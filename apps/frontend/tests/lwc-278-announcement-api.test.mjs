@@ -48,7 +48,7 @@ test('admin settings and publish use the direct-publish announcement schema', as
   const calls = [];
   globalThis.fetch = async (url, init = {}) => {
     calls.push({ url: String(url), init });
-    if (init.method === 'POST') return Response.json({ registration_enabled: true, announcement_markdown: '# Published' });
+    if (init.method === 'POST') return Response.json({ announcement_markdown: '# Published' });
     return Response.json({ registration_enabled: true, announcement_markdown: '# Published' });
   };
 
@@ -72,10 +72,9 @@ test('publish rejects a successful response with missing or invalid fields', asy
     onUnauthorized: () => {},
   });
   for (const payload of [
-    { announcement_markdown: '# Published' },
-    { registration_enabled: 'yes', announcement_markdown: '# Published' },
-    { registration_enabled: true },
-    { registration_enabled: true, announcement_markdown: 42 },
+    {},
+    { announcement_markdown: 42 },
+    { announcement_markdown: null },
   ]) {
     globalThis.fetch = async () => Response.json(payload, { status: 200 });
     await assert.rejects(() => publishAnnouncement('# New announcement'), /Invalid announcement publish response/);

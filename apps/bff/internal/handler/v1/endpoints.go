@@ -3644,7 +3644,7 @@ func (h *Handler) AdminListUsers(c *gin.Context) {
 		users := make([]adminUserEntry, 0, len(remoteUsers))
 		for _, user := range remoteUsers {
 			users = append(users, adminUserEntry{Status: user.Status, ID: user.ID, Name: user.Name, Email: user.Email,
-				ScopeStates: convertManagementScopeStates(user.ScopeStates), ProjectCount: projectCounts[user.ID]})
+				Role: user.Role, ScopeStates: convertManagementScopeStates(user.ScopeStates), ProjectCount: projectCounts[user.ID]})
 		}
 		c.JSON(http.StatusOK, gin.H{"users": users})
 		return
@@ -3732,11 +3732,6 @@ func (h *Handler) AdminListUsers(c *gin.Context) {
 //	@Security		BearerAuth
 //	@Router			/api/v1/admin/users/{id} [patch]
 func (h *Handler) AdminUpdateUser(c *gin.Context) {
-	if h.firestore == nil || h.firestore.Raw() == nil {
-		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "Firestore client is not configured"})
-		return
-	}
-
 	userID := c.Param("id")
 	var body struct {
 		Role        *string `json:"role"`
@@ -3753,9 +3748,17 @@ func (h *Handler) AdminUpdateUser(c *gin.Context) {
 		trimmed := strings.TrimSpace(*body.Role)
 		body.Role = &trimmed
 	}
+	if body.Status != nil {
+		trimmed := strings.TrimSpace(*body.Status)
+		body.Status = &trimmed
+	}
 	if management, ok := h.consumerVerifier.(managementConsumer); ok {
 		credential := requestUserCredential(c)
 		if body.Scope != nil || body.Action != nil || body.OperationID != nil {
+			if h.authManagementBridge {
+				c.JSON(http.StatusConflict, handler.ErrorResponse{Error: "scope changes are disabled until central cutover"})
+				return
+			}
 			if body.Scope == nil || body.Action == nil || body.OperationID == nil || body.Role != nil || body.Status != nil {
 				c.JSON(http.StatusBadRequest, handler.ErrorResponse{Error: "scope, action, and operation_id are required"})
 				return
@@ -3785,6 +3788,24 @@ func (h *Handler) AdminUpdateUser(c *gin.Context) {
 			c.JSON(http.StatusOK, result)
 			return
 		}
+		if h.authManagementBridge {
+			if body.Role == nil && body.Status == nil {
+				c.JSON(http.StatusBadRequest, handler.ErrorResponse{Error: "role or status is required"})
+				return
+			}
+			legacy, ok := h.consumerVerifier.(legacyAccountManagementConsumer)
+			if !ok {
+				c.JSON(http.StatusServiceUnavailable, handler.ErrorResponse{Error: "Auth account authority unavailable"})
+				return
+			}
+			if err := legacy.UpdateLegacyAccount(c.Request.Context(), credential, userID, body.Role, body.Status); err != nil {
+				statusCode, message := managementConsumerError(err)
+				c.JSON(statusCode, handler.ErrorResponse{Error: message})
+				return
+			}
+			c.JSON(http.StatusOK, gin.H{"status": "updated", "id": userID})
+			return
+		}
 		if body.Status != nil && body.Role == nil {
 			if err := management.UpdateAccountStatus(c.Request.Context(), credential, userID, strings.TrimSpace(*body.Status)); err != nil {
 				statusCode, message := managementConsumerError(err)
@@ -3795,6 +3816,10 @@ func (h *Handler) AdminUpdateUser(c *gin.Context) {
 			return
 		}
 		c.JSON(http.StatusBadRequest, handler.ErrorResponse{Error: "role updates are replaced by explicit management scope operations"})
+		return
+	}
+	if h.firestore == nil || h.firestore.Raw() == nil {
+		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "Firestore client is not configured"})
 		return
 	}
 	err := auth.UpdateAccount(c.Request.Context(), h.firestore.Raw(), c.GetString("userID"), userID, body.Role, body.Status)

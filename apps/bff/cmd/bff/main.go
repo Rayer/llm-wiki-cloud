@@ -73,6 +73,48 @@ func configureScheduledPipeline(hV1 *handlerv1.Handler, cfg config.Config) {
 		cfg.ScheduledPipelineAudience, cfg.ScheduledPipelineServiceAccount)
 }
 
+type authConsumerFactory func(context.Context, authconsumer.Config, *http.Client) (*authconsumer.Client, error)
+
+func configureAuthConsumer(hV1 *handlerv1.Handler, cfg config.Config, localMode bool, factory authConsumerFactory) (*authconsumer.Client, error) {
+	hV1.SetAuthManagementBridge(cfg.BFFManagementBridge)
+	if localMode {
+		return nil, nil
+	}
+	consumer := cfg.BFFAuthConsumer
+	if consumer == nil || strings.TrimSpace(consumer.Environment) == "" || strings.TrimSpace(consumer.AuthURL) == "" ||
+		strings.TrimSpace(consumer.Issuer) == "" || strings.TrimSpace(consumer.VerifierAudience) == "" ||
+		strings.TrimSpace(consumer.Resource) == "" || consumer.TimeoutSeconds != 5 {
+		return nil, errors.New("Auth consumer identity is missing from BFF config")
+	}
+	switch cfg.BFFConfigSchemaVersion {
+	case 2:
+		if !cfg.BFFManagementBridge {
+			return nil, errors.New("schema-2 Auth consumer bridge is unavailable")
+		}
+	case 3:
+		if cfg.BFFManagementBridge {
+			return nil, errors.New("schema-3 BFF cannot enable legacy management bridge")
+		}
+	default:
+		return nil, errors.New("BFF Auth consumer schema is unsupported")
+	}
+	if factory == nil {
+		return nil, errors.New("Auth consumer factory is unavailable")
+	}
+	runtimeConfig := authconsumer.Config{
+		BaseURL: consumer.AuthURL, Environment: consumer.Environment, Issuer: consumer.Issuer,
+		Resource: consumer.Resource, Audience: consumer.VerifierAudience,
+		VerifierPath: consumer.VerifierPath, AccountCheckPath: consumer.AccountCheckPath, CatalogPath: consumer.CatalogPath,
+		Timeout: time.Duration(consumer.TimeoutSeconds) * time.Second,
+	}
+	client, err := factory(context.Background(), runtimeConfig, &http.Client{Timeout: runtimeConfig.Timeout})
+	if err != nil {
+		return nil, fmt.Errorf("configure Auth consumer: %w", err)
+	}
+	hV1.SetConsumerVerifier(client)
+	return client, nil
+}
+
 func main() {
 	cfg, err := config.LoadBFFFile(os.Getenv("LWC_BFF_CONFIG_PATH"))
 	if err != nil {
@@ -152,22 +194,9 @@ func main() {
 
 	// Handlers
 	hV1 := handlerv1.New(wikiStore, fsClient, idx, conceptCache, nil, nil)
-	if !localMode {
-		consumerConfig := cfg.BFFAuthConsumer
-		if consumerConfig == nil || strings.TrimSpace(consumerConfig.Environment) == "" ||
-			strings.TrimSpace(consumerConfig.VerifierAudience) == "" || strings.TrimSpace(consumerConfig.Resource) == "" {
-			log.Fatal("Auth consumer identity is missing from BFF config")
-		}
-		consumer, err := authconsumer.NewGoogleRuntime(context.Background(), authconsumer.Config{
-			BaseURL: consumerConfig.AuthURL, Environment: consumerConfig.Environment, Issuer: consumerConfig.Issuer,
-			Resource: consumerConfig.Resource, Audience: consumerConfig.VerifierAudience,
-			VerifierPath: consumerConfig.VerifierPath, AccountCheckPath: consumerConfig.AccountCheckPath, CatalogPath: consumerConfig.CatalogPath,
-			Timeout: time.Duration(consumerConfig.TimeoutSeconds) * time.Second,
-		}, &http.Client{Timeout: time.Duration(consumerConfig.TimeoutSeconds) * time.Second})
-		if err != nil {
-			log.Fatalf("configure Auth consumer: %v", err)
-		}
-		hV1.SetConsumerVerifier(consumer)
+	authConsumerClient, err := configureAuthConsumer(hV1, cfg, localMode, authconsumer.NewGoogleRuntime)
+	if err != nil {
+		log.Fatalf("configure Auth consumer: %v", err)
 	}
 	hV1.SetMCPConfig(cfg.MCP)
 	hV1.SetQueryExecutor(productionExecutor)
@@ -222,7 +251,11 @@ func main() {
 	rawFactory := func(scopedClient *gcs.Client, fsClient *firestore.Client) rawScrapeHandler {
 		return handlerraw.NewWithURLIntake(scopedClient, fsClient, intakeService)
 	}
-	r := newProductionRouter(cfg, localMode, gcsClient, fsClient, hV1, settingsStore, rawFactory)
+	var publicRegistrationProvider syssettings.PublicRegistrationSettingsProvider
+	if authConsumerClient != nil {
+		publicRegistrationProvider = authConsumerPublicRegistrationProvider{client: authConsumerClient}
+	}
+	r := newProductionRouter(cfg, localMode, gcsClient, fsClient, hV1, settingsStore, rawFactory, publicRegistrationProvider)
 
 	listenHost := ":"
 	if localMode {
@@ -416,7 +449,12 @@ func newProductionRouter(
 	hV1 *handlerv1.Handler,
 	settingsStore syssettings.RegistrationGate,
 	rawScrapeFactory rawScrapeHandlerFactory,
+	registrationProviders ...syssettings.PublicRegistrationSettingsProvider,
 ) *observability.RequestLifecycleRouter {
+	var registrationProvider syssettings.PublicRegistrationSettingsProvider
+	if len(registrationProviders) > 0 {
+		registrationProvider = registrationProviders[0]
+	}
 	r := gin.Default()
 	r.Use(observability.RequestLifecycleMiddleware())
 	r.Use(observability.AuthHTTPMiddleware())
@@ -439,7 +477,7 @@ func newProductionRouter(
 		AllowCredentials: true,
 	})))
 
-	registerPublicRoutes(r, settingsStore, cfg.AuthServiceURL, !localMode)
+	registerPublicRoutes(r, settingsStore, cfg.AuthServiceURL, !localMode, registrationProvider)
 	r.POST("/internal/profile/dispatch", productionProfileDispatcher(hV1, cfg).Gin)
 	r.POST("/internal/pipeline/schedule", hV1.ScheduledPipeline)
 	r.GET("/api/v1/query/config", hV1.QueryConfig)
@@ -500,7 +538,7 @@ func newProductionRouter(
 		v1.GET("/projects/:pid/status", hV1.ProjectStatus)
 	}
 
-	registerAdminRoutes(r, cfg, hV1, settingsStore)
+	registerAdminRoutes(r, cfg, hV1, settingsStore, registrationProvider != nil)
 
 	projectKeyRoutes := r.Group("/api/v1")
 	projectKeyRoutes.Use(hV1.ProjectKeyManagementAuth(cfg), auth.WebOnly())
@@ -608,11 +646,32 @@ func newExportHTTPHandler(localMode bool, cfg config.Config, repo exportjob.Repo
 	return exportjob.NewHTTPHandler(repo, projects, archives, starter)
 }
 
-func registerPublicRoutes(r *gin.Engine, settingsStore syssettings.RegistrationGate, authServiceURL string, demoEnabled bool) {
+func registerPublicRoutes(r *gin.Engine, settingsStore syssettings.RegistrationGate, authServiceURL string, demoEnabled bool,
+	registrationProviders ...syssettings.PublicRegistrationSettingsProvider) {
 	// Public routes are registered on the root router, outside JWT and project middleware.
 	_ = authServiceURL
-	r.GET("/api/v1/public/config", syssettings.PublicConfigHandler(settingsStore, demoEnabled))
+	var registration syssettings.PublicRegistrationSettingsProvider
+	if len(registrationProviders) > 0 {
+		registration = registrationProviders[0]
+	}
+	r.GET("/api/v1/public/config", syssettings.PublicConfigHandlerWithRegistration(settingsStore, demoEnabled, registration))
 	r.GET("/api/v1/public/version", buildinfo.Handler())
+}
+
+type authConsumerPublicRegistrationProvider struct {
+	client *authconsumer.Client
+}
+
+func (p authConsumerPublicRegistrationProvider) PublicRegistrationSettings(ctx context.Context) (syssettings.RegistrationSettings, error) {
+	if p.client == nil {
+		return syssettings.RegistrationSettings{}, errors.New("Auth consumer unavailable")
+	}
+	settings, err := p.client.PublicRegistrationSettings(ctx)
+	if err != nil {
+		return syssettings.RegistrationSettings{}, err
+	}
+	return syssettings.RegistrationSettings{RegistrationEnabled: settings.RegistrationEnabled,
+		EmailRegistrationEnabled: settings.EmailRegistrationEnabled, GoogleRegistrationEnabled: settings.GoogleRegistrationEnabled}, nil
 }
 
 const legacyObservabilityServiceName = "llm-wiki-bff-dev"
@@ -624,12 +683,19 @@ func observabilityServiceName(kService string) string {
 	return legacyObservabilityServiceName
 }
 
-func registerAdminRoutes(r *gin.Engine, cfg config.Config, hV1 *handlerv1.Handler, settingsStore syssettings.RegistrationGate) {
+func registerAdminRoutes(r *gin.Engine, cfg config.Config, hV1 *handlerv1.Handler, settingsStore syssettings.RegistrationGate,
+	useAuthRegistration ...bool) {
+	remoteRegistration := len(useAuthRegistration) > 0 && useAuthRegistration[0]
 	platformAdmin := r.Group("/api/v1/admin")
 	platformAdmin.Use(hV1.AccountAuth(cfg), handlerv1.ManagementScopeOnly(auth.ManagementScopeAuthAdmin))
 	{
-		platformAdmin.GET("/settings", syssettings.AdminGetSettingsHandler(settingsStore))
-		platformAdmin.PATCH("/settings", syssettings.AdminPatchSettingsHandler(settingsStore))
+		if remoteRegistration {
+			platformAdmin.GET("/settings", hV1.AdminGetRegistrationSettings)
+			platformAdmin.PATCH("/settings", hV1.AdminPatchRegistrationSettings)
+		} else {
+			platformAdmin.GET("/settings", syssettings.AdminGetSettingsHandler(settingsStore))
+			platformAdmin.PATCH("/settings", syssettings.AdminPatchSettingsHandler(settingsStore))
+		}
 		platformAdmin.GET("/management/catalog", hV1.AdminManagementCatalog)
 		platformAdmin.GET("/users", hV1.AdminListUsers)
 		platformAdmin.PATCH("/users/:id", hV1.AdminUpdateUser)

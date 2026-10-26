@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -97,6 +98,91 @@ func TestDefaultProductionQueryCompositionUsesProductionExecutor(t *testing.T) {
 	if _, ok := executor.(*queryquality.ProductionExecutor); !ok {
 		t.Fatalf("production executor = %T, want queryquality.ProductionExecutor", executor)
 	}
+}
+
+func TestConfigureAuthConsumerWiresSchema2BridgeAndSchema3Runtime(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	verifyCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/auth/consumers/lwc/verify-credential" {
+			t.Errorf("Auth consumer request method/path=%s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer synthetic-runtime-token" {
+			t.Errorf("runtime identity token=%q", got)
+		}
+		verifyCalls++
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		_ = json.NewEncoder(w).Encode(authconsumer.Identity{
+			SchemaVersion: 1, Subject: "synthetic-user", CredentialKind: "web-access", Environment: "dev",
+			Issuer: serverURL(r), Resource: "https://bff.dev.example.test", ExpiresAt: time.Now().Add(time.Minute).Unix(),
+			Scopes: []string{}, ManagementScopes: []string{},
+		})
+	}))
+	defer server.Close()
+
+	for _, schemaVersion := range []int{2, 3} {
+		t.Run(fmt.Sprintf("schema-%d", schemaVersion), func(t *testing.T) {
+			consumer := &config.BFFAuthConsumer{
+				SchemaVersion: 1, Environment: "dev", AuthURL: server.URL, Issuer: server.URL,
+				RuntimeServiceAccount: "lwc-bff-dev@example.iam.gserviceaccount.com",
+				VerifierAudience:      "https://auth-runtime.example.test", Resource: "https://bff.dev.example.test",
+				VerifierPath: "/api/v1/auth/consumers/lwc/verify-credential", AccountCheckPath: "/api/v1/auth/consumers/lwc/accounts/check",
+				CatalogPath: "/api/v1/auth/consumers/lwc/management/catalog", AuthorityModes: []string{"legacy-shadow", "central"}, TimeoutSeconds: 5,
+			}
+			cfg := config.Config{BFFConfigSchemaVersion: schemaVersion, BFFManagementBridge: schemaVersion == 2,
+				BFFAuthConsumer: consumer, JWTSecret: "legacy-secret-must-not-be-used"}
+			h := handlerv1.New(nil, nil, nil, nil, nil, nil)
+			var received authconsumer.Config
+			client, err := configureAuthConsumer(h, cfg, false, func(_ context.Context, runtimeConfig authconsumer.Config,
+				httpClient *http.Client) (*authconsumer.Client, error) {
+				received = runtimeConfig
+				if httpClient.Timeout != 5*time.Second {
+					t.Errorf("consumer HTTP timeout=%s", httpClient.Timeout)
+				}
+				return authconsumer.New(runtimeConfig, httpClient, func(_ context.Context, audience string) (string, error) {
+					if audience != consumer.VerifierAudience {
+						t.Errorf("runtime token audience=%q", audience)
+					}
+					return "synthetic-runtime-token", nil
+				})
+			})
+			if err != nil || client == nil {
+				t.Fatalf("configure schema-%d consumer client=%v err=%v", schemaVersion, client, err)
+			}
+			if received.BaseURL != server.URL || received.Issuer != server.URL || received.Environment != "dev" ||
+				received.Resource != consumer.Resource || received.Audience != consumer.VerifierAudience || received.Timeout != 5*time.Second {
+				t.Fatalf("runtime consumer config=%+v", received)
+			}
+			router := gin.New()
+			router.GET("/probe", h.AccountAuth(cfg), func(c *gin.Context) {
+				if c.GetString("userID") != "synthetic-user" {
+					t.Errorf("Auth consumer user ID=%q", c.GetString("userID"))
+				}
+				c.Status(http.StatusNoContent)
+			})
+			request := httptest.NewRequest(http.MethodGet, "/probe", nil)
+			request.Header.Set("Authorization", "Bearer synthetic-user-credential")
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+			if response.Code != http.StatusNoContent || verifyCalls != schemaVersion-1 {
+				t.Fatalf("schema-%d runtime route status=%d verify calls=%d", schemaVersion, response.Code, verifyCalls)
+			}
+		})
+	}
+
+	h := handlerv1.New(nil, nil, nil, nil, nil, nil)
+	if client, err := configureAuthConsumer(h, config.Config{BFFConfigSchemaVersion: 3, JWTSecret: "legacy-secret-must-not-be-used"}, false,
+		func(context.Context, authconsumer.Config, *http.Client) (*authconsumer.Client, error) {
+			t.Fatal("schema-3 startup attempted a local credential fallback")
+			return nil, nil
+		}); err == nil || client != nil {
+		t.Fatalf("schema-3 startup accepted missing Auth consumer config: client=%v err=%v", client, err)
+	}
+}
+
+func serverURL(r *http.Request) string {
+	return "http://" + r.Host
 }
 
 func TestURLIntakeJevUsesLoadedConfigAndIgnoresLegacyEnvironment(t *testing.T) {
@@ -1076,6 +1162,53 @@ func newAdminRouteTestRouter(t *testing.T) *gin.Engine {
 	settingsStore := &syssettings.FakeStore{Enabled: true}
 	registerAdminRoutes(router, config.Config{JWTSecret: "test-secret"}, handler, settingsStore)
 	return router
+}
+
+func TestSchema2AdminRegistrationRouteUsesAuthWhenBFFSettingsStoreFails(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	handler := handlerv1.New(nil, nil, nil, nil, nil, nil)
+	handler.SetAuthManagementBridge(true)
+	remote := &adminRegistrationConsumerStub{}
+	handler.SetConsumerVerifier(remote)
+	localSettings := &syssettings.FakeStore{Err: errors.New("BFF registration settings store unavailable")}
+	router := gin.New()
+	registerAdminRoutes(router, config.Config{JWTSecret: "test-secret"}, handler, localSettings, true)
+	token, err := auth.GenerateAccessToken("admin-user", "admin", "test-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPatch, "/api/v1/admin/settings", strings.NewReader(`{"registration_enabled":false}`))
+	request.Header.Set("Authorization", "Bearer "+token)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || remote.updates != 1 || remote.credential != token {
+		t.Fatalf("Auth registration update status=%d calls=%d credential-forwarded=%t body=%s", response.Code, remote.updates,
+			remote.credential == token, response.Body.String())
+	}
+	if localSettings.GetCalls != 0 || localSettings.SetCalls != 0 {
+		t.Fatalf("Auth-owned registration route touched local store: reads=%d writes=%d", localSettings.GetCalls, localSettings.SetCalls)
+	}
+}
+
+type adminRegistrationConsumerStub struct {
+	adminTestConsumerVerifier
+	updates    int
+	credential string
+}
+
+func (*adminRegistrationConsumerStub) ManagementRegistrationSettings(context.Context, string) (authconsumer.RegistrationSettings, error) {
+	return authconsumer.RegistrationSettings{RegistrationEnabled: true, EmailRegistrationEnabled: true, GoogleRegistrationEnabled: true}, nil
+}
+
+func (s *adminRegistrationConsumerStub) UpdateManagementRegistrationSettings(_ context.Context, credential string,
+	patch authconsumer.RegistrationSettingsPatch) (authconsumer.RegistrationSettings, error) {
+	s.updates++
+	s.credential = credential
+	if patch.RegistrationEnabled == nil {
+		return authconsumer.RegistrationSettings{}, authconsumer.ErrInvalidRequest
+	}
+	return authconsumer.RegistrationSettings{RegistrationEnabled: *patch.RegistrationEnabled,
+		EmailRegistrationEnabled: true, GoogleRegistrationEnabled: true}, nil
 }
 
 type adminTestConsumerVerifier struct{}

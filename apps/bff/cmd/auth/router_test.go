@@ -69,11 +69,15 @@ func TestProductionRouterExposesOnlyAuthPublicSurface(t *testing.T) {
 		http.MethodPost + " /api/v1/auth/consumers/lwc/verify-credential":                 true,
 		http.MethodPost + " /api/v1/auth/consumers/lwc/accounts/check":                    true,
 		http.MethodGet + " /api/v1/auth/consumers/lwc/management/catalog":                 true,
+		http.MethodGet + " /api/v1/auth/consumers/lwc/registration/settings":              true,
+		http.MethodGet + " /api/v1/auth/consumers/lwc/management/registration-settings":   true,
 		http.MethodGet + " /api/v1/auth/consumers/lwc/management/me":                      true,
 		http.MethodGet + " /api/v1/auth/consumers/lwc/management/users":                   true,
 		http.MethodPost + " /api/v1/auth/consumers/lwc/management/grants":                 true,
 		http.MethodGet + " /api/v1/auth/consumers/lwc/management/operations/:operationID": true,
 		http.MethodPatch + " /api/v1/auth/consumers/lwc/management/users/:userID":         true,
+		http.MethodPatch + " /api/v1/auth/consumers/lwc/management/users/:userID/legacy":  true,
+		http.MethodPatch + " /api/v1/auth/consumers/lwc/management/registration-settings": true,
 		http.MethodDelete + " /api/v1/auth/consumers/lwc/management/users/:userID":        true,
 		http.MethodPost + " /api/v1/auth/mcp/oauth/register":                              true,
 		http.MethodPost + " /api/v1/auth/mcp/oauth/token":                                 true,
@@ -95,6 +99,19 @@ func TestProductionRouterExposesOnlyAuthPublicSurface(t *testing.T) {
 		if !want[route] {
 			t.Errorf("Auth production router exposed unapproved route %s", route)
 		}
+	}
+}
+
+func TestLWCConsumerPolicySchema2BridgeUsesFrozenBFFIdentity(t *testing.T) {
+	policy := lwcConsumerPolicy(config.Config{ConfigSchemaVersion: 2, AuthEnvironment: "dev",
+		AuthServiceURL: "https://auth.dev.rayer.idv.tw", SyncServiceURL: "https://untrusted.example"})
+	if !policy.Enabled || policy.Resource != "https://llm-wiki-bff-dev-580854833715.asia-east1.run.app" ||
+		policy.CallerServiceAccount != "lwc-bff-dev@llm-wiki-cloud.iam.gserviceaccount.com" ||
+		policy.VerifierAudience != "https://llm-wiki-auth-dev-a5nkmux6pq-de.a.run.app" {
+		t.Fatalf("schema-2 bridge policy=%+v", policy)
+	}
+	if got := lwcConsumerPolicy(config.Config{ConfigSchemaVersion: 2, AuthEnvironment: "dev", AuthServiceURL: "https://auth.dev.attacker.test"}); got.Enabled {
+		t.Fatalf("untrusted schema-2 config enabled consumer policy: %+v", got)
 	}
 }
 

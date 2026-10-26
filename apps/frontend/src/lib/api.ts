@@ -1954,19 +1954,16 @@ export async function updateAdminSettings(
   } as AdminSettings;
 }
 
-export async function publishAnnouncement(announcement_markdown: string): Promise<AdminSettings> {
+export async function publishAnnouncement(announcement_markdown: string): Promise<{ announcement_markdown: string }> {
   const payload = await adminJson('/api/v1/admin/settings/announcement/publish', {
     method: 'POST',
     json: true,
     body: JSON.stringify({ announcement_markdown }),
   });
   const record = isRecord(payload) ? payload : {};
-  if (typeof record.registration_enabled !== 'boolean' || typeof record.announcement_markdown !== 'string') {
+  if (typeof record.announcement_markdown !== 'string') {
     throw new ApiError('Invalid announcement publish response', 500);
   }
   clearPublicConfigCache();
-  return {
-    ...registrationSettings(record),
-    announcement_markdown: record.announcement_markdown,
-  };
+  return { announcement_markdown: record.announcement_markdown };
 }

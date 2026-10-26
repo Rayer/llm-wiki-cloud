@@ -155,7 +155,7 @@ export function AdminClient() {
     setSettingsPending(true);
     try {
       const settings = await publishAnnouncement(announcementMarkdown);
-      if (typeof settings.registration_enabled !== 'boolean' || typeof settings.announcement_markdown !== 'string') {
+      if (typeof settings.announcement_markdown !== 'string') {
         throw new Error('Invalid announcement publish response');
       }
       const markdown = settings.announcement_markdown;

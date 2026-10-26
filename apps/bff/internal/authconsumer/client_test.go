@@ -120,6 +120,43 @@ func TestClientAccountCheckUsesSameTrustedRuntimeAndRequiresExactSubject(t *test
 	}
 }
 
+func TestClientRegistrationSettingsUsesAuthAuthorityAndStrictSchema(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.Header.Get("Authorization") != "Bearer runtime" {
+			t.Errorf("missing trusted runtime identity: %q", r.Header.Get("Authorization"))
+		}
+		if requests == 1 {
+			if r.Method != http.MethodGet || r.URL.Path != "/api/v1/auth/consumers/lwc/registration/settings" || r.Header.Get("X-LWC-User-Credential") != "" {
+				t.Errorf("public settings request=%s %s credential=%q", r.Method, r.URL.Path, r.Header.Get("X-LWC-User-Credential"))
+			}
+		} else {
+			if r.Method != http.MethodPatch || r.URL.Path != "/api/v1/auth/consumers/lwc/management/registration-settings" || r.Header.Get("X-LWC-User-Credential") != "admin-credential" {
+				t.Errorf("admin settings request=%s %s credential=%q", r.Method, r.URL.Path, r.Header.Get("X-LWC-User-Credential"))
+			}
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body["schema_version"] != float64(1) || body["registration_enabled"] != false {
+				t.Errorf("unexpected admin settings body=%#v err=%v", body, err)
+			}
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = w.Write([]byte(`{"schema_version":1,"registration_enabled":false,"email_registration_enabled":true,"google_registration_enabled":false}`))
+	}))
+	defer server.Close()
+	client := testClient(t, server.URL, func(context.Context, string) (string, error) { return "runtime", nil })
+	settings, err := client.PublicRegistrationSettings(context.Background())
+	if err != nil || settings.RegistrationEnabled || !settings.EmailRegistrationEnabled || settings.GoogleRegistrationEnabled {
+		t.Fatalf("public settings=%+v err=%v", settings, err)
+	}
+	settings, err = client.UpdateManagementRegistrationSettings(context.Background(), "admin-credential", RegistrationSettingsPatch{RegistrationEnabled: boolPointer(false)})
+	if err != nil || settings.RegistrationEnabled || requests != 2 {
+		t.Fatalf("updated settings=%+v requests=%d err=%v", settings, requests, err)
+	}
+}
+
+func boolPointer(value bool) *bool { return &value }
+
 func testClient(t *testing.T, baseURL string, token RuntimeTokenSource) *Client {
 	t.Helper()
 	client, err := New(Config{BaseURL: baseURL, Environment: "dev", Resource: "https://bff.example.test",

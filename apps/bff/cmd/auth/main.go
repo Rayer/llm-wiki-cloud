@@ -207,17 +207,25 @@ func newProductionRouter(cfg config.Config, localMode bool, fsClient *firestorec
 		mcpOAuth = auth.NewMCPOAuthServiceWithPolicy(rawFirestore, databaseEnvironment, cfg.AuthEnvironment,
 			cfg.AuthServiceURL, cfg.SyncServiceURL, "", cfg.JWTSecret, cfg.AuthOAuthResources)
 	}
+	var settingsAuthority auth.RegistrationSettingsAuthority
+	if settingsStore, ok := settingsStore.(*syssettings.Store); ok && settingsStore != nil {
+		settingsAuthority = authRegistrationSettingsStore{store: settingsStore}
+	}
 	consumerRoutes := authRoutes.Group("/consumers/lwc")
 	consumerRoutes.Use(middleware.NewRateLimiter(60, time.Minute))
 	consumerRoutes.POST("/verify-credential", auth.LWCConsumerVerifyHandlerWithAuthorities(cfg, rawFirestore, consumerPolicy,
 		idtoken.Validate, verifyCLISession, management, mcpOAuth))
 	consumerRoutes.POST("/accounts/check", auth.LWCConsumerAccountCheckHandler(rawFirestore, consumerPolicy, idtoken.Validate))
+	consumerRoutes.GET("/registration/settings", auth.ConsumerRegistrationSettingsHandler(settingsAuthority, consumerPolicy, idtoken.Validate))
 	consumerRoutes.GET("/management/catalog", auth.ManagementCatalogHandler(consumerPolicy, cfg.AuthConsumerPublicProjection, idtoken.Validate))
 	consumerRoutes.GET("/management/me", auth.ManagementMeHandler(cfg, rawFirestore, consumerPolicy, idtoken.Validate, verifyCLISession, management))
 	consumerRoutes.GET("/management/users", auth.ManagementUsersHandler(cfg, rawFirestore, consumerPolicy, idtoken.Validate, verifyCLISession, management))
 	consumerRoutes.POST("/management/grants", auth.ManagementGrantHandler(cfg, rawFirestore, consumerPolicy, idtoken.Validate, verifyCLISession, management))
 	consumerRoutes.GET("/management/operations/:operationID", auth.ManagementOperationHandler(cfg, rawFirestore, consumerPolicy, idtoken.Validate, verifyCLISession, management))
 	consumerRoutes.PATCH("/management/users/:userID", auth.ManagementAccountStatusHandler(cfg, rawFirestore, consumerPolicy, idtoken.Validate, verifyCLISession, management))
+	consumerRoutes.PATCH("/management/users/:userID/legacy", auth.ManagementLegacyAccountHandler(cfg, rawFirestore, consumerPolicy, idtoken.Validate, verifyCLISession, management))
+	consumerRoutes.GET("/management/registration-settings", auth.ManagementRegistrationSettingsGetHandler(cfg, rawFirestore, consumerPolicy, idtoken.Validate, verifyCLISession, management, settingsAuthority))
+	consumerRoutes.PATCH("/management/registration-settings", auth.ManagementRegistrationSettingsPatchHandler(cfg, rawFirestore, consumerPolicy, idtoken.Validate, verifyCLISession, management, settingsAuthority))
 	consumerRoutes.DELETE("/management/users/:userID", auth.ManagementAccountDeleteHandler(cfg, rawFirestore, consumerPolicy, idtoken.Validate, verifyCLISession, management))
 	passwordRoutes := authRoutes.Group("/account")
 	if rawFirestore != nil {
@@ -235,7 +243,41 @@ func newProductionRouter(cfg config.Config, localMode bool, fsClient *firestorec
 	return observability.WrapRequestLifecycleRouter(r)
 }
 
+type authRegistrationSettingsStore struct {
+	store *syssettings.Store
+}
+
+func (s authRegistrationSettingsStore) GetRegistrationSettings(ctx context.Context) (auth.ManagementRegistrationSettings, error) {
+	if s.store == nil {
+		return auth.ManagementRegistrationSettings{}, fmt.Errorf("registration settings store unavailable")
+	}
+	settings, err := s.store.GetRegistrationSettings(ctx)
+	return auth.ManagementRegistrationSettings{RegistrationEnabled: settings.RegistrationEnabled,
+		EmailRegistrationEnabled: settings.EmailRegistrationEnabled, GoogleRegistrationEnabled: settings.GoogleRegistrationEnabled}, err
+}
+
+func (s authRegistrationSettingsStore) SetRegistrationSettingsInTransaction(ctx context.Context, tx *firestore.Transaction,
+	master, email, google *bool) (auth.ManagementRegistrationSettings, error) {
+	if s.store == nil {
+		return auth.ManagementRegistrationSettings{}, fmt.Errorf("registration settings store unavailable")
+	}
+	settings, err := s.store.SetRegistrationSettingsInTransaction(ctx, tx, master, email, google)
+	return auth.ManagementRegistrationSettings{RegistrationEnabled: settings.RegistrationEnabled,
+		EmailRegistrationEnabled: settings.EmailRegistrationEnabled, GoogleRegistrationEnabled: settings.GoogleRegistrationEnabled}, err
+}
+
 func lwcConsumerPolicy(cfg config.Config) auth.LWCConsumerPolicy {
+	if cfg.ConfigSchemaVersion == 2 && cfg.AuthEnvironment != "local" {
+		_, verifier, err := config.LegacyLWCBridgeConsumer(cfg.AuthEnvironment, cfg.AuthServiceURL, "")
+		if err != nil {
+			return auth.LWCConsumerPolicy{}
+		}
+		return auth.LWCConsumerPolicy{
+			Enabled: true, Environment: verifier.Environment, Resource: verifier.Resource,
+			CallerServiceAccount: verifier.CallerServiceAccount, VerifierAudience: verifier.Audience,
+			Issuer: cfg.AuthServiceURL, AllowedCredentialKinds: append([]string(nil), verifier.AllowedCredentialKinds...),
+		}
+	}
 	var verifier config.AuthConsumerVerifier
 	for _, candidate := range cfg.AuthConsumerVerifiers {
 		if candidate.ID == "lwc-bff" && candidate.Environment == cfg.AuthEnvironment {

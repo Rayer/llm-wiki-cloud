@@ -215,7 +215,19 @@ func LoadBFFFile(path string) (Config, error) {
 			return Config{}, errors.New("invalid PORT")
 		}
 	}
-	return configFromBFFFile(file, port), nil
+	cfg := configFromBFFFile(file, port)
+	if file.SchemaVersion == 2 && file.Environment != "local" {
+		consumer, _, err := LegacyLWCBridgeConsumer(file.Environment, file.AuthServiceURL, file.MCPResourceOrigin)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.BFFAuthConsumer = &consumer
+		cfg.BFFManagementBridge = true
+		if cfg.MCPResourceOrigin == "" {
+			cfg.MCPResourceOrigin = consumer.Resource
+		}
+	}
+	return cfg, nil
 }
 
 // DecodeBFFFile validates the complete schema before projecting it into the
@@ -839,10 +851,11 @@ func configFromBFFFile(file BFFFile, port string) Config {
 		PipelineCooldownSeconds: file.PipelineCooldownSeconds, PipelineMinNewRaw: file.PipelineMinNewRaw,
 		PipelineDemoUserIDs: file.PipelineDemoUserIDs, RegistrationEnabled: file.RegistrationEnabled,
 		AuthServiceURL: file.AuthServiceURL, AuthSessionEnvironment: file.AuthSessionEnvironment,
-		MCPResourceOrigin:    file.MCPResourceOrigin,
-		MCP:                  file.MCP,
-		BFFAuthConsumer:      file.AuthConsumer,
-		AuthSessionMigration: file.AuthSessionMigration, ProfileRuntimeAudience: file.ProfileRuntimeAudience,
+		MCPResourceOrigin:      file.MCPResourceOrigin,
+		MCP:                    file.MCP,
+		BFFAuthConsumer:        file.AuthConsumer,
+		BFFConfigSchemaVersion: file.SchemaVersion,
+		AuthSessionMigration:   file.AuthSessionMigration, ProfileRuntimeAudience: file.ProfileRuntimeAudience,
 		ProfileRuntimeServiceAccount: file.ProfileRuntimeServiceAccount,
 		PipelineScheduleCron:         file.PipelineSchedule.Cron, PipelineScheduleTimezone: file.PipelineSchedule.Timezone,
 		ScheduledPipelineAudience: file.PipelineSchedule.Audience, ScheduledPipelineServiceAccount: file.PipelineSchedule.ServiceAccount,

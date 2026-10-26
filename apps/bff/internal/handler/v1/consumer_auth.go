@@ -2,7 +2,9 @@ package v1
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 
@@ -25,6 +27,58 @@ type managementConsumer interface {
 	ReadManagementOperation(context.Context, string, string) (authconsumer.ManagementMutationResult, error)
 	UpdateAccountStatus(context.Context, string, string, string) error
 	DeleteAccount(context.Context, string, string) error
+}
+
+type registrationManagementConsumer interface {
+	ManagementRegistrationSettings(context.Context, string) (authconsumer.RegistrationSettings, error)
+	UpdateManagementRegistrationSettings(context.Context, string, authconsumer.RegistrationSettingsPatch) (authconsumer.RegistrationSettings, error)
+}
+
+type legacyAccountManagementConsumer interface {
+	UpdateLegacyAccount(context.Context, string, string, *string, *string) error
+}
+
+func (h *Handler) AdminGetRegistrationSettings(c *gin.Context) {
+	management, ok := h.consumerVerifier.(registrationManagementConsumer)
+	if !ok {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Auth registration authority unavailable"})
+		return
+	}
+	settings, err := management.ManagementRegistrationSettings(c.Request.Context(), requestUserCredential(c))
+	if err != nil {
+		statusCode, message := managementConsumerError(err)
+		c.JSON(statusCode, gin.H{"error": message})
+		return
+	}
+	c.JSON(http.StatusOK, settings)
+}
+
+func (h *Handler) AdminPatchRegistrationSettings(c *gin.Context) {
+	management, ok := h.consumerVerifier.(registrationManagementConsumer)
+	if !ok {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Auth registration authority unavailable"})
+		return
+	}
+	var patch authconsumer.RegistrationSettingsPatch
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&patch); err != nil ||
+		(patch.RegistrationEnabled == nil && patch.EmailRegistrationEnabled == nil && patch.GoogleRegistrationEnabled == nil) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "valid settings are required"})
+		return
+	}
+	var trailing any
+	if !errors.Is(decoder.Decode(&trailing), io.EOF) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "valid settings are required"})
+		return
+	}
+	settings, err := management.UpdateManagementRegistrationSettings(c.Request.Context(), requestUserCredential(c), patch)
+	if err != nil {
+		statusCode, message := managementConsumerError(err)
+		c.JSON(statusCode, gin.H{"error": message})
+		return
+	}
+	c.JSON(http.StatusOK, settings)
 }
 
 func (h *Handler) AdminManagementCatalog(c *gin.Context) {

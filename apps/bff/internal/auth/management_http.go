@@ -25,6 +25,7 @@ type managementUserSummary struct {
 	ID          string                          `json:"id"`
 	Name        string                          `json:"name"`
 	Email       string                          `json:"email"`
+	Role        string                          `json:"role,omitempty"`
 	Status      string                          `json:"status"`
 	ScopeStates map[string]ManagementScopeState `json:"scope_states"`
 }
@@ -35,6 +36,96 @@ type managementGrantRequest struct {
 	TargetUserID  string `json:"target_user_id"`
 	Scope         string `json:"scope"`
 	Action        string `json:"action"`
+}
+
+type managementRegistrationSettingsRequest struct {
+	SchemaVersion             int   `json:"schema_version"`
+	RegistrationEnabled       *bool `json:"registration_enabled,omitempty"`
+	EmailRegistrationEnabled  *bool `json:"email_registration_enabled,omitempty"`
+	GoogleRegistrationEnabled *bool `json:"google_registration_enabled,omitempty"`
+}
+
+func ConsumerRegistrationSettingsHandler(store RegistrationSettingsAuthority, policy LWCConsumerPolicy, validate OIDCCallerValidator) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		consumerNoStore(c)
+		if store == nil || !policy.ready() || validate == nil || !authorizeLWCConsumer(c, policy, validate) {
+			if !c.IsAborted() {
+				c.JSON(http.StatusServiceUnavailable, gin.H{"error": "consumer authority unavailable"})
+			}
+			return
+		}
+		settings, err := store.GetRegistrationSettings(c.Request.Context())
+		if err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "registration settings unavailable"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"schema_version": 1, "registration_enabled": settings.RegistrationEnabled,
+			"email_registration_enabled": settings.EmailRegistrationEnabled, "google_registration_enabled": settings.GoogleRegistrationEnabled})
+	}
+}
+
+func ManagementRegistrationSettingsGetHandler(cfg config.Config, fs *firestore.Client, policy LWCConsumerPolicy,
+	validate OIDCCallerValidator, verifySession CLIAccessSessionVerifier, management *ManagementAuthority,
+	store RegistrationSettingsAuthority) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		consumerNoStore(c)
+		actor, statusCode, message := authenticateManagementActor(c, cfg, fs, policy, validate, verifySession, management)
+		if statusCode != 0 {
+			c.JSON(statusCode, gin.H{"error": message})
+			return
+		}
+		if !containsString(actor.scopes, ManagementScopeAuthAdmin) {
+			c.JSON(http.StatusForbidden, gin.H{"error": ErrManagementDenied.Error()})
+			return
+		}
+		if store == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "registration settings unavailable"})
+			return
+		}
+		settings, err := store.GetRegistrationSettings(c.Request.Context())
+		if err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "registration settings unavailable"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"schema_version": 1, "registration_enabled": settings.RegistrationEnabled,
+			"email_registration_enabled": settings.EmailRegistrationEnabled, "google_registration_enabled": settings.GoogleRegistrationEnabled})
+	}
+}
+
+func ManagementRegistrationSettingsPatchHandler(cfg config.Config, fs *firestore.Client, policy LWCConsumerPolicy,
+	validate OIDCCallerValidator, verifySession CLIAccessSessionVerifier, management *ManagementAuthority,
+	store RegistrationSettingsAuthority) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		consumerNoStore(c)
+		actor, statusCode, message := authenticateManagementActor(c, cfg, fs, policy, validate, verifySession, management)
+		if statusCode != 0 {
+			c.JSON(statusCode, gin.H{"error": message})
+			return
+		}
+		if !containsString(actor.scopes, ManagementScopeAuthAdmin) {
+			c.JSON(http.StatusForbidden, gin.H{"error": ErrManagementDenied.Error()})
+			return
+		}
+		if store == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "registration settings unavailable"})
+			return
+		}
+		var request managementRegistrationSettingsRequest
+		if !decodeStrictManagementBody(c, &request) || request.SchemaVersion != 1 ||
+			(request.RegistrationEnabled == nil && request.EmailRegistrationEnabled == nil && request.GoogleRegistrationEnabled == nil) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": ErrManagementInvalid.Error()})
+			return
+		}
+		settings, err := management.UpdateRegistrationSettings(c.Request.Context(), actor.claims.Sub,
+			actor.claims.ManagementScopeVersions, actor.claims.AuthVersion, store, request.RegistrationEnabled,
+			request.EmailRegistrationEnabled, request.GoogleRegistrationEnabled)
+		if err != nil {
+			c.JSON(managementMutationErrorStatus(err), gin.H{"error": managementMutationErrorMessage(err)})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"schema_version": 1, "registration_enabled": settings.RegistrationEnabled,
+			"email_registration_enabled": settings.EmailRegistrationEnabled, "google_registration_enabled": settings.GoogleRegistrationEnabled})
+	}
 }
 
 // ManagementCatalogHandler returns the fixed, nonsecret public projection of
@@ -98,6 +189,11 @@ func ManagementUsersHandler(cfg config.Config, fs *firestore.Client, policy LWCC
 			c.JSON(http.StatusForbidden, gin.H{"error": ErrManagementDenied.Error()})
 			return
 		}
+		epoch, err := management.AuthorityEpoch(c.Request.Context())
+		if err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "management authority unavailable"})
+			return
+		}
 		iter := scopedfirestore.Collection(fs, "users").Documents(c.Request.Context())
 		defer iter.Stop()
 		users := make([]managementUserSummary, 0)
@@ -132,7 +228,11 @@ func ManagementUsersHandler(cfg config.Config, fs *firestore.Client, policy LWCC
 			if accountStatus == "" {
 				accountStatus = AccountActive
 			}
-			users = append(users, managementUserSummary{ID: doc.Ref.ID, Name: name, Email: user.Email, Status: accountStatus, ScopeStates: states})
+			userSummary := managementUserSummary{ID: doc.Ref.ID, Name: name, Email: user.Email, Status: accountStatus, ScopeStates: states}
+			if epoch.Mode == "legacy-shadow" {
+				userSummary.Role = user.Role
+			}
+			users = append(users, userSummary)
 		}
 		sort.Slice(users, func(i, j int) bool { return users[i].ID < users[j].ID })
 		c.JSON(http.StatusOK, gin.H{"schema_version": 1, "users": users})
@@ -160,7 +260,7 @@ func ManagementGrantHandler(cfg config.Config, fs *firestore.Client, policy LWCC
 			c.JSON(http.StatusBadRequest, gin.H{"error": ErrManagementInvalid.Error()})
 			return
 		}
-		result, err := management.MutateGrant(c.Request.Context(), actor.claims.Sub, actor.claims.ManagementScopeVersions,
+		result, err := management.MutateGrant(c.Request.Context(), actor.claims.Sub, actor.claims.ManagementScopeVersions, actor.claims.AuthVersion,
 			ManagementMutation{OperationID: request.OperationID, TargetID: request.TargetUserID, Scope: request.Scope, Action: request.Action})
 		if err != nil {
 			c.JSON(managementMutationErrorStatus(err), gin.H{"error": managementMutationErrorMessage(err)})
@@ -216,12 +316,57 @@ func ManagementAccountStatusHandler(cfg config.Config, fs *firestore.Client, pol
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid management request"})
 			return
 		}
-		if err := management.UpdateAccountStatus(c.Request.Context(), actor.claims.Sub, actor.claims.ManagementScopeVersions, userID, request.Status); err != nil {
+		if err := management.UpdateAccountStatus(c.Request.Context(), actor.claims.Sub, actor.claims.ManagementScopeVersions, actor.claims.AuthVersion, userID, request.Status); err != nil {
 			statusCode := managementMutationErrorStatus(err)
 			if errors.Is(err, ErrAccountSelfSuspension) {
 				statusCode = http.StatusConflict
 			}
 			c.JSON(statusCode, gin.H{"error": managementMutationErrorMessage(err)})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"schema_version": 1, "status": "updated", "id": userID})
+	}
+}
+
+func ManagementLegacyAccountHandler(cfg config.Config, fs *firestore.Client, policy LWCConsumerPolicy, validate OIDCCallerValidator,
+	verifySession CLIAccessSessionVerifier, management *ManagementAuthority) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		consumerNoStore(c)
+		actor, statusCode, message := authenticateManagementActor(c, cfg, fs, policy, validate, verifySession, management)
+		if statusCode != 0 {
+			c.JSON(statusCode, gin.H{"error": message})
+			return
+		}
+		if !containsString(actor.scopes, ManagementScopeAuthAdmin) {
+			c.JSON(http.StatusForbidden, gin.H{"error": ErrManagementDenied.Error()})
+			return
+		}
+		userID := c.Param("userID")
+		var request struct {
+			SchemaVersion int     `json:"schema_version"`
+			Role          *string `json:"role"`
+			Status        *string `json:"status"`
+		}
+		if !ValidPathSegment(userID) || !decodeStrictManagementBody(c, &request) || request.SchemaVersion != 1 ||
+			(request.Role == nil && request.Status == nil) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": ErrManagementInvalid.Error()})
+			return
+		}
+		if request.Role != nil {
+			role := strings.TrimSpace(*request.Role)
+			request.Role = &role
+		}
+		if request.Status != nil {
+			state := strings.TrimSpace(*request.Status)
+			request.Status = &state
+		}
+		if err := management.UpdateLegacyAccount(c.Request.Context(), actor.claims.Sub, actor.claims.ManagementScopeVersions,
+			actor.claims.AuthVersion, userID, request.Role, request.Status); err != nil {
+			code := managementMutationErrorStatus(err)
+			if errors.Is(err, ErrAccountSelfSuspension) {
+				code = http.StatusConflict
+			}
+			c.JSON(code, gin.H{"error": managementMutationErrorMessage(err)})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"schema_version": 1, "status": "updated", "id": userID})
@@ -246,7 +391,7 @@ func ManagementAccountDeleteHandler(cfg config.Config, fs *firestore.Client, pol
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user ID"})
 			return
 		}
-		if err := management.DeleteAccount(c.Request.Context(), actor.claims.Sub, actor.claims.ManagementScopeVersions, userID); err != nil {
+		if err := management.DeleteAccount(c.Request.Context(), actor.claims.Sub, actor.claims.ManagementScopeVersions, actor.claims.AuthVersion, userID); err != nil {
 			c.JSON(managementMutationErrorStatus(err), gin.H{"error": managementMutationErrorMessage(err)})
 			return
 		}

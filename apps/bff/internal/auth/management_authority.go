@@ -302,6 +302,15 @@ func (a *ManagementAuthority) CutoverToCentral(ctx context.Context, runID, confi
 				return ErrManagementConflict
 			}
 		}
+		for _, scope := range []string{ManagementScopeAuthAdmin, ManagementScopeLWCAdmin} {
+			members, err := a.activeManagementMemberCount(ctx, tx, scope)
+			if err != nil {
+				return err
+			}
+			if members == 0 {
+				return ErrManagementLastAdmin
+			}
+		}
 		locks := make(map[string]int64, 2)
 		for _, scope := range []string{ManagementScopeAuthAdmin, ManagementScopeLWCAdmin} {
 			lockDoc, lockErr := tx.Get(a.lockRef(scope))
@@ -349,9 +358,8 @@ func (a *ManagementAuthority) operationRef(operationID string) *firestore.Docume
 	return a.namespace().Collection("operations").Doc(operationID)
 }
 
-// GrantedScopeVersions returns current explicit grants. During the bounded
-// legacy-shadow epoch only an untouched legacy admin retains its two old
-// capabilities; any principal or migration marker switches to explicit state.
+// GrantedScopeVersions returns current explicit grants and still-effective
+// per-scope legacy-shadow capabilities.
 func (a *ManagementAuthority) GrantedScopeVersions(ctx context.Context, userID string) (map[string]int64, error) {
 	if !a.ready() || !ValidPathSegment(userID) {
 		return nil, ErrManagementUnavailable
@@ -381,13 +389,17 @@ func (a *ManagementAuthority) GrantedScopeVersions(ctx context.Context, userID s
 	if err != nil {
 		return nil, ErrManagementUnavailable
 	}
-	if epoch.Mode == "legacy-shadow" && user.Role == "admin" && !managementPrincipalHasExplicitAuthority(principal) {
-		return map[string]int64{ManagementScopeAuthAdmin: epoch.Epoch, ManagementScopeLWCAdmin: epoch.Epoch}, nil
-	}
 	versions := make(map[string]int64)
 	for scope, state := range principal.ScopeStates {
 		if managementScopeAllowed(scope) && state.State == "granted" && state.Revision > 0 {
 			versions[scope] = state.Revision
+		}
+	}
+	if epoch.Mode == "legacy-shadow" {
+		for _, scope := range []string{ManagementScopeAuthAdmin, ManagementScopeLWCAdmin} {
+			if legacyShadowScopeGranted(principal, user, scope) {
+				versions[scope] = epoch.Epoch
+			}
 		}
 	}
 	return versions, nil
@@ -415,7 +427,7 @@ func (a *ManagementAuthority) ScopeStates(ctx context.Context, userID string) (m
 	return states, nil
 }
 
-func (a *ManagementAuthority) UpdateAccountStatus(ctx context.Context, actorID string, actorCaps map[string]int64, targetID, nextStatus string) error {
+func (a *ManagementAuthority) UpdateAccountStatus(ctx context.Context, actorID string, actorCaps map[string]int64, actorAuthVersion int64, targetID, nextStatus string) error {
 	if !a.ready() || !ValidPathSegment(actorID) || !ValidPathSegment(targetID) ||
 		(nextStatus != AccountActive && nextStatus != AccountSuspended) {
 		return ErrManagementInvalid
@@ -433,7 +445,7 @@ func (a *ManagementAuthority) UpdateAccountStatus(ctx context.Context, actorID s
 			return ErrManagementDenied
 		}
 		var actor UserRecord
-		if actorDoc.DataTo(&actor) != nil || !actor.Active() {
+		if actorDoc.DataTo(&actor) != nil || !actor.AllowsVersion(actorAuthVersion) {
 			return ErrManagementDenied
 		}
 		actorPrincipal := managementPrincipal{SchemaVersion: managementSchemaVersion, ScopeStates: map[string]ManagementScopeState{}}
@@ -446,7 +458,7 @@ func (a *ManagementAuthority) UpdateAccountStatus(ctx context.Context, actorID s
 		} else if status.Code(actorPrincipalErr) != codes.NotFound {
 			return ErrManagementUnavailable
 		}
-		if !a.hasCurrentManagementCap(actorPrincipal, &actor, actorCaps, ManagementScopeAuthAdmin, epoch) {
+		if !a.hasCurrentManagementCap(actorPrincipal, &actor, actorCaps, actorAuthVersion, ManagementScopeAuthAdmin, epoch) {
 			return ErrManagementDenied
 		}
 		targetRef := scopedfirestore.Collection(a.fs, "users").Doc(targetID)
@@ -489,8 +501,7 @@ func (a *ManagementAuthority) UpdateAccountStatus(ctx context.Context, actorID s
 			}
 		}
 		for _, scope := range scopes {
-			state := principal.ScopeStates[scope]
-			if state.State != "granted" || nextStatus != AccountSuspended || target.Status == AccountSuspended {
+			if !effectiveManagementScopeGranted(principal, &target, scope, epoch) || nextStatus != AccountSuspended || target.Status == AccountSuspended {
 				continue
 			}
 			active, err := a.activeManagementMemberCount(ctx, tx, scope)
@@ -527,7 +538,225 @@ func (a *ManagementAuthority) UpdateAccountStatus(ctx context.Context, actorID s
 	})
 }
 
-func (a *ManagementAuthority) DeleteAccount(ctx context.Context, actorID string, actorCaps map[string]int64, targetID string) error {
+// UpdateLegacyAccount is the schema-2 bridge for old role/status forms. It is
+// shadow-only; role changes and their scope effects commit with account state.
+func (a *ManagementAuthority) UpdateLegacyAccount(ctx context.Context, actorID string, actorCaps map[string]int64, actorAuthVersion int64,
+	targetID string, role, nextStatus *string) error {
+	if !a.ready() || !ValidPathSegment(actorID) || !ValidPathSegment(targetID) || (role == nil && nextStatus == nil) {
+		return ErrManagementInvalid
+	}
+	if role != nil && *role != "admin" && *role != "member" && *role != "user" {
+		return ErrManagementInvalid
+	}
+	if nextStatus != nil && *nextStatus != AccountActive && *nextStatus != AccountSuspended {
+		return ErrManagementInvalid
+	}
+	if actorID == targetID && nextStatus != nil && *nextStatus == AccountSuspended {
+		return ErrAccountSelfSuspension
+	}
+	return a.fs.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+		epoch, err := a.authorityEpochInTransaction(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if epoch.Mode != "legacy-shadow" {
+			return ErrManagementConflict
+		}
+		actorDoc, err := tx.Get(scopedfirestore.Collection(a.fs, "users").Doc(actorID))
+		if err != nil {
+			return ErrManagementDenied
+		}
+		var actor UserRecord
+		if actorDoc.DataTo(&actor) != nil || !actor.AllowsVersion(actorAuthVersion) {
+			return ErrManagementDenied
+		}
+		actorPrincipal := managementPrincipal{SchemaVersion: managementSchemaVersion, ScopeStates: map[string]ManagementScopeState{}}
+		actorPrincipalDoc, actorPrincipalErr := tx.Get(a.principalRef(actorID))
+		if actorPrincipalErr == nil {
+			actorPrincipal, err = decodeManagementPrincipal(actorPrincipalDoc)
+			if err != nil {
+				return ErrManagementDenied
+			}
+		} else if status.Code(actorPrincipalErr) != codes.NotFound {
+			return ErrManagementUnavailable
+		}
+		if !a.hasCurrentManagementCap(actorPrincipal, &actor, actorCaps, actorAuthVersion, ManagementScopeAuthAdmin, epoch) {
+			return ErrManagementDenied
+		}
+		targetRef := scopedfirestore.Collection(a.fs, "users").Doc(targetID)
+		targetDoc, err := tx.Get(targetRef)
+		if err != nil {
+			return ErrManagementTarget
+		}
+		var target UserRecord
+		if targetDoc.DataTo(&target) != nil {
+			return ErrManagementUnavailable
+		}
+		principal := managementPrincipal{SchemaVersion: managementSchemaVersion, ScopeStates: map[string]ManagementScopeState{}}
+		principalDoc, principalErr := tx.Get(a.principalRef(targetID))
+		if principalErr == nil {
+			principal, err = decodeManagementPrincipal(principalDoc)
+			if err != nil {
+				return ErrManagementUnavailable
+			}
+		} else if status.Code(principalErr) != codes.NotFound {
+			return ErrManagementUnavailable
+		}
+		next := target
+		if role != nil {
+			next.Role = *role
+		}
+		if nextStatus != nil {
+			next.Status = *nextStatus
+		}
+		roleDowngrade := target.Role == "admin" && next.Role != "admin"
+		statusSuspension := target.Active() && !next.Active()
+		locks := make(map[string]int64, 2)
+		lockChanged := make(map[string]bool, 2)
+		for _, scope := range []string{ManagementScopeAuthAdmin, ManagementScopeLWCAdmin} {
+			lockDoc, lockErr := tx.Get(a.lockRef(scope))
+			if lockErr != nil {
+				return ErrManagementUnavailable
+			}
+			locks[scope], lockErr = readManagementLockRevision(lockDoc)
+			if lockErr != nil {
+				return ErrManagementUnavailable
+			}
+			if target.Active() && (roleDowngrade || statusSuspension) && effectiveManagementScopeGranted(principal, &target, scope, epoch) {
+				members, err := a.activeManagementMemberCount(ctx, tx, scope)
+				if err != nil {
+					return err
+				}
+				if members <= 1 {
+					return ErrManagementLastAdmin
+				}
+			}
+			if statusSuspension {
+				if locks[scope] == math.MaxInt64 {
+					return ErrManagementUnavailable
+				}
+				locks[scope]++
+				lockChanged[scope] = true
+			}
+		}
+		if role == nil && nextStatus != nil && target.Status == next.Status || role != nil && nextStatus == nil && target.Role == next.Role {
+			return nil
+		}
+		updates := make([]firestore.Update, 0, 4)
+		if role != nil && target.Role != next.Role {
+			updates = append(updates, firestore.Update{Path: "role", Value: next.Role})
+		}
+		if nextStatus != nil && target.Status != next.Status {
+			updates = append(updates, firestore.Update{Path: "status", Value: next.Status})
+			if statusSuspension {
+				if target.AuthVersion < 0 || target.AuthVersion == math.MaxInt64 {
+					return ErrManagementInvalid
+				}
+				updates = append(updates, firestore.Update{Path: "auth_version", Value: target.AuthVersion + 1}, firestore.Update{Path: "auth_invalid_before", Value: firestore.ServerTimestamp})
+			} else if target.Status == AccountSuspended && next.Status == AccountActive {
+				updates = append(updates, firestore.Update{Path: "auth_invalid_before", Value: targetDoc.UpdateTime})
+			}
+		}
+		principalChanged := false
+		if roleDowngrade {
+			if principal.ScopeStates == nil {
+				principal.ScopeStates = map[string]ManagementScopeState{}
+			}
+			for _, scope := range []string{ManagementScopeAuthAdmin, ManagementScopeLWCAdmin} {
+				state := principal.ScopeStates[scope]
+				if state.State == "revoked" {
+					continue
+				}
+				if state.Revision == math.MaxInt64 || locks[scope] == math.MaxInt64 {
+					return ErrManagementUnavailable
+				}
+				state = ManagementScopeState{State: "revoked", Revision: state.Revision + 1, Source: "legacy-role-change", UpdatedAt: time.Now().UTC()}
+				principal.ScopeStates[scope] = state
+				if !lockChanged[scope] {
+					locks[scope]++
+				}
+				lockChanged[scope] = true
+				principalChanged = true
+			}
+		}
+		if principalChanged {
+			if principal.DocumentRevision == math.MaxInt64 {
+				return ErrManagementUnavailable
+			}
+			principal.SchemaVersion = managementSchemaVersion
+			principal.DocumentRevision++
+			principal.GrantedScopeIDs = managementGrantedIDs(principal.ScopeStates)
+		}
+		if len(updates) > 0 {
+			if err := tx.Update(targetRef, updates); err != nil {
+				return err
+			}
+		}
+		if principalChanged {
+			if err := tx.Set(a.principalRef(targetID), principal); err != nil {
+				return err
+			}
+		}
+		for scope, revision := range locks {
+			if lockChanged[scope] {
+				if err := tx.Update(a.lockRef(scope), []firestore.Update{{Path: "revision", Value: revision}, {Path: "updated_at", Value: time.Now().UTC()}}); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+}
+
+func (a *ManagementAuthority) UpdateRegistrationSettings(ctx context.Context, actorID string, actorCaps map[string]int64,
+	actorAuthVersion int64, store RegistrationSettingsAuthority, master, email, google *bool) (ManagementRegistrationSettings, error) {
+	if !a.ready() || !ValidPathSegment(actorID) || store == nil || (master == nil && email == nil && google == nil) {
+		return ManagementRegistrationSettings{}, ErrManagementInvalid
+	}
+	var result ManagementRegistrationSettings
+	err := a.fs.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+		epoch, err := a.authorityEpochInTransaction(ctx, tx)
+		if err != nil {
+			return err
+		}
+		actorDoc, err := tx.Get(scopedfirestore.Collection(a.fs, "users").Doc(actorID))
+		if err != nil {
+			return ErrManagementDenied
+		}
+		var actor UserRecord
+		if actorDoc.DataTo(&actor) != nil || !actor.AllowsVersion(actorAuthVersion) {
+			return ErrManagementDenied
+		}
+		principal := managementPrincipal{SchemaVersion: managementSchemaVersion, ScopeStates: map[string]ManagementScopeState{}}
+		principalDoc, principalErr := tx.Get(a.principalRef(actorID))
+		if principalErr == nil {
+			principal, err = decodeManagementPrincipal(principalDoc)
+			if err != nil {
+				return ErrManagementDenied
+			}
+		} else if status.Code(principalErr) != codes.NotFound {
+			return ErrManagementUnavailable
+		}
+		lockDoc, err := tx.Get(a.lockRef(ManagementScopeAuthAdmin))
+		if err != nil {
+			return ErrManagementUnavailable
+		}
+		if _, err := readManagementLockRevision(lockDoc); err != nil {
+			return ErrManagementUnavailable
+		}
+		if !a.hasCurrentManagementCap(principal, &actor, actorCaps, actorAuthVersion, ManagementScopeAuthAdmin, epoch) {
+			return ErrManagementDenied
+		}
+		result, err = store.SetRegistrationSettingsInTransaction(ctx, tx, master, email, google)
+		return err
+	})
+	if err != nil {
+		return ManagementRegistrationSettings{}, err
+	}
+	return result, nil
+}
+
+func (a *ManagementAuthority) DeleteAccount(ctx context.Context, actorID string, actorCaps map[string]int64, actorAuthVersion int64, targetID string) error {
 	if !a.ready() || !ValidPathSegment(actorID) || !ValidPathSegment(targetID) {
 		return ErrManagementInvalid
 	}
@@ -541,7 +770,7 @@ func (a *ManagementAuthority) DeleteAccount(ctx context.Context, actorID string,
 			return ErrManagementDenied
 		}
 		var actor UserRecord
-		if actorDoc.DataTo(&actor) != nil || !actor.Active() {
+		if actorDoc.DataTo(&actor) != nil || !actor.AllowsVersion(actorAuthVersion) {
 			return ErrManagementDenied
 		}
 		actorPrincipal := managementPrincipal{SchemaVersion: managementSchemaVersion, ScopeStates: map[string]ManagementScopeState{}}
@@ -554,7 +783,7 @@ func (a *ManagementAuthority) DeleteAccount(ctx context.Context, actorID string,
 		} else if status.Code(actorPrincipalErr) != codes.NotFound {
 			return ErrManagementUnavailable
 		}
-		if !a.hasCurrentManagementCap(actorPrincipal, &actor, actorCaps, ManagementScopeAuthAdmin, epoch) {
+		if !a.hasCurrentManagementCap(actorPrincipal, &actor, actorCaps, actorAuthVersion, ManagementScopeAuthAdmin, epoch) {
 			return ErrManagementDenied
 		}
 		targetRef := scopedfirestore.Collection(a.fs, "users").Doc(targetID)
@@ -604,8 +833,7 @@ func (a *ManagementAuthority) DeleteAccount(ctx context.Context, actorID string,
 			principal.LegacyMigration = map[string]ManagementMigrationMarker{}
 		}
 		for _, scope := range scopes {
-			state := principal.ScopeStates[scope]
-			if state.State == "granted" && target.Active() {
+			if effectiveManagementScopeGranted(principal, &target, scope, epoch) && target.Active() {
 				active, err := a.activeManagementMemberCount(ctx, tx, scope)
 				if err != nil {
 					return err
@@ -698,11 +926,8 @@ func (a *ManagementAuthority) activeManagementMemberCount(ctx context.Context, t
 		if userDoc.DataTo(&user) != nil {
 			return 0, ErrManagementUnavailable
 		}
-		principal, hasPrincipal := principals[userID]
-		state, hasState := principal.ScopeStates[scope]
-		explicitGrant := hasPrincipal && hasState && state.State == "granted"
-		legacyGrant := epoch.Mode == "legacy-shadow" && user.Role == "admin" && (!hasPrincipal || !managementPrincipalHasExplicitAuthority(principal))
-		if user.Active() && (explicitGrant || legacyGrant) {
+		principal := principals[userID]
+		if user.Active() && effectiveManagementScopeGranted(principal, &user, scope, epoch) {
 			active++
 		}
 	}
@@ -774,13 +999,12 @@ func (a *ManagementAuthority) EffectiveScopes(ctx context.Context, userID string
 	if err != nil {
 		return nil, ErrManagementUnavailable
 	}
-	if epoch.Mode == "legacy-shadow" && user.Role == "admin" && !managementPrincipalHasExplicitAuthority(principal) {
-		return shadowManagementScopes(caps, epoch.Epoch), nil
-	}
 	scopes := make([]string, 0, len(caps))
 	for scope, revision := range caps {
 		state, ok := principal.ScopeStates[scope]
 		if ok && managementScopeAllowed(scope) && state.State == "granted" && revision == state.Revision {
+			scopes = append(scopes, scope)
+		} else if revision == epoch.Epoch && legacyShadowScopeGranted(principal, user, scope) {
 			scopes = append(scopes, scope)
 		}
 	}
@@ -791,7 +1015,7 @@ func (a *ManagementAuthority) EffectiveScopes(ctx context.Context, userID string
 // MutateGrant serializes grant/removal by scope lock, checks the actor's
 // current auth:admin capability in the transaction, and protects the last
 // active member of each registered management scope.
-func (a *ManagementAuthority) MutateGrant(ctx context.Context, actorID string, actorCaps map[string]int64, mutation ManagementMutation) (ManagementMutationResult, error) {
+func (a *ManagementAuthority) MutateGrant(ctx context.Context, actorID string, actorCaps map[string]int64, actorAuthVersion int64, mutation ManagementMutation) (ManagementMutationResult, error) {
 	if !a.ready() || !ValidPathSegment(actorID) || !ValidPathSegment(mutation.OperationID) ||
 		!ValidPathSegment(mutation.TargetID) || !managementScopeAllowed(mutation.Scope) ||
 		(mutation.Action != "grant" && mutation.Action != "remove") {
@@ -817,13 +1041,16 @@ func (a *ManagementAuthority) MutateGrant(ctx context.Context, actorID string, a
 		if err != nil {
 			return err
 		}
+		if epoch.Mode != "central" {
+			return ErrManagementConflict
+		}
 
 		actorUserDoc, err := tx.Get(scopedfirestore.Collection(a.fs, "users").Doc(actorID))
 		if err != nil {
 			return ErrManagementDenied
 		}
 		var actorUser UserRecord
-		if actorUserDoc.DataTo(&actorUser) != nil || !actorUser.Active() {
+		if actorUserDoc.DataTo(&actorUser) != nil || !actorUser.AllowsVersion(actorAuthVersion) {
 			return ErrManagementDenied
 		}
 		actorPrincipal := managementPrincipal{SchemaVersion: managementSchemaVersion, ScopeStates: map[string]ManagementScopeState{}}
@@ -836,7 +1063,7 @@ func (a *ManagementAuthority) MutateGrant(ctx context.Context, actorID string, a
 		} else if status.Code(actorPrincipalErr) != codes.NotFound {
 			return ErrManagementUnavailable
 		}
-		if !a.hasCurrentManagementCap(actorPrincipal, &actorUser, actorCaps, ManagementScopeAuthAdmin, epoch) {
+		if !a.hasCurrentManagementCap(actorPrincipal, &actorUser, actorCaps, actorAuthVersion, ManagementScopeAuthAdmin, epoch) {
 			return ErrManagementDenied
 		}
 
@@ -1035,7 +1262,7 @@ func (a *ManagementAuthority) ApplyLegacyMigrationScope(ctx context.Context, run
 		marker, marked := principal.LegacyMigration[scope]
 		result = ManagementMigrationResult{RunID: runID, TargetID: target.UserID, Scope: scope}
 		switch {
-		case marked:
+		case marked && !(marker.Disposition == "skipped" && marker.Reason == "source-account-changed"):
 			result.Disposition, result.Reason = "skipped", "already-processed"
 			if marker.Disposition == "account-deleted" {
 				result.Reason = "account-deleted"
@@ -1058,7 +1285,7 @@ func (a *ManagementAuthority) ApplyLegacyMigrationScope(ctx context.Context, run
 			principal.ScopeStates[scope] = current
 			result.Disposition, result.Revision = "applied", current.Revision
 		}
-		if !marked {
+		if result.Reason != "source-account-changed" {
 			if principal.LegacyMigration == nil {
 				principal.LegacyMigration = map[string]ManagementMigrationMarker{}
 			}
@@ -1151,17 +1378,36 @@ func equalStringSet(left, right []string) bool {
 	return strings.Join(a, "\x00") == strings.Join(b, "\x00")
 }
 
-func (a *ManagementAuthority) hasCurrentManagementCap(principal managementPrincipal, user *UserRecord, caps map[string]int64, scope string, epoch ManagementAuthorityEpoch) bool {
+func (a *ManagementAuthority) hasCurrentManagementCap(principal managementPrincipal, user *UserRecord, caps map[string]int64, expectedAuthVersion int64, scope string, epoch ManagementAuthorityEpoch) bool {
+	if user == nil || !user.AllowsVersion(expectedAuthVersion) {
+		return false
+	}
 	state, ok := principal.ScopeStates[scope]
 	if ok && state.State == "granted" && state.Revision > 0 && caps[scope] == state.Revision {
 		return true
 	}
-	return epoch.Mode == "legacy-shadow" && user != nil && user.Role == "admin" &&
-		!managementPrincipalHasExplicitAuthority(principal) && caps[scope] == epoch.Epoch && managementScopeAllowed(scope)
+	return epoch.Mode == "legacy-shadow" && caps[scope] == epoch.Epoch && legacyShadowScopeGranted(principal, user, scope)
 }
 
-func managementPrincipalHasExplicitAuthority(principal managementPrincipal) bool {
-	return len(principal.ScopeStates) != 0 || len(principal.LegacyMigration) != 0
+func legacyShadowScopeGranted(principal managementPrincipal, user *UserRecord, scope string) bool {
+	if user == nil || user.Role != "admin" || !managementScopeAllowed(scope) {
+		return false
+	}
+	if _, explicit := principal.ScopeStates[scope]; explicit {
+		return false
+	}
+	if marker, marked := principal.LegacyMigration[scope]; marked &&
+		!(marker.Disposition == "skipped" && marker.Reason == "source-account-changed") {
+		return false
+	}
+	return true
+}
+
+func effectiveManagementScopeGranted(principal managementPrincipal, user *UserRecord, scope string, epoch ManagementAuthorityEpoch) bool {
+	if state, ok := principal.ScopeStates[scope]; ok {
+		return state.State == "granted"
+	}
+	return epoch.Mode == "legacy-shadow" && legacyShadowScopeGranted(principal, user, scope)
 }
 
 func shadowManagementScopes(caps map[string]int64, epoch int64) []string {

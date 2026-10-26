@@ -71,8 +71,21 @@ type ManagementUser struct {
 	ID          string                     `json:"id"`
 	Name        string                     `json:"name"`
 	Email       string                     `json:"email"`
+	Role        string                     `json:"role,omitempty"`
 	Status      string                     `json:"status"`
 	ScopeStates map[string]ManagementScope `json:"scope_states"`
+}
+
+type RegistrationSettings struct {
+	RegistrationEnabled       bool `json:"registration_enabled"`
+	EmailRegistrationEnabled  bool `json:"email_registration_enabled"`
+	GoogleRegistrationEnabled bool `json:"google_registration_enabled"`
+}
+
+type RegistrationSettingsPatch struct {
+	RegistrationEnabled       *bool `json:"registration_enabled,omitempty"`
+	EmailRegistrationEnabled  *bool `json:"email_registration_enabled,omitempty"`
+	GoogleRegistrationEnabled *bool `json:"google_registration_enabled,omitempty"`
 }
 
 type ManagementScope struct {
@@ -255,6 +268,61 @@ func (c *Client) CheckAccount(ctx context.Context, userID string) (Account, erro
 		return Account{}, ErrUnavailable
 	}
 	return account, nil
+}
+
+// PublicRegistrationSettings reads dynamic self-service policy from Auth.
+func (c *Client) PublicRegistrationSettings(ctx context.Context) (RegistrationSettings, error) {
+	return c.registrationSettings(ctx, "GET", "/api/v1/auth/consumers/lwc/registration/settings", "", nil)
+}
+
+// ManagementRegistrationSettings reads registration policy for an authenticated Auth administrator.
+func (c *Client) ManagementRegistrationSettings(ctx context.Context, credential string) (RegistrationSettings, error) {
+	return c.registrationSettings(ctx, http.MethodGet, "/api/v1/auth/consumers/lwc/management/registration-settings", credential, nil)
+}
+
+func (c *Client) UpdateManagementRegistrationSettings(ctx context.Context, credential string, patch RegistrationSettingsPatch) (RegistrationSettings, error) {
+	if patch.RegistrationEnabled == nil && patch.EmailRegistrationEnabled == nil && patch.GoogleRegistrationEnabled == nil {
+		return RegistrationSettings{}, ErrInvalidRequest
+	}
+	return c.registrationSettings(ctx, http.MethodPatch, "/api/v1/auth/consumers/lwc/management/registration-settings", credential,
+		struct {
+			SchemaVersion int `json:"schema_version"`
+			RegistrationSettingsPatch
+		}{SchemaVersion: 1, RegistrationSettingsPatch: patch})
+}
+
+func (c *Client) registrationSettings(ctx context.Context, method, path, credential string, requestBody any) (RegistrationSettings, error) {
+	var response struct {
+		SchemaVersion int `json:"schema_version"`
+		RegistrationSettings
+	}
+	if err := c.request(ctx, method, path, credential, requestBody, &response); err != nil {
+		return RegistrationSettings{}, err
+	}
+	if response.SchemaVersion != 1 {
+		return RegistrationSettings{}, ErrUnavailable
+	}
+	return response.RegistrationSettings, nil
+}
+
+func (c *Client) UpdateLegacyAccount(ctx context.Context, credential, userID string, role, state *string) error {
+	if !validPathSegment(userID) || (role == nil && state == nil) {
+		return ErrInvalidRequest
+	}
+	var result AccountMutationResult
+	path := "/api/v1/auth/consumers/lwc/management/users/" + url.PathEscape(userID) + "/legacy"
+	body := struct {
+		SchemaVersion int     `json:"schema_version"`
+		Role          *string `json:"role,omitempty"`
+		Status        *string `json:"status,omitempty"`
+	}{SchemaVersion: 1, Role: role, Status: state}
+	if err := c.request(ctx, http.MethodPatch, path, credential, body, &result); err != nil {
+		return err
+	}
+	if result.SchemaVersion != 1 || result.Status != "updated" || result.ID != userID {
+		return ErrUnavailable
+	}
+	return nil
 }
 
 func (c *Client) ManagementUsers(ctx context.Context, credential string) ([]ManagementUser, error) {

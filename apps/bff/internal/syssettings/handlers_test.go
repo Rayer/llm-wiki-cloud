@@ -1,9 +1,11 @@
 package syssettings
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,6 +16,19 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/config"
 	"github.com/stretchr/testify/assert"
 )
+
+type publicRegistrationProvider struct {
+	settings RegistrationSettings
+	err      error
+	calls    int
+}
+
+func settingBool(value bool) *bool { return &value }
+
+func (p *publicRegistrationProvider) PublicRegistrationSettings(context.Context) (RegistrationSettings, error) {
+	p.calls++
+	return p.settings, p.err
+}
 
 func expectedAnnouncementDigest(markdown string) string {
 	sum := sha256.Sum256([]byte(markdown))
@@ -38,6 +53,31 @@ func TestPublicConfig_NoAuth(t *testing.T) {
 	assert.Equal(t, "", body.AnnouncementMarkdown)
 	assert.Nil(t, body.AnnouncementDigest)
 	assert.Equal(t, 1, store.GetCalls)
+}
+
+func TestPublicConfigUsesAuthRegistrationPolicyAndBFFAnnouncement(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := &FakeStore{Enabled: true, EmailEnabled: settingBool(true), GoogleEnabled: settingBool(true), Published: "BFF-owned announcement"}
+	provider := &publicRegistrationProvider{settings: RegistrationSettings{RegistrationEnabled: false,
+		EmailRegistrationEnabled: true, GoogleRegistrationEnabled: false}}
+	router := gin.New()
+	router.GET("/config", PublicConfigHandlerWithRegistration(store, false, provider))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/config", nil))
+	var body PublicSettings
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Code != http.StatusOK || body.RegistrationEnabled || body.EmailRegistrationEnabled || body.GoogleRegistrationEnabled ||
+		body.AnnouncementMarkdown != "BFF-owned announcement" || provider.calls != 1 || store.GetCalls != 0 || store.AnnouncementGetCalls != 1 {
+		t.Fatalf("status=%d body=%+v provider calls=%d registration reads=%d announcement reads=%d", rec.Code, body, provider.calls, store.GetCalls, store.AnnouncementGetCalls)
+	}
+	provider.err = errors.New("Auth unavailable")
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/config", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("Auth failure returned %d, want fail-closed 503", rec.Code)
+	}
 }
 
 func TestPublicConfigAnnounceDigest_EmptyAndAsciiAndMultibyte(t *testing.T) {
@@ -220,6 +260,9 @@ func TestAnnouncementPublishReplacesPublishedContent(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)
+	var published map[string]interface{}
+	assert.NoError(t, json.Unmarshal(rec.Body.Bytes(), &published))
+	assert.Equal(t, map[string]interface{}{"announcement_markdown": "new"}, published)
 	public := getPublic()
 	assert.Equal(t, "new", public.AnnouncementMarkdown)
 	assert.Equal(t, expectedAnnouncementDigest("new"), *public.AnnouncementDigest)

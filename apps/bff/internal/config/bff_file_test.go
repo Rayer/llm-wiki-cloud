@@ -60,6 +60,13 @@ func validLocalBFFFileForTest() BFFFile {
 	return file
 }
 
+func validBridgeBFFFileForTest() BFFFile {
+	file := validBFFFileForTest()
+	file.AuthServiceURL = legacyDevAuthURL
+	file.MCPResourceOrigin = legacyDevBFFResource
+	return file
+}
+
 func marshalBFFFileForTest(t *testing.T, file BFFFile) []byte {
 	t.Helper()
 	data, err := json.Marshal(file)
@@ -284,7 +291,7 @@ func TestDecodeBFFFilePreservesFrozenNullableAndEmptyControls(t *testing.T) {
 }
 
 func TestLoadBFFFileRejectsInvalidSessionNamespaceBeforeReturningConfig(t *testing.T) {
-	data := marshalBFFFileForTest(t, validBFFFileForTest())
+	data := marshalBFFFileForTest(t, validBridgeBFFFileForTest())
 	validPath := filepath.Join(t.TempDir(), "valid.json")
 	if err := os.WriteFile(validPath, data, 0o600); err != nil {
 		t.Fatal(err)
@@ -466,7 +473,7 @@ func TestLoadBFFFileUsesOnlyPortEnvironmentOverride(t *testing.T) {
 	t.Setenv("MCP_DISCOVERY_TTL_MS", "0")
 	t.Setenv("MCP_TOOLS_LIST_TTL_MS", "0")
 	t.Setenv("MCP_INSTRUCTIONS", "stale instructions")
-	file := validBFFFileForTest()
+	file := validBridgeBFFFileForTest()
 	file.MCP = validBFFMCPForTest()
 	data := marshalBFFFileForTest(t, file)
 	path := filepath.Join(t.TempDir(), "bff.json")
@@ -482,6 +489,35 @@ func TestLoadBFFFileUsesOnlyPortEnvironmentOverride(t *testing.T) {
 	}
 	if cfg.MCP == nil || cfg.MCP.DiscoveryTTLMS != 60_000 || cfg.MCP.ToolsListTTLMS != 60_000 || cfg.MCP.Instructions != "configured instructions" {
 		t.Fatalf("MCP environment values overrode CaC metadata: %+v", cfg.MCP)
+	}
+}
+
+func TestLoadBFFFileBuildsBoundedSchema2AuthBridge(t *testing.T) {
+	t.Setenv("PORT", "")
+	path := filepath.Join(t.TempDir(), "bff.json")
+	if err := os.WriteFile(path, marshalBFFFileForTest(t, validBridgeBFFFileForTest()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadBFFFile(path)
+	if err != nil {
+		t.Fatalf("LoadBFFFile() error = %v", err)
+	}
+	if cfg.BFFConfigSchemaVersion != 2 || !cfg.BFFManagementBridge || cfg.BFFAuthConsumer == nil {
+		t.Fatalf("schema-2 bridge not enabled: version=%d bridge=%t consumer=%+v", cfg.BFFConfigSchemaVersion, cfg.BFFManagementBridge, cfg.BFFAuthConsumer)
+	}
+	consumer := cfg.BFFAuthConsumer
+	if consumer.AuthURL != legacyDevAuthURL || consumer.Resource != legacyDevBFFResource || consumer.VerifierAudience != legacyDevAuthAudience ||
+		consumer.RuntimeServiceAccount != legacyDevBFFCaller || consumer.VerifierPath != "/api/v1/auth/consumers/lwc/verify-credential" ||
+		consumer.AccountCheckPath != "/api/v1/auth/consumers/lwc/accounts/check" {
+		t.Fatalf("schema-2 bridge identity is not the frozen DEV projection: %+v", consumer)
+	}
+	file := validBridgeBFFFileForTest()
+	file.AuthServiceURL = "https://auth.dev.untrusted.example"
+	if err := os.WriteFile(path, marshalBFFFileForTest(t, file), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if loaded, err := LoadBFFFile(path); err == nil || loaded.BFFAuthConsumer != nil || loaded.FirestoreDatabaseID != "" {
+		t.Fatalf("untrusted schema-2 Auth URL reached runtime config: config=%+v err=%v", loaded, err)
 	}
 }
 

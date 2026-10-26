@@ -26,6 +26,7 @@ import (
 type Handler struct {
 	accountLookup        auth.AccountLookup
 	consumerVerifier     consumerVerifier
+	authManagementBridge bool
 	cliSessionVerifier   auth.CLIAccessSessionVerifier
 	cliProjectAuthorizer auth.ProjectOwnerAuthorizer
 	syncBindingAuthority syncBindingChecker
@@ -132,6 +133,12 @@ func (h *Handler) SetConsumerVerifier(verifier consumerVerifier) {
 	if verifier != nil {
 		h.SetAccountLookup(remoteAccountLookup(verifier))
 	}
+}
+
+// SetAuthManagementBridge enables only the schema-2 role/status compatibility
+// path; explicit scope changes remain disabled until central cutover.
+func (h *Handler) SetAuthManagementBridge(enabled bool) {
+	h.authManagementBridge = enabled
 }
 
 // AccountAuth always requires a signed token and the current account authority.
