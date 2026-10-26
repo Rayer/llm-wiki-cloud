@@ -1087,7 +1087,7 @@ export function HomeClient() {
                   ) : null}
                 </div>
                 <p className="mt-3 line-clamp-4 text-sm leading-6 text-zinc-400">
-                  {result.excerpt ?? result.description ?? 'Open this wiki entry.'}
+                  {result.excerpt ?? result.description ?? t('QueryResults.openEntryFallback')}
                 </p>
               </button>
             );
