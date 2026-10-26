@@ -7,10 +7,8 @@ const gates = vi.hoisted(() => ({
   shell: vi.fn(() => { throw new Error('workspace unavailable'); }),
 }));
 
-vi.mock('next/font/google', () => ({
-  Geist: () => ({ variable: '' }),
-  Geist_Mono: () => ({ variable: '' }),
-  Noto_Serif_TC: () => ({ variable: '' }),
+vi.mock('next/font/local', () => ({
+  default: () => ({ variable: '' }),
 }));
 vi.mock('@/lib/auth', () => ({ AuthProvider: gates.auth }));
 vi.mock('@/components/Shell', () => ({ Shell: gates.shell }));

@@ -116,7 +116,7 @@ function AccountGrantPanel({ accessToken, sessionEpoch, userId, t }: {
 }
 
 export default function AdvancedPage() {
-  const { t } = useT();
+  const { locale, t } = useT();
   const { accessToken, sessionEpoch, user, isDemoSession } = useAuth();
   const { hydrated, currentProject, projectsLoading } = useWorkspace();
   const [grants, setGrants] = useState<MCPOAuthGrant[]>([]);
@@ -221,7 +221,7 @@ export default function AdvancedPage() {
 
       <AccountGrantPanel accessToken={accessToken} sessionEpoch={sessionEpoch} userId={user.id} t={t} />
 
-      {currentProject ? <AgentMcpTabs resourceURL={resourceURL} environmentLabel={environmentLabel} identityKey={`${contextKey}:${resourceURL}`} t={t} /> : null}
+      {currentProject ? <AgentMcpTabs resourceURL={resourceURL} environmentLabel={environmentLabel} identityKey={contextKey + ':' + resourceURL + ':' + locale} locale={locale} t={t} /> : null}
 
       {currentProject ? (
       <details className="rounded-2xl border border-white/10 bg-[#151515]">

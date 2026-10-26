@@ -10,22 +10,23 @@ import { mcpResourceURL } from '@/lib/mcp-oauth';
 const { act, cleanup, fireEvent, render, screen, within } = await import('@testing-library/react');
 const resourceURLA = 'https://api.example.test/mcp/projects/project%2FA%20%26%20team';
 const resourceURLB = 'https://api.example.test/mcp/projects/project-B';
+const guideSourcesOpenAI = 'https://help.openai.com/en/articles/12584461-connecting-custom-mcp-servers-in-chatgpt';
 const scrollIntoView = vi.fn();
 
 function renderTabs(locale: Locale = 'en', resourceURL = resourceURLA, identityKey = `user-a:project-a:${resourceURL}`) {
   const t = (key: string, params?: Record<string, string | number>) => translate(locale, key, params);
-  return render(<AgentMcpTabs resourceURL={resourceURL} identityKey={identityKey} environmentLabel="Configured deployment" t={t} />);
+  return render(<AgentMcpTabs resourceURL={resourceURL} identityKey={identityKey} environmentLabel="Configured deployment" locale={locale} t={t} />);
 }
 
 function copyLabel(target: MCPGuideTarget) {
   if (target === 'hermes') return 'MCPOAuth.copyConfig';
-  if (target === 'grok-bot') return 'MCPOAuth.copyProjectURL';
+  if (target === 'grok-bot' || target === 'openai-web') return 'MCPOAuth.copyPrompt';
   return 'MCPOAuth.copySetup';
 }
 
 function tabIndex(target: MCPGuideTarget) {
   if (target === 'hermes') return 0;
-  if (target === 'codex') return 1;
+  if (target === 'codex' || target === 'openai-web') return 1;
   if (target === 'grok-cli' || target === 'grok-bot') return 2;
   if (target === 'claude-code') return 3;
   return 4;
@@ -158,7 +159,7 @@ describe('LWC-389 Agent & MCP client guides', () => {
       oauth: { scope: 'mcp:query mcp:raw:write' },
     });
     expect(buildMCPGuideSnippet('grok-cli', resourceURLA)).toMatch(/^grok mcp add --transport http llm-wiki /);
-    expect(buildMCPGuideSnippet('grok-bot', resourceURLA)).toBe(resourceURLA);
+    expect(buildMCPGuideSnippet('grok-bot', resourceURLA, 'en')).toContain(resourceURLA);
     expect(isUsableMCPResourceURL(resourceURLA)).toBe(true);
     for (const value of ['', 'not a URL', 'ftp://api.example.test/mcp', 'https://user:secret@api.example.test/mcp', 'https://api.example.test/mcp#fragment']) {
       expect(isUsableMCPResourceURL(value)).toBe(false);
@@ -181,5 +182,83 @@ describe('LWC-389 Agent & MCP client guides', () => {
     expect(document.body.textContent).not.toContain('即將');
     expect(document.body.textContent).not.toContain('Bearer');
     expect(document.body.textContent).not.toContain('example.invalid');
+  });
+
+  it.each(['zh-TW', 'en'] as const)('shows and copies the localized Grok Bot request for the current Project in %s', async (locale) => {
+    const t = (key: string) => translate(locale, key);
+    renderTabs(locale);
+    fireEvent.click(screen.getByRole('tab', { name: t('MCPOAuth.toolGrok') }));
+    const panel = screen.getByRole('tabpanel');
+    const prompt = buildMCPGuideSnippet('grok-bot', resourceURLA, locale);
+    expect(within(panel).getByText((_, element) => element?.tagName === 'CODE' && element.textContent === prompt)).toBeDefined();
+    expect(prompt).toContain(resourceURLA);
+    expect(prompt).toContain(locale === 'zh-TW' ? '請填寫此 Project 要處理的資料用途' : '[describe the data this Project should handle]');
+    expect(prompt).not.toContain('Setup → Plugins');
+    fireEvent.click(within(panel).getByRole('button', { name: t('MCPOAuth.copyPrompt') }));
+    expect(navigator.clipboard.writeText).toHaveBeenLastCalledWith(prompt);
+    expect(await within(panel).findByRole('button', { name: t('MCPOAuth.copied') })).toBeDefined();
+  });
+
+  it.each(['zh-TW', 'en'] as const)('keeps Codex and adds the shared OpenAI web prompt in the existing OpenAI tab for %s', async (locale) => {
+    const t = (key: string) => translate(locale, key);
+    renderTabs(locale);
+    const openaiTab = screen.getByRole('tab', { name: 'OpenAI' });
+    expect(openaiTab).toBeDefined();
+    fireEvent.click(openaiTab);
+    const panel = screen.getByRole('tabpanel');
+    expect(within(panel).getByRole('heading', { name: t('MCPOAuth.panel.codex.title') })).toBeDefined();
+    expect(within(panel).getByRole('heading', { name: t('MCPOAuth.panel.openaiWeb.title') })).toBeDefined();
+    const prompt = buildMCPGuideSnippet('openai-web', resourceURLA, locale);
+    expect(within(panel).getByText((_, element) => element?.tagName === 'CODE' && element.textContent === prompt)).toBeDefined();
+    expect(prompt).toContain(resourceURLA);
+    expect(prompt).not.toContain('example.invalid');
+    const guideLinks = within(panel).getAllByRole('link', { name: t('MCPOAuth.officialGuide') });
+    expect(guideLinks.some((link) => link.getAttribute('href') === guideSourcesOpenAI)).toBe(true);
+    fireEvent.click(within(panel).getByRole('button', { name: t('MCPOAuth.copyPrompt') }));
+    expect(navigator.clipboard.writeText).toHaveBeenLastCalledWith(prompt);
+    expect(await within(panel).findByRole('button', { name: t('MCPOAuth.copied') })).toBeDefined();
+    expect(panel.textContent).toContain(locale === 'zh-TW' ? 'Dot 共用流程由 Owner 確認' : 'The shared Dot flow is Owner-confirmed');
+    expect(panel.textContent).toContain(locale === 'zh-TW' ? '尚未執行' : 'NOT RUN');
+  });
+
+  it('invalidates a pending connection-prompt copy when the locale changes', async () => {
+    let resolveCopy!: () => void;
+    const pendingCopy = new Promise<void>((resolve) => { resolveCopy = resolve; });
+    const writeText = vi.fn().mockReturnValue(pendingCopy);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    const tEn = (key: string) => translate('en', key);
+    const tZh = (key: string) => translate('zh-TW', key);
+    const { rerender } = render(
+      <AgentMcpTabs
+        resourceURL={resourceURLA}
+        identityKey={'user-a:project-a:' + resourceURLA + ':en'}
+        environmentLabel="Configured deployment"
+        locale="en"
+        t={tEn}
+      />,
+    );
+    fireEvent.click(screen.getByRole('tab', { name: 'OpenAI' }));
+    const englishPanel = screen.getByRole('tabpanel');
+    const englishPrompt = buildMCPGuideSnippet('openai-web', resourceURLA, 'en');
+    fireEvent.click(within(englishPanel).getByRole('button', { name: tEn('MCPOAuth.copyPrompt') }));
+    expect(writeText).toHaveBeenLastCalledWith(englishPrompt);
+
+    rerender(
+      <AgentMcpTabs
+        resourceURL={resourceURLA}
+        identityKey={'user-a:project-a:' + resourceURLA + ':zh-TW'}
+        environmentLabel="Configured deployment"
+        locale="zh-TW"
+        t={tZh}
+      />,
+    );
+    await act(async () => {
+      resolveCopy();
+      await pendingCopy;
+    });
+    const chinesePanel = screen.getByRole('tabpanel');
+    expect(screen.queryByRole('button', { name: tZh('MCPOAuth.copied') })).toBeNull();
+    expect(within(chinesePanel).getByText((_, element) => element?.tagName === 'CODE'
+      && element.textContent === buildMCPGuideSnippet('openai-web', resourceURLA, 'zh-TW'))).toBeDefined();
   });
 });

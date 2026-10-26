@@ -18,6 +18,7 @@ import {
   QueryApiError,
   type ApiStatus,
   type Citation,
+  type QueryTerminalMetadata,
   type SearchResult,
   type WikiEntry,
 } from '@/lib/api';
@@ -26,6 +27,7 @@ import { getExactRawCitationRange } from '@/lib/markdown-citations';
 import { resolveWikilinksInMarkdown } from '@/lib/markdown-inline';
 import { LAST_PROJECT_KEY } from '@/lib/projects';
 import {
+  copyQueryTerminalMetadata,
   ensureQueryHistoryEntry,
   getCompletedQueryResult,
   isCurrentQueryHistoryEntry,
@@ -225,6 +227,9 @@ export function HomeClient() {
   const [statusError, setStatusError] = useState('');
   const [results, setResults] = useState<SearchResult[]>(restoredResult?.results ?? []);
   const [aiAnswer, setAiAnswer] = useState(restoredResult?.aiAnswer ?? '');
+  const [queryOutcome, setQueryOutcome] = useState<QueryTerminalMetadata>(() =>
+    restoredResult ? copyQueryTerminalMetadata(restoredResult) : {},
+  );
   const [citations, setCitations] = useState<Citation[]>(restoredResult?.citations ?? []);
   const [expandKeywords, setExpandKeywords] = useState<string[]>(restoredResult?.expandKeywords ?? []);
   const [searched, setSearched] = useState(Boolean(initialSearch.q));
@@ -283,6 +288,7 @@ export function HomeClient() {
     setSubmittedMode(completed.mode);
     setResults(completed.results);
     setAiAnswer(completed.aiAnswer);
+    setQueryOutcome(copyQueryTerminalMetadata(completed));
     setCitations(completed.citations);
     setExpandKeywords(completed.expandKeywords);
     setSearched(true);
@@ -301,6 +307,7 @@ export function HomeClient() {
     setSubmittedMode(searchMode);
     setResults([]);
     setAiAnswer('');
+    setQueryOutcome({});
     setCitations([]);
     setExpandKeywords([]);
     setSearched(true);
@@ -330,6 +337,7 @@ export function HomeClient() {
     setErrorIdCopied(false);
     setResults([]);
     setAiAnswer('');
+    setQueryOutcome({});
     setCitations([]);
     setExpandKeywords([]);
 
@@ -342,6 +350,7 @@ export function HomeClient() {
           projectId: identity.projectId ?? '',
           query: q,
           mode: searchMode,
+          ...copyQueryTerminalMetadata(response),
           results: response.results,
           aiAnswer: response.aiAnswer,
           citations: response.citations,
@@ -349,6 +358,7 @@ export function HomeClient() {
         };
         setResults(response.results);
         setAiAnswer(response.aiAnswer);
+        setQueryOutcome(copyQueryTerminalMetadata(response));
         setCitations(response.citations);
         setExpandKeywords(response.expand?.keywords ?? []);
         if (identity.authenticated && identity.ownerId && identity.projectId) {
@@ -360,6 +370,7 @@ export function HomeClient() {
         setError(searchError(err));
         setResults([]);
         setAiAnswer('');
+        setQueryOutcome({});
         setCitations([]);
         setExpandKeywords([]);
       })
@@ -403,6 +414,7 @@ export function HomeClient() {
       setSubmittedMode('wiki');
       setResults([]);
       setAiAnswer('');
+      setQueryOutcome({});
       setCitations([]);
       setExpandKeywords([]);
       setSearched(false);
@@ -473,6 +485,7 @@ export function HomeClient() {
         setSubmittedMode(initialSearch.mode);
         setResults(response.results);
         setAiAnswer(response.aiAnswer);
+        setQueryOutcome(copyQueryTerminalMetadata(response));
         setCitations(response.citations);
         setExpandKeywords(response.expand?.keywords ?? []);
         if (entryId && identity.authenticated && identity.ownerId && identity.projectId) {
@@ -482,6 +495,7 @@ export function HomeClient() {
             projectId: identity.projectId,
             query: initialSearch.q,
             mode: initialSearch.mode,
+            ...copyQueryTerminalMetadata(response),
             results: response.results,
             aiAnswer: response.aiAnswer,
             citations: response.citations,
@@ -496,6 +510,7 @@ export function HomeClient() {
         setErrorIdCopied(false);
         setResults([]);
         setAiAnswer('');
+        setQueryOutcome({});
         setCitations([]);
         setExpandKeywords([]);
       })
@@ -528,6 +543,7 @@ export function HomeClient() {
     setMode('wiki');
     setResults([]);
     setAiAnswer('');
+    setQueryOutcome({});
     setCitations([]);
     setExpandKeywords([]);
     setSearched(false);
@@ -562,6 +578,7 @@ export function HomeClient() {
     setMode('wiki');
     setResults([]);
     setAiAnswer('');
+    setQueryOutcome({});
     setCitations([]);
     setExpandKeywords([]);
     setSearched(false);
@@ -569,6 +586,7 @@ export function HomeClient() {
     setResultUnavailable(false);
     setError(null);
     setErrorIdCopied(false);
+    setQueryOutcome({});
     setModal(null);
     setModalLoading(false);
     setSubmittedMode('wiki');
@@ -630,6 +648,7 @@ export function HomeClient() {
     setResultUnavailable(false);
     setError(null);
     setErrorIdCopied(false);
+    setQueryOutcome({});
     setAiAnswer('');
     setCitations([]);
     setExpandKeywords([]);
@@ -640,6 +659,7 @@ export function HomeClient() {
       if (!isCurrentSearch(requestId, identity, entryId)) return;
       setResults(response.results);
       setAiAnswer(response.aiAnswer);
+      setQueryOutcome(copyQueryTerminalMetadata(response));
       setCitations(response.citations);
       setExpandKeywords(response.expand?.keywords ?? []);
       if (entryId && identity.authenticated && identity.ownerId && identity.projectId) {
@@ -649,6 +669,7 @@ export function HomeClient() {
           projectId: identity.projectId,
           query: trimmed,
           mode: searchMode,
+          ...copyQueryTerminalMetadata(response),
           results: response.results,
           aiAnswer: response.aiAnswer,
           citations: response.citations,
@@ -661,6 +682,7 @@ export function HomeClient() {
       setError(searchError(err));
       setResults([]);
       setAiAnswer('');
+      setQueryOutcome({});
       setCitations([]);
       setExpandKeywords([]);
     } finally {
@@ -803,6 +825,10 @@ export function HomeClient() {
   const resultType = (type?: string): 'source' | 'concept' =>
     type === 'source' ? 'source' : 'concept';
   const suggestedQueries = status?.suggestedQueries ?? [];
+  const insufficientEvidence = queryOutcome.status === 'insufficient_evidence';
+  const showModelPriorDisclosure = submittedMode === 'full'
+    && Boolean(aiAnswer)
+    && (queryOutcome.answer_basis === 'model_prior' || queryOutcome.disclosure_required === true);
   const searchButtonCueState = searchButtonCue > 0 ? searchButtonCue.toString() : undefined;
 
   return (
@@ -935,10 +961,10 @@ export function HomeClient() {
         {searched ? (
           <div className="flex items-center justify-between gap-4">
             <h2 className="text-lg font-semibold text-white">{t('Demo.results')}</h2>
-            <Badge variant="muted">{submittedMode} mode</Badge>
+            <Badge variant="muted">{t(submittedMode === 'full' ? 'QueryResults.fullMode' : 'QueryResults.wikiMode')}</Badge>
           </div>
         ) : null}
-        {loading ? <LoadingState label="Searching" /> : null}
+        {loading ? <LoadingState label={t('QueryResults.searching')} /> : null}
         {error ? (
           <ErrorState
             message={t(error.messageKey)}
@@ -964,12 +990,20 @@ export function HomeClient() {
             </button>
           </div>
         ) : null}
+        {!loading && !error && !resultUnavailable && insufficientEvidence ? (
+          <div role="status" className="rounded-md border border-amber-300/30 bg-amber-500/10 p-4">
+            <p className="text-sm text-amber-100">{t('QueryResults.insufficientEvidence')}</p>
+          </div>
+        ) : null}
         {!loading && !error && aiAnswer ? (
           <article className="relative overflow-hidden rounded-[var(--radius-lg)] border border-emerald-400/20 bg-emerald-400/[0.06] p-5 backdrop-blur-sm">
             <div className="absolute inset-y-0 left-0 w-1 bg-gradient-to-b from-emerald-300 to-teal-500" />
             <div className="pl-3">
               <div className="flex flex-wrap items-center gap-2">
                 <h3 className="text-sm font-semibold text-emerald-200">{t('Demo.answer')}</h3>
+                {showModelPriorDisclosure ? (
+                  <span className="text-sm text-amber-100">{t('QueryResults.modelPriorDisclosure')}</span>
+                ) : null}
                 {citations.length > 0 ? (
                   <Badge variant="accent">
                     {t('Demo.sourcesCount', { count: citations.length })}
@@ -1016,8 +1050,8 @@ export function HomeClient() {
             </div>
           </article>
         ) : null}
-        {!loading && !error && !resultUnavailable && searched && results.length === 0 ? (
-          <EmptyState message={t('Demo.noResults')} />
+        {!loading && !error && !resultUnavailable && !insufficientEvidence && !aiAnswer && searched && results.length === 0 ? (
+          <EmptyState message={t('QueryResults.noResults')} />
         ) : null}
         <div className="grid gap-4 md:grid-cols-2">
           {results.map((result, index) => {
@@ -1061,7 +1095,7 @@ export function HomeClient() {
         </div>
         {!loading && !error && searched && expandKeywords.length > 0 ? (
           <div className="mt-1 text-xs text-zinc-500">
-            搜尋關鍵字：{expandKeywords.join('、')}
+            {t('QueryResults.expansionKeywords', { keywords: expandKeywords.join('、') })}
           </div>
         ) : null}
       </section>

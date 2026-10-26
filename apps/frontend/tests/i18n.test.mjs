@@ -32,6 +32,31 @@ test('source-count answer badge is translated with a count in every locale', asy
   assert.match(traditionalChinese.Demo.sourcesCount, /\{count\}/);
 });
 
+test('Query terminal, mode, loading, and ordinary-empty copy exists in both locales', async () => {
+  const [english, traditionalChinese] = await Promise.all([
+    readJson(new URL('../src/messages/en.json', import.meta.url)),
+    readJson(new URL('../src/messages/zh-TW.json', import.meta.url)),
+  ]);
+  const keys = [
+    'searching',
+    'wikiMode',
+    'fullMode',
+    'noResults',
+    'insufficientEvidence',
+    'modelPriorDisclosure',
+    'expansionKeywords',
+  ];
+
+  for (const key of keys) {
+    assert.equal(typeof english.QueryResults[key], 'string', 'English QueryResults.' + key + ' is missing');
+    assert.equal(typeof traditionalChinese.QueryResults[key], 'string', 'Traditional Chinese QueryResults.' + key + ' is missing');
+    assert.notEqual(english.QueryResults[key], 'QueryResults.' + key);
+    assert.notEqual(traditionalChinese.QueryResults[key], 'QueryResults.' + key);
+  }
+  assert.match(english.QueryResults.insufficientEvidence, /Wiki retrieval/);
+  assert.match(traditionalChinese.QueryResults.insufficientEvidence, /Wiki 檢索/);
+});
+
 test('requested frontend components read their copy from the locale hook', async () => {
   const [loginModal, comingSoonModal, shell, homeClient, i18n] = await Promise.all([
     readFile(new URL('../src/components/LoginModal.tsx', import.meta.url), 'utf8'),

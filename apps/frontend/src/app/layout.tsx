@@ -1,21 +1,25 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono, Noto_Serif_TC } from "next/font/google";
+import localFont from "next/font/local";
 import "./globals.css";
 
-const geistSans = Geist({
+const geistSans = localFont({
+  src: "./fonts/Geist-Variable.woff2",
   variable: "--font-geist-sans",
-  subsets: ["latin"],
+  weight: "100 900",
+  display: "swap",
 });
 
-const geistMono = Geist_Mono({
+const geistMono = localFont({
+  src: "./fonts/GeistMono-Variable.woff2",
   variable: "--font-geist-mono",
-  subsets: ["latin"],
+  weight: "100 900",
+  display: "swap",
 });
 
-const notoSerif = Noto_Serif_TC({
+const notoSerif = localFont({
+  src: "./fonts/NotoSerifTC[wght].ttf",
   variable: "--font-noto-serif",
-  subsets: ["latin"],
-  weight: ["500", "600"],
+  weight: "200 900",
   display: "swap",
 });
 

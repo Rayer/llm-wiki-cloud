@@ -14,6 +14,8 @@ const mocks = vi.hoisted(() => ({
   user: { id: 'account-a' },
   hydrated: true,
   projectsLoading: false,
+  locale: 'en' as 'en' | 'zh-TW',
+  useRealLocaleCopy: false,
   getConcepts: vi.fn(),
   getProfile: vi.fn(),
   getStatus: vi.fn(),
@@ -31,9 +33,17 @@ vi.mock('@/lib/api', async () => {
   };
 });
 
-vi.mock('@/lib/i18n', () => ({
-  useT: () => ({ t: (key: string) => key }),
-}));
+vi.mock('@/lib/i18n', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/i18n')>('@/lib/i18n');
+  return {
+    ...actual,
+    useT: () => ({
+      t: (key: string, params?: Record<string, string | number>) => mocks.useRealLocaleCopy
+        ? actual.translate(mocks.locale, key, params)
+        : key,
+    }),
+  };
+});
 
 vi.mock('next/navigation', () => ({
   usePathname: () => window.location.pathname,
@@ -111,6 +121,8 @@ beforeEach(() => {
   mocks.user = { id: 'account-a' };
   mocks.hydrated = true;
   mocks.projectsLoading = false;
+  mocks.locale = 'en';
+  mocks.useRealLocaleCopy = false;
   mocks.getStatus.mockResolvedValue(status());
   mocks.getConcepts.mockResolvedValue([]);
   mocks.searchWiki.mockResolvedValue(SEARCH_RESPONSE);
@@ -242,14 +254,14 @@ describe('LWC-248 home search submission contract', () => {
 
     expect(mocks.searchWiki).toHaveBeenCalledTimes(1);
     expect(mocks.searchWiki).toHaveBeenLastCalledWith('topic epsilon', 'wiki');
-    expect(screen.getByText('wiki mode')).toBeDefined();
+    expect(screen.getByText('QueryResults.wikiMode')).toBeDefined();
     expect(replaceStateSpy).toHaveBeenCalledTimes(1);
 
     await act(async () => {
       fireEvent.click(fullMode);
     });
     expect(mocks.searchWiki).toHaveBeenCalledTimes(1);
-    expect(screen.getByText('wiki mode')).toBeDefined();
+    expect(screen.getByText('QueryResults.wikiMode')).toBeDefined();
 
     await act(async () => {
       fireEvent.click(searchButton);
@@ -258,7 +270,7 @@ describe('LWC-248 home search submission contract', () => {
     expect(mocks.searchWiki).toHaveBeenCalledTimes(2);
     expect(mocks.searchWiki).toHaveBeenNthCalledWith(1, 'topic epsilon', 'wiki');
     expect(mocks.searchWiki).toHaveBeenNthCalledWith(2, 'topic epsilon', 'full');
-    expect(screen.getByText('full mode')).toBeDefined();
+    expect(screen.getByText('QueryResults.fullMode')).toBeDefined();
     expect(replaceStateSpy).toHaveBeenCalledTimes(2);
     expect(replaceStateSpy).toHaveBeenCalledWith(expect.objectContaining({ __lwc342QueryEntryId: expect.any(String) }), '', '/?q=topic+epsilon&mode=full');
   });
@@ -445,7 +457,7 @@ describe('LWC-248 home search submission contract', () => {
 
     expect(await screen.findByText('QueryErrors.providerFailed')).toBeTruthy();
     expect(screen.getByText(diagnosticId)).toBeTruthy();
-    expect(screen.queryByText('Demo.noResults')).toBeNull();
+    expect(screen.queryByText('QueryResults.noResults')).toBeNull();
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'QueryErrors.copyDiagnosticId' }));
     });
@@ -469,7 +481,7 @@ describe('LWC-248 home search submission contract', () => {
     });
 
     expect(await screen.findByText('QueryErrors.providerFailed')).toBeTruthy();
-    expect(screen.queryByText('Demo.noResults')).toBeNull();
+    expect(screen.queryByText('QueryResults.noResults')).toBeNull();
     expect(screen.queryByRole('button', { name: 'QueryErrors.copyDiagnosticId' })).toBeNull();
     expect(screen.queryByText('QueryErrors.diagnosticId')).toBeNull();
     expect(writeText).not.toHaveBeenCalled();
@@ -565,9 +577,9 @@ describe('LWC-342 completed query history restoration', () => {
     const restoredPage = render(<HomeClient />);
     expect(await screen.findByText('First answer from this submission.')).toBeTruthy();
     expect(screen.getByRole('textbox')).toHaveProperty('value', 'same question');
-    expect(screen.getByText(`${searchMode} mode`)).toBeTruthy();
+    expect(screen.getByText(searchMode === 'wiki' ? 'QueryResults.wikiMode' : 'QueryResults.fullMode')).toBeTruthy();
     expect(screen.getByText('First citation')).toBeTruthy();
-    expect(screen.getByText(/first keyword/)).toBeTruthy();
+    expect(screen.getByText('QueryResults.expansionKeywords')).toBeTruthy();
     expect(mocks.searchWiki).toHaveBeenCalledTimes(1);
 
     await act(async () => {
@@ -585,7 +597,7 @@ describe('LWC-342 completed query history restoration', () => {
 
     expect(await screen.findByText('Different answer from the resubmission.')).toBeTruthy();
     expect(screen.getByText('Second citation')).toBeTruthy();
-    expect(screen.getByText(/second keyword/)).toBeTruthy();
+    expect(screen.getByText('QueryResults.expansionKeywords')).toBeTruthy();
     expect(mocks.searchWiki).toHaveBeenCalledTimes(2);
   });
 
@@ -598,14 +610,14 @@ describe('LWC-342 completed query history restoration', () => {
       fireEvent.change(input, { target: { value: 'empty answer' } });
       fireEvent.submit((await getFormFromSearchButton()).form);
     });
-    expect(await screen.findByText('Demo.noResults')).toBeTruthy();
+    expect(await screen.findByText('QueryResults.noResults')).toBeTruthy();
 
     window.history.pushState({}, '', '/sources/empty-result');
     firstPage.unmount();
     window.history.back();
     await waitFor(() => expect(window.location.pathname).toBe('/'));
     render(<HomeClient />);
-    expect(await screen.findByText('Demo.noResults')).toBeTruthy();
+    expect(await screen.findByText('QueryResults.noResults')).toBeTruthy();
     expect(mocks.searchWiki).toHaveBeenCalledTimes(1);
 
     window.history.pushState({}, '', '/sources/empty-result');
@@ -615,7 +627,7 @@ describe('LWC-342 completed query history restoration', () => {
     await waitFor(() => expect(window.location.pathname).toBe('/'));
     render(<HomeClient />);
     expect(await screen.findByText('QueryResults.resultUnavailable')).toBeTruthy();
-    expect(screen.queryByText('Demo.noResults')).toBeNull();
+    expect(screen.queryByText('QueryResults.noResults')).toBeNull();
     expect(mocks.searchWiki).toHaveBeenCalledTimes(1);
 
     mocks.searchWiki.mockResolvedValueOnce({
@@ -628,5 +640,99 @@ describe('LWC-342 completed query history restoration', () => {
     });
     expect(await screen.findByText('Retry result answer.')).toBeTruthy();
     expect(mocks.searchWiki).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['en', 'zh-TW'] as const)('renders insufficient Wiki evidence as a localized terminal state in %s', async (locale) => {
+    mocks.locale = locale;
+    mocks.useRealLocaleCopy = true;
+    mocks.searchWiki.mockResolvedValueOnce({
+      status: 'insufficient_evidence',
+      reason: 'no_qualified_evidence',
+      wiki_evidence_status: 'insufficient_evidence',
+      results: [],
+      aiAnswer: '',
+      citations: [],
+    });
+    render(<HomeClient />);
+    await waitForInitialSearchState();
+    const input = screen.getByRole('textbox');
+    await act(async () => {
+      fireEvent.change(input, { target: { value: 'wiki evidence query' } });
+      fireEvent.submit(input.closest('form') as HTMLFormElement);
+    });
+
+    expect(await screen.findByText(
+      locale === 'en'
+        ? 'This Wiki retrieval did not find sufficient evidence to answer this question.'
+        : '目前的 Wiki 檢索未找到足夠證據回答這個問題。',
+    )).toBeTruthy();
+    expect(screen.queryByText(locale === 'en' ? 'No results were found for this search.' : '這次搜尋沒有找到結果。')).toBeNull();
+    expect(screen.queryByText('QueryResults.insufficientEvidence')).toBeNull();
+    expect(screen.queryByText('QueryResults.searching')).toBeNull();
+  });
+
+  it.each(['en', 'zh-TW'] as const)('discloses and restores a Full model-prior answer with empty results in %s', async (locale) => {
+    mocks.locale = locale;
+    mocks.useRealLocaleCopy = true;
+    mocks.searchWiki.mockResolvedValueOnce({
+      status: 'insufficient_evidence',
+      reason: 'no_qualified_evidence',
+      answer_basis: 'model_prior',
+      wiki_evidence_status: 'insufficient_evidence',
+      disclosure_required: true,
+      results: [],
+      aiAnswer: 'Model-prior answer.',
+      citations: [],
+      expand: { keywords: [] },
+    });
+    const firstPage = render(<HomeClient />);
+    await waitForInitialSearchState();
+    const input = screen.getByRole('textbox');
+    const fullMode = screen.getByRole('button', { name: locale === 'en' ? 'Full' : '完整' });
+    fireEvent.click(fullMode);
+    await act(async () => {
+      fireEvent.change(input, { target: { value: 'full evidence query' } });
+      fireEvent.submit(input.closest('form') as HTMLFormElement);
+    });
+
+    const insufficientCopy = locale === 'en'
+      ? 'This Wiki retrieval did not find sufficient evidence to answer this question.'
+      : '目前的 Wiki 檢索未找到足夠證據回答這個問題。';
+    const disclosureCopy = locale === 'en'
+      ? 'This Full mode answer may use general model knowledge and is not supported by the retrieved Wiki evidence.'
+      : '此完整模式回答可能使用模型的一般知識，並非由檢索到的 Wiki 證據支持。';
+    const noResultsCopy = locale === 'en' ? 'No results were found for this search.' : '這次搜尋沒有找到結果。';
+    expect(await screen.findByText('Model-prior answer.')).toBeTruthy();
+    expect(screen.getByText(insufficientCopy)).toBeTruthy();
+    expect(screen.getByText(disclosureCopy)).toBeTruthy();
+    expect(screen.getByText(locale === 'en' ? 'Full mode' : '完整模式')).toBeTruthy();
+    expect(screen.queryByText(noResultsCopy)).toBeNull();
+    expect(screen.queryByText('QueryResults.modelPriorDisclosure')).toBeNull();
+
+    window.history.pushState({}, '', '/sources/model-prior-detail');
+    firstPage.unmount();
+    window.history.back();
+    await waitFor(() => expect(window.location.pathname).toBe('/'));
+    render(<HomeClient />);
+    expect(await screen.findByText('Model-prior answer.')).toBeTruthy();
+    expect(screen.getByText(insufficientCopy)).toBeTruthy();
+    expect(screen.getByText(disclosureCopy)).toBeTruthy();
+    expect(screen.queryByText(noResultsCopy)).toBeNull();
+    expect(mocks.searchWiki).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps an invalid successful response in the retryable technical error path', async () => {
+    mocks.searchWiki.mockRejectedValueOnce(new QueryApiError('The query response did not match the expected schema.', 502, 'invalid_response'));
+    render(<HomeClient />);
+    await waitForInitialSearchState();
+    const input = screen.getByRole('textbox');
+    await act(async () => {
+      fireEvent.change(input, { target: { value: 'schema failure query' } });
+      fireEvent.submit(input.closest('form') as HTMLFormElement);
+    });
+
+    expect(await screen.findByText('QueryErrors.queryFailure')).toBeTruthy();
+    expect(screen.queryByText('QueryResults.insufficientEvidence')).toBeNull();
+    expect(screen.queryByText('QueryResults.noResults')).toBeNull();
   });
 });
