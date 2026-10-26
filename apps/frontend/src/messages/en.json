@@ -173,6 +173,14 @@
     "retryCitation": "Retry citation",
     "openFullPage": "Open full page"
   },
+  "ConceptProvenance": {
+    "title": "Generation provenance",
+    "implementation": "Implementation",
+    "version": "Version",
+    "revision": "Revision",
+    "compileRun": "Compile run",
+    "unknown": "Unknown / not recorded"
+  },
   "Entry": {
     "singular": "Entry",
     "plural": "Entries",

@@ -173,6 +173,14 @@
     "retryCitation": "重試載入引用",
     "openFullPage": "開啟完整頁面"
   },
+  "ConceptProvenance": {
+    "title": "內容生成來源",
+    "implementation": "實作",
+    "version": "版本",
+    "revision": "修訂版",
+    "compileRun": "編譯執行識別碼",
+    "unknown": "未知／未記錄"
+  },
   "Entry": {
     "singular": "條目",
     "plural": "條目",
