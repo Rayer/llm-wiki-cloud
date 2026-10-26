@@ -676,6 +676,7 @@
     "wikiMode": "Wiki 模式",
     "fullMode": "完整模式",
     "noResults": "這次搜尋沒有找到結果。",
+    "openEntryFallback": "開啟此 Wiki 條目。",
     "insufficientEvidence": "目前的 Wiki 檢索未找到足夠證據回答這個問題。",
     "modelPriorDisclosure": "此完整模式回答可能使用模型的一般知識，並非由檢索到的 Wiki 證據支持。",
     "expansionKeywords": "擴展搜尋關鍵字：{keywords}"

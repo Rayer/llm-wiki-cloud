@@ -676,6 +676,7 @@
     "wikiMode": "Wiki mode",
     "fullMode": "Full mode",
     "noResults": "No results were found for this search.",
+    "openEntryFallback": "Open this wiki entry.",
     "insufficientEvidence": "This Wiki retrieval did not find sufficient evidence to answer this question.",
     "modelPriorDisclosure": "This Full mode answer may use general model knowledge and is not supported by the retrieved Wiki evidence.",
     "expansionKeywords": "Expanded keywords: {keywords}"

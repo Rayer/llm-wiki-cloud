@@ -531,6 +531,39 @@ describe('LWC-248 home search submission contract', () => {
     expect(screen.getByRole('button', { name: 'QueryErrors.copyDiagnosticId' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'QueryErrors.diagnosticIdCopied' })).toBeNull();
   });
+
+  it.each(['en', 'zh-TW'] as const)('localizes the no-summary fallback and keeps real summaries in %s', async (locale) => {
+    mocks.locale = locale;
+    mocks.useRealLocaleCopy = true;
+    mocks.searchWiki.mockResolvedValueOnce({
+      results: [
+        { id: 'without-summary', slug: 'without-summary', title: 'Entry without summary', type: 'concept', content: '' },
+        { id: 'with-excerpt', slug: 'with-excerpt', title: 'Entry with excerpt', type: 'concept', excerpt: 'This excerpt comes from the Wiki.', content: '' },
+        { id: 'with-description', slug: 'with-description', title: 'Entry with description', type: 'concept', description: 'This description comes from the Wiki.', content: '' },
+      ],
+      aiAnswer: '',
+      citations: [],
+    });
+    render(<HomeClient />);
+    await waitForInitialSearchState();
+    const input = screen.getByRole('textbox');
+    await act(async () => {
+      fireEvent.change(input, { target: { value: 'qualified evidence query' } });
+      fireEvent.submit(input.closest('form') as HTMLFormElement);
+    });
+
+    const fallback = locale === 'en' ? 'Open this wiki entry.' : '開啟此 Wiki 條目。';
+    const noSummaryCard = await screen.findByRole('button', { name: /Entry without summary/ });
+    const excerptCard = screen.getByRole('button', { name: /Entry with excerpt/ });
+    const descriptionCard = screen.getByRole('button', { name: /Entry with description/ });
+
+    expect(noSummaryCard.textContent).toContain(fallback);
+    expect(excerptCard.textContent).toContain('This excerpt comes from the Wiki.');
+    expect(excerptCard.textContent).not.toContain(fallback);
+    expect(descriptionCard.textContent).toContain('This description comes from the Wiki.');
+    expect(descriptionCard.textContent).not.toContain(fallback);
+    expect(screen.queryByText('QueryResults.openEntryFallback')).toBeNull();
+  });
 });
 
 describe('LWC-342 completed query history restoration', () => {
