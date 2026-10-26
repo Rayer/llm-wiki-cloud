@@ -178,6 +178,50 @@ func TestLegacyAdminMigrationSkipsChangedSourceSnapshot(t *testing.T) {
 	}
 }
 
+func TestDeletedLegacyMigrationTombstoneRemainsTerminal(t *testing.T) {
+	fs := accountEmulator(t)
+	ctx := context.Background()
+	environment := "deleted-migration-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	userID := "deleted-admin-" + environment
+	userRef := fs.Collection("users").Doc(userID)
+	if _, err := userRef.Set(ctx, UserRecord{Role: "admin", Status: AccountActive, AuthVersion: 1}); err != nil {
+		t.Fatal(err)
+	}
+	authority := NewManagementAuthority(fs, environment)
+	if _, err := authority.InitializeLegacyShadow(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	deletedPreview, err := authority.PreviewLegacyAdminMigration(ctx)
+	if err != nil || len(deletedPreview) != 1 {
+		t.Fatalf("preview=%+v err=%v", deletedPreview, err)
+	}
+	if _, err := userRef.Delete(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, scope := range deletedPreview[0].Scopes {
+		result, err := authority.ApplyLegacyMigrationScope(ctx, "deleted-run", deletedPreview[0], scope)
+		if err != nil || result.Disposition != "skipped" || result.Reason != "account-deleted" {
+			t.Fatalf("deleted apply scope=%s result=%+v err=%v", scope, result, err)
+		}
+	}
+	if _, err := userRef.Set(ctx, UserRecord{Role: "admin", Status: AccountActive, AuthVersion: 1}); err != nil {
+		t.Fatal(err)
+	}
+	recreatedPreview, err := authority.PreviewLegacyAdminMigration(ctx)
+	if err != nil || len(recreatedPreview) != 1 {
+		t.Fatalf("recreated preview=%+v err=%v", recreatedPreview, err)
+	}
+	for _, scope := range recreatedPreview[0].Scopes {
+		result, err := authority.ApplyLegacyMigrationScope(ctx, "recreated-run", recreatedPreview[0], scope)
+		if err != nil || result.Disposition != "skipped" || result.Reason != "account-deleted" {
+			t.Fatalf("recreated account bypassed deletion tombstone scope=%s result=%+v err=%v", scope, result, err)
+		}
+	}
+	if caps, err := authority.GrantedScopeVersions(ctx, userID); err != nil || len(caps) != 0 {
+		t.Fatalf("deleted-account tombstone restored shadow capabilities: %v err=%v", caps, err)
+	}
+}
+
 func TestLegacyAdminMigrationCutoverRequiresCompletePreviewAndReadback(t *testing.T) {
 	fs := accountEmulator(t)
 	ctx := context.Background()
@@ -216,6 +260,106 @@ func TestLegacyAdminMigrationCutoverRequiresCompletePreviewAndReadback(t *testin
 	}
 	if _, err := authority.CutoverToCentral(ctx, "cutover-run", configID, targets); err != nil {
 		t.Fatalf("idempotent cutover retry: %v", err)
+	}
+}
+
+func TestCutoverRejectsReadbackFromDifferentManifestFingerprint(t *testing.T) {
+	fs := accountEmulator(t)
+	ctx := context.Background()
+	environment := "fingerprint-cutover-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	userID := "fingerprint-admin-" + environment
+	if _, err := fs.Collection("users").Doc(userID).Set(ctx, UserRecord{Role: "admin", Status: AccountActive, AuthVersion: 1}); err != nil {
+		t.Fatal(err)
+	}
+	authority := NewManagementAuthority(fs, environment)
+	if _, err := authority.InitializeLegacyShadow(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	oldTargets, err := authority.PreviewLegacyAdminMigration(ctx)
+	if err != nil || len(oldTargets) != 1 {
+		t.Fatalf("old preview=%+v err=%v", oldTargets, err)
+	}
+	if _, err := fs.Collection("users").Doc(userID).Update(ctx, []firestore.Update{{Path: "name", Value: "changed-after-preview"}}); err != nil {
+		t.Fatal(err)
+	}
+	const sameRun = "same-run-stale-preview"
+	for _, scope := range oldTargets[0].Scopes {
+		result, err := authority.ApplyLegacyMigrationScope(ctx, sameRun, oldTargets[0], scope)
+		if err != nil || result.Disposition != "skipped" || result.Reason != "source-account-changed" {
+			t.Fatalf("stale apply scope=%s result=%+v err=%v", scope, result, err)
+		}
+	}
+	freshTargets, err := authority.PreviewLegacyAdminMigration(ctx)
+	if err != nil || len(freshTargets) != 1 || freshTargets[0].SourceUpdateTime.Equal(oldTargets[0].SourceUpdateTime) {
+		t.Fatalf("fresh preview=%+v err=%v", freshTargets, err)
+	}
+	if _, err := authority.ReadLegacyMigrationScopeForTarget(ctx, sameRun, freshTargets[0], ManagementScopeAuthAdmin); !errors.Is(err, ErrManagementConflict) {
+		t.Fatalf("readback accepted a different manifest fingerprint: %v", err)
+	}
+	if _, err := authority.CutoverToCentral(ctx, sameRun, "", freshTargets); !errors.Is(err, ErrManagementConflict) {
+		t.Fatalf("cutover accepted a fresh but unapplied same-run manifest: %v", err)
+	}
+	epoch, err := authority.AuthorityEpoch(ctx)
+	if err != nil || epoch.Mode != "legacy-shadow" {
+		t.Fatalf("fingerprint mismatch changed epoch: %+v err=%v", epoch, err)
+	}
+	shadowCaps, err := authority.GrantedScopeVersions(ctx, userID)
+	if err != nil || len(shadowCaps) != 2 {
+		t.Fatalf("retryable stale preview removed shadow capabilities: %v err=%v", shadowCaps, err)
+	}
+
+	const freshRun = "fresh-preview-run"
+	for _, scope := range freshTargets[0].Scopes {
+		result, err := authority.ApplyLegacyMigrationScope(ctx, freshRun, freshTargets[0], scope)
+		if err != nil || result.Disposition != "applied" {
+			t.Fatalf("fresh apply scope=%s result=%+v err=%v", scope, result, err)
+		}
+	}
+	central, err := authority.CutoverToCentral(ctx, freshRun, "", freshTargets)
+	if err != nil || central.Mode != "central" {
+		t.Fatalf("fresh reviewed manifest failed cutover: epoch=%+v err=%v", central, err)
+	}
+	if retry, err := authority.CutoverToCentral(ctx, freshRun, "", freshTargets); err != nil || retry != central {
+		t.Fatalf("same-manifest cutover retry=%+v err=%v want %+v", retry, err, central)
+	}
+	caps, err := authority.GrantedScopeVersions(ctx, userID)
+	if err != nil || caps[ManagementScopeAuthAdmin] < 1 || caps[ManagementScopeLWCAdmin] < 1 {
+		t.Fatalf("fresh-run central capabilities=%v err=%v", caps, err)
+	}
+}
+
+func TestCentralCutoverRequiresExplicitMembersAfterReadback(t *testing.T) {
+	fs := accountEmulator(t)
+	ctx := context.Background()
+	environment := "explicit-cutover-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	userID := "explicit-admin-" + environment
+	if _, err := fs.Collection("users").Doc(userID).Set(ctx, UserRecord{Role: "admin", Status: AccountActive, AuthVersion: 1}); err != nil {
+		t.Fatal(err)
+	}
+	authority := NewManagementAuthority(fs, environment)
+	if _, err := authority.InitializeLegacyShadow(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	targets, err := authority.PreviewLegacyAdminMigration(ctx)
+	if err != nil || len(targets) != 1 {
+		t.Fatalf("preview=%+v err=%v", targets, err)
+	}
+	const runID = "readback-without-principal"
+	for _, scope := range targets[0].Scopes {
+		result, err := authority.ApplyLegacyMigrationScope(ctx, runID, targets[0], scope)
+		if err != nil || result.Disposition != "applied" {
+			t.Fatalf("apply scope=%s result=%+v err=%v", scope, result, err)
+		}
+	}
+	if _, err := authority.principalRef(userID).Delete(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := authority.CutoverToCentral(ctx, runID, "", targets); !errors.Is(err, ErrManagementLastAdmin) {
+		t.Fatalf("cutover counted shadow identity instead of explicit grants: %v", err)
+	}
+	epoch, err := authority.AuthorityEpoch(ctx)
+	if err != nil || epoch.Mode != "legacy-shadow" {
+		t.Fatalf("missing explicit members changed epoch: %+v err=%v", epoch, err)
 	}
 }
 

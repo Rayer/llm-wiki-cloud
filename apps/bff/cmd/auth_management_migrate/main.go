@@ -124,7 +124,7 @@ func run(args []string) error {
 		results := make([]auth.ManagementMigrationResult, 0, len(manifest.Targets)*2)
 		for _, target := range manifest.Targets {
 			for _, scope := range target.Scopes {
-				result, err := authority.ReadLegacyMigrationScope(ctx, manifest.RunID, target.UserID, scope)
+				result, err := authority.ReadLegacyMigrationScopeForTarget(ctx, manifest.RunID, target, scope)
 				if err != nil {
 					return fmt.Errorf("read migration result for target %s scope %s: %w", target.UserID, scope, err)
 				}

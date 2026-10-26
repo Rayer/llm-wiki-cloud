@@ -261,7 +261,7 @@ func (a *ManagementAuthority) CutoverToCentral(ctx context.Context, runID, confi
 		}
 		manifestTargets[target.UserID] = target
 		for _, scope := range target.Scopes {
-			result, err := a.ReadLegacyMigrationScope(ctx, runID, target.UserID, scope)
+			result, err := a.ReadLegacyMigrationScopeForTarget(ctx, runID, target, scope)
 			if err != nil || (result.Disposition != "applied" && result.Disposition != "skipped") {
 				return ManagementAuthorityEpoch{}, ErrManagementConflict
 			}
@@ -303,7 +303,7 @@ func (a *ManagementAuthority) CutoverToCentral(ctx context.Context, runID, confi
 			}
 		}
 		for _, scope := range []string{ManagementScopeAuthAdmin, ManagementScopeLWCAdmin} {
-			members, err := a.activeManagementMemberCount(ctx, tx, scope)
+			members, err := a.activeExplicitManagementMemberCount(ctx, tx, scope)
 			if err != nil {
 				return err
 			}
@@ -934,6 +934,45 @@ func (a *ManagementAuthority) activeManagementMemberCount(ctx context.Context, t
 	return active, nil
 }
 
+// activeExplicitManagementMemberCount checks the membership that will still
+// exist after legacy-shadow compatibility ends. It intentionally excludes
+// role-derived shadow capabilities.
+func (a *ManagementAuthority) activeExplicitManagementMemberCount(ctx context.Context, tx *firestore.Transaction, scope string) (int, error) {
+	if !managementScopeAllowed(scope) {
+		return 0, ErrManagementInvalid
+	}
+	docs, err := tx.Documents(a.namespace().Collection("principals").Where("granted_scope_ids", "array-contains", scope)).GetAll()
+	if err != nil {
+		return 0, ErrManagementUnavailable
+	}
+	active := 0
+	for _, doc := range docs {
+		principal, err := decodeManagementPrincipal(doc)
+		if err != nil {
+			return 0, ErrManagementUnavailable
+		}
+		state := principal.ScopeStates[scope]
+		if state.State != "granted" || state.Revision < 1 {
+			continue
+		}
+		userDoc, err := tx.Get(scopedfirestore.Collection(a.fs, "users").Doc(doc.Ref.ID))
+		if status.Code(err) == codes.NotFound {
+			continue
+		}
+		if err != nil {
+			return 0, ErrManagementUnavailable
+		}
+		var user UserRecord
+		if userDoc.DataTo(&user) != nil {
+			return 0, ErrManagementUnavailable
+		}
+		if user.Active() {
+			active++
+		}
+	}
+	return active, nil
+}
+
 func issueManagedWebAccessToken(ctx context.Context, management *ManagementAuthority, resource, userID, role, secret string, version int64) (string, error) {
 	if management == nil {
 		return GenerateAccessToken(userID, role, secret, version)
@@ -1264,7 +1303,7 @@ func (a *ManagementAuthority) ApplyLegacyMigrationScope(ctx context.Context, run
 		switch {
 		case marked && !(marker.Disposition == "skipped" && marker.Reason == "source-account-changed"):
 			result.Disposition, result.Reason = "skipped", "already-processed"
-			if marker.Disposition == "account-deleted" {
+			if marker.Disposition == "account-deleted" || marker.Reason == "account-deleted" {
 				result.Reason = "account-deleted"
 			}
 		case accountDeleted:
@@ -1341,6 +1380,22 @@ func (a *ManagementAuthority) ReadLegacyMigrationScope(ctx context.Context, runI
 	if !a.ready() || !ValidPathSegment(runID) || !ValidPathSegment(userID) || !managementScopeAllowed(scope) {
 		return ManagementMigrationResult{}, ErrManagementInvalid
 	}
+	return a.readLegacyMigrationScope(ctx, runID, userID, scope, "")
+}
+
+// ReadLegacyMigrationScopeForTarget binds readback to the exact target
+// captured by the reviewed manifest, including its source update timestamp.
+func (a *ManagementAuthority) ReadLegacyMigrationScopeForTarget(ctx context.Context, runID string,
+	target ManagementMigrationTarget, scope string) (ManagementMigrationResult, error) {
+	if !a.ready() || !ValidPathSegment(runID) || !ValidPathSegment(target.UserID) || target.Role != "admin" ||
+		target.SourceUpdateTime.IsZero() || !managementScopeAllowed(scope) ||
+		!equalStringSet(target.Scopes, []string{ManagementScopeAuthAdmin, ManagementScopeLWCAdmin}) {
+		return ManagementMigrationResult{}, ErrManagementInvalid
+	}
+	return a.readLegacyMigrationScope(ctx, runID, target.UserID, scope, migrationFingerprint(runID, target, scope))
+}
+
+func (a *ManagementAuthority) readLegacyMigrationScope(ctx context.Context, runID, userID, scope, expectedFingerprint string) (ManagementMigrationResult, error) {
 	doc, err := a.operationRef(migrationOperationID(runID, userID, scope)).Get(ctx)
 	if status.Code(err) == codes.NotFound {
 		return ManagementMigrationResult{}, ErrManagementOperationNotFound
@@ -1349,9 +1404,14 @@ func (a *ManagementAuthority) ReadLegacyMigrationScope(ctx context.Context, runI
 		return ManagementMigrationResult{}, ErrManagementUnavailable
 	}
 	var operation managementOperation
-	if doc.DataTo(&operation) != nil || operation.Fingerprint == "" || operation.MigrationResult == nil ||
+	if doc.DataTo(&operation) != nil || operation.SchemaVersion != managementSchemaVersion || operation.OperationID != migrationOperationID(runID, userID, scope) ||
+		operation.TargetID != userID || operation.Scope != scope || operation.Action != "migration" || operation.Fingerprint == "" ||
+		operation.MigrationResult == nil ||
 		operation.MigrationResult.RunID != runID || operation.MigrationResult.TargetID != userID || operation.MigrationResult.Scope != scope {
 		return ManagementMigrationResult{}, ErrManagementUnavailable
+	}
+	if expectedFingerprint != "" && operation.Fingerprint != expectedFingerprint {
+		return ManagementMigrationResult{}, ErrManagementConflict
 	}
 	return *operation.MigrationResult, nil
 }
