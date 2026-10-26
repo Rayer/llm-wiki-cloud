@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 const frontend = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const layout = readFileSync(path.join(frontend, 'src/app/layout.tsx'), 'utf8');
 const globalStyles = readFileSync(path.join(frontend, 'src/app/globals.css'), 'utf8');
+const legalLayout = readFileSync(path.join(frontend, 'src/app/(legal)/layout.tsx'), 'utf8');
 
 test('LWC-429 loads pinned local fonts and keeps the existing font variables', () => {
   assert.match(layout, /from "next\/font\/local"/);
@@ -14,9 +15,13 @@ test('LWC-429 loads pinned local fonts and keeps the existing font variables', (
   assert.match(layout, /--font-geist-sans/);
   assert.match(layout, /--font-geist-mono/);
   assert.match(layout, /--font-noto-serif/);
-  assert.match(layout, /weight: "200 900"/);
+  assert.match(layout, /weight: "500 600"/);
+  assert.doesNotMatch(layout, /weight: "200 900"/);
   assert.match(layout, /display: "swap"/);
   assert.doesNotMatch(globalStyles, /fonts\.googleapis\.com|fonts\.gstatic\.com/);
+  assert.match(legalLayout, /font-serif text-xl/);
+  assert.match(legalLayout, /\[&_h1\]:font-serif/);
+  assert.doesNotMatch(legalLayout, /\[&_h1\]:font-(?:medium|semibold|bold)/);
 
   for (const asset of [
     'Geist-Variable.woff2',

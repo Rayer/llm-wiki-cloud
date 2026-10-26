@@ -651,7 +651,7 @@ test('normalizeSearchResponse preserves typed Query terminal metadata and model-
     status: 'insufficient_evidence',
     reason: 'no_qualified_evidence',
     answer_basis: 'model_prior',
-    wiki_evidence_status: 'insufficient_evidence',
+    wiki_evidence_status: 'no_relevant_evidence',
     disclosure_required: true,
     results: [],
     ai_synth: 'General knowledge answer.',
@@ -667,7 +667,7 @@ test('normalizeSearchResponse preserves typed Query terminal metadata and model-
     status: 'insufficient_evidence',
     reason: 'no_qualified_evidence',
     answer_basis: 'model_prior',
-    wiki_evidence_status: 'insufficient_evidence',
+    wiki_evidence_status: 'no_relevant_evidence',
     disclosure_required: true,
   });
   assert.equal(response.aiAnswer, 'General knowledge answer.');

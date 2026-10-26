@@ -19,7 +19,7 @@ const geistMono = localFont({
 const notoSerif = localFont({
   src: "./fonts/NotoSerifTC[wght].ttf",
   variable: "--font-noto-serif",
-  weight: "200 900",
+  weight: "500 600",
   display: "swap",
 });
 

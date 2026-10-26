@@ -10,4 +10,4 @@ These files are fixed build inputs. The app imports them with next/font/local, s
 
 Sources: [Geist v1.7.2](https://github.com/vercel/geist-font/tree/v1.7.2), [Google Fonts Noto Serif TC snapshot](https://github.com/google/fonts/tree/6d17dab13b85129360f9748f057c7f67c5f484d4/ofl/notoseriftc), and its [Noto CJK upstream](https://github.com/notofonts/noto-cjk/tree/985fa52c81c1d6692ccdd82bc3656e8fb932fd89).
 
-Noto Serif TC is the variable font and includes Traditional Chinese glyphs; the existing design uses weights 500 and 600. The font is intentionally a single full language file rather than the Latin-only subset previously configured.
+Noto Serif TC is the variable font and includes Traditional Chinese glyphs. Its local face is intentionally exposed as weights 500–600 to preserve the prior font-matching behavior: existing legal-page serif text requests the CSS default 400 and previously selected the nearest available 500 face. The app's designed medium and semibold uses request weights 500 and 600. The font is intentionally a single full language file rather than the Latin-only subset previously configured.
