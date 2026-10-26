@@ -514,7 +514,7 @@ describe('LWC-389 MCP OAuth frontend', () => {
     const view = render(<AdvancedPage />);
     fireEvent.click(screen.getByRole('tab', { name: 'MCPOAuth.toolCodex' }));
     const firstURL = `http://localhost:18080/mcp/projects/${encodeURIComponent(firstProjectId)}`;
-    const firstCode = within(screen.getByRole('tabpanel')).getByText((_, element) => element?.tagName === 'CODE');
+    const firstCode = within(screen.getByRole('tabpanel')).getByText((_, element) => element?.tagName === 'CODE' && element.textContent?.startsWith('codex mcp add '));
     expect(firstCode.textContent).toContain(firstURL);
     fireEvent.click(screen.getByRole('button', { name: 'MCPOAuth.copySetup' }));
     expect(await screen.findByRole('button', { name: 'MCPOAuth.copied' })).toBeDefined();
@@ -522,7 +522,7 @@ describe('LWC-389 MCP OAuth frontend', () => {
     mocks.project = { id: 'project-b', name: 'Project B' };
     view.rerender(<AdvancedPage />);
     const secondURL = 'http://localhost:18080/mcp/projects/project-b';
-    const secondCode = within(screen.getByRole('tabpanel')).getByText((_, element) => element?.tagName === 'CODE');
+    const secondCode = within(screen.getByRole('tabpanel')).getByText((_, element) => element?.tagName === 'CODE' && element.textContent?.startsWith('codex mcp add '));
     expect(secondCode.textContent).toContain(secondURL);
     expect(secondCode.textContent).not.toContain(firstURL);
     expect(screen.queryByRole('button', { name: 'MCPOAuth.copied' })).toBeNull();

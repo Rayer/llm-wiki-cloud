@@ -646,6 +646,61 @@ test('normalizeSearchResponse preserves query expansion keywords', () => {
   assert.deepEqual(response.expand?.keywords, ['台北', '親子', '公園']);
 });
 
+test('normalizeSearchResponse preserves typed Query terminal metadata and model-prior disclosure', () => {
+  const response = normalizeSearchResponse({
+    status: 'insufficient_evidence',
+    reason: 'no_qualified_evidence',
+    answer_basis: 'model_prior',
+    wiki_evidence_status: 'no_relevant_evidence',
+    disclosure_required: true,
+    results: [],
+    ai_synth: 'General knowledge answer.',
+  });
+
+  assert.deepEqual({
+    status: response.status,
+    reason: response.reason,
+    answer_basis: response.answer_basis,
+    wiki_evidence_status: response.wiki_evidence_status,
+    disclosure_required: response.disclosure_required,
+  }, {
+    status: 'insufficient_evidence',
+    reason: 'no_qualified_evidence',
+    answer_basis: 'model_prior',
+    wiki_evidence_status: 'no_relevant_evidence',
+    disclosure_required: true,
+  });
+  assert.equal(response.aiAnswer, 'General knowledge answer.');
+});
+
+test('searchWiki keeps a malformed successful payload in the technical error path', async () => {
+  configureApiAuth({
+    getAccessToken: () => 'jwt-token',
+    refreshAccessToken: async () => null,
+    onUnauthorized: () => undefined,
+  });
+  const originalWindow = globalThis.window;
+  const originalFetch = globalThis.fetch;
+
+  try {
+    globalThis.window = { localStorage: { getItem: () => 'project-1' } };
+    globalThis.fetch = async () => Response.json({
+      status: 'insufficient_evidence',
+      reason: 'no_qualified_evidence',
+      results: null,
+    });
+    await assert.rejects(
+      () => searchWiki('safe query', 'wiki'),
+      (error) => error instanceof QueryApiError
+        && error.status === 502
+        && error.code === 'invalid_response',
+    );
+  } finally {
+    globalThis.window = originalWindow;
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('normalizeCitation preserves canonical id and ignores invalid path lookup sources', () => {
   const citation = normalizeCitation({
     text: 'My Concept',

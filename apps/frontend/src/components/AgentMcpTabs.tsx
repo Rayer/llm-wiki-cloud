@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import type { Locale } from '@/lib/i18n-core';
 import { buildMCPGuideSnippet, isUsableMCPResourceURL, type MCPGuideTarget } from '@/lib/mcp-client-guides';
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;
@@ -17,6 +18,7 @@ const tools: { id: ToolId; labelKey: string }[] = [
 
 const guideSources: Partial<Record<MCPGuideTarget, string>> = {
   codex: 'https://developers.openai.com/codex/extend/mcp',
+  'openai-web': 'https://help.openai.com/en/articles/12584461-connecting-custom-mcp-servers-in-chatgpt',
   'grok-cli': 'https://docs.x.ai/build/features/mcp-servers',
   'grok-bot': 'https://docs.x.ai/grok-bot/team-bots',
   'claude-code': 'https://code.claude.com/docs/en/mcp-configuration',
@@ -30,11 +32,13 @@ export function AgentMcpTabs({
   resourceURL,
   environmentLabel,
   identityKey,
+  locale = 'en',
   t,
 }: {
   resourceURL: string;
   environmentLabel: string;
   identityKey: string;
+  locale?: Locale;
   t: Translate;
 }) {
   const [selectedTool, setSelectedTool] = useState<ToolId>('hermes');
@@ -78,7 +82,7 @@ export function AgentMcpTabs({
   };
 
   const copySnippet = async (target: MCPGuideTarget) => {
-    const snippet = buildMCPGuideSnippet(target, resourceURL);
+    const snippet = buildMCPGuideSnippet(target, resourceURL, locale);
     const identity = identityRef.current;
     if (!snippet || identity.key !== identityKey) return;
     const operation = ++copyOperationRef.current;
@@ -104,10 +108,10 @@ export function AgentMcpTabs({
   };
 
   const renderCopyBlock = (target: MCPGuideTarget, buttonKey: string) => {
-    const snippet = buildMCPGuideSnippet(target, resourceURL);
+    const snippet = buildMCPGuideSnippet(target, resourceURL, locale);
     const feedback = copyFeedback?.identityKey === identityKey
       && copyFeedback.target === target
-      && selectedTool === (target === 'grok-cli' || target === 'grok-bot' ? 'grok' : target)
+      && selectedTool === (target === 'grok-cli' || target === 'grok-bot' ? 'grok' : target === 'openai-web' ? 'codex' : target)
       ? copyFeedback.status
       : null;
     return (
@@ -222,13 +226,28 @@ export function AgentMcpTabs({
               <section className="mt-4 rounded-xl border border-white/10 bg-black/15 p-4 sm:p-5" aria-labelledby="grok-bot-guide-title">
                 <h4 id="grok-bot-guide-title" className="font-semibold text-white">{t('MCPOAuth.panel.grok.botTitle')}</h4>
                 <p className="mt-2 text-sm leading-6 text-zinc-300">{t('MCPOAuth.panel.grok.botBody')}</p>
-                {renderCopyBlock('grok-bot', 'MCPOAuth.copyProjectURL')}
+                {renderCopyBlock('grok-bot', 'MCPOAuth.copyPrompt')}
                 <p className="mt-3 text-xs leading-5 text-amber-100">{t('MCPOAuth.panel.grok.botEvidence')}</p>
                 {renderSource('grok-bot')}
               </section>
               {renderTechnicalDetails('mcp:query')}
             </div>
-          ) : tool.id === 'codex' ? renderSingleGuide('codex', 'codex')
+          ) : tool.id === 'codex' ? (
+            <>
+              {renderSingleGuide('codex', 'codex')}
+              <section className="mt-6 rounded-xl border border-white/10 bg-black/15 p-4 sm:p-5" aria-labelledby="openai-web-guide-title">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <h3 id="openai-web-guide-title" className="text-lg font-semibold text-white">{t('MCPOAuth.panel.openaiWeb.title')}</h3>
+                  <span className="rounded-md border border-amber-300/20 bg-amber-300/5 px-2.5 py-1 text-xs text-amber-100">{t('MCPOAuth.productNotVerified')}</span>
+                </div>
+                <p className="mt-3 text-sm leading-6 text-zinc-300">{t('MCPOAuth.panel.openaiWeb.body')}</p>
+                {renderCopyBlock('openai-web', 'MCPOAuth.copyPrompt')}
+                <p className="mt-3 text-xs leading-5 text-amber-100">{t('MCPOAuth.panel.openaiWeb.evidence')}</p>
+                {renderSource('openai-web')}
+                {renderTechnicalDetails('mcp:query')}
+              </section>
+            </>
+          )
             : tool.id === 'claude-code' ? renderSingleGuide('claude-code', 'claude-code')
               : renderSingleGuide('openclaw', 'openclaw')}
         </div>
