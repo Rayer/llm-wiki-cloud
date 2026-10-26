@@ -22,14 +22,25 @@ type refreshSessionIssuer interface {
 
 // DemoLoginHandlerWithRepository signs in the configured active non-admin Demo user.
 func DemoLoginHandlerWithRepository(repo DemoUserLookup, userID, email, role, jwtSecret string, cookiePolicy RefreshCookiePolicy, sessions *RefreshSessionAuthority) gin.HandlerFunc {
+	return DemoLoginHandlerWithManagement(repo, userID, email, role, jwtSecret, cookiePolicy, sessions, nil, "")
+}
+
+func DemoLoginHandlerWithManagement(repo DemoUserLookup, userID, email, role, jwtSecret string, cookiePolicy RefreshCookiePolicy,
+	sessions *RefreshSessionAuthority, management *ManagementAuthority, resource string) gin.HandlerFunc {
 	var issuer refreshSessionIssuer
 	if sessions != nil {
 		issuer = sessions
 	}
-	return demoLoginHandlerWithIssuer(repo, userID, email, role, jwtSecret, cookiePolicy, issuer)
+	return demoLoginHandlerWithManagementIssuer(repo, userID, email, role, jwtSecret, cookiePolicy, issuer, management, resource)
 }
 
-func demoLoginHandlerWithIssuer(repo DemoUserLookup, userID, email, role, jwtSecret string, cookiePolicy RefreshCookiePolicy, sessions refreshSessionIssuer) gin.HandlerFunc {
+func demoLoginHandlerWithIssuer(repo DemoUserLookup, userID, email, role, jwtSecret string,
+	cookiePolicy RefreshCookiePolicy, sessions refreshSessionIssuer) gin.HandlerFunc {
+	return demoLoginHandlerWithManagementIssuer(repo, userID, email, role, jwtSecret, cookiePolicy, sessions, nil, "")
+}
+
+func demoLoginHandlerWithManagementIssuer(repo DemoUserLookup, userID, email, role, jwtSecret string, cookiePolicy RefreshCookiePolicy,
+	sessions refreshSessionIssuer, management *ManagementAuthority, resource string) gin.HandlerFunc {
 	configuredUserID := strings.TrimSpace(userID)
 	configuredEmail := CanonicalizeEmail(email)
 	configuredRole := strings.TrimSpace(role)
@@ -54,7 +65,7 @@ func demoLoginHandlerWithIssuer(repo DemoUserLookup, userID, email, role, jwtSec
 			return
 		}
 
-		accessToken, err := GenerateAccessToken(configuredUserID, user.Role, jwtSecret, user.AuthVersion)
+		accessToken, err := issueManagedWebAccessToken(c.Request.Context(), management, resource, configuredUserID, user.Role, jwtSecret, user.AuthVersion)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate token"})
 			return

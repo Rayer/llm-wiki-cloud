@@ -7,13 +7,17 @@ vi.mock('@/lib/api', () => ({
   ApiError: class extends Error {},
   clearPublicConfigCache: vi.fn(), deleteAdminProject: vi.fn(), deleteAdminUser: vi.fn(),
   getAdminProjects: async () => [], getAdminUsers: mocks.users,
+  getAdminManagementCatalog: async () => [
+    { id: 'auth:admin', product: 'auth', resource: 'bff', grant_mode: 'operator-only', display_name: { en: 'Platform administrator', 'zh-TW': '平台管理員' }, description: { en: 'Manage accounts.', 'zh-TW': '管理帳號。' } },
+    { id: 'lwc:admin', product: 'lwc', resource: 'bff', grant_mode: 'operator-only', display_name: { en: 'LWC administrator', 'zh-TW': 'LWC 管理員' }, description: { en: 'Manage projects.', 'zh-TW': '管理專案。' } },
+  ],
   getAdminSettings: async () => ({ registration_enabled: true }), getAdminPipelineStatus: vi.fn(),
   publishAnnouncement: vi.fn(), rebuildAdminProjectIndex: vi.fn(), renameAdminProject: vi.fn(),
   triggerAdminProjectPipeline: vi.fn(), updateAdminSettings: vi.fn(), updateAdminUserRole: vi.fn(),
   updateAdminUserStatus: mocks.update,
 }));
-vi.mock('@/lib/auth', () => ({ useAuth: () => ({ hydrated: true, user: { id: 'admin', role: 'admin' } }) }));
-vi.mock('@/lib/i18n', () => ({ useLocale: () => ({ t: (key: string) => key }) }));
+vi.mock('@/lib/auth', () => ({ useAuth: () => ({ hydrated: true, user: { id: 'admin', role: 'admin', management_scopes: ['auth:admin', 'lwc:admin'] } }) }));
+vi.mock('@/lib/i18n', () => ({ useLocale: () => ({ locale: 'en', t: (key: string) => key }) }));
 vi.mock('@/components/NavigationBlocker', () => ({ useNavigationBlocker: () => ({ setBlocked: vi.fn() }) }));
 
 afterEach(cleanup);
@@ -21,8 +25,8 @@ afterEach(cleanup);
 describe('account lifecycle administration', () => {
   beforeEach(() => vi.resetAllMocks());
   it('disables self suspension, confirms suspension, and restores after an authoritative refresh', async () => {
-    const admin = { id: 'admin', name: 'Admin', email: 'admin@example.test', role: 'admin', status: 'active', projectCount: 0 };
-    const owner = { id: 'owner', name: 'Owner', email: 'owner@example.test', role: 'user', status: 'active', projectCount: 2 };
+    const admin = { id: 'admin', name: 'Admin', email: 'admin@example.test', role: 'admin', status: 'active', scopeStates: {}, projectCount: 0 };
+    const owner = { id: 'owner', name: 'Owner', email: 'owner@example.test', role: 'user', status: 'active', scopeStates: {}, projectCount: 2 };
     mocks.users.mockResolvedValueOnce([admin, owner]).mockResolvedValueOnce([admin, { ...owner, status: 'suspended' }]).mockResolvedValue([admin, owner]);
     mocks.update.mockResolvedValue(undefined);
     render(<AdminClient />);
@@ -46,7 +50,7 @@ describe('account lifecycle administration', () => {
 
 // A committed mutation must not leave stale account state actionable when readback fails.
 it.each(['active', 'suspended'] as const)('requires a successful readback after changing %s status', async (status) => {
-  const owner = { id: 'owner', name: 'Owner', email: 'owner@example.test', role: 'user', status, projectCount: 2 };
+  const owner = { id: 'owner', name: 'Owner', email: 'owner@example.test', role: 'user', status, scopeStates: {}, projectCount: 2 };
   const nextStatus = status === 'active' ? 'suspended' : 'active';
   mocks.users.mockReset().mockResolvedValueOnce([owner]).mockRejectedValueOnce(new Error('Readback unavailable')).mockResolvedValue([{ ...owner, status: nextStatus }]);
   mocks.update.mockReset().mockResolvedValue(undefined);

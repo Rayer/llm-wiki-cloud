@@ -27,26 +27,29 @@ var authNumericSecretReferencePattern = regexp.MustCompile(`^projects/[A-Za-z0-9
 var authOutputSecretPattern = regexp.MustCompile(`^projects/llm-wiki-cloud/secrets/lwc-auth-app-config-(?:dev|prod)$`)
 
 type authSourceProjection struct {
-	SchemaVersion          int                        `json:"schema_version"`
-	Environment            string                     `json:"environment"`
-	Target                 string                     `json:"target"`
-	GCPProject             string                     `json:"gcp_project"`
-	FirestoreDatabaseID    string                     `json:"firestore_database_id"`
-	LocalCloudScope        string                     `json:"local_cloud_scope"`
-	AuthServiceURL         string                     `json:"auth_service_url"`
-	SyncServiceURL         string                     `json:"sync_service_url"`
-	AllowedHosts           []string                   `json:"allowed_hosts"`
-	AllowedOrigins         []string                   `json:"allowed_origins"`
-	AuthSessionEnvironment string                     `json:"auth_session_environment"`
-	AuthSessionMigration   string                     `json:"auth_session_migration"`
-	RegistrationEnabled    *bool                      `json:"registration_enabled"`
-	AuthDemoUserID         string                     `json:"auth_demo_user_id"`
-	AuthDemoUserEmail      string                     `json:"auth_demo_user_email"`
-	AuthDemoUserRole       string                     `json:"auth_demo_user_role"`
-	JWTSecretReference     string                     `json:"jwt_secret_reference"`
-	Google                 authSourceGoogle           `json:"google"`
-	OAuthResources         []config.AuthOAuthResource `json:"oauth_resources"`
-	ConfigSecretResource   string                     `json:"config_secret_resource"`
+	SchemaVersion            int                                  `json:"schema_version"`
+	Environment              string                               `json:"environment"`
+	Target                   string                               `json:"target"`
+	GCPProject               string                               `json:"gcp_project"`
+	FirestoreDatabaseID      string                               `json:"firestore_database_id"`
+	LocalCloudScope          string                               `json:"local_cloud_scope"`
+	AuthServiceURL           string                               `json:"auth_service_url"`
+	SyncServiceURL           string                               `json:"sync_service_url"`
+	AllowedHosts             []string                             `json:"allowed_hosts"`
+	AllowedOrigins           []string                             `json:"allowed_origins"`
+	AuthSessionEnvironment   string                               `json:"auth_session_environment"`
+	AuthSessionMigration     string                               `json:"auth_session_migration"`
+	RegistrationEnabled      *bool                                `json:"registration_enabled"`
+	AuthDemoUserID           string                               `json:"auth_demo_user_id"`
+	AuthDemoUserEmail        string                               `json:"auth_demo_user_email"`
+	AuthDemoUserRole         string                               `json:"auth_demo_user_role"`
+	JWTSecretReference       string                               `json:"jwt_secret_reference"`
+	Google                   authSourceGoogle                     `json:"google"`
+	OAuthResources           []config.AuthOAuthResource           `json:"oauth_resources"`
+	ManagementScopes         []config.AuthManagementScope         `json:"management_scopes"`
+	ConsumerVerifiers        []config.AuthConsumerVerifier        `json:"consumer_verifiers"`
+	ConsumerPublicProjection *config.AuthConsumerPublicProjection `json:"consumer_public_projection"`
+	ConfigSecretResource     string                               `json:"config_secret_resource"`
 }
 
 type authSourceGoogle struct {
@@ -167,7 +170,15 @@ func decodeAuthSourceProjection(data []byte, environment string) (authSourceProj
 		"schema_version", "environment", "target", "gcp_project", "firestore_database_id", "local_cloud_scope",
 		"auth_service_url", "sync_service_url", "allowed_hosts", "allowed_origins", "auth_session_environment",
 		"auth_session_migration", "registration_enabled", "auth_demo_user_id", "jwt_secret_reference",
-		"auth_demo_user_email", "auth_demo_user_role", "google", "oauth_resources", "config_secret_resource",
+		"auth_demo_user_email", "auth_demo_user_role", "google", "config_secret_resource",
+	}
+	var version int
+	_ = json.Unmarshal(fields["schema_version"], &version)
+	if version >= 2 {
+		required = append(required, "oauth_resources")
+	}
+	if version == 3 {
+		required = append(required, "management_scopes", "consumer_verifiers", "consumer_public_projection")
 	}
 	if len(fields) != len(required) {
 		return authSourceProjection{}, errors.New("selected Auth SSOT has an invalid shape")
@@ -203,13 +214,13 @@ func decodeAuthSourceProjection(data []byte, environment string) (authSourceProj
 }
 
 func validateAuthSourceProjection(p authSourceProjection, environment string) error {
-	if p.SchemaVersion != 2 || p.Target != "auth" || p.Environment != environment ||
+	if (p.SchemaVersion != 1 && p.SchemaVersion != 2 && p.SchemaVersion != 3) || p.Target != "auth" || p.Environment != environment ||
 		(p.Environment != "local" && p.Environment != "dev" && p.Environment != "prod") ||
 		strings.TrimSpace(p.GCPProject) == "" || p.AllowedHosts == nil || p.AllowedOrigins == nil {
 		return errors.New("selected Auth SSOT identity or required value is invalid")
 	}
 	file := config.AuthFile{
-		SchemaVersion: 2, Target: "auth", Environment: p.Environment, ConfigID: "sha256:" + strings.Repeat("0", 64),
+		SchemaVersion: p.SchemaVersion, Target: "auth", Environment: p.Environment, ConfigID: "sha256:" + strings.Repeat("0", 64),
 		GCPProject: p.GCPProject, FirestoreDatabaseID: p.FirestoreDatabaseID, LocalCloudScope: p.LocalCloudScope,
 		AuthServiceURL: p.AuthServiceURL, SyncServiceURL: p.SyncServiceURL,
 		AllowedHosts: p.AllowedHosts, AllowedOrigins: p.AllowedOrigins,
@@ -217,6 +228,18 @@ func validateAuthSourceProjection(p authSourceProjection, environment string) er
 		RegistrationEnabled: p.RegistrationEnabled, AuthDemoUserID: p.AuthDemoUserID,
 		AuthDemoUserEmail: p.AuthDemoUserEmail, AuthDemoUserRole: p.AuthDemoUserRole,
 		JWTSecret: "synthetic-validation-value", OAuthResources: p.OAuthResources,
+	}
+	if p.SchemaVersion == 3 {
+		if p.ConsumerPublicProjection == nil {
+			return errors.New("selected Auth consumer policy is invalid")
+		}
+		file.ManagementScopes = p.ManagementScopes
+		file.ConsumerVerifiers = &p.ConsumerVerifiers
+		file.ConsumerPublicProjection = p.ConsumerPublicProjection
+		if err := config.ValidateAuthPublicPolicy(p.ManagementScopes, p.ConsumerVerifiers,
+			*p.ConsumerPublicProjection, p.Environment, p.AuthServiceURL, p.SyncServiceURL); err != nil {
+			return fmt.Errorf("selected Auth consumer policy is invalid: %w", err)
+		}
 	}
 	if p.Environment == "local" {
 		if p.JWTSecretReference == "" || !filepath.IsAbs(p.JWTSecretReference) || p.ConfigSecretResource != "" {
@@ -298,7 +321,7 @@ func prepareAuthInputs(ctx context.Context, projection authSourceProjection, sou
 		}
 	}
 	inputs := config.AuthInputSnapshot{
-		SchemaVersion: 2, Environment: projection.Environment, Target: "auth", SourceSHA: sourceSHA,
+		SchemaVersion: projection.SchemaVersion, Environment: projection.Environment, Target: "auth", SourceSHA: sourceSHA,
 		GCPProject: projection.GCPProject, FirestoreDatabaseID: projection.FirestoreDatabaseID,
 		LocalCloudScope: projection.LocalCloudScope, AuthServiceURL: projection.AuthServiceURL,
 		SyncServiceURL: projection.SyncServiceURL,
@@ -308,6 +331,11 @@ func prepareAuthInputs(ctx context.Context, projection authSourceProjection, sou
 		AuthDemoUserEmail: projection.AuthDemoUserEmail, AuthDemoUserRole: projection.AuthDemoUserRole,
 		JWTSecretVersion: jwtVersion, Google: google, ConfigSecretResource: projection.ConfigSecretResource,
 		OAuthResources: projection.OAuthResources,
+	}
+	if projection.SchemaVersion == 3 {
+		inputs.ManagementScopes = projection.ManagementScopes
+		inputs.ConsumerVerifiers = &projection.ConsumerVerifiers
+		inputs.ConsumerPublicProjection = projection.ConsumerPublicProjection
 	}
 	inputs.ConfigID, err = config.AuthInputConfigID(inputs)
 	if err != nil {
@@ -426,7 +454,7 @@ func prepareAuthLocal(ctx context.Context, root, output string, projection authS
 
 func authFileFromSource(p authSourceProjection, jwt string) config.AuthFile {
 	file := config.AuthFile{
-		SchemaVersion: 2, Target: "auth", Environment: p.Environment, GCPProject: p.GCPProject,
+		SchemaVersion: p.SchemaVersion, Target: "auth", Environment: p.Environment, GCPProject: p.GCPProject,
 		FirestoreDatabaseID: p.FirestoreDatabaseID, LocalCloudScope: p.LocalCloudScope,
 		AuthServiceURL: p.AuthServiceURL, SyncServiceURL: p.SyncServiceURL,
 		AllowedHosts: p.AllowedHosts, AllowedOrigins: p.AllowedOrigins,
@@ -434,6 +462,11 @@ func authFileFromSource(p authSourceProjection, jwt string) config.AuthFile {
 		RegistrationEnabled: p.RegistrationEnabled, AuthDemoUserID: p.AuthDemoUserID,
 		AuthDemoUserEmail: p.AuthDemoUserEmail, AuthDemoUserRole: p.AuthDemoUserRole, JWTSecret: jwt,
 		OAuthResources: p.OAuthResources,
+	}
+	if p.SchemaVersion == 3 {
+		file.ManagementScopes = p.ManagementScopes
+		file.ConsumerVerifiers = &p.ConsumerVerifiers
+		file.ConsumerPublicProjection = p.ConsumerPublicProjection
 	}
 	if p.Google.Enabled {
 		file.Google = config.AuthFileGoogle{
@@ -468,6 +501,8 @@ func materializeAuthSnapshot(ctx context.Context, inputs config.AuthInputSnapsho
 		RegistrationEnabled: inputs.RegistrationEnabled, AuthDemoUserID: inputs.AuthDemoUserID,
 		AuthDemoUserEmail: inputs.AuthDemoUserEmail, AuthDemoUserRole: inputs.AuthDemoUserRole,
 		JWTSecret: string(jwt), OAuthResources: inputs.OAuthResources,
+		ManagementScopes: inputs.ManagementScopes, ConsumerVerifiers: inputs.ConsumerVerifiers,
+		ConsumerPublicProjection: inputs.ConsumerPublicProjection,
 		Google: config.AuthFileGoogle{
 			Enabled: inputs.Google.Enabled, ClientID: inputs.Google.ClientID, Issuer: inputs.Google.Issuer,
 			JWKSURL: inputs.Google.JWKSURL, TokenURL: inputs.Google.TokenURL,

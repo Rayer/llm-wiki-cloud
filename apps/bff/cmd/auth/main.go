@@ -21,6 +21,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/middleware"
 	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"github.com/rayer/llm-wiki-bff/internal/syssettings"
+	"google.golang.org/api/idtoken"
 )
 
 func main() {
@@ -96,8 +97,8 @@ func newProductionRouter(cfg config.Config, localMode bool, fsClient *firestorec
 
 	corsHandler := cors.New(cors.Config{
 		AllowOrigins:     cfg.AllowedOriginsFor(localMode),
-		AllowMethods:     []string{http.MethodGet, http.MethodPost, http.MethodDelete, http.MethodOptions},
-		AllowHeaders:     []string{"Content-Type", "Authorization"},
+		AllowMethods:     []string{http.MethodGet, http.MethodPost, http.MethodPatch, http.MethodDelete, http.MethodOptions},
+		AllowHeaders:     []string{"Content-Type", "Authorization", "X-LWC-User-Credential"},
 		ExposeHeaders:    []string{"X-Request-ID"},
 		AllowCredentials: true,
 	})
@@ -117,6 +118,11 @@ func newProductionRouter(cfg config.Config, localMode bool, fsClient *firestorec
 	}
 	var demoUsers auth.DemoUserLookup
 	var sessions *auth.RefreshSessionAuthority
+	var management *auth.ManagementAuthority
+	consumerResource := strings.TrimSpace(cfg.AuthConsumerPublicProjection.Resource)
+	if consumerResource == "" {
+		consumerResource = cfg.SyncServiceURL
+	}
 	if fsClient == nil || fsClient.Raw() == nil {
 		unavailable := func(c *gin.Context) {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "auth routes require Firestore"})
@@ -139,11 +145,13 @@ func newProductionRouter(cfg config.Config, localMode bool, fsClient *firestorec
 		sessions = auth.NewRefreshSessionAuthorityWithConfig(fsClient.Raw(), auth.SessionAuthorityConfig{
 			Environment: sessionEnvironment, Migration: auth.RefreshSessionMigrationMode(cfg.AuthSessionMigration),
 		})
+		management = auth.NewManagementAuthorityWithCatalog(fsClient.Raw(), sessionEnvironment, cfg.ManagementScopes)
+		sessions.SetManagementAuthority(management, consumerResource)
 		demoUsers = identityRepository
 		registerCLIAuthRoutes(authRoutes, cfg, fsClient.Raw(), sessions, sessionEnvironment)
-		authRoutes.POST("/login", middleware.NewRateLimiter(10, time.Minute), auth.LoginHandlerWithRepositoryAndSessionAuthority(identityRepository, cfg.JWTSecret, cookiePolicy, sessions))
+		authRoutes.POST("/login", middleware.NewRateLimiter(10, time.Minute), auth.LoginHandlerWithManagement(identityRepository, cfg.JWTSecret, cookiePolicy, sessions, management, consumerResource))
 		authRoutes.POST("/register", middleware.NewRateLimiter(5, time.Minute), auth.RegisterHandlerWithRepository(identityRepository, cfg.JWTSecret, settingsStore))
-		authRoutes.POST("/refresh", auth.RefreshHandlerWithSessionAuthority(sessions, cfg.JWTSecret, cookiePolicy))
+		authRoutes.POST("/refresh", auth.RefreshHandlerWithManagement(sessions, cfg.JWTSecret, cookiePolicy, management, consumerResource))
 		authRoutes.POST("/logout", auth.LogoutHandlerWithSessionAuthority(sessions, cfg.JWTSecret, cookiePolicy))
 		if cfg.GoogleClientID != "" {
 			google := auth.NewGoogleOAuthServiceWithSessionAuthority(auth.GoogleConfig{
@@ -169,8 +177,8 @@ func newProductionRouter(cfg config.Config, localMode bool, fsClient *firestorec
 			authRoutes.GET("/google/identity", auth.JWTAuthWithAccountLookup(cfg, auth.FirestoreAccountLookup(fsClient.Raw())), google.IdentitySummaryHandler())
 		}
 	}
-	demoHandler := auth.DemoLoginHandlerWithRepository(
-		demoUsers, cfg.AuthDemoUserID, cfg.AuthDemoUserEmail, cfg.AuthDemoUserRole, cfg.JWTSecret, cookiePolicy, sessions,
+	demoHandler := auth.DemoLoginHandlerWithManagement(
+		demoUsers, cfg.AuthDemoUserID, cfg.AuthDemoUserEmail, cfg.AuthDemoUserRole, cfg.JWTSecret, cookiePolicy, sessions, management, consumerResource,
 	)
 	if !demoReady {
 		demoHandler = func(c *gin.Context) {
@@ -182,6 +190,41 @@ func newProductionRouter(cfg config.Config, localMode bool, fsClient *firestorec
 	if fsClient != nil {
 		rawFirestore = fsClient.Raw()
 	}
+	consumerPolicy := lwcConsumerPolicy(cfg)
+	var verifyCLISession auth.CLIAccessSessionVerifier
+	var mcpOAuth *auth.MCPOAuthService
+	if sessions != nil {
+		verifyCLISession = sessions.VerifyCLIAccessSession
+	}
+	if rawFirestore != nil {
+		databaseEnvironment := strings.TrimSpace(cfg.AuthSessionEnvironment)
+		if databaseEnvironment == "" {
+			databaseEnvironment = strings.TrimSpace(cfg.FirestoreDatabaseID)
+		}
+		if databaseEnvironment == "" {
+			databaseEnvironment = "default"
+		}
+		mcpOAuth = auth.NewMCPOAuthServiceWithPolicy(rawFirestore, databaseEnvironment, cfg.AuthEnvironment,
+			cfg.AuthServiceURL, cfg.SyncServiceURL, "", cfg.JWTSecret, cfg.AuthOAuthResources)
+	}
+	consumerRoutes := authRoutes.Group("/consumers/lwc")
+	consumerRoutes.Use(middleware.NewRateLimiter(60, time.Minute))
+	consumerRoutes.POST("/verify-credential", auth.LWCConsumerVerifyHandlerWithAuthorities(cfg, rawFirestore, consumerPolicy,
+		idtoken.Validate, verifyCLISession, management, mcpOAuth))
+	consumerRoutes.POST("/accounts/check", auth.LWCConsumerAccountCheckHandler(rawFirestore, consumerPolicy, idtoken.Validate))
+	consumerRoutes.GET("/management/catalog", auth.ManagementCatalogHandler(consumerPolicy, cfg.AuthConsumerPublicProjection, idtoken.Validate))
+	consumerRoutes.GET("/management/me", auth.ManagementMeHandler(cfg, rawFirestore, consumerPolicy, idtoken.Validate, verifyCLISession, management))
+	consumerRoutes.GET("/management/users", auth.ManagementUsersHandler(cfg, rawFirestore, consumerPolicy, idtoken.Validate, verifyCLISession, management))
+	consumerRoutes.POST("/management/grants", auth.ManagementGrantHandler(cfg, rawFirestore, consumerPolicy, idtoken.Validate, verifyCLISession, management))
+	consumerRoutes.GET("/management/operations/:operationID", auth.ManagementOperationHandler(cfg, rawFirestore, consumerPolicy, idtoken.Validate, verifyCLISession, management))
+	consumerRoutes.PATCH("/management/users/:userID", auth.ManagementAccountStatusHandler(cfg, rawFirestore, consumerPolicy, idtoken.Validate, verifyCLISession, management))
+	consumerRoutes.DELETE("/management/users/:userID", auth.ManagementAccountDeleteHandler(cfg, rawFirestore, consumerPolicy, idtoken.Validate, verifyCLISession, management))
+	passwordRoutes := authRoutes.Group("/account")
+	if rawFirestore != nil {
+		passwordRoutes.Use(auth.JWTAuthWithAccountLookup(cfg, auth.FirestoreAccountLookup(rawFirestore)), auth.WebOnly())
+	}
+	passwordRoutes.GET("/password", auth.PasswordSelfServiceStatusHandler(rawFirestore, cfg.AuthDemoUserID))
+	passwordRoutes.POST("/password", middleware.NewRateLimiter(5, time.Minute), auth.ChangePasswordHandler(rawFirestore, cfg.AuthDemoUserID))
 	auth.RegisterMCPOAuthRoutes(r, authRoutes, cfg, rawFirestore)
 
 	r.GET("/api/v1/public/healthz", func(c *gin.Context) {
@@ -190,6 +233,22 @@ func newProductionRouter(cfg config.Config, localMode bool, fsClient *firestorec
 	r.GET("/api/v1/public/version", authVersionHandler(cfg))
 
 	return observability.WrapRequestLifecycleRouter(r)
+}
+
+func lwcConsumerPolicy(cfg config.Config) auth.LWCConsumerPolicy {
+	var verifier config.AuthConsumerVerifier
+	for _, candidate := range cfg.AuthConsumerVerifiers {
+		if candidate.ID == "lwc-bff" && candidate.Environment == cfg.AuthEnvironment {
+			verifier = candidate
+			break
+		}
+	}
+	return auth.LWCConsumerPolicy{
+		Enabled:     cfg.ConfigSchemaVersion >= 3 && cfg.AuthEnvironment != "local" && verifier.ID == "lwc-bff",
+		Environment: cfg.AuthEnvironment, Resource: verifier.Resource,
+		CallerServiceAccount: verifier.CallerServiceAccount, VerifierAudience: verifier.Audience,
+		Issuer: cfg.AuthServiceURL, AllowedCredentialKinds: append([]string(nil), verifier.AllowedCredentialKinds...),
+	}
 }
 
 func authVersionHandler(cfg config.Config) gin.HandlerFunc {

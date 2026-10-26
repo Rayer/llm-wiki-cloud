@@ -18,6 +18,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/rayer/llm-wiki-bff/internal/auth"
+	"github.com/rayer/llm-wiki-bff/internal/authconsumer"
 	conceptcache "github.com/rayer/llm-wiki-bff/internal/cache"
 	"github.com/rayer/llm-wiki-bff/internal/config"
 	"github.com/rayer/llm-wiki-bff/internal/firestore"
@@ -1071,7 +1072,31 @@ func newAdminRouteTestRouter(t *testing.T) *gin.Engine {
 		}
 		return &auth.UserRecord{Role: role}, nil
 	})
+	handler.SetConsumerVerifier(adminTestConsumerVerifier{})
 	settingsStore := &syssettings.FakeStore{Enabled: true}
 	registerAdminRoutes(router, config.Config{JWTSecret: "test-secret"}, handler, settingsStore)
 	return router
+}
+
+type adminTestConsumerVerifier struct{}
+
+func (adminTestConsumerVerifier) Verify(_ context.Context, token, _ string) (authconsumer.Identity, error) {
+	claims, err := auth.ValidateToken(token, "test-secret")
+	if err != nil {
+		return authconsumer.Identity{}, authconsumer.ErrInvalidCredential
+	}
+	var scopes []string
+	if claims.Sub == "admin-user" {
+		scopes = []string{auth.ManagementScopeAuthAdmin, auth.ManagementScopeLWCAdmin}
+	}
+	return authconsumer.Identity{
+		SchemaVersion: 1, Subject: claims.Sub, CredentialKind: "web-access", Environment: "dev",
+		Issuer: "https://auth.example.test", Resource: "https://bff.example.test",
+		ExpiresAt: time.Now().Add(time.Minute).Unix(), AuthVersion: claims.AuthVersion,
+		Scopes: []string{}, ManagementScopes: scopes,
+	}, nil
+}
+
+func (adminTestConsumerVerifier) CheckAccount(context.Context, string) (authconsumer.Account, error) {
+	return authconsumer.Account{SchemaVersion: 1, Active: true}, nil
 }

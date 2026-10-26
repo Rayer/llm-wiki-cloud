@@ -16,6 +16,7 @@ import {
   getRecompileAllCapability,
   getAdminProjects,
   getAdminUsers,
+  getAdminManagementCatalog,
   getBuildInfo,
   getConcept,
   getConcepts,
@@ -40,7 +41,8 @@ import {
   toV1Path,
   triggerPipeline,
   recompileAll,
-  updateAdminUserRole,
+  updateAdminUserManagementScope,
+  updateAdminUserStatus,
   uploadRawFile,
   updateSourceAnnotation,
 } from '../src/lib/api.ts';
@@ -1638,7 +1640,7 @@ test('admin project mutations use admin endpoints without project header', async
   }
 });
 
-test('getAdminUsers and user mutations use admin endpoints without project header', async () => {
+test('getAdminUsers and management mutations use admin endpoints without project header', async () => {
   configureApiAuth({
     getAccessToken: () => 'jwt-token',
     refreshAccessToken: async () => null,
@@ -1663,18 +1665,26 @@ test('getAdminUsers and user mutations use admin endpoints without project heade
             id: 'user-1',
             name: 'Admin Person',
             email: 'admin@example.com',
-            role: 'admin',
+            status: 'active',
+            scope_states: { 'auth:admin': { state: 'granted', revision: 1, source: 'migration' } },
             project_count: 4,
           },
         ],
       });
+    }
+    if (String(url).endsWith('/api/v1/admin/management/catalog')) {
+      return Response.json({ scopes: [
+        { id: 'auth:admin', product: 'auth', resource: 'bff', grant_mode: 'operator-only', display_name: { en: 'Auth', 'zh-TW': 'Auth' }, description: { en: 'Accounts', 'zh-TW': 'Accounts' } },
+      ] });
     }
     return Response.json({ status: 'ok' });
   };
 
   try {
     const users = await getAdminUsers();
-    await updateAdminUserRole('user-1', 'user');
+    const catalog = await getAdminManagementCatalog();
+    await updateAdminUserManagementScope('user-1', 'lwc:admin', 'grant');
+    await updateAdminUserStatus('user-1', 'suspended');
     await deleteAdminUser('user-1');
 
     assert.deepEqual(users, [
@@ -1682,20 +1692,27 @@ test('getAdminUsers and user mutations use admin endpoints without project heade
         id: 'user-1',
         name: 'Admin Person',
         email: 'admin@example.com',
-        role: 'admin',
-        projectCount: 4,
         status: 'active',
+        scopeStates: { 'auth:admin': { state: 'granted', revision: 1, source: 'migration' } },
+        projectCount: 4,
       },
     ]);
+    assert.equal(catalog[0].id, 'auth:admin');
     assert.deepEqual(
       calls.map((call) => [call.url, call.init.method, call.init.headers['X-Project-ID']]),
       [
         ['https://api.runtime.test/api/v1/admin/users', undefined, undefined],
+        ['https://api.runtime.test/api/v1/admin/management/catalog', undefined, undefined],
+        ['https://api.runtime.test/api/v1/admin/users/user-1', 'PATCH', undefined],
         ['https://api.runtime.test/api/v1/admin/users/user-1', 'PATCH', undefined],
         ['https://api.runtime.test/api/v1/admin/users/user-1', 'DELETE', undefined],
       ],
     );
-    assert.equal(calls[1].init.body, JSON.stringify({ role: 'user' }));
+    const grant = JSON.parse(calls[2].init.body);
+    assert.equal(grant.scope, 'lwc:admin');
+    assert.equal(grant.action, 'grant');
+    assert.match(grant.operation_id, /^[0-9a-f-]{36}$/);
+    assert.equal(calls[3].init.body, JSON.stringify({ status: 'suspended' }));
   } finally {
     globalThis.fetch = originalFetch;
   }

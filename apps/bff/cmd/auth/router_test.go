@@ -34,38 +34,49 @@ func TestProductionRouterExposesOnlyAuthPublicSurface(t *testing.T) {
 	router := newProductionRouter(config.Config{JWTSecret: "test-secret"}, true, nil, &syssettings.FakeStore{Enabled: true}, true)
 
 	want := map[string]bool{
-		http.MethodDelete + " /api/v1/auth/mcp/oauth/grants/:grantID":               true,
-		http.MethodDelete + " /api/v1/auth/cli/bindings/:projectID/:bindingID":      true,
-		http.MethodDelete + " /api/v1/auth/cli/sessions/:id":                        true,
-		http.MethodGet + " /.well-known/oauth-authorization-server":                 true,
-		http.MethodGet + " /api/v1/auth/mcp/oauth/authorize":                        true,
-		http.MethodGet + " /api/v1/auth/mcp/oauth/consent/:transactionID":           true,
-		http.MethodGet + " /api/v1/auth/mcp/oauth/grants":                           true,
-		http.MethodGet + " /api/v1/auth/cli/bindings":                               true,
-		http.MethodGet + " /api/v1/auth/cli/projects":                               true,
-		http.MethodGet + " /api/v1/auth/cli/sessions":                               true,
-		http.MethodGet + " /api/v1/auth/cli/status":                                 true,
-		http.MethodGet + " /api/v1/auth/cli/sync-service":                           true,
-		http.MethodGet + " /api/v1/public/healthz":                                  true,
-		http.MethodGet + " /api/v1/public/version":                                  true,
-		http.MethodPost + " /api/v1/auth/cli/bindings":                              true,
-		http.MethodPost + " /api/v1/auth/cli/bindings/:projectID/:bindingID/revoke": true,
-		http.MethodPost + " /api/v1/auth/cli/bindings/:projectID/reauthorize":       true,
-		http.MethodPost + " /api/v1/auth/cli/logout":                                true,
-		http.MethodPost + " /api/v1/auth/cli/pairing/decision":                      true,
-		http.MethodPost + " /api/v1/auth/cli/pairing/poll":                          true,
-		http.MethodPost + " /api/v1/auth/cli/pairing/start":                         true,
-		http.MethodPost + " /api/v1/auth/cli/refresh":                               true,
-		http.MethodPost + " /api/v1/auth/cli/sessions/:id/revoke":                   true,
-		http.MethodPost + " /api/v1/auth/register":                                  true,
-		http.MethodPost + " /api/v1/auth/login":                                     true,
-		http.MethodPost + " /api/v1/auth/refresh":                                   true,
-		http.MethodPost + " /api/v1/auth/logout":                                    true,
-		http.MethodPost + " /api/v1/auth/demo":                                      true,
-		http.MethodPost + " /api/v1/auth/mcp/oauth/consent/:transactionID/decision": true,
-		http.MethodPost + " /api/v1/auth/consumers/daily-brief/verify-credential":   true,
-		http.MethodPost + " /api/v1/auth/mcp/oauth/register":                        true,
-		http.MethodPost + " /api/v1/auth/mcp/oauth/token":                           true,
+		http.MethodDelete + " /api/v1/auth/mcp/oauth/grants/:grantID":                     true,
+		http.MethodDelete + " /api/v1/auth/cli/bindings/:projectID/:bindingID":            true,
+		http.MethodDelete + " /api/v1/auth/cli/sessions/:id":                              true,
+		http.MethodGet + " /.well-known/oauth-authorization-server":                       true,
+		http.MethodGet + " /api/v1/auth/mcp/oauth/authorize":                              true,
+		http.MethodGet + " /api/v1/auth/mcp/oauth/consent/:transactionID":                 true,
+		http.MethodGet + " /api/v1/auth/mcp/oauth/grants":                                 true,
+		http.MethodGet + " /api/v1/auth/cli/bindings":                                     true,
+		http.MethodGet + " /api/v1/auth/cli/projects":                                     true,
+		http.MethodGet + " /api/v1/auth/cli/sessions":                                     true,
+		http.MethodGet + " /api/v1/auth/cli/status":                                       true,
+		http.MethodGet + " /api/v1/auth/cli/sync-service":                                 true,
+		http.MethodGet + " /api/v1/auth/account/password":                                 true,
+		http.MethodGet + " /api/v1/public/healthz":                                        true,
+		http.MethodGet + " /api/v1/public/version":                                        true,
+		http.MethodPost + " /api/v1/auth/cli/bindings":                                    true,
+		http.MethodPost + " /api/v1/auth/cli/bindings/:projectID/:bindingID/revoke":       true,
+		http.MethodPost + " /api/v1/auth/cli/bindings/:projectID/reauthorize":             true,
+		http.MethodPost + " /api/v1/auth/cli/logout":                                      true,
+		http.MethodPost + " /api/v1/auth/cli/pairing/decision":                            true,
+		http.MethodPost + " /api/v1/auth/cli/pairing/poll":                                true,
+		http.MethodPost + " /api/v1/auth/cli/pairing/start":                               true,
+		http.MethodPost + " /api/v1/auth/cli/refresh":                                     true,
+		http.MethodPost + " /api/v1/auth/cli/sessions/:id/revoke":                         true,
+		http.MethodPost + " /api/v1/auth/register":                                        true,
+		http.MethodPost + " /api/v1/auth/login":                                           true,
+		http.MethodPost + " /api/v1/auth/refresh":                                         true,
+		http.MethodPost + " /api/v1/auth/logout":                                          true,
+		http.MethodPost + " /api/v1/auth/account/password":                                true,
+		http.MethodPost + " /api/v1/auth/demo":                                            true,
+		http.MethodPost + " /api/v1/auth/mcp/oauth/consent/:transactionID/decision":       true,
+		http.MethodPost + " /api/v1/auth/consumers/daily-brief/verify-credential":         true,
+		http.MethodPost + " /api/v1/auth/consumers/lwc/verify-credential":                 true,
+		http.MethodPost + " /api/v1/auth/consumers/lwc/accounts/check":                    true,
+		http.MethodGet + " /api/v1/auth/consumers/lwc/management/catalog":                 true,
+		http.MethodGet + " /api/v1/auth/consumers/lwc/management/me":                      true,
+		http.MethodGet + " /api/v1/auth/consumers/lwc/management/users":                   true,
+		http.MethodPost + " /api/v1/auth/consumers/lwc/management/grants":                 true,
+		http.MethodGet + " /api/v1/auth/consumers/lwc/management/operations/:operationID": true,
+		http.MethodPatch + " /api/v1/auth/consumers/lwc/management/users/:userID":         true,
+		http.MethodDelete + " /api/v1/auth/consumers/lwc/management/users/:userID":        true,
+		http.MethodPost + " /api/v1/auth/mcp/oauth/register":                              true,
+		http.MethodPost + " /api/v1/auth/mcp/oauth/token":                                 true,
 	}
 
 	got := make(map[string]bool)
@@ -634,7 +645,7 @@ func TestCLISessionRevokePostPassesExistingCORSPreflightContract(t *testing.T) {
 		request.Header.Set("Access-Control-Request-Method", http.MethodPost)
 		request.Header.Set("Access-Control-Request-Headers", "Authorization, Content-Type")
 		router.ServeHTTP(recorder, request)
-		if recorder.Code != http.StatusNoContent || recorder.Header().Get("Access-Control-Allow-Methods") != "GET,POST,DELETE,OPTIONS" || recorder.Header().Get("Access-Control-Allow-Origin") != "https://frontend.example" {
+		if recorder.Code != http.StatusNoContent || recorder.Header().Get("Access-Control-Allow-Methods") != "GET,POST,PATCH,DELETE,OPTIONS" || recorder.Header().Get("Access-Control-Allow-Origin") != "https://frontend.example" {
 			t.Fatalf("revoke preflight for %s status=%d headers=%#v body=%s", path, recorder.Code, recorder.Header(), recorder.Body.String())
 		}
 	}
@@ -958,11 +969,11 @@ func TestAuthCORSAllowsConfiguredMethodsAndHeaders(t *testing.T) {
 	if recorder.Code != http.StatusNoContent {
 		t.Fatalf("CORS preflight status = %d, want %d", recorder.Code, http.StatusNoContent)
 	}
-	if got := recorder.Header().Get("Access-Control-Allow-Methods"); got != "GET,POST,DELETE,OPTIONS" {
-		t.Fatalf("Access-Control-Allow-Methods = %q, want %q", got, "GET,POST,DELETE,OPTIONS")
+	if got := recorder.Header().Get("Access-Control-Allow-Methods"); got != "GET,POST,PATCH,DELETE,OPTIONS" {
+		t.Fatalf("Access-Control-Allow-Methods = %q, want %q", got, "GET,POST,PATCH,DELETE,OPTIONS")
 	}
-	if got := recorder.Header().Get("Access-Control-Allow-Headers"); got != "Content-Type,Authorization" {
-		t.Fatalf("Access-Control-Allow-Headers = %q, want %q", got, "Content-Type,Authorization")
+	if got := recorder.Header().Get("Access-Control-Allow-Headers"); got != "Content-Type,Authorization,X-Lwc-User-Credential" {
+		t.Fatalf("Access-Control-Allow-Headers = %q, want %q", got, "Content-Type,Authorization,X-Lwc-User-Credential")
 	}
 	if got := recorder.Header().Get("Access-Control-Allow-Origin"); got != "https://frontend.example" {
 		t.Fatalf("Access-Control-Allow-Origin = %q, want configured origin", got)

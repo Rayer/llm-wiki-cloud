@@ -2,11 +2,13 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
-test('shell exposes Admin navigation only for admin users', async () => {
+test('shell exposes Admin navigation only for management-scope holders', async () => {
   const shell = await readFile(new URL('../src/components/Shell.tsx', import.meta.url), 'utf8');
 
   assert.match(shell, /Shield/);
-  assert.match(shell, /user\?\.role === 'admin'/);
+  assert.match(shell, /user\?\.management_scopes\?\.some/);
+  assert.match(shell, /scope === 'auth:admin'/);
+  assert.match(shell, /scope === 'lwc:admin'/);
   assert.match(shell, /href: '\/admin'/);
   assert.match(shell, /label: 'Admin'/);
 });
@@ -36,7 +38,8 @@ test('AdminClient gates access, renders tabs, and loads admin tables', async () 
   );
 
   assert.match(adminClient, /useAuth/);
-  assert.match(adminClient, /user\?\.role !== 'admin'/);
+  assert.match(adminClient, /user\?\.management_scopes\?\.includes\('auth:admin'\)/);
+  assert.match(adminClient, /user\?\.management_scopes\?\.includes\('lwc:admin'\)/);
   assert.match(adminClient, /Admin access required/);
   assert.match(adminClient, /Projects/);
   assert.match(adminClient, /Users/);
@@ -77,10 +80,12 @@ test('AdminClient wires project and user actions through confirmation modals', a
   assert.match(adminClient, /deleteAdminProject/);
   assert.match(adminClient, /rebuildAdminProjectIndex/);
   assert.match(adminClient, /triggerAdminProjectPipeline/);
-  assert.match(adminClient, /updateAdminUserRole/);
+  assert.match(adminClient, /updateAdminUserManagementScope/);
+  assert.match(adminClient, /updateAdminUserStatus/);
   assert.match(adminClient, /deleteAdminUser/);
+  assert.match(adminClient, /canDeleteUser=\{isAuthAdmin && isLWCAdmin\}/);
   assert.match(adminClient, /ConfirmActionModal/);
-  assert.match(adminClient, /RoleActionModal/);
+  assert.match(adminClient, /ScopeActionModal/);
   assert.match(adminClient, /RenameProjectModal/);
   assert.match(adminClient, /announcementMarkdown\.trim\(\) === '' && !window\.confirm/);
   assert.match(adminClient, /setNotice/);

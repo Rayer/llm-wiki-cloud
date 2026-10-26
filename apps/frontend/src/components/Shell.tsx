@@ -94,7 +94,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
     { href: '/sources', label: t('Shell.sources'), icon: FileText, countKey: 'sources' },
     { href: '/concepts', label: t('Shell.concepts'), icon: Brain, countKey: 'concepts' },
     { href: '/status', label: t('Shell.status'), icon: Activity },
-    ...(user?.role === 'admin'
+    ...(user?.management_scopes?.some((scope) => scope === 'auth:admin' || scope === 'lwc:admin')
       ? [{ href: '/admin', label: 'Admin', icon: Shield }]
       : []),
   ];

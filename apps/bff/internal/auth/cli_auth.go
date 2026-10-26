@@ -366,7 +366,7 @@ func (s *CLIAuthService) PollPairing(ctx context.Context, pairingID, pollSecret 
 			terminalErr = ErrCLIPairingDenied
 			return nil
 		}
-		credential, err := s.sessions.createCLISessionInTransaction(tx, pair.ApprovedUserID, &user, pair.ClientName, s.jwtSecret, sessionID, refreshToken, now)
+		credential, err := s.sessions.createCLISessionInTransaction(ctx, tx, pair.ApprovedUserID, &user, pair.ClientName, s.jwtSecret, sessionID, refreshToken, now)
 		if err != nil {
 			return err
 		}

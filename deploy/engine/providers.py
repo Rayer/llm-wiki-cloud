@@ -1264,7 +1264,7 @@ class Providers:
     def auth_runtime_config_matches(self, inputs):
         expected_schema = inputs.get('schema_version') if isinstance(inputs, dict) else None
         expected_config_id = inputs.get('config_id') if isinstance(inputs, dict) else None
-        if (type(expected_schema) is not int or expected_schema not in (1, 2) or
+        if (type(expected_schema) is not int or expected_schema not in (1, 2, 3) or
                 not isinstance(expected_config_id, str) or
                 re.fullmatch(r'sha256:[0-9a-f]{64}', expected_config_id) is None):
             raise Breakpoint('auth-runtime-config-identity-invalid', 'failed', False,

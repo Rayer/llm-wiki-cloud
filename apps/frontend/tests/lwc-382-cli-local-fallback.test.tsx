@@ -94,6 +94,9 @@ describe('LWC-382 CLI and Sync local fallback copy', () => {
           : payload.error;
         const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
           const url = String(input);
+          if (url.endsWith('/api/v1/auth/account/password') && (!init?.method || init.method === 'GET')) {
+            return jsonResponse(true, 200, { allowed: true, configured: true });
+          }
           if (url.endsWith('/sessions')) return jsonResponse(true, 200, { sessions: [session] });
           if (url.endsWith('/bindings')) return jsonResponse(true, 200, { bindings: [binding] });
           if (url.includes(action.path)) return jsonResponse(false, 503, payload);

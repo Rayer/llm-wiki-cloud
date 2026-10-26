@@ -4,6 +4,7 @@ export type AuthUser = {
   id: string;
   email: string;
   role?: string;
+  management_scopes?: string[];
 };
 
 export type AuthResponse = {
@@ -32,8 +33,16 @@ function normalizeUser(value: unknown): AuthUser | null {
   const id = firstString(value, ['id', 'user_id', 'userId']);
   const email = firstString(value, ['email']);
   const role = firstString(value, ['role']);
+  const managementScopes = Array.isArray(value.management_scopes)
+    ? value.management_scopes.filter((scope): scope is string => scope === 'auth:admin' || scope === 'lwc:admin')
+    : undefined;
   if (!id || !email) return null;
-  return role ? { id, email, role } : { id, email };
+  return {
+    id,
+    email,
+    ...(role ? { role } : {}),
+    ...(managementScopes ? { management_scopes: managementScopes } : {}),
+  };
 }
 
 export class RegistrationDisabledError extends Error {

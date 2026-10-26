@@ -116,6 +116,19 @@ func AdminGetSettingsHandler(gate RegistrationGate) gin.HandlerFunc {
 	}
 }
 
+// AdminGetAnnouncementHandler serves the product-admin announcement editor
+// without exposing registration controls to lwc:admin principals.
+func AdminGetAnnouncementHandler(gate RegistrationGate) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		settings, err := gate.GetSettings(c.Request.Context())
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"announcement_markdown": settings.AnnouncementMarkdown})
+	}
+}
+
 // AdminPatchSettingsHandler serves PATCH /api/v1/admin/settings.
 //
 //	@Summary		Update system settings (admin)

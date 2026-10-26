@@ -8,6 +8,10 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const mocks = vi.hoisted(() => ({
   getAdminProjects: vi.fn(),
   getAdminUsers: vi.fn(),
+  getAdminManagementCatalog: vi.fn().mockResolvedValue([
+    { id: 'auth:admin', product: 'auth', resource: 'bff', grant_mode: 'operator-only', display_name: { en: 'Platform administrator', 'zh-TW': '平台管理員' }, description: { en: 'Manage accounts.', 'zh-TW': '管理帳號。' } },
+    { id: 'lwc:admin', product: 'lwc', resource: 'bff', grant_mode: 'operator-only', display_name: { en: 'LWC administrator', 'zh-TW': 'LWC 管理員' }, description: { en: 'Manage projects.', 'zh-TW': '管理專案。' } },
+  ]),
   getAdminSettings: vi.fn(),
   triggerAdminProjectPipeline: vi.fn(),
   getAdminPipelineStatus: vi.fn(),
@@ -18,13 +22,14 @@ vi.mock('@/lib/api', () => ({
   clearPublicConfigCache: vi.fn(),
   deleteAdminProject: vi.fn(), deleteAdminUser: vi.fn(),
   getAdminProjects: mocks.getAdminProjects, getAdminUsers: mocks.getAdminUsers,
+  getAdminManagementCatalog: mocks.getAdminManagementCatalog,
   getAdminSettings: mocks.getAdminSettings, getAdminPipelineStatus: mocks.getAdminPipelineStatus,
   publishAnnouncement: vi.fn(), rebuildAdminProjectIndex: vi.fn(), renameAdminProject: vi.fn(),
   triggerAdminProjectPipeline: mocks.triggerAdminProjectPipeline,
   updateAdminSettings: vi.fn(), updateAdminUserRole: vi.fn(), updateAdminUserStatus: vi.fn(),
 }));
-vi.mock('@/lib/auth', () => ({ useAuth: () => ({ hydrated: true, user: { role: 'admin' } }) }));
-vi.mock('@/lib/i18n', () => ({ useLocale: () => ({ t: (key: string) => key }) }));
+vi.mock('@/lib/auth', () => ({ useAuth: () => ({ hydrated: true, user: { role: 'admin', management_scopes: ['auth:admin', 'lwc:admin'] } }) }));
+vi.mock('@/lib/i18n', () => ({ useLocale: () => ({ locale: 'en', t: (key: string) => key }) }));
 vi.mock('@/components/AnnouncementBoard', () => ({ AnnouncementBoard: () => null }));
 vi.mock('@/components/NavigationBlocker', () => ({ useNavigationBlocker: () => ({ setBlocked: vi.fn() }) }));
 

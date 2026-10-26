@@ -3,6 +3,7 @@
 import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { useAuth } from '@/lib/auth';
 import { beginGoogleLink, GoogleAuthError, readGoogleIdentitySummary } from '@/lib/google-auth';
+import { changeAccountPassword, readPasswordSelfServiceStatus, type PasswordSelfServiceStatus } from '@/lib/account-password';
 import { useLocale } from '@/lib/i18n';
 import {
   CLIAuthError,
@@ -18,6 +19,7 @@ import {
 export function AccountSettingsModal({ onClose }: { onClose: () => void }) {
   const { accessToken, refreshAccessToken, user } = useAuth();
   const { t } = useLocale();
+  const userID = user?.id ?? null;
   const [linkOpen, setLinkOpen] = useState(false);
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -29,6 +31,13 @@ export function AccountSettingsModal({ onClose }: { onClose: () => void }) {
   const [controlError, setControlError] = useState('');
   const [controlNotice, setControlNotice] = useState('');
   const [busyControl, setBusyControl] = useState('');
+  const [passwordStatus, setPasswordStatus] = useState<{ userID: string; value: PasswordSelfServiceStatus } | null>(null);
+  const [passwordStatusError, setPasswordStatusError] = useState<{ userID: string; message: string } | null>(null);
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [passwordPending, setPasswordPending] = useState(false);
+  const [passwordError, setPasswordError] = useState('');
+  const [passwordNotice, setPasswordNotice] = useState('');
   const passwordRef = useRef<HTMLInputElement>(null);
 
   const closeSettings = useCallback(() => onClose(), [onClose]);
@@ -75,16 +84,31 @@ export function AccountSettingsModal({ onClose }: { onClose: () => void }) {
   }, [accessToken, refreshAccessToken, t, user]);
 
   useEffect(() => {
+    if (!accessToken || !userID) return;
+    let active = true;
+    const accountId = userID;
+    void readPasswordSelfServiceStatus(accessToken).then((status) => {
+      if (active) {
+        setPasswordStatus({ userID: accountId, value: status });
+        setPasswordStatusError(null);
+      }
+    }).catch(() => {
+      if (active) setPasswordStatusError({ userID: accountId, message: t('AccountSettings.passwordStatusError') });
+    });
+    return () => { active = false; };
+  }, [accessToken, t, userID]);
+
+  useEffect(() => {
     if (linkOpen) passwordRef.current?.focus();
   }, [linkOpen]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !loading) closeSettings();
+      if (event.key === 'Escape' && !loading && !passwordPending) closeSettings();
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, [loading, closeSettings]);
+  }, [loading, passwordPending, closeSettings]);
 
   if (!user) return null;
 
@@ -101,6 +125,30 @@ export function AccountSettingsModal({ onClose }: { onClose: () => void }) {
         : linkError instanceof Error ? linkError.message : t('AccountSettings.googleLinkError'));
       setPassword('');
       setLoading(false);
+    }
+  };
+
+  const handlePasswordUpdate = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (passwordPending || !accessToken || !user || !passwordStatus || passwordStatus.userID !== user.id || !passwordStatus.value.allowed) return;
+    if (newPassword !== confirmPassword) {
+      setPasswordError(t('AccountSettings.passwordMismatch'));
+      return;
+    }
+    setPasswordPending(true);
+    setPasswordError('');
+    setPasswordNotice('');
+    try {
+      await changeAccountPassword(accessToken, newPassword, confirmPassword);
+      const refreshed = await readPasswordSelfServiceStatus(accessToken);
+      setPasswordStatus({ userID: user.id, value: refreshed });
+      setNewPassword('');
+      setConfirmPassword('');
+      setPasswordNotice(t('AccountSettings.passwordUpdated'));
+    } catch (requestError) {
+      setPasswordError(requestError instanceof Error ? requestError.message : t('AccountSettings.passwordUpdateError'));
+    } finally {
+      setPasswordPending(false);
     }
   };
 
@@ -188,6 +236,40 @@ export function AccountSettingsModal({ onClose }: { onClose: () => void }) {
             <p className="mt-2 text-xs leading-5 text-zinc-500">{t('AccountSettings.googleHint')}</p>
           </div>
         </dl>
+
+        <section className="mt-6 border-t border-white/10 pt-6" aria-labelledby="account-password-title">
+          <h3 id="account-password-title" className="text-lg font-semibold text-white">{t('AccountSettings.passwordTitle')}</h3>
+          {passwordStatusError?.userID === user.id ? <p role="alert" className="mt-2 text-sm text-red-300">{passwordStatusError.message}</p> : null}
+          {passwordStatusError?.userID !== user.id && (!passwordStatus || passwordStatus.userID !== user.id) ? (
+            <p role="status" className="mt-2 text-sm text-zinc-400">{t('AccountSettings.passwordLoading')}</p>
+          ) : null}
+          {passwordStatus?.userID === user.id && !passwordStatus.value.allowed ? (
+            <p className="mt-2 text-sm leading-6 text-zinc-400">{t('AccountSettings.passwordDemoDisabled')}</p>
+          ) : null}
+          {passwordStatus?.userID === user.id && passwordStatus.value.allowed ? (
+            <form onSubmit={handlePasswordUpdate} className="mt-3 space-y-4 rounded-lg border border-white/10 bg-black/20 p-4">
+              <p className="text-sm leading-6 text-zinc-400">
+                {passwordStatus.value.configured ? t('AccountSettings.passwordChangeHint') : t('AccountSettings.passwordSetupHint')}
+              </p>
+              <label className="block text-sm font-medium text-zinc-300">
+                {t('AccountSettings.newPassword')}
+                <input type="password" autoComplete="new-password" minLength={8} required value={newPassword} onChange={(event) => setNewPassword(event.target.value)} className="mt-2 w-full rounded-lg border border-white/10 bg-black/30 px-4 py-3 text-white outline-none focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400" />
+              </label>
+              <label className="block text-sm font-medium text-zinc-300">
+                {t('AccountSettings.confirmNewPassword')}
+                <input type="password" autoComplete="new-password" minLength={8} required value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} className="mt-2 w-full rounded-lg border border-white/10 bg-black/30 px-4 py-3 text-white outline-none focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400" />
+              </label>
+              {passwordError ? <p role="alert" className="text-sm text-red-300">{passwordError}</p> : null}
+              {passwordNotice ? <p role="status" className="text-sm text-emerald-200">{passwordNotice}</p> : null}
+              <p className="text-xs leading-5 text-zinc-500">{t('AccountSettings.forgotPasswordHint')}</p>
+              <div className="flex justify-end">
+                <button type="submit" disabled={passwordPending || newPassword.length < 8 || !confirmPassword} className="min-h-11 rounded-lg bg-emerald-300 px-4 py-2.5 text-sm font-semibold text-black hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-60">
+                  {passwordPending ? t('AccountSettings.passwordSaving') : passwordStatus.value.configured ? t('AccountSettings.changePassword') : t('AccountSettings.setPassword')}
+                </button>
+              </div>
+            </form>
+          ) : null}
+        </section>
 
         {!linkOpen ? (
           <button type="button" onClick={() => setLinkOpen(true)} className="mt-6 min-h-11 w-full rounded-lg bg-emerald-300 px-4 py-3 font-semibold text-black hover:bg-emerald-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300">

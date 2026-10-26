@@ -6,19 +6,14 @@ import (
 	"net/http"
 	"strings"
 
-	"cloud.google.com/go/firestore"
 	"github.com/gin-gonic/gin"
 	"github.com/rayer/llm-wiki-bff/internal/auth"
+	"github.com/rayer/llm-wiki-bff/internal/authconsumer"
 )
 
 // MCPProjectOAuthHandler serves the project-scoped OAuth resource with the
 // same stateless MCP tool implementation used by /mcp.
 func (h *Handler) MCPProjectOAuthHandler(environment, resourceOrigin string) gin.HandlerFunc {
-	var rawFirestore *firestore.Client
-	if h != nil && h.firestore != nil {
-		rawFirestore = h.firestore.Raw()
-	}
-	authority := auth.NewMCPGrantAuthority(rawFirestore, environment, resourceOrigin)
 	return func(c *gin.Context) {
 		projectID := c.Param("projectID")
 		if !auth.ValidPathSegment(projectID) || strings.Contains(projectID, "/") {
@@ -38,32 +33,110 @@ func (h *Handler) MCPProjectOAuthHandler(environment, resourceOrigin string) gin
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "access token required"})
 			return
 		}
-		identity, err := authority.AuthenticateAccessToken(c.Request.Context(), token, projectID, resource)
+		verifier, ok := h.consumerVerifier.(interface {
+			VerifyResource(context.Context, string, string, string) (authconsumer.Identity, error)
+		})
+		if !ok {
+			c.Header("Cache-Control", "no-store")
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "OAuth resource authority unavailable"})
+			return
+		}
+		identity, err := verifier.VerifyResource(c.Request.Context(), token, resource, projectID)
 		if err != nil {
-			writeMCPProjectOAuthError(c, metadata, err)
+			writeMCPConsumerError(c, metadata, err)
+			return
+		}
+		if identity.CredentialKind != "mcp-oauth" || identity.Environment != environment || identity.Subject == "" || identity.ProjectID != projectID ||
+			identity.GrantID == "" || identity.ClientID == "" || identity.Resource != resource || len(identity.ManagementScopes) != 0 ||
+			!hasMCPCapability(identity.Scopes, mcpQueryCapability) {
+			c.Header("Cache-Control", "no-store")
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "OAuth resource authority unavailable"})
+			return
+		}
+		if h.cliProjectAuthorizer == nil {
+			c.Header("Cache-Control", "no-store")
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "project access authority unavailable"})
+			return
+		}
+		if err := h.cliProjectAuthorizer(c.Request.Context(), identity.Subject, projectID); err != nil {
+			if errors.Is(err, auth.ErrProjectPermissionDenied) {
+				writeMCPProjectOAuthError(c, metadata, auth.ErrMCPOAuthDenied)
+			} else {
+				writeMCPProjectOAuthError(c, metadata, auth.ErrMCPOAuthUnavailable)
+			}
 			return
 		}
 		if requestedProject := c.GetHeader("X-Project-ID"); requestedProject != "" && requestedProject != projectID {
 			writeMCPProjectOAuthError(c, metadata, auth.ErrMCPOAuthDenied)
 			return
 		}
-		requestIdentity := mcpProjectKeyIdentity{
-			userID: identity.UserID, projectID: identity.ProjectID, keyID: identity.GrantID,
-			capabilities: identity.Capabilities,
-		}
+		requestIdentity := mcpProjectKeyIdentity{userID: identity.Subject, projectID: identity.ProjectID, keyID: identity.GrantID,
+			capabilities: append([]string(nil), identity.Scopes...)}
 		requestIdentity.revalidate = func(ctx context.Context) error {
-			fresh, err := authority.AuthenticateAccessToken(ctx, token, projectID, resource)
+			fresh, err := verifier.VerifyResource(ctx, token, resource, projectID)
 			if err != nil {
-				return err
+				return normalizeMCPConsumerError(err)
 			}
-			if fresh.UserID != requestIdentity.userID || fresh.ProjectID != requestIdentity.projectID ||
-				fresh.GrantID != requestIdentity.keyID || !hasMCPCapability(fresh.Capabilities, mcpQueryCapability) {
+			if fresh.CredentialKind != "mcp-oauth" || fresh.Environment != environment || fresh.Subject != identity.Subject ||
+				fresh.ProjectID != identity.ProjectID || fresh.GrantID != identity.GrantID ||
+				fresh.ClientID != identity.ClientID || fresh.Resource != identity.Resource || !sameMCPStringSet(fresh.Scopes, identity.Scopes) ||
+				!hasMCPCapability(fresh.Scopes, mcpQueryCapability) {
 				return auth.ErrMCPOAuthDenied
+			}
+			if err := h.cliProjectAuthorizer(ctx, fresh.Subject, fresh.ProjectID); err != nil {
+				if errors.Is(err, auth.ErrProjectPermissionDenied) {
+					return auth.ErrMCPOAuthDenied
+				}
+				return auth.ErrMCPOAuthUnavailable
 			}
 			return nil
 		}
 		h.serveAuthenticatedMCP(h.mcpSDKHandler(requestIdentity), requestIdentity, c.Writer, c.Request)
 	}
+}
+
+func writeMCPConsumerError(c *gin.Context, metadataURL string, err error) {
+	switch {
+	case errors.Is(err, authconsumer.ErrInvalidCredential):
+		writeMCPProjectOAuthError(c, metadataURL, auth.ErrMCPOAuthInvalid)
+	case errors.Is(err, authconsumer.ErrForbidden):
+		writeMCPProjectOAuthError(c, metadataURL, auth.ErrMCPOAuthDenied)
+	default:
+		writeMCPProjectOAuthError(c, metadataURL, auth.ErrMCPOAuthUnavailable)
+	}
+}
+
+func normalizeMCPConsumerError(err error) error {
+	switch {
+	case errors.Is(err, authconsumer.ErrInvalidCredential):
+		return auth.ErrMCPOAuthInvalid
+	case errors.Is(err, authconsumer.ErrForbidden):
+		return auth.ErrMCPOAuthDenied
+	default:
+		return auth.ErrMCPOAuthUnavailable
+	}
+}
+
+func sameMCPStringSet(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	seen := make(map[string]int, len(left))
+	for _, value := range left {
+		seen[value]++
+	}
+	for _, value := range right {
+		seen[value]--
+		if seen[value] < 0 {
+			return false
+		}
+	}
+	for _, count := range seen {
+		if count != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func MCPProjectResourceMetadataHandler(resourceOrigin, authorizationServer string) gin.HandlerFunc {

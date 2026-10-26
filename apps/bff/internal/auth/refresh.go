@@ -43,6 +43,11 @@ func RefreshHandlerWithCookiePolicy(fsClient *firestore.Client, jwtSecret string
 // RefreshHandlerWithSessionAuthority uses the shared durable session owner.
 // The legacy handler remains available only to the local/compatibility lane.
 func RefreshHandlerWithSessionAuthority(authority *RefreshSessionAuthority, jwtSecret string, cookiePolicy RefreshCookiePolicy) gin.HandlerFunc {
+	return RefreshHandlerWithManagement(authority, jwtSecret, cookiePolicy, nil, "")
+}
+
+func RefreshHandlerWithManagement(authority *RefreshSessionAuthority, jwtSecret string, cookiePolicy RefreshCookiePolicy,
+	management *ManagementAuthority, resource string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		cookie, err := c.Request.Cookie(cookiePolicy.Name)
 		if err != nil || cookie.Value == "" || authority == nil {
@@ -60,7 +65,7 @@ func RefreshHandlerWithSessionAuthority(authority *RefreshSessionAuthority, jwtS
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid refresh token"})
 			return
 		}
-		accessToken, err := GenerateAccessToken(claims.Sub, user.Role, jwtSecret, user.AuthVersion)
+		accessToken, err := issueManagedWebAccessToken(c.Request.Context(), management, resource, claims.Sub, user.Role, jwtSecret, user.AuthVersion)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate token"})
 			return
@@ -73,7 +78,7 @@ func RefreshHandlerWithSessionAuthority(authority *RefreshSessionAuthority, jwtS
 		setRefreshTokenCookieWithPolicy(c, rotation.Token, int(refreshTokenTTL.Seconds()), cookiePolicy)
 		c.JSON(http.StatusOK, RefreshResponse{
 			AccessToken: accessToken,
-			User:        User{ID: rotation.UserID, Email: user.Email, Role: user.Role},
+			User:        User{ID: rotation.UserID, Email: user.Email, Role: user.Role, ManagementScopes: AccessManagementScopes(accessToken, jwtSecret)},
 		})
 	}
 }
@@ -112,7 +117,7 @@ func refreshHandlerWithCookiePolicy(fsClient *firestore.Client, jwtSecret string
 		setRefreshTokenCookieWithPolicy(c, refreshToken, int(refreshTokenTTL.Seconds()), cookiePolicy)
 		c.JSON(http.StatusOK, RefreshResponse{
 			AccessToken: accessToken,
-			User:        User{ID: claims.Sub, Email: user.Email, Role: user.Role},
+			User:        User{ID: claims.Sub, Email: user.Email, Role: user.Role, ManagementScopes: AccessManagementScopes(accessToken, jwtSecret)},
 		})
 	}
 }

@@ -90,7 +90,10 @@ type MCPOAuthIdentity struct {
 
 type MCPOAuthVerifiedCredential struct {
 	UserID      string    `json:"user_id"`
+	GrantID     string    `json:"grant_id"`
 	ClientID    string    `json:"client_id"`
+	ProjectID   string    `json:"project_id"`
+	AuthVersion int64     `json:"auth_version"`
 	Scopes      []string  `json:"scopes"`
 	Resource    string    `json:"resource"`
 	Environment string    `json:"environment"`
@@ -1685,7 +1688,8 @@ func (s *MCPOAuthService) VerifyAccessToken(ctx context.Context, token string) (
 		return MCPOAuthVerifiedCredential{}, ErrMCPOAuthInvalid
 	}
 	return MCPOAuthVerifiedCredential{
-		UserID: grant.UserID, ClientID: client.ClientID, Scopes: strings.Split(grant.Scope, " "),
+		UserID: grant.UserID, GrantID: grant.GrantID, ClientID: client.ClientID, ProjectID: grant.ProjectID,
+		AuthVersion: grant.AuthVersion, Scopes: strings.Split(grant.Scope, " "),
 		Resource: grant.Resource, Environment: s.wireEnvironment, ExpiresAt: access.ExpiresAt.UTC(),
 	}, nil
 }

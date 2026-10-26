@@ -238,7 +238,10 @@ class Engine:
         }
         if schema_version == 2:
             expected_keys.add('oauth_resources')
-        require(isinstance(inputs, dict) and type(schema_version) is int and schema_version in (1, 2) and
+        elif schema_version == 3:
+            expected_keys.update(('oauth_resources', 'management_scopes', 'consumer_verifiers',
+                                  'consumer_public_projection'))
+        require(isinstance(inputs, dict) and type(schema_version) is int and schema_version in (1, 2, 3) and
                 set(inputs) == expected_keys and
                 inputs.get('target') == 'auth' and
                 inputs.get('environment') == {'development': 'dev', 'production': 'prod'}.get(
@@ -247,6 +250,13 @@ class Engine:
                 re.fullmatch(r'[0-9a-f]{40}', inputs.get('source_sha', '')) is not None and
                 re.fullmatch(r'sha256:[0-9a-f]{64}', inputs.get('config_id', '')) is not None,
                 'auth-input-snapshot-invalid')
+        if schema_version == 3:
+            require(isinstance(inputs['management_scopes'], list) and
+                    all(isinstance(value, dict) for value in inputs['management_scopes']) and
+                    isinstance(inputs['consumer_verifiers'], list) and
+                    all(isinstance(value, dict) for value in inputs['consumer_verifiers']) and
+                    isinstance(inputs['consumer_public_projection'], dict),
+                    'auth-input-snapshot-invalid')
         return copy.deepcopy(inputs)
 
     def attach_auth_input_snapshot(self, receipt, *, require_match=False):

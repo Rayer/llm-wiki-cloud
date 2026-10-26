@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -21,13 +22,14 @@ import (
 // Sub is kept at the outer level for backward compatibility (claims.Sub).
 // RegisteredClaims is embedded for standard JWT fields (exp, iat, etc.).
 type Claims struct {
-	AuthVersion int64  `json:"av,omitempty"`
-	Sub         string `json:"sub"`
-	Role        string `json:"role,omitempty"`
-	TokenType   string `json:"token_type,omitempty"`
-	ClientKind  string `json:"client_kind,omitempty"`
-	SessionID   string `json:"sid,omitempty"`
-	TokenID     string `json:"tid,omitempty"`
+	AuthVersion             int64            `json:"av,omitempty"`
+	Sub                     string           `json:"sub"`
+	Role                    string           `json:"role,omitempty"`
+	TokenType               string           `json:"token_type,omitempty"`
+	ClientKind              string           `json:"client_kind,omitempty"`
+	SessionID               string           `json:"sid,omitempty"`
+	TokenID                 string           `json:"tid,omitempty"`
+	ManagementScopeVersions map[string]int64 `json:"management_scope_versions,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -196,6 +198,7 @@ func jwtAuth(cfg config.Config, lookup AccountLookup, enforce bool, verifySessio
 		}
 		c.Set("userID", claims.Sub)
 		c.Set("userRole", claims.Role)
+		c.Set("authVersion", claims.AuthVersion)
 		c.Set("clientKind", claims.ClientKind)
 		if claims.ClientKind == cliClientKind {
 			c.Set("sessionID", claims.SessionID)
@@ -265,6 +268,75 @@ func GenerateTokenWithRole(userID, role, secret string, ttl time.Duration) (stri
 // GenerateAccessToken creates a short-lived HS256 JWT for API authorization.
 func GenerateAccessToken(userID, role, secret string, version ...int64) (string, error) {
 	return generateTokenAt(userID, role, secret, accessTokenTTL, accessTokenType, "", "", "", time.Now(), "", version...)
+}
+
+// GenerateFirstPartyAccessToken issues a Web access credential whose audience
+// and management capability revisions are bound to the configured LWC
+// consumer. Empty caps are valid and do not infer authority from role.
+func GenerateFirstPartyAccessToken(userID, role, secret, resource string, capabilities map[string]int64, version ...int64) (string, error) {
+	return generateFirstPartyAccessToken(userID, role, secret, resource, capabilities, "", version...)
+}
+
+// GenerateFirstPartyCLIAccessToken issues the corresponding session-bound CLI
+// credential. Management capability revision checks still occur in Auth.
+func GenerateFirstPartyCLIAccessToken(userID, role, sessionID, secret, resource string, capabilities map[string]int64, version ...int64) (string, error) {
+	if !ValidPathSegment(sessionID) {
+		return "", fmt.Errorf("invalid CLI session ID")
+	}
+	return generateFirstPartyAccessToken(userID, role, secret, resource, capabilities, sessionID, version...)
+}
+
+func generateFirstPartyAccessToken(userID, role, secret, resource string, capabilities map[string]int64, sessionID string, version ...int64) (string, error) {
+	if strings.TrimSpace(resource) == "" {
+		return "", errors.New("LWC consumer resource is required")
+	}
+	clientKind := ""
+	if sessionID != "" {
+		clientKind = cliClientKind
+	}
+	claims := &Claims{
+		Sub: userID, Role: role, TokenType: accessTokenType, ClientKind: clientKind,
+		SessionID: sessionID, ManagementScopeVersions: copyManagementCaps(capabilities),
+		RegisteredClaims: jwt.RegisteredClaims{
+			IssuedAt: jwt.NewNumericDate(time.Now()), ExpiresAt: jwt.NewNumericDate(time.Now().Add(accessTokenTTL)),
+			Audience: jwt.ClaimStrings{resource},
+		},
+	}
+	if len(version) > 0 {
+		claims.AuthVersion = version[0]
+	}
+	for scope, revision := range claims.ManagementScopeVersions {
+		if !managementScopeAllowed(scope) || revision < 1 {
+			return "", errors.New("invalid management capability")
+		}
+	}
+	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(secret))
+}
+
+func copyManagementCaps(caps map[string]int64) map[string]int64 {
+	if len(caps) == 0 {
+		return nil
+	}
+	copy := make(map[string]int64, len(caps))
+	for scope, revision := range caps {
+		copy[scope] = revision
+	}
+	return copy
+}
+
+func AccessManagementScopes(tokenString, secret string) []string {
+	claims, err := ValidateToken(tokenString, secret)
+	if err != nil || len(claims.ManagementScopeVersions) == 0 {
+		return []string{}
+	}
+	scopes := make([]string, 0, len(claims.ManagementScopeVersions))
+	for scope, revision := range claims.ManagementScopeVersions {
+		if managementScopeAllowed(scope) && revision > 0 {
+			scopes = append(scopes, scope)
+		}
+	}
+	sort.Strings(scopes)
+	return scopes
 }
 
 // GenerateCLIAccessToken creates a short-lived access token bound to a durable
