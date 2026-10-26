@@ -2,6 +2,7 @@ package syssettings
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -18,6 +19,12 @@ type patchSettingsRequest struct {
 	RegistrationEnabled       *bool `json:"registration_enabled"`
 	EmailRegistrationEnabled  *bool `json:"email_registration_enabled"`
 	GoogleRegistrationEnabled *bool `json:"google_registration_enabled"`
+}
+
+// PublicRegistrationSettingsProvider is the Auth-owned source of dynamic
+// registration policy for cloud BFFs.
+type PublicRegistrationSettingsProvider interface {
+	PublicRegistrationSettings(context.Context) (RegistrationSettings, error)
 }
 
 type publishAnnouncementRequest struct {
@@ -69,19 +76,47 @@ func bindStrictJSONBody(c *gin.Context, req any) error {
 //	@Success		200	{object}	PublicSettings
 //	@Router			/api/v1/public/config [get]
 func PublicConfigHandler(gate RegistrationGate, demoEnabled bool) gin.HandlerFunc {
+	return PublicConfigHandlerWithRegistration(gate, demoEnabled, nil)
+}
+
+func PublicConfigHandlerWithRegistration(gate RegistrationGate, demoEnabled bool, registration PublicRegistrationSettingsProvider) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		settings, err := gate.GetSettings(c.Request.Context())
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
-			return
+		var announcement string
+		var registrationSettings RegistrationSettings
+		var err error
+		if registration != nil {
+			reader, ok := gate.(AnnouncementReader)
+			if !ok {
+				c.JSON(http.StatusServiceUnavailable, gin.H{"error": "announcement settings unavailable"})
+				return
+			}
+			announcement, err = reader.GetAnnouncementMarkdown(c.Request.Context())
+			if err != nil {
+				c.JSON(http.StatusServiceUnavailable, gin.H{"error": "announcement settings unavailable"})
+				return
+			}
+			registrationSettings, err = registration.PublicRegistrationSettings(c.Request.Context())
+			if err != nil {
+				c.JSON(http.StatusServiceUnavailable, gin.H{"error": "registration settings unavailable"})
+				return
+			}
+		} else {
+			settings, err := gate.GetSettings(c.Request.Context())
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+				return
+			}
+			announcement = settings.AnnouncementMarkdown
+			registrationSettings = RegistrationSettings{RegistrationEnabled: settings.RegistrationEnabled,
+				EmailRegistrationEnabled: settings.EmailRegistrationEnabled, GoogleRegistrationEnabled: settings.GoogleRegistrationEnabled}
 		}
 		c.JSON(http.StatusOK, PublicSettings{
-			RegistrationEnabled:       settings.RegistrationEnabled,
-			EmailRegistrationEnabled:  settings.RegistrationEnabled && settings.EmailRegistrationEnabled,
-			GoogleRegistrationEnabled: settings.RegistrationEnabled && settings.GoogleRegistrationEnabled,
+			RegistrationEnabled:       registrationSettings.RegistrationEnabled,
+			EmailRegistrationEnabled:  registrationSettings.RegistrationEnabled && registrationSettings.EmailRegistrationEnabled,
+			GoogleRegistrationEnabled: registrationSettings.RegistrationEnabled && registrationSettings.GoogleRegistrationEnabled,
 			DemoEnabled:               demoEnabled,
-			AnnouncementMarkdown:      settings.AnnouncementMarkdown,
-			AnnouncementDigest:        announcementDigest(settings.AnnouncementMarkdown),
+			AnnouncementMarkdown:      announcement,
+			AnnouncementDigest:        announcementDigest(announcement),
 		})
 	}
 }
@@ -113,6 +148,24 @@ func AdminGetSettingsHandler(gate RegistrationGate) gin.HandlerFunc {
 			return
 		}
 		c.JSON(http.StatusOK, settings)
+	}
+}
+
+// AdminGetAnnouncementHandler serves the product-admin announcement editor
+// without exposing registration controls to lwc:admin principals.
+func AdminGetAnnouncementHandler(gate RegistrationGate) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		reader, ok := gate.(AnnouncementReader)
+		if !ok {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "announcement settings unavailable"})
+			return
+		}
+		markdown, err := reader.GetAnnouncementMarkdown(c.Request.Context())
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"announcement_markdown": markdown})
 	}
 }
 
@@ -156,7 +209,7 @@ func AdminPatchSettingsHandler(gate RegistrationGate) gin.HandlerFunc {
 //	@Tags			admin
 //	@Produce		json
 //	@Param			body	body	publishAnnouncementRequest	true	"Announcement Markdown"
-//	@Success		200	{object}	Settings
+//	@Success		200	{object}	map[string]string
 //	@Failure		400	{object}	map[string]string
 //	@Failure		401	{object}	map[string]string
 //	@Failure		403	{object}	map[string]string
@@ -182,6 +235,6 @@ func AdminPublishAnnouncementHandler(gate RegistrationGate) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
 			return
 		}
-		c.JSON(http.StatusOK, settings)
+		c.JSON(http.StatusOK, gin.H{"announcement_markdown": settings.AnnouncementMarkdown})
 	}
 }

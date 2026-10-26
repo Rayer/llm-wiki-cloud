@@ -154,38 +154,39 @@ type BFFPipelineSchedule struct {
 }
 
 type BFFSourceProjection struct {
-	SchemaVersion                int                  `json:"schema_version"`
-	Environment                  string               `json:"environment"`
-	Target                       string               `json:"target"`
-	GCPProject                   string               `json:"gcp_project"`
-	Bucket                       string               `json:"bucket"`
-	FirestoreDatabaseID          string               `json:"firestore_database_id"`
-	AuthServiceURL               string               `json:"auth_service_url"`
-	MCPResourceOrigin            string               `json:"mcp_resource_origin"`
-	MCP                          runtimeconfig.BFFMCP `json:"mcp"`
-	PipelineJobURL               string               `json:"pipeline_job_url"`
-	ExportJobURL                 string               `json:"export_job_url"`
-	ExportSigningServiceAccount  string               `json:"export_signing_service_account"`
-	AllowedOrigins               []string             `json:"allowed_origins"`
-	AllowedHosts                 []string             `json:"allowed_hosts"`
-	PipelineDailyLimit           int                  `json:"pipeline_daily_limit"`
-	PipelineCooldownSeconds      int                  `json:"pipeline_cooldown_seconds"`
-	PipelineMinNewRaw            int                  `json:"pipeline_min_new_raw"`
-	PipelineDemoUserIDs          []string             `json:"pipeline_demo_user_ids"`
-	AuthSessionEnvironment       string               `json:"auth_session_environment"`
-	AuthSessionMigration         string               `json:"auth_session_migration"`
-	RegistrationEnabled          *bool                `json:"registration_enabled"`
-	JWTSecretReference           BFFSecretReference   `json:"jwt_secret_reference"`
-	DeepSeekAPIKeyReference      BFFSecretReference   `json:"deepseek_api_key_reference"`
-	TypeSafeAPIKeyReference      *BFFSecretReference  `json:"typesafe_api_key_reference"`
-	ProfileRuntimeAudience       string               `json:"profile_runtime_audience"`
-	ProfileRuntimeServiceAccount string               `json:"profile_runtime_service_account"`
-	PipelineSchedule             BFFPipelineSchedule  `json:"pipeline_schedule"`
-	LLM                          BFFLLM               `json:"llm"`
-	Query                        BFFQuery             `json:"query"`
-	Local                        *BFFLocal            `json:"local"`
-	PortDefault                  int                  `json:"port_default"`
-	ConfigSecretResource         string               `json:"config_secret_resource"`
+	SchemaVersion                int                            `json:"schema_version"`
+	Environment                  string                         `json:"environment"`
+	Target                       string                         `json:"target"`
+	GCPProject                   string                         `json:"gcp_project"`
+	Bucket                       string                         `json:"bucket"`
+	FirestoreDatabaseID          string                         `json:"firestore_database_id"`
+	AuthServiceURL               string                         `json:"auth_service_url"`
+	MCPResourceOrigin            string                         `json:"mcp_resource_origin"`
+	MCP                          runtimeconfig.BFFMCP           `json:"mcp"`
+	PipelineJobURL               string                         `json:"pipeline_job_url"`
+	ExportJobURL                 string                         `json:"export_job_url"`
+	ExportSigningServiceAccount  string                         `json:"export_signing_service_account"`
+	AllowedOrigins               []string                       `json:"allowed_origins"`
+	AllowedHosts                 []string                       `json:"allowed_hosts"`
+	PipelineDailyLimit           int                            `json:"pipeline_daily_limit"`
+	PipelineCooldownSeconds      int                            `json:"pipeline_cooldown_seconds"`
+	PipelineMinNewRaw            int                            `json:"pipeline_min_new_raw"`
+	PipelineDemoUserIDs          []string                       `json:"pipeline_demo_user_ids"`
+	AuthSessionEnvironment       string                         `json:"auth_session_environment"`
+	AuthSessionMigration         string                         `json:"auth_session_migration"`
+	RegistrationEnabled          *bool                          `json:"registration_enabled"`
+	JWTSecretReference           *BFFSecretReference            `json:"jwt_secret_reference"`
+	AuthConsumer                 *runtimeconfig.BFFAuthConsumer `json:"auth_consumer"`
+	DeepSeekAPIKeyReference      BFFSecretReference             `json:"deepseek_api_key_reference"`
+	TypeSafeAPIKeyReference      *BFFSecretReference            `json:"typesafe_api_key_reference"`
+	ProfileRuntimeAudience       string                         `json:"profile_runtime_audience"`
+	ProfileRuntimeServiceAccount string                         `json:"profile_runtime_service_account"`
+	PipelineSchedule             BFFPipelineSchedule            `json:"pipeline_schedule"`
+	LLM                          BFFLLM                         `json:"llm"`
+	Query                        BFFQuery                       `json:"query"`
+	Local                        *BFFLocal                      `json:"local"`
+	PortDefault                  int                            `json:"port_default"`
+	ConfigSecretResource         string                         `json:"config_secret_resource"`
 }
 
 type WorkerConfig struct {
@@ -588,10 +589,18 @@ func loadBFFInputDescriptor(path, environment string) (BFFSourceProjection, erro
 	required := []string{"schema_version", "environment", "target", "gcp_project", "bucket", "firestore_database_id",
 		"auth_service_url", "mcp_resource_origin", "mcp", "pipeline_job_url", "export_job_url", "export_signing_service_account", "allowed_origins",
 		"allowed_hosts", "pipeline_daily_limit", "pipeline_cooldown_seconds", "pipeline_min_new_raw", "pipeline_demo_user_ids",
-		"auth_session_environment", "auth_session_migration", "registration_enabled", "jwt_secret_reference",
+		"auth_session_environment", "auth_session_migration", "registration_enabled",
 		"deepseek_api_key_reference", "typesafe_api_key_reference", "profile_runtime_audience", "profile_runtime_service_account",
 		"pipeline_schedule", "llm", "query", "local", "port_default", "config_secret_resource"}
-	if len(fields) != len(required) {
+	var schemaVersion int
+	if err := json.Unmarshal(fields["schema_version"], &schemaVersion); err != nil || (schemaVersion != 2 && schemaVersion != 3) {
+		return BFFSourceProjection{}, errors.New("generated BFF input descriptor has an invalid schema version")
+	}
+	versionKey := "jwt_secret_reference"
+	if schemaVersion == 3 {
+		versionKey = "auth_consumer"
+	}
+	if len(fields) != len(required)+1 {
 		return BFFSourceProjection{}, errors.New("generated BFF input descriptor has an invalid shape")
 	}
 	for _, key := range required {
@@ -599,7 +608,10 @@ func loadBFFInputDescriptor(path, environment string) (BFFSourceProjection, erro
 			return BFFSourceProjection{}, fmt.Errorf("generated BFF input descriptor is missing %s", key)
 		}
 	}
-	if err := validateBFFDescriptorShape(fields); err != nil {
+	if _, ok := fields[versionKey]; !ok {
+		return BFFSourceProjection{}, fmt.Errorf("generated BFF input descriptor is missing %s", versionKey)
+	}
+	if err := validateBFFDescriptorShape(fields, schemaVersion); err != nil {
 		return BFFSourceProjection{}, err
 	}
 	decoder := json.NewDecoder(strings.NewReader(string(data)))
@@ -613,7 +625,7 @@ func loadBFFInputDescriptor(path, environment string) (BFFSourceProjection, erro
 		return BFFSourceProjection{}, errors.New("generated BFF input descriptor must contain one JSON object")
 	}
 	expectedEnvironment := map[string]string{"development": "dev", "production": "prod"}[environment]
-	if expectedEnvironment == "" || projection.SchemaVersion != 2 || projection.Environment != expectedEnvironment || projection.Target != "bff" ||
+	if expectedEnvironment == "" || projection.SchemaVersion != schemaVersion || projection.Environment != expectedEnvironment || projection.Target != "bff" ||
 		projection.GCPProject != "llm-wiki-cloud" || projection.Local != nil || projection.Bucket == "" || projection.FirestoreDatabaseID == "" ||
 		projection.PipelineCooldownSeconds <= 0 || projection.PipelineDailyLimit <= 0 || projection.PipelineMinNewRaw <= 0 ||
 		projection.PipelineDemoUserIDs == nil || projection.AuthSessionEnvironment == "" || projection.AuthSessionMigration == "" ||
@@ -698,7 +710,7 @@ func applyAuthInputDescriptor(config *EnvironmentConfig, inputs runtimeconfig.Au
 	config.Auth.Google = google
 }
 
-func validateBFFDescriptorShape(fields map[string]json.RawMessage) error {
+func validateBFFDescriptorShape(fields map[string]json.RawMessage, schemaVersion int) error {
 	exact := func(raw json.RawMessage, keys ...string) bool {
 		var object map[string]json.RawMessage
 		if json.Unmarshal(raw, &object) != nil || object == nil || len(object) != len(keys) {
@@ -715,11 +727,17 @@ func validateBFFDescriptorShape(fields map[string]json.RawMessage) error {
 		!exact(fields["pipeline_schedule"], "cron", "timezone", "audience", "service_account") ||
 		!exact(fields["mcp"], "instructions", "tool_descriptions", "discovery_ttl_ms", "tools_list_ttl_ms") ||
 		!exact(fields["query"], "stage_config_path", "legacy") ||
-		!exact(fields["jwt_secret_reference"], "source", "env_name", "resource") ||
 		!exact(fields["deepseek_api_key_reference"], "source", "env_name", "resource") ||
 		!exact(fields["typesafe_api_key_reference"], "source", "env_name", "resource") ||
 		!strings.EqualFold(strings.TrimSpace(string(fields["local"])), "null") {
 		return errors.New("generated BFF input descriptor has an invalid nested shape")
+	}
+	if schemaVersion == 2 {
+		if !exact(fields["jwt_secret_reference"], "source", "env_name", "resource") {
+			return errors.New("generated BFF JWT reference has an invalid shape")
+		}
+	} else if !exact(fields["auth_consumer"], "schema_version", "environment", "auth_url", "issuer", "runtime_service_account", "verifier_audience", "resource", "verifier_path", "account_check_path", "catalog_path", "authority_modes", "timeout_seconds") {
+		return errors.New("generated BFF Auth consumer has an invalid shape")
 	}
 	var mcpFields map[string]json.RawMessage
 	if json.Unmarshal(fields["mcp"], &mcpFields) != nil || !exact(mcpFields["tool_descriptions"], "query_project", "add_raw", "import_url") {
@@ -751,7 +769,9 @@ func applyBFFInputDescriptor(config *EnvironmentConfig, inputs BFFSourceProjecti
 	bff.ProfileRuntimeAudience = inputs.ProfileRuntimeAudience
 	bff.ProfileRuntimeServiceAccount = inputs.ProfileRuntimeServiceAccount
 	bff.ConfigSecretResource = inputs.ConfigSecretResource
-	bff.SecretReferences.JWT = secretNameFromResource(inputs.JWTSecretReference.Resource)
+	if inputs.JWTSecretReference != nil {
+		bff.SecretReferences.JWT = secretNameFromResource(inputs.JWTSecretReference.Resource)
+	}
 	bff.SecretReferences.DeepSeekAPIKey = secretNameFromResource(inputs.DeepSeekAPIKeyReference.Resource)
 	if inputs.TypeSafeAPIKeyReference != nil {
 		parts := strings.Split(inputs.TypeSafeAPIKeyReference.Resource, "/")
@@ -775,13 +795,29 @@ func validateBFFDescriptorSecrets(p BFFSourceProjection, environment string) err
 	if environment == "prod" {
 		expected = "prod"
 	}
-	for key, ref := range map[string]BFFSecretReference{
-		"jwt_secret_reference":       p.JWTSecretReference,
-		"deepseek_api_key_reference": p.DeepSeekAPIKeyReference,
-	} {
+	secretRefs := map[string]BFFSecretReference{"deepseek_api_key_reference": p.DeepSeekAPIKeyReference}
+	if p.SchemaVersion == 2 && p.JWTSecretReference != nil {
+		secretRefs["jwt_secret_reference"] = *p.JWTSecretReference
+	}
+	for key, ref := range secretRefs {
 		if ref.Source != "secret-manager" || ref.EnvName != "" || !regexp.MustCompile(`^projects/llm-wiki-cloud/secrets/[A-Za-z0-9_-]+/versions/(?:latest|[1-9][0-9]*)$`).MatchString(ref.Resource) {
 			return fmt.Errorf("generated BFF %s is invalid", key)
 		}
+	}
+	if p.SchemaVersion == 3 {
+		consumer := p.AuthConsumer
+		if p.JWTSecretReference != nil || consumer == nil || consumer.SchemaVersion != 1 || consumer.Environment != p.Environment ||
+			consumer.AuthURL != p.AuthServiceURL || consumer.Issuer != p.AuthServiceURL || consumer.TimeoutSeconds != 5 ||
+			!regexp.MustCompile(`^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z0-9.-]+\.iam\.gserviceaccount\.com$`).MatchString(consumer.RuntimeServiceAccount) ||
+			!validProfileRuntimeAudience(consumer.VerifierAudience) || consumer.Resource != p.MCPResourceOrigin ||
+			consumer.VerifierPath != "/api/v1/auth/consumers/lwc/verify-credential" ||
+			consumer.AccountCheckPath != "/api/v1/auth/consumers/lwc/accounts/check" ||
+			consumer.CatalogPath != "/api/v1/auth/consumers/lwc/management/catalog" ||
+			!sameStringSet(consumer.AuthorityModes, []string{"legacy-shadow", "central"}) {
+			return errors.New("generated BFF Auth consumer is invalid")
+		}
+	} else if p.AuthConsumer != nil {
+		return errors.New("generated BFF schema-2 descriptor must not contain auth_consumer")
 	}
 	if p.TypeSafeAPIKeyReference == nil || p.TypeSafeAPIKeyReference.Source != "secret-manager" || p.TypeSafeAPIKeyReference.EnvName != "" ||
 		!regexp.MustCompile(`^projects/llm-wiki-cloud/secrets/typesafe-jev-api-key-(?:dev|prod)/versions/[1-9][0-9]*$`).MatchString(p.TypeSafeAPIKeyReference.Resource) {
@@ -792,6 +828,25 @@ func validateBFFDescriptorSecrets(p BFFSourceProjection, environment string) err
 		return errors.New("generated BFF destination secret resource is invalid")
 	}
 	return nil
+}
+
+func sameStringSet(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	seen := make(map[string]int, len(left))
+	for _, value := range left {
+		seen[value]++
+	}
+	for _, value := range right {
+		seen[value]--
+	}
+	for _, count := range seen {
+		if count != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func contains(values []string, target string) bool {
@@ -907,13 +962,17 @@ func validateConfigForSelectedComponents(environment string, config EnvironmentC
 		for name, value := range map[string]string{
 			"bff.bucket": config.BFF.Bucket, "bff.firestore_database_id": config.BFF.FirestoreDatabaseID,
 			"bff.pipeline_job_url": config.BFF.PipelineJobURL, "bff.auth_service_url": config.BFF.AuthServiceURL,
-			"bff.mcp_resource_origin": config.BFF.MCPResourceOrigin,
-			"bff.query_config":        config.BFF.QueryConfig, "bff.secret_references.jwt": config.BFF.SecretReferences.JWT,
+			"bff.mcp_resource_origin": config.BFF.MCPResourceOrigin, "bff.query_config": config.BFF.QueryConfig,
 			"bff.secret_references.deepseek_api_key": config.BFF.SecretReferences.DeepSeekAPIKey,
 			"bff.config_secret_resource":             config.BFF.ConfigSecretResource,
 		} {
 			if strings.TrimSpace(value) == "" {
 				return fmt.Errorf("missing required field %s", name)
+			}
+		}
+		if config.BFF.RuntimeInputs == nil || config.BFF.RuntimeInputs.SchemaVersion == 2 {
+			if strings.TrimSpace(config.BFF.SecretReferences.JWT) == "" {
+				return errors.New("missing required field bff.secret_references.jwt")
 			}
 		}
 	}
@@ -1024,7 +1083,9 @@ func validateConfigForSelectedComponents(environment string, config EnvironmentC
 		secretRefs["auth.jwt"] = config.Auth.SecretReferences.JWT
 	}
 	if hasBFFInputs {
-		secretRefs["bff.jwt"] = config.BFF.SecretReferences.JWT
+		if config.BFF.RuntimeInputs == nil || config.BFF.RuntimeInputs.SchemaVersion == 2 {
+			secretRefs["bff.jwt"] = config.BFF.SecretReferences.JWT
+		}
 		secretRefs["bff.deepseek_api_key"] = config.BFF.SecretReferences.DeepSeekAPIKey
 	}
 	for name, value := range secretRefs {
@@ -1040,7 +1101,7 @@ func validateConfigForSelectedComponents(environment string, config EnvironmentC
 		if (hasAuthInputs && config.Auth.SecretReferences.JWT != jwt) || config.Worker.SecretReferences.DeepSeekAPIKey != "deepseek-apikey" {
 			return errors.New("secret references are not the reviewed environment bindings")
 		}
-		if hasBFFInputs && (config.BFF.SecretReferences.JWT != jwt || config.BFF.SecretReferences.DeepSeekAPIKey != "deepseek-apikey") {
+		if hasBFFInputs && ((config.BFF.RuntimeInputs == nil || config.BFF.RuntimeInputs.SchemaVersion == 2) && config.BFF.SecretReferences.JWT != jwt || config.BFF.SecretReferences.DeepSeekAPIKey != "deepseek-apikey") {
 			return errors.New("BFF secret references are not the selected environment bindings")
 		}
 		if hasBFFInputs {
@@ -1147,7 +1208,10 @@ func componentInputs(config EnvironmentConfig, query QueryConfigIdentity, select
 				components[name].(map[string]any)["google"] = config.Auth.Google
 			}
 		case "bff":
-			secretReferences := map[string]any{"jwt": config.BFF.SecretReferences.JWT, "deepseek_api_key": config.BFF.SecretReferences.DeepSeekAPIKey}
+			secretReferences := map[string]any{"deepseek_api_key": config.BFF.SecretReferences.DeepSeekAPIKey}
+			if config.BFF.RuntimeInputs == nil || config.BFF.RuntimeInputs.SchemaVersion == 2 {
+				secretReferences["jwt"] = config.BFF.SecretReferences.JWT
+			}
 			if config.BFF.SecretReferences.TypeSafeJevAPIKey != nil {
 				secretReferences["typesafe_jev_api_key"] = config.BFF.SecretReferences.TypeSafeJevAPIKey
 			}

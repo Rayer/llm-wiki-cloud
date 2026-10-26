@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"io"
 	"log"
 	"net/http"
@@ -21,8 +20,10 @@ import (
 	"cloud.google.com/go/storage"
 	"github.com/gin-gonic/gin"
 	"github.com/rayer/llm-wiki-bff/internal/auth"
+	"github.com/rayer/llm-wiki-bff/internal/authconsumer"
 	"github.com/rayer/llm-wiki-bff/internal/buildinfo"
 	"github.com/rayer/llm-wiki-bff/internal/config"
+	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"github.com/rayer/llm-wiki-bff/internal/gcs"
 	"github.com/rayer/llm-wiki-bff/internal/generation"
 	"github.com/rayer/llm-wiki-bff/internal/handler"
@@ -2684,12 +2685,13 @@ type adminProjectEntry struct {
 }
 
 type adminUserEntry struct {
-	Status       string `json:"status"`
-	ID           string `json:"id"`
-	Name         string `json:"name"`
-	Email        string `json:"email"`
-	Role         string `json:"role"`
-	ProjectCount int    `json:"project_count"`
+	Status       string                               `json:"status"`
+	ID           string                               `json:"id"`
+	Name         string                               `json:"name"`
+	Email        string                               `json:"email"`
+	Role         string                               `json:"role,omitempty"`
+	ScopeStates  map[string]auth.ManagementScopeState `json:"scope_states,omitempty"`
+	ProjectCount int                                  `json:"project_count"`
 }
 
 type adminProjectRecord struct {
@@ -3626,6 +3628,27 @@ func (h *Handler) AdminPipelineStatus(c *gin.Context) {
 //	@Security		BearerAuth
 //	@Router			/api/v1/admin/users [get]
 func (h *Handler) AdminListUsers(c *gin.Context) {
+	if management, ok := h.consumerVerifier.(managementConsumer); ok {
+		remoteUsers, err := management.ManagementUsers(c.Request.Context(), requestUserCredential(c))
+		if err != nil {
+			statusCode, message := managementConsumerError(err)
+			c.JSON(statusCode, handler.ErrorResponse{Error: message})
+			return
+		}
+		projectRecords, err := h.listAdminProjectRecords(c.Request.Context())
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "user project list unavailable"})
+			return
+		}
+		projectCounts := adminProjectCountsByUser(projectRecords)
+		users := make([]adminUserEntry, 0, len(remoteUsers))
+		for _, user := range remoteUsers {
+			users = append(users, adminUserEntry{Status: user.Status, ID: user.ID, Name: user.Name, Email: user.Email,
+				Role: user.Role, ScopeStates: convertManagementScopeStates(user.ScopeStates), ProjectCount: projectCounts[user.ID]})
+		}
+		c.JSON(http.StatusOK, gin.H{"users": users})
+		return
+	}
 	if h.firestore == nil || h.firestore.Raw() == nil {
 		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "Firestore client is not configured"})
 		return
@@ -3709,15 +3732,13 @@ func (h *Handler) AdminListUsers(c *gin.Context) {
 //	@Security		BearerAuth
 //	@Router			/api/v1/admin/users/{id} [patch]
 func (h *Handler) AdminUpdateUser(c *gin.Context) {
-	if h.firestore == nil || h.firestore.Raw() == nil {
-		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "Firestore client is not configured"})
-		return
-	}
-
 	userID := c.Param("id")
 	var body struct {
-		Role   *string `json:"role"`
-		Status *string `json:"status"`
+		Role        *string `json:"role"`
+		Status      *string `json:"status"`
+		Scope       *string `json:"scope"`
+		Action      *string `json:"action"`
+		OperationID *string `json:"operation_id"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, handler.ErrorResponse{Error: "invalid JSON"})
@@ -3726,6 +3747,80 @@ func (h *Handler) AdminUpdateUser(c *gin.Context) {
 	if body.Role != nil {
 		trimmed := strings.TrimSpace(*body.Role)
 		body.Role = &trimmed
+	}
+	if body.Status != nil {
+		trimmed := strings.TrimSpace(*body.Status)
+		body.Status = &trimmed
+	}
+	if management, ok := h.consumerVerifier.(managementConsumer); ok {
+		credential := requestUserCredential(c)
+		if body.Scope != nil || body.Action != nil || body.OperationID != nil {
+			if h.authManagementBridge {
+				c.JSON(http.StatusConflict, handler.ErrorResponse{Error: "scope changes are disabled until central cutover"})
+				return
+			}
+			if body.Scope == nil || body.Action == nil || body.OperationID == nil || body.Role != nil || body.Status != nil {
+				c.JSON(http.StatusBadRequest, handler.ErrorResponse{Error: "scope, action, and operation_id are required"})
+				return
+			}
+			request := authconsumer.ManagementGrantRequest{SchemaVersion: 1, OperationID: strings.TrimSpace(*body.OperationID),
+				TargetUserID: userID, Scope: strings.TrimSpace(*body.Scope), Action: strings.TrimSpace(*body.Action)}
+			result, err := management.GrantManagement(c.Request.Context(), credential, request)
+			if errors.Is(err, authconsumer.ErrUnavailable) {
+				readback, readErr := management.ReadManagementOperation(c.Request.Context(), credential, request.OperationID)
+				if readErr == nil {
+					if readback.TargetID != userID || readback.Scope != request.Scope {
+						c.JSON(http.StatusConflict, handler.ErrorResponse{Error: "management operation ID conflict"})
+						return
+					}
+					result, err = readback, nil
+				} else if errors.Is(readErr, authconsumer.ErrNotFound) {
+					err = authconsumer.ErrUnavailable
+				} else {
+					err = readErr
+				}
+			}
+			if err != nil {
+				statusCode, message := managementConsumerError(err)
+				c.JSON(statusCode, handler.ErrorResponse{Error: message})
+				return
+			}
+			c.JSON(http.StatusOK, result)
+			return
+		}
+		if h.authManagementBridge {
+			if body.Role == nil && body.Status == nil {
+				c.JSON(http.StatusBadRequest, handler.ErrorResponse{Error: "role or status is required"})
+				return
+			}
+			legacy, ok := h.consumerVerifier.(legacyAccountManagementConsumer)
+			if !ok {
+				c.JSON(http.StatusServiceUnavailable, handler.ErrorResponse{Error: "Auth account authority unavailable"})
+				return
+			}
+			if err := legacy.UpdateLegacyAccount(c.Request.Context(), credential, userID, body.Role, body.Status); err != nil {
+				statusCode, message := managementConsumerError(err)
+				c.JSON(statusCode, handler.ErrorResponse{Error: message})
+				return
+			}
+			c.JSON(http.StatusOK, gin.H{"status": "updated", "id": userID})
+			return
+		}
+		if body.Status != nil && body.Role == nil {
+			if err := management.UpdateAccountStatus(c.Request.Context(), credential, userID, strings.TrimSpace(*body.Status)); err != nil {
+				statusCode, message := managementConsumerError(err)
+				c.JSON(statusCode, handler.ErrorResponse{Error: message})
+				return
+			}
+			c.JSON(http.StatusOK, gin.H{"status": "updated", "id": userID})
+			return
+		}
+		c.JSON(http.StatusBadRequest, handler.ErrorResponse{Error: "role updates are replaced by explicit management scope operations"})
+		return
+	}
+	if h.firestore == nil || h.firestore.Raw() == nil {
+		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "Firestore client is not configured"})
+		return
 	}
 	err := auth.UpdateAccount(c.Request.Context(), h.firestore.Raw(), c.GetString("userID"), userID, body.Role, body.Status)
 	if err != nil {
@@ -3777,20 +3872,42 @@ func (h *Handler) AdminDeleteUser(c *gin.Context) {
 	ctx := c.Request.Context()
 	logAdminDelete("user", "get", userID, "")
 
-	// Verify user exists
-	userDocument, err := backend.getUser(ctx, userID)
-	if err != nil {
-		if status.Code(err) == codes.NotFound {
+	management, remoteAuth := h.consumerVerifier.(managementConsumer)
+	if remoteAuth {
+		users, err := management.ManagementUsers(ctx, requestUserCredential(c))
+		if err != nil {
+			statusCode, message := managementConsumerError(err)
+			c.JSON(statusCode, handler.ErrorResponse{Error: message})
+			return
+		}
+		found := false
+		for _, user := range users {
+			if user.ID == userID {
+				found = true
+				break
+			}
+		}
+		if !found {
 			c.JSON(http.StatusNotFound, handler.ErrorResponse{Error: "user not found"})
 			return
 		}
-		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "user unavailable"})
-		return
-	}
-	if userDocument.id != userID {
-		logAdminDelete("user", "validation_failed", userID, "")
-		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "user delete unavailable"})
-		return
+	} else {
+		// Local development keeps its direct Auth store adapter. Production uses
+		// Auth's management API so the BFF never reads the private users store.
+		userDocument, err := backend.getUser(ctx, userID)
+		if err != nil {
+			if status.Code(err) == codes.NotFound {
+				c.JSON(http.StatusNotFound, handler.ErrorResponse{Error: "user not found"})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "user unavailable"})
+			return
+		}
+		if userDocument.id != userID {
+			logAdminDelete("user", "validation_failed", userID, "")
+			c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "user delete unavailable"})
+			return
+		}
 	}
 	if err := requireGCSProjectPrefixDeleter(h.store); err != nil {
 		logAdminDelete("user", "capability_unavailable", userID, "")
@@ -3901,9 +4018,16 @@ func (h *Handler) AdminDeleteUser(c *gin.Context) {
 		return backend.deleteUserProjectMetadata(ctx, userID, projectID)
 	}, func(ctx context.Context) error {
 		logAdminDelete("user", "user", userID, "")
+		if remoteAuth {
+			return management.DeleteAccount(ctx, requestUserCredential(c), userID)
+		}
 		return backend.deleteUser(ctx, userID)
 	}); err != nil {
 		logAdminDelete("user", "cleanup_failed", userID, "")
+		if remoteAuth && errors.Is(err, authconsumer.ErrNotFound) {
+			c.JSON(http.StatusNotFound, handler.ErrorResponse{Error: "user not found"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, handler.ErrorResponse{Error: "user delete unavailable"})
 		return
 	}

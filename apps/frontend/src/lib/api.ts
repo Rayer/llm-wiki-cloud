@@ -160,8 +160,17 @@ export type AdminUser = {
   id: string;
   name: string;
   email: string;
-  role: string;
+  scopeStates: Partial<Record<'auth:admin' | 'lwc:admin', { state: string; revision: number; source: string }>>;
   projectCount: number;
+};
+
+export type AdminManagementScope = {
+  id: 'auth:admin' | 'lwc:admin';
+  product: string;
+  resource: string;
+  grant_mode: 'operator-only';
+  display_name: { en: string; 'zh-TW': string };
+  description: { en: string; 'zh-TW': string };
 };
 
 export type BuildInfo = {
@@ -860,13 +869,24 @@ function normalizeAdminUser(item: unknown): AdminUser | null {
   const id = firstString(record, ['id', 'user_id', 'userId']);
   const email = firstString(record, ['email']) ?? '';
   const name = firstString(record, ['name', 'user_name', 'userName']) ?? '';
+  const scopeStates = isRecord(record.scope_states) ? record.scope_states : {};
   if (!id) return null;
   return {
     id,
     name,
     email,
-    role: firstString(record, ['role']) ?? 'user',
     status: firstString(record, ['status']) ?? 'active',
+    scopeStates: Object.fromEntries(
+      (['auth:admin', 'lwc:admin'] as const).flatMap((scope) => {
+        const value = scopeStates[scope];
+        if (!isRecord(value)) return [];
+        return [[scope, {
+          state: firstString(value, ['state']) ?? 'unknown',
+          revision: firstNumber(value, ['revision']) ?? 0,
+          source: firstString(value, ['source']) ?? '',
+        }]];
+      }),
+    ),
     projectCount: firstNumber(record, ['project_count', 'projectCount', 'projects_count', 'projectsCount']) ?? 0,
   };
 }
@@ -1734,11 +1754,24 @@ export async function getAdminUsers(): Promise<AdminUser[]> {
     .filter((user): user is AdminUser => user !== null);
 }
 
-export async function updateAdminUserRole(id: string, role: string): Promise<void> {
+export async function getAdminManagementCatalog(): Promise<AdminManagementScope[]> {
+  const payload = await adminJson('/api/v1/admin/management/catalog');
+  const value = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {};
+  const scopes = Array.isArray(value.scopes) ? value.scopes : [];
+  return scopes.filter((scope: unknown): scope is AdminManagementScope => {
+    if (!scope || typeof scope !== 'object') return false;
+    const value = scope as Partial<AdminManagementScope>;
+    return (value.id === 'auth:admin' || value.id === 'lwc:admin') && value.grant_mode === 'operator-only' &&
+      !!value.display_name && typeof value.display_name.en === 'string' && typeof value.display_name['zh-TW'] === 'string' &&
+      !!value.description && typeof value.description.en === 'string' && typeof value.description['zh-TW'] === 'string';
+  });
+}
+
+export async function updateAdminUserManagementScope(id: string, scope: 'auth:admin' | 'lwc:admin', action: 'grant' | 'remove'): Promise<void> {
   await adminJson(`/api/v1/admin/users/${encodeURIComponent(id)}`, {
     method: 'PATCH',
     json: true,
-    body: JSON.stringify({ role }),
+    body: JSON.stringify({ scope, action, operation_id: crypto.randomUUID() }),
   });
 }
 
@@ -1894,6 +1927,15 @@ export async function getAdminSettings(): Promise<AdminSettings> {
   } as AdminSettings;
 }
 
+export async function getAdminAnnouncement(): Promise<string> {
+  const payload = await adminJson('/api/v1/admin/settings/announcement');
+  const record = isRecord(payload) ? payload : {};
+  if (typeof record.announcement_markdown !== 'string') {
+    throw new ApiError('Invalid admin announcement response', 500);
+  }
+  return record.announcement_markdown;
+}
+
 export async function updateAdminSettings(
   settings: Partial<AdminSettings>,
 ): Promise<AdminSettings> {
@@ -1912,19 +1954,16 @@ export async function updateAdminSettings(
   } as AdminSettings;
 }
 
-export async function publishAnnouncement(announcement_markdown: string): Promise<AdminSettings> {
+export async function publishAnnouncement(announcement_markdown: string): Promise<{ announcement_markdown: string }> {
   const payload = await adminJson('/api/v1/admin/settings/announcement/publish', {
     method: 'POST',
     json: true,
     body: JSON.stringify({ announcement_markdown }),
   });
   const record = isRecord(payload) ? payload : {};
-  if (typeof record.registration_enabled !== 'boolean' || typeof record.announcement_markdown !== 'string') {
+  if (typeof record.announcement_markdown !== 'string') {
     throw new ApiError('Invalid announcement publish response', 500);
   }
   clearPublicConfigCache();
-  return {
-    ...registrationSettings(record),
-    announcement_markdown: record.announcement_markdown,
-  };
+  return { announcement_markdown: record.announcement_markdown };
 }

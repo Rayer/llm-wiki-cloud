@@ -25,6 +25,7 @@ import (
 	ginSwagger "github.com/swaggo/gin-swagger"
 
 	"github.com/rayer/llm-wiki-bff/internal/auth"
+	"github.com/rayer/llm-wiki-bff/internal/authconsumer"
 	"github.com/rayer/llm-wiki-bff/internal/buildinfo"
 	conceptcache "github.com/rayer/llm-wiki-bff/internal/cache"
 	"github.com/rayer/llm-wiki-bff/internal/config"
@@ -70,6 +71,48 @@ import (
 func configureScheduledPipeline(hV1 *handlerv1.Handler, cfg config.Config) {
 	hV1.SetScheduledPipelineConfig(cfg.PipelineScheduleCron, cfg.PipelineScheduleTimezone,
 		cfg.ScheduledPipelineAudience, cfg.ScheduledPipelineServiceAccount)
+}
+
+type authConsumerFactory func(context.Context, authconsumer.Config, *http.Client) (*authconsumer.Client, error)
+
+func configureAuthConsumer(hV1 *handlerv1.Handler, cfg config.Config, localMode bool, factory authConsumerFactory) (*authconsumer.Client, error) {
+	hV1.SetAuthManagementBridge(cfg.BFFManagementBridge)
+	if localMode {
+		return nil, nil
+	}
+	consumer := cfg.BFFAuthConsumer
+	if consumer == nil || strings.TrimSpace(consumer.Environment) == "" || strings.TrimSpace(consumer.AuthURL) == "" ||
+		strings.TrimSpace(consumer.Issuer) == "" || strings.TrimSpace(consumer.VerifierAudience) == "" ||
+		strings.TrimSpace(consumer.Resource) == "" || consumer.TimeoutSeconds != 5 {
+		return nil, errors.New("Auth consumer identity is missing from BFF config")
+	}
+	switch cfg.BFFConfigSchemaVersion {
+	case 2:
+		if !cfg.BFFManagementBridge {
+			return nil, errors.New("schema-2 Auth consumer bridge is unavailable")
+		}
+	case 3:
+		if cfg.BFFManagementBridge {
+			return nil, errors.New("schema-3 BFF cannot enable legacy management bridge")
+		}
+	default:
+		return nil, errors.New("BFF Auth consumer schema is unsupported")
+	}
+	if factory == nil {
+		return nil, errors.New("Auth consumer factory is unavailable")
+	}
+	runtimeConfig := authconsumer.Config{
+		BaseURL: consumer.AuthURL, Environment: consumer.Environment, Issuer: consumer.Issuer,
+		Resource: consumer.Resource, Audience: consumer.VerifierAudience,
+		VerifierPath: consumer.VerifierPath, AccountCheckPath: consumer.AccountCheckPath, CatalogPath: consumer.CatalogPath,
+		Timeout: time.Duration(consumer.TimeoutSeconds) * time.Second,
+	}
+	client, err := factory(context.Background(), runtimeConfig, &http.Client{Timeout: runtimeConfig.Timeout})
+	if err != nil {
+		return nil, fmt.Errorf("configure Auth consumer: %w", err)
+	}
+	hV1.SetConsumerVerifier(client)
+	return client, nil
 }
 
 func main() {
@@ -151,6 +194,10 @@ func main() {
 
 	// Handlers
 	hV1 := handlerv1.New(wikiStore, fsClient, idx, conceptCache, nil, nil)
+	authConsumerClient, err := configureAuthConsumer(hV1, cfg, localMode, authconsumer.NewGoogleRuntime)
+	if err != nil {
+		log.Fatalf("configure Auth consumer: %v", err)
+	}
 	hV1.SetMCPConfig(cfg.MCP)
 	hV1.SetQueryExecutor(productionExecutor)
 	hV1.SetPipelineJobURL(cfg.PipelineJobURL)
@@ -204,7 +251,11 @@ func main() {
 	rawFactory := func(scopedClient *gcs.Client, fsClient *firestore.Client) rawScrapeHandler {
 		return handlerraw.NewWithURLIntake(scopedClient, fsClient, intakeService)
 	}
-	r := newProductionRouter(cfg, localMode, gcsClient, fsClient, hV1, settingsStore, rawFactory)
+	var publicRegistrationProvider syssettings.PublicRegistrationSettingsProvider
+	if authConsumerClient != nil {
+		publicRegistrationProvider = authConsumerPublicRegistrationProvider{client: authConsumerClient}
+	}
+	r := newProductionRouter(cfg, localMode, gcsClient, fsClient, hV1, settingsStore, rawFactory, publicRegistrationProvider)
 
 	listenHost := ":"
 	if localMode {
@@ -398,7 +449,12 @@ func newProductionRouter(
 	hV1 *handlerv1.Handler,
 	settingsStore syssettings.RegistrationGate,
 	rawScrapeFactory rawScrapeHandlerFactory,
+	registrationProviders ...syssettings.PublicRegistrationSettingsProvider,
 ) *observability.RequestLifecycleRouter {
+	var registrationProvider syssettings.PublicRegistrationSettingsProvider
+	if len(registrationProviders) > 0 {
+		registrationProvider = registrationProviders[0]
+	}
 	r := gin.Default()
 	r.Use(observability.RequestLifecycleMiddleware())
 	r.Use(observability.AuthHTTPMiddleware())
@@ -421,44 +477,40 @@ func newProductionRouter(
 		AllowCredentials: true,
 	})))
 
-	registerPublicRoutes(r, settingsStore, cfg.AuthServiceURL, !localMode)
+	registerPublicRoutes(r, settingsStore, cfg.AuthServiceURL, !localMode, registrationProvider)
 	r.POST("/internal/profile/dispatch", productionProfileDispatcher(hV1, cfg).Gin)
 	r.POST("/internal/pipeline/schedule", hV1.ScheduledPipeline)
 	r.GET("/api/v1/query/config", hV1.QueryConfig)
 	r.Any("/mcp", gin.WrapH(hV1.MCPHandler()))
-	r.Any("/mcp/projects/:projectID", hV1.MCPProjectOAuthHandler(cfg.AuthSessionEnvironment, cfg.MCPResourceOrigin))
+	r.Any("/mcp/projects/:projectID", hV1.MCPProjectOAuthHandler(cfg.AuthEnvironment, cfg.MCPResourceOrigin))
 	r.GET("/.well-known/oauth-protected-resource/mcp/projects/:projectID",
 		handlerv1.MCPProjectResourceMetadataHandler(cfg.MCPResourceOrigin, cfg.AuthServiceURL))
 
 	// Temporary Stage A compatibility lane for the frontend Auth cutover.
 	var sessions *auth.RefreshSessionAuthority
-	authRoutes := r.Group("/api/v1/auth")
 	if localMode {
-		authRoutes.Use(localAuthHostAllowlist(cfg))
-	}
-	authRoutes.Use(auth.CompatibilityBodyLimit())
-	cookiePolicy := auth.LegacyRefreshCookiePolicy()
-	if localMode {
-		cookiePolicy = auth.LocalRefreshCookiePolicy()
-	}
-	if fsClient == nil || fsClient.Raw() == nil {
-		unavailable := func(c *gin.Context) {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "auth routes require Firestore"})
+		authRoutes := r.Group("/api/v1/auth")
+		authRoutes.Use(localAuthHostAllowlist(cfg), auth.CompatibilityBodyLimit())
+		cookiePolicy := auth.LocalRefreshCookiePolicy()
+		if fsClient == nil || fsClient.Raw() == nil {
+			unavailable := func(c *gin.Context) {
+				c.JSON(http.StatusServiceUnavailable, gin.H{"error": "auth routes require Firestore"})
+			}
+			authRoutes.POST("/login", unavailable)
+			authRoutes.POST("/register", unavailable)
+			authRoutes.POST("/refresh", unavailable)
+			authRoutes.POST("/logout", auth.LogoutHandlerWithCookiePolicy(cookiePolicy))
+		} else {
+			identityRepository := auth.NewIdentityRepository(fsClient.Raw())
+			sessionEnvironment := authSessionEnvironment(cfg)
+			sessions = auth.NewRefreshSessionAuthorityWithConfig(fsClient.Raw(), auth.SessionAuthorityConfig{
+				Environment: sessionEnvironment, Migration: auth.RefreshSessionMigrationMode(cfg.AuthSessionMigration),
+			})
+			authRoutes.POST("/login", middleware.NewRateLimiter(10, time.Minute), auth.LoginHandlerWithRepositoryAndSessionAuthority(identityRepository, cfg.JWTSecret, cookiePolicy, sessions))
+			authRoutes.POST("/register", middleware.NewRateLimiter(5, time.Minute), auth.RegisterHandlerWithRepository(identityRepository, cfg.JWTSecret, settingsStore))
+			authRoutes.POST("/refresh", auth.RefreshHandlerWithSessionAuthority(sessions, cfg.JWTSecret, cookiePolicy))
+			authRoutes.POST("/logout", auth.LogoutHandlerWithSessionAuthority(sessions, cfg.JWTSecret, cookiePolicy))
 		}
-		authRoutes.POST("/login", unavailable)
-		authRoutes.POST("/register", unavailable)
-		authRoutes.POST("/refresh", unavailable)
-		authRoutes.POST("/logout", auth.LogoutHandlerWithCookiePolicy(cookiePolicy))
-	} else {
-		identityRepository := auth.NewIdentityRepository(fsClient.Raw())
-		sessionEnvironment := authSessionEnvironment(cfg)
-		sessions = auth.NewRefreshSessionAuthorityWithConfig(fsClient.Raw(), auth.SessionAuthorityConfig{
-			Environment: sessionEnvironment, Migration: auth.RefreshSessionMigrationMode(cfg.AuthSessionMigration),
-		})
-		authRoutes.POST("/login", middleware.NewRateLimiter(10, time.Minute), auth.LoginHandlerWithRepositoryAndSessionAuthority(identityRepository, cfg.JWTSecret, cookiePolicy, sessions))
-		authRoutes.POST("/register", middleware.NewRateLimiter(5, time.Minute), auth.RegisterHandlerWithRepository(identityRepository, cfg.JWTSecret, settingsStore))
-		authRoutes.POST("/refresh", auth.RefreshHandlerWithSessionAuthority(sessions, cfg.JWTSecret, cookiePolicy))
-		authRoutes.POST("/logout", auth.LogoutHandlerWithSessionAuthority(sessions, cfg.JWTSecret, cookiePolicy))
 	}
 	var rawFirestore *cloudfirestore.Client
 	if fsClient != nil {
@@ -466,9 +518,7 @@ func newProductionRouter(
 	}
 	hV1.SetSyncBindingAuthority(auth.NewSyncBindingAuthority(rawFirestore, authSessionEnvironment(cfg), cfg.AuthServiceURL))
 	hV1.SetSyncBindingHost(cfg.AuthServiceURL)
-	if fsClient == nil {
-		wireCLIAuthorities(hV1, nil, sessions)
-	} else {
+	if fsClient != nil {
 		wireCLIAuthorities(hV1, fsClient.Raw(), sessions)
 	}
 
@@ -488,7 +538,7 @@ func newProductionRouter(
 		v1.GET("/projects/:pid/status", hV1.ProjectStatus)
 	}
 
-	registerAdminRoutes(r, cfg, hV1, settingsStore)
+	registerAdminRoutes(r, cfg, hV1, settingsStore, registrationProvider != nil)
 
 	projectKeyRoutes := r.Group("/api/v1")
 	projectKeyRoutes.Use(hV1.ProjectKeyManagementAuth(cfg), auth.WebOnly())
@@ -596,11 +646,32 @@ func newExportHTTPHandler(localMode bool, cfg config.Config, repo exportjob.Repo
 	return exportjob.NewHTTPHandler(repo, projects, archives, starter)
 }
 
-func registerPublicRoutes(r *gin.Engine, settingsStore syssettings.RegistrationGate, authServiceURL string, demoEnabled bool) {
+func registerPublicRoutes(r *gin.Engine, settingsStore syssettings.RegistrationGate, authServiceURL string, demoEnabled bool,
+	registrationProviders ...syssettings.PublicRegistrationSettingsProvider) {
 	// Public routes are registered on the root router, outside JWT and project middleware.
 	_ = authServiceURL
-	r.GET("/api/v1/public/config", syssettings.PublicConfigHandler(settingsStore, demoEnabled))
+	var registration syssettings.PublicRegistrationSettingsProvider
+	if len(registrationProviders) > 0 {
+		registration = registrationProviders[0]
+	}
+	r.GET("/api/v1/public/config", syssettings.PublicConfigHandlerWithRegistration(settingsStore, demoEnabled, registration))
 	r.GET("/api/v1/public/version", buildinfo.Handler())
+}
+
+type authConsumerPublicRegistrationProvider struct {
+	client *authconsumer.Client
+}
+
+func (p authConsumerPublicRegistrationProvider) PublicRegistrationSettings(ctx context.Context) (syssettings.RegistrationSettings, error) {
+	if p.client == nil {
+		return syssettings.RegistrationSettings{}, errors.New("Auth consumer unavailable")
+	}
+	settings, err := p.client.PublicRegistrationSettings(ctx)
+	if err != nil {
+		return syssettings.RegistrationSettings{}, err
+	}
+	return syssettings.RegistrationSettings{RegistrationEnabled: settings.RegistrationEnabled,
+		EmailRegistrationEnabled: settings.EmailRegistrationEnabled, GoogleRegistrationEnabled: settings.GoogleRegistrationEnabled}, nil
 }
 
 const legacyObservabilityServiceName = "llm-wiki-bff-dev"
@@ -612,23 +683,38 @@ func observabilityServiceName(kService string) string {
 	return legacyObservabilityServiceName
 }
 
-func registerAdminRoutes(r *gin.Engine, cfg config.Config, hV1 *handlerv1.Handler, settingsStore syssettings.RegistrationGate) {
-	admin := r.Group("/api/v1/admin")
-	admin.Use(hV1.AccountAuth(cfg), auth.AdminOnly())
+func registerAdminRoutes(r *gin.Engine, cfg config.Config, hV1 *handlerv1.Handler, settingsStore syssettings.RegistrationGate,
+	useAuthRegistration ...bool) {
+	remoteRegistration := len(useAuthRegistration) > 0 && useAuthRegistration[0]
+	platformAdmin := r.Group("/api/v1/admin")
+	platformAdmin.Use(hV1.AccountAuth(cfg), handlerv1.ManagementScopeOnly(auth.ManagementScopeAuthAdmin))
 	{
-		admin.GET("/settings", syssettings.AdminGetSettingsHandler(settingsStore))
-		admin.PATCH("/settings", syssettings.AdminPatchSettingsHandler(settingsStore))
-		admin.POST("/settings/announcement/publish", syssettings.AdminPublishAnnouncementHandler(settingsStore))
-		admin.GET("/projects", hV1.AdminProjects)
-		admin.PATCH("/projects/:id", hV1.AdminRenameProject)
-		admin.DELETE("/projects/:id", hV1.AdminDeleteProject)
-		admin.POST("/projects/:id/pipeline", hV1.AdminPipelineTrigger)
-		admin.GET("/projects/:id/pipeline/status", hV1.AdminPipelineStatus)
-		admin.POST("/projects/:id/rebuild-index", hV1.AdminRebuildIndex)
-		admin.GET("/users", hV1.AdminListUsers)
-		admin.PATCH("/users/:id", hV1.AdminUpdateUser)
-		admin.DELETE("/users/:id", hV1.AdminDeleteUser)
+		if remoteRegistration {
+			platformAdmin.GET("/settings", hV1.AdminGetRegistrationSettings)
+			platformAdmin.PATCH("/settings", hV1.AdminPatchRegistrationSettings)
+		} else {
+			platformAdmin.GET("/settings", syssettings.AdminGetSettingsHandler(settingsStore))
+			platformAdmin.PATCH("/settings", syssettings.AdminPatchSettingsHandler(settingsStore))
+		}
+		platformAdmin.GET("/management/catalog", hV1.AdminManagementCatalog)
+		platformAdmin.GET("/users", hV1.AdminListUsers)
+		platformAdmin.PATCH("/users/:id", hV1.AdminUpdateUser)
 	}
+
+	productAdmin := r.Group("/api/v1/admin")
+	productAdmin.Use(hV1.AccountAuth(cfg), handlerv1.ManagementScopeOnly(auth.ManagementScopeLWCAdmin))
+	productAdmin.GET("/settings/announcement", syssettings.AdminGetAnnouncementHandler(settingsStore))
+	productAdmin.POST("/settings/announcement/publish", syssettings.AdminPublishAnnouncementHandler(settingsStore))
+	productAdmin.GET("/projects", hV1.AdminProjects)
+	productAdmin.PATCH("/projects/:id", hV1.AdminRenameProject)
+	productAdmin.DELETE("/projects/:id", hV1.AdminDeleteProject)
+	productAdmin.POST("/projects/:id/pipeline", hV1.AdminPipelineTrigger)
+	productAdmin.GET("/projects/:id/pipeline/status", hV1.AdminPipelineStatus)
+	productAdmin.POST("/projects/:id/rebuild-index", hV1.AdminRebuildIndex)
+
+	deleteUser := r.Group("/api/v1/admin")
+	deleteUser.Use(hV1.AccountAuth(cfg), handlerv1.ManagementScopesRequired(auth.ManagementScopeAuthAdmin, auth.ManagementScopeLWCAdmin))
+	deleteUser.DELETE("/users/:id", hV1.AdminDeleteUser)
 }
 
 func registerRawScrapeRoute(v1 *gin.RouterGroup, gcsClient *gcs.Client, fsClient *firestore.Client, rawScrapeFactory rawScrapeHandlerFactory) {

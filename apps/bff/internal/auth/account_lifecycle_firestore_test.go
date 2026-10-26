@@ -29,6 +29,10 @@ func accountEmulator(t *testing.T) *firestore.Client {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := NewManagementAuthority(client, "dev").InitializeLegacyShadow(context.Background(), ""); err != nil {
+		_ = client.Close()
+		t.Fatalf("seed management authority epoch: %v", err)
+	}
 	t.Cleanup(func() { client.Close() })
 	return client
 }

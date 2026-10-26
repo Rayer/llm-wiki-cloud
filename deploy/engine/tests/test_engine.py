@@ -851,7 +851,7 @@ class Acceptance(unittest.TestCase):
         with patch('providers.urllib.request.build_opener',return_value=opener):
             self.assertFalse(provider.auth_runtime_config_matches(inputs),
                              'schema-1 readback cannot satisfy a schema-2 snapshot')
-        response.read.return_value=json.dumps({'config_schema_version':3,
+        response.read.return_value=json.dumps({'config_schema_version':4,
                                               'config_id':inputs['config_id']}).encode()
         with patch('providers.urllib.request.build_opener',return_value=opener):
             self.assertFalse(provider.auth_runtime_config_matches(inputs),
@@ -872,7 +872,7 @@ class Acceptance(unittest.TestCase):
             with self.assertRaisesRegex(Breakpoint,'auth-runtime-config-identity-invalid'):
                 provider.auth_runtime_config_matches(bad)
             build_opener.assert_not_called()
-        bad_schema=dict(inputs,schema_version=3)
+        bad_schema=dict(inputs,schema_version=4)
         with patch('providers.urllib.request.build_opener') as build_opener:
             with self.assertRaisesRegex(Breakpoint,'auth-runtime-config-identity-invalid'):
                 provider.auth_runtime_config_matches(bad_schema)
@@ -882,7 +882,7 @@ class Acceptance(unittest.TestCase):
             with self.assertRaisesRegex(Breakpoint,'auth-runtime-config-identity-unreadable'):
                 provider.auth_runtime_config_matches(inputs)
 
-    def test_auth_input_snapshot_supports_exact_schema_one_and_two_receipts(self):
+    def test_auth_input_snapshot_supports_exact_schema_one_two_and_three_receipts(self):
         e=self.make(('auth',),name='auth-input-snapshot-schema')
         inputs=e.auth_input_snapshot()
         self.assertEqual(inputs['schema_version'],2)
@@ -901,6 +901,20 @@ class Acceptance(unittest.TestCase):
         e.attach_auth_input_snapshot(old_receipt)
         self.assertEqual(old_receipt['auth_config_inputs'],legacy)
         self.assertEqual(old_receipt['auth_materialization_schema'],1)
+
+        current=copy.deepcopy(inputs)
+        current.update(schema_version=3, management_scopes=[{'id':'auth:admin'}, {'id':'lwc:admin'}],
+                       consumer_verifiers=[{'id':'lwc'}],
+                       consumer_public_projection={'issuer':'https://auth.example','resource':'https://lwc.example'})
+        e.plan['normalized']['auth']['runtime_inputs']=current
+        self.assertEqual(e.auth_input_snapshot(),current)
+        current_receipt={}
+        e.attach_auth_input_snapshot(current_receipt)
+        self.assertEqual(current_receipt['auth_config_inputs'],current)
+        self.assertEqual(current_receipt['auth_materialization_schema'],1)
+
+        # Keep the schema-1 compatibility check against an exact legacy key set.
+        e.plan['normalized']['auth']['runtime_inputs']=inputs
         mismatch=copy.deepcopy(old_receipt)
         mismatch['auth_config_inputs']['config_id']='sha256:'+'0'*64
         with self.assertRaisesRegex(Breakpoint,'artifact-auth-input-snapshot-mismatch'):

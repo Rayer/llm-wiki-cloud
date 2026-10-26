@@ -2,17 +2,23 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
- getPublicConfig: vi.fn(), getAdminSettings: vi.fn(), updateAdminSettings: vi.fn(),
+ getPublicConfig: vi.fn(), getAdminSettings: vi.fn(), updateAdminSettings: vi.fn(), getAdminAnnouncement: vi.fn().mockResolvedValue(''),
+ getAdminUsers: vi.fn().mockResolvedValue([]), getAdminManagementCatalog: vi.fn().mockResolvedValue([
+  { id: 'auth:admin', product: 'auth', resource: 'bff', grant_mode: 'operator-only', display_name: { en: 'Platform administrator', 'zh-TW': '平台管理員' }, description: { en: 'Manage accounts.', 'zh-TW': '管理帳號。' } },
+  { id: 'lwc:admin', product: 'lwc', resource: 'bff', grant_mode: 'operator-only', display_name: { en: 'LWC administrator', 'zh-TW': 'LWC 管理員' }, description: { en: 'Manage projects.', 'zh-TW': '管理專案。' } },
+ ]),
  startGoogleLogin: vi.fn(), signIn: vi.fn(), signInAsDemo: vi.fn(), loginOpen: true,
 }));
 vi.mock('@/lib/api', async () => ({
  ...await vi.importActual<typeof import('@/lib/api')>('@/lib/api'),
  getPublicConfig: mocks.getPublicConfig, getAdminSettings: mocks.getAdminSettings,
  updateAdminSettings: mocks.updateAdminSettings, getAdminProjects: vi.fn().mockResolvedValue([]),
+ getAdminUsers: mocks.getAdminUsers, getAdminManagementCatalog: mocks.getAdminManagementCatalog,
+ getAdminAnnouncement: mocks.getAdminAnnouncement,
 }));
 vi.mock('@/lib/google-auth', () => ({ startGoogleLogin: mocks.startGoogleLogin }));
-vi.mock('@/lib/auth', () => ({ useAuth: () => ({ hydrated: true, user: { role: 'admin' } }) }));
-vi.mock('@/lib/i18n', () => ({ useLocale: () => ({ t: (key: string) => key }), useT: () => ({ t: (key: string) => key }) }));
+vi.mock('@/lib/auth', () => ({ useAuth: () => ({ hydrated: true, user: { role: 'admin', management_scopes: ['auth:admin', 'lwc:admin'] } }) }));
+vi.mock('@/lib/i18n', () => ({ useLocale: () => ({ locale: 'en', t: (key: string) => key }), useT: () => ({ t: (key: string) => key }) }));
 vi.mock('@/components/WorkspaceProvider', () => ({ useWorkspace: () => ({ loginOpen: mocks.loginOpen, signIn: mocks.signIn, signInAsDemo: mocks.signInAsDemo }) }));
 vi.mock('@/components/RegisterModal', () => ({ RegisterModal: () => <div role="dialog" aria-label="email registration" /> }));
 import { LoginModal } from '@/components/LoginModal';

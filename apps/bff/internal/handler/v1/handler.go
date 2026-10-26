@@ -25,6 +25,8 @@ import (
 // Handler holds the dependencies for the V1 API.
 type Handler struct {
 	accountLookup        auth.AccountLookup
+	consumerVerifier     consumerVerifier
+	authManagementBridge bool
 	cliSessionVerifier   auth.CLIAccessSessionVerifier
 	cliProjectAuthorizer auth.ProjectOwnerAuthorizer
 	syncBindingAuthority syncBindingChecker
@@ -119,10 +121,31 @@ func New(wikiStore store.RootStore, fs *firestore.Client, idx *search.Index, cac
 }
 
 // SetAccountLookup supplies the shared account authority (also used by local test adapters).
-func (h *Handler) SetAccountLookup(lookup auth.AccountLookup) { h.accountLookup = lookup }
+func (h *Handler) SetAccountLookup(lookup auth.AccountLookup) {
+	h.accountLookup = lookup
+	if h.projectKeyService != nil {
+		h.projectKeyService.SetAccountLookup(lookup)
+	}
+}
+
+func (h *Handler) SetConsumerVerifier(verifier consumerVerifier) {
+	h.consumerVerifier = verifier
+	if verifier != nil {
+		h.SetAccountLookup(remoteAccountLookup(verifier))
+	}
+}
+
+// SetAuthManagementBridge enables only the schema-2 role/status compatibility
+// path; explicit scope changes remain disabled until central cutover.
+func (h *Handler) SetAuthManagementBridge(enabled bool) {
+	h.authManagementBridge = enabled
+}
 
 // AccountAuth always requires a signed token and the current account authority.
 func (h *Handler) AccountAuth(cfg config.Config) gin.HandlerFunc {
+	if h.consumerVerifier != nil {
+		return h.consumerAuthMiddleware()
+	}
 	return auth.JWTAuthWithAccountLookupAndSessionVerifier(cfg, h.accountLookup, h.cliSessionVerifier, h.cliProjectAuthorizer)
 }
 
@@ -131,6 +154,9 @@ func (h *Handler) ProjectKeyQueryAuth(cfg config.Config) gin.HandlerFunc {
 }
 
 func (h *Handler) ProjectKeyManagementAuth(cfg config.Config) gin.HandlerFunc {
+	if h.consumerVerifier != nil {
+		return h.consumerAuthMiddleware()
+	}
 	return auth.ProjectKeyManagementJWTAuth(cfg, h.accountLookup, h.cliSessionVerifier, h.cliProjectAuthorizer)
 }
 

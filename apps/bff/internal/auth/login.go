@@ -23,9 +23,10 @@ type LoginResponse struct {
 
 // User contains the authenticated user's public information.
 type User struct {
-	ID    string `json:"id"`
-	Email string `json:"email"`
-	Role  string `json:"role,omitempty"`
+	ID               string   `json:"id"`
+	Email            string   `json:"email"`
+	Role             string   `json:"role,omitempty"`
+	ManagementScopes []string `json:"management_scopes,omitempty"`
 }
 
 // ErrorResponse is the JSON response returned when an auth request fails.
@@ -80,6 +81,11 @@ func LoginHandlerWithRepository(repo PasswordLoginRepository, jwtSecret string, 
 // the supplied durable authority. A nil authority is retained only for the
 // existing unit/local compatibility lane.
 func LoginHandlerWithRepositoryAndSessionAuthority(repo PasswordLoginRepository, jwtSecret string, cookiePolicy RefreshCookiePolicy, sessions *RefreshSessionAuthority) gin.HandlerFunc {
+	return LoginHandlerWithManagement(repo, jwtSecret, cookiePolicy, sessions, nil, "")
+}
+
+func LoginHandlerWithManagement(repo PasswordLoginRepository, jwtSecret string, cookiePolicy RefreshCookiePolicy,
+	sessions *RefreshSessionAuthority, management *ManagementAuthority, resource string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req LoginRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
@@ -101,7 +107,7 @@ func LoginHandlerWithRepositoryAndSessionAuthority(repo PasswordLoginRepository,
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
 			return
 		}
-		accessToken, err := GenerateAccessToken(userID, user.Role, jwtSecret, user.AuthVersion)
+		accessToken, err := issueManagedWebAccessToken(ctx, management, resource, userID, user.Role, jwtSecret, user.AuthVersion)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate token"})
 			return
@@ -114,7 +120,7 @@ func LoginHandlerWithRepositoryAndSessionAuthority(repo PasswordLoginRepository,
 		setRefreshTokenCookieWithPolicy(c, refreshToken, int(refreshTokenTTL.Seconds()), cookiePolicy)
 		c.JSON(http.StatusOK, LoginResponse{
 			AccessToken: accessToken,
-			User:        User{ID: userID, Email: user.Email, Role: user.Role},
+			User:        User{ID: userID, Email: user.Email, Role: user.Role, ManagementScopes: AccessManagementScopes(accessToken, jwtSecret)},
 		})
 	}
 }

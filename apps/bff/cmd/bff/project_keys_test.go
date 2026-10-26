@@ -84,12 +84,14 @@ func TestProjectKeyManagementAndQueryRoutes(t *testing.T) {
 		return accountLookup(ctx, id)
 	})
 	cfg := config.Config{JWTSecret: jwtSecret, AuthSessionEnvironment: sessionEnvironment, AllowedOrigins: []string{"https://frontend.example.test"}}
-	router := newProductionRouter(cfg, false, nil, fsClient, h, &syssettings.FakeStore{Enabled: true}, nil)
+	sessions := auth.NewRefreshSessionAuthority(fsClient.Raw(), sessionEnvironment)
+	h.SetCLISessionVerifier(sessions.VerifyCLIAccessSession)
+	h.SetCLIProjectAuthorizer(auth.FirestoreProjectOwnerAuthorizer(fsClient.Raw()))
+	router := newProductionRouter(cfg, true, nil, fsClient, h, &syssettings.FakeStore{Enabled: true}, nil)
 	webToken, err := auth.GenerateAccessToken(userID, "member", jwtSecret)
 	if err != nil {
 		t.Fatal(err)
 	}
-	sessions := auth.NewRefreshSessionAuthority(fsClient.Raw(), sessionEnvironment)
 	cli, err := sessions.IssueCLISession(ctx, userID, "test CLI", jwtSecret)
 	if err != nil {
 		t.Fatal(err)
@@ -97,6 +99,7 @@ func TestProjectKeyManagementAndQueryRoutes(t *testing.T) {
 	request := func(method, path, token, body, projectHeader string) *httptest.ResponseRecorder {
 		recorder := httptest.NewRecorder()
 		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Host = "localhost:8080"
 		if token != "" {
 			req.Header.Set("Authorization", "Bearer "+token)
 		}

@@ -13,6 +13,8 @@ const mocks = vi.hoisted(() => ({
   revokeSyncBinding: vi.fn(),
   reauthorizeSyncBinding: vi.fn(),
   readGoogleIdentitySummary: vi.fn(),
+  readPasswordSelfServiceStatus: vi.fn(),
+  changeAccountPassword: vi.fn(),
   locale: 'en' as 'en' | 'zh-TW',
   accessToken: 'web-access-token',
   refreshAccessToken: vi.fn(),
@@ -35,6 +37,10 @@ vi.mock('@/lib/google-auth', async () => {
   const actual = await vi.importActual<typeof import('@/lib/google-auth')>('@/lib/google-auth');
   return { ...actual, readGoogleIdentitySummary: mocks.readGoogleIdentitySummary };
 });
+vi.mock('@/lib/account-password', () => ({
+  readPasswordSelfServiceStatus: mocks.readPasswordSelfServiceStatus,
+  changeAccountPassword: mocks.changeAccountPassword,
+}));
 vi.mock('@/lib/cli-auth', async () => {
   const actual = await vi.importActual<typeof import('@/lib/cli-auth')>('@/lib/cli-auth');
   return {
@@ -61,6 +67,8 @@ beforeEach(() => {
   mocks.revokeSyncBinding.mockReset().mockResolvedValue(undefined);
   mocks.reauthorizeSyncBinding.mockReset().mockResolvedValue({ ...binding, binding_id: 'binding-2' });
   mocks.readGoogleIdentitySummary.mockReset().mockResolvedValue({ primary_email: 'owner@example.test', linked_providers: [] });
+  mocks.readPasswordSelfServiceStatus.mockReset().mockResolvedValue({ allowed: true, configured: true });
+  mocks.changeAccountPassword.mockReset().mockResolvedValue(undefined);
   mocks.refreshAccessToken.mockReset().mockResolvedValue('fresh-web-token');
   vi.stubGlobal('confirm', vi.fn(() => true));
 });
@@ -72,6 +80,33 @@ afterEach(() => {
 });
 
 describe('LWC-346 account self-service', () => {
+  it('lets a signed-in OAuth user optionally set an email password without an unknown old password', async () => {
+    mocks.readPasswordSelfServiceStatus.mockImplementation(async () => ({
+      allowed: true,
+      configured: mocks.changeAccountPassword.mock.calls.length > 0,
+    }));
+    render(<AccountSettingsModal onClose={vi.fn()} />);
+
+    fireEvent.change(await screen.findByLabelText('New password'), { target: { value: 'first-password-431' } });
+    fireEvent.change(screen.getByLabelText('Confirm new password'), { target: { value: 'first-password-431' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Set password' }));
+
+    await waitFor(() => expect(mocks.changeAccountPassword).toHaveBeenCalledWith(
+      'web-access-token', 'first-password-431', 'first-password-431',
+    ));
+    expect(await screen.findByText('Password updated. You remain signed in.')).not.toBeNull();
+    expect(screen.queryByLabelText('Current password')).toBeNull();
+  });
+
+  it('uses Auth-qualified Demo status to suppress password controls', async () => {
+    mocks.readPasswordSelfServiceStatus.mockResolvedValue({ allowed: false, configured: true });
+    render(<AccountSettingsModal onClose={vi.fn()} />);
+
+    expect(await screen.findByText('Password setup is not available for this shared Demo account.')).not.toBeNull();
+    expect(screen.queryByLabelText('New password')).toBeNull();
+    expect(mocks.changeAccountPassword).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['en', 'Unable to link this Google account.', 200, {}],
     ['zh-TW', '無法連結這個 Google 帳號。', 200, { authorization_url: 'not a valid URL' }],

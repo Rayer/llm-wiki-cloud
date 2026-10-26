@@ -7,6 +7,8 @@ import {
   clearPublicConfigCache,
   deleteAdminProject,
   deleteAdminUser,
+  getAdminAnnouncement,
+  getAdminManagementCatalog,
   getAdminProjects,
   getAdminPipelineStatus,
   getAdminSettings,
@@ -16,10 +18,11 @@ import {
   renameAdminProject,
   triggerAdminProjectPipeline,
   updateAdminSettings,
-  updateAdminUserRole,
+  updateAdminUserManagementScope,
   updateAdminUserStatus,
   type AdminProject,
   type AdminUser,
+  type AdminManagementScope,
 } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { useLocale } from '@/lib/i18n';
@@ -37,16 +40,17 @@ type Action =
   | { kind: 'rebuild-project'; project: AdminProject }
   | { kind: 'trigger-project'; project: AdminProject }
   | { kind: 'suggest-queries-project'; project: AdminProject }
-  | { kind: 'change-role'; user: AdminUser }
+  | { kind: 'change-scope'; user: AdminUser }
   | { kind: 'delete-user'; user: AdminUser }
   | { kind: 'set-user-status'; user: AdminUser; status: 'active' | 'suspended' };
 
 export function AdminClient() {
   const { hydrated, user } = useAuth();
-  const { t } = useLocale();
+  const { locale, t } = useLocale();
   const [tab, setTab] = useState<Tab>('projects');
   const [projects, setProjects] = useState<AdminProject[]>([]);
   const [users, setUsers] = useState<AdminUser[]>([]);
+  const [managementCatalog, setManagementCatalog] = useState<AdminManagementScope[]>([]);
   const [projectsLoading, setProjectsLoading] = useState(false);
   const [usersLoading, setUsersLoading] = useState(false);
   const [projectsError, setProjectsError] = useState('');
@@ -69,8 +73,10 @@ export function AdminClient() {
   const mounted = useRef(true);
   const { setBlocked } = useNavigationBlocker();
   const announcementDirty = announcementMarkdown !== announcementBaseline;
-  const isAdmin = user?.role === 'admin';
-  const accessDenied = user?.role !== 'admin';
+  const isAuthAdmin = user?.management_scopes?.includes('auth:admin') === true;
+  const isLWCAdmin = user?.management_scopes?.includes('lwc:admin') === true;
+  const isAdmin = isAuthAdmin || isLWCAdmin;
+  const accessDenied = !isAdmin;
 
   const loadProjects = useCallback(async () => {
     setProjectsLoading(true);
@@ -93,7 +99,9 @@ export function AdminClient() {
     setUsersError('');
     setNotice(null);
     try {
-      setUsers(await getAdminUsers());
+      const [nextUsers, catalog] = await Promise.all([getAdminUsers(), getAdminManagementCatalog()]);
+      setUsers(nextUsers);
+      setManagementCatalog(catalog);
       return true;
     } catch (error) {
       if (error instanceof ApiError && error.status === 403) {
@@ -111,9 +119,12 @@ export function AdminClient() {
     setSettingsLoading(true);
     setSettingsError('');
     try {
-      const settings = await getAdminSettings();
-      setRegistrationEnabled({ registration_enabled: settings.registration_enabled, email_registration_enabled: settings.email_registration_enabled === true, google_registration_enabled: settings.google_registration_enabled === true });
-      const markdown = settings.announcement_markdown ?? '';
+      const [settings, announcement] = await Promise.all([
+        isAuthAdmin ? getAdminSettings() : Promise.resolve(null),
+        isLWCAdmin ? getAdminAnnouncement() : Promise.resolve(null),
+      ]);
+      if (settings) setRegistrationEnabled({ registration_enabled: settings.registration_enabled, email_registration_enabled: settings.email_registration_enabled === true, google_registration_enabled: settings.google_registration_enabled === true });
+      const markdown = announcement ?? settings?.announcement_markdown ?? '';
       setAnnouncementMarkdown(markdown);
       setAnnouncementBaseline(markdown);
     } catch (error) {
@@ -121,7 +132,7 @@ export function AdminClient() {
     } finally {
       setSettingsLoading(false);
     }
-  }, []);
+  }, [isAuthAdmin, isLWCAdmin]);
 
   const handleRegistrationToggle = async (method: 'registration_enabled' | 'email_registration_enabled' | 'google_registration_enabled') => {
     setSettingsError('');
@@ -144,7 +155,7 @@ export function AdminClient() {
     setSettingsPending(true);
     try {
       const settings = await publishAnnouncement(announcementMarkdown);
-      if (typeof settings.registration_enabled !== 'boolean' || typeof settings.announcement_markdown !== 'string') {
+      if (typeof settings.announcement_markdown !== 'string') {
         throw new Error('Invalid announcement publish response');
       }
       const markdown = settings.announcement_markdown;
@@ -187,17 +198,17 @@ export function AdminClient() {
     }
   };
 
-  const submitRoleChange = async (role: string) => {
-    if (!action || action.kind !== 'change-role') return;
+  const submitScopeChange = async (scope: 'auth:admin' | 'lwc:admin', scopeAction: 'grant' | 'remove') => {
+    if (!action || action.kind !== 'change-scope') return;
     setActionPending(true);
     setActionError('');
     try {
-      await updateAdminUserRole(action.user.id, role);
+      await updateAdminUserManagementScope(action.user.id, scope, scopeAction);
       const refreshed = await loadUsers();
-      setNotice(refreshed ? { tone: 'success', message: 'User role updated.' } : userReadbackFailure);
+      setNotice(refreshed ? { tone: 'success', message: 'Management scope updated.' } : userReadbackFailure);
       setAction(null);
     } catch (error) {
-      setActionError(error instanceof Error ? error.message : 'Role update failed.');
+      setActionError(error instanceof Error ? error.message : 'Management scope update failed.');
     } finally {
       setActionPending(false);
     }
@@ -320,10 +331,16 @@ export function AdminClient() {
   useEffect(() => {
     if (!hydrated || !isAdmin) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- kick off initial admin reads after auth hydration
-    void loadProjects();
-    void loadUsers();
-    void loadSettings();
-  }, [hydrated, isAdmin, loadProjects, loadSettings, loadUsers]);
+    if (isLWCAdmin) void loadProjects();
+    if (isAuthAdmin) void loadUsers();
+    if (isAuthAdmin || isLWCAdmin) void loadSettings();
+  }, [hydrated, isAdmin, isAuthAdmin, isLWCAdmin, loadProjects, loadSettings, loadUsers]);
+
+  useEffect(() => {
+    if (!hydrated || tab !== 'projects' || isLWCAdmin) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- choose the first tab this scope can read
+    setTab(isAuthAdmin ? 'users' : 'settings');
+  }, [hydrated, isAuthAdmin, isLWCAdmin, tab]);
 
   useEffect(() => {
     setBlocked(announcementDirty);
@@ -367,15 +384,9 @@ export function AdminClient() {
 
       <Surface variant="glass" className="p-2">
         <div className="flex gap-1">
-          <TabButton active={tab === 'projects'} onClick={() => setTab('projects')}>
-            Projects
-          </TabButton>
-          <TabButton active={tab === 'users'} onClick={() => setTab('users')}>
-            Users
-          </TabButton>
-          <TabButton active={tab === 'settings'} onClick={() => setTab('settings')}>
-            Settings
-          </TabButton>
+          {isLWCAdmin ? <TabButton active={tab === 'projects'} onClick={() => setTab('projects')}>Projects</TabButton> : null}
+          {isAuthAdmin ? <TabButton active={tab === 'users'} onClick={() => setTab('users')}>Users</TabButton> : null}
+          {(isAuthAdmin || isLWCAdmin) ? <TabButton active={tab === 'settings'} onClick={() => setTab('settings')}>Settings</TabButton> : null}
         </div>
       </Surface>
 
@@ -406,6 +417,11 @@ export function AdminClient() {
           pending={actionPending}
           onRetry={loadUsers}
           onAction={setAction}
+          managementCatalog={managementCatalog}
+          locale={locale}
+          canManageScopes={isAuthAdmin && managementCatalog.length === 2}
+          canManageStatus={isAuthAdmin}
+          canDeleteUser={isAuthAdmin && isLWCAdmin}
         />
       ) : (
         <SettingsPanel
@@ -413,6 +429,8 @@ export function AdminClient() {
           loading={settingsLoading}
           pending={settingsPending}
           error={settingsError}
+          canManageRegistration={isAuthAdmin}
+          canManageAnnouncement={isLWCAdmin}
           masterLabel={t('Admin.registrationEnabled')}
           emailLabel={t('Admin.emailRegistrationEnabled')}
           googleLabel={t('Admin.googleRegistrationEnabled')}
@@ -434,12 +452,14 @@ export function AdminClient() {
           onClose={closeAction}
         />
       ) : null}
-      {action?.kind === 'change-role' ? (
-        <RoleActionModal
+      {action?.kind === 'change-scope' ? (
+        <ScopeActionModal
           user={action.user}
+          scopes={managementCatalog}
+          locale={locale}
           pending={actionPending}
           error={actionError}
-          onSubmit={(role) => void submitRoleChange(role)}
+          onSubmit={(scope, scopeAction) => void submitScopeChange(scope, scopeAction)}
           onClose={closeAction}
         />
       ) : null}
@@ -535,6 +555,8 @@ function SettingsPanel({
   loading,
   pending,
   error,
+  canManageRegistration,
+  canManageAnnouncement,
   masterLabel,
   emailLabel,
   googleLabel,
@@ -549,6 +571,8 @@ function SettingsPanel({
   loading: boolean;
   pending: boolean;
   error: string;
+  canManageRegistration: boolean;
+  canManageAnnouncement: boolean;
   masterLabel: string;
   emailLabel: string;
   googleLabel: string;
@@ -577,7 +601,7 @@ function SettingsPanel({
               </button>
             </div>
           ) : null}
-          <div className="space-y-4">
+          {canManageRegistration ? <div className="space-y-4">
             <label className="flex items-center justify-between gap-4">
               <span className="text-sm font-medium text-white">{masterLabel}</span>
               <input type="checkbox" checked={registrationEnabled.registration_enabled} disabled={pending || Boolean(error)} onChange={() => onToggle('registration_enabled')} className="size-5 rounded border-white/20 bg-black/30 text-emerald-400 focus:ring-emerald-400" />
@@ -590,8 +614,8 @@ function SettingsPanel({
                 </label>
               ))}
             </div>
-          </div>
-          <div>
+          </div> : null}
+          {canManageAnnouncement ? <div>
             <h2 className="text-lg font-semibold text-white">Announcement</h2>
             <p className="mt-1 text-sm text-zinc-400">Edit the published announcement and preview it live.</p>
             <textarea
@@ -607,7 +631,7 @@ function SettingsPanel({
             </div>
             <h3 className="mt-5 text-sm font-semibold uppercase tracking-wide text-zinc-400">Preview</h3>
             <AnnouncementBoard markdown={announcementMarkdown} />
-          </div>
+          </div> : null}
         </div>
       )}
     </Surface>
@@ -776,6 +800,11 @@ function UsersTable({
   pending,
   onRetry,
   onAction,
+  canManageScopes,
+  canManageStatus,
+  canDeleteUser,
+  managementCatalog,
+  locale,
 }: {
   users: AdminUser[];
   currentUserId?: string;
@@ -784,6 +813,11 @@ function UsersTable({
   pending: boolean;
   onRetry: () => void;
   onAction: (action: Action) => void;
+  canManageScopes: boolean;
+  canManageStatus: boolean;
+  canDeleteUser: boolean;
+  managementCatalog: AdminManagementScope[];
+  locale: 'zh-TW' | 'en';
 }) {
   const unknown = loading || !!error;
   return (
@@ -801,7 +835,7 @@ function UsersTable({
             <tr>
               <th className="px-4 py-3 font-medium">User</th>
               <th className="px-4 py-3 font-medium">User ID</th>
-              <th className="px-4 py-3 font-medium">Role</th>
+              <th className="px-4 py-3 font-medium">Management scopes</th>
               <th className="px-4 py-3 font-medium">Status</th>
               <th className="px-4 py-3 font-medium">Project count</th>
               <th className="px-4 py-3 text-right font-medium">Actions</th>
@@ -821,31 +855,36 @@ function UsersTable({
                     {user.id || '—'}
                   </td>
                   <td className="px-4 py-3">
-                    <Badge variant={user.role === 'admin' ? 'accent' : 'muted'}>{unknown ? 'Unknown' : user.role}</Badge>
+                    {unknown ? 'Unknown' : <div className="flex flex-wrap gap-1">
+                      {managementCatalog.map((scope) => user.scopeStates[scope.id]?.state === 'granted'
+                        ? <Badge key={scope.id} variant="accent">{scope.display_name[locale] || scope.id}</Badge>
+                        : null)}
+                      {!Object.values(user.scopeStates).some((scope) => scope?.state === 'granted') ? <span className="text-zinc-500">None</span> : null}
+                    </div>}
                   </td>
                   <td className="px-4 py-3"><Badge variant={user.status === 'active' ? 'muted' : 'accent'}>{unknown ? 'Unknown' : user.status}</Badge></td>
                   <td className="px-4 py-3 tabular-nums text-zinc-300">{user.projectCount}</td>
                   <td className="px-4 py-3">
                     <div className="flex justify-end gap-1">
-                      <IconAction
-                        label="Change role"
-                        icon={Pencil}
+                      {canManageScopes ? <IconAction
+                        label="Manage scopes"
+                        icon={ShieldAlert}
                         disabled={pending || unknown}
-                        onClick={() => onAction({ kind: 'change-role', user })}
-                      />
-                      <IconAction
+                        onClick={() => onAction({ kind: 'change-scope', user })}
+                      /> : null}
+                      {canManageStatus ? <IconAction
                         label={user.status === 'suspended' ? 'Restore user' : 'Suspend user'}
                         icon={user.status === 'suspended' ? RotateCcw : ShieldAlert}
                         disabled={pending || unknown || (user.id === currentUserId && user.status !== 'suspended')}
                         onClick={() => onAction({ kind: 'set-user-status', user, status: user.status === 'suspended' ? 'active' : 'suspended' })}
-                      />
-                      <IconAction
+                      /> : null}
+                      {canDeleteUser ? <IconAction
                         label="Delete user"
                         icon={Trash2}
                         danger
                         disabled={pending || unknown}
                         onClick={() => onAction({ kind: 'delete-user', user })}
-                      />
+                      /> : null}
                     </div>
                   </td>
                 </tr>
@@ -992,37 +1031,44 @@ function RenameProjectModal({
   );
 }
 
-function RoleActionModal({
+function ScopeActionModal({
   user,
+  scopes,
+  locale,
   pending,
   error,
   onSubmit,
   onClose,
 }: {
   user: AdminUser;
+  scopes: AdminManagementScope[];
+  locale: 'zh-TW' | 'en';
   pending: boolean;
   error: string;
-  onSubmit: (role: string) => void;
+  onSubmit: (scope: 'auth:admin' | 'lwc:admin', action: 'grant' | 'remove') => void;
   onClose: () => void;
 }) {
-  const [role, setRole] = useState(user.role === 'admin' ? 'admin' : 'user');
+  const [scope, setScope] = useState<'auth:admin' | 'lwc:admin'>('auth:admin');
+  const granted = user.scopeStates[scope]?.state === 'granted';
+  const selectedScope = scopes.find((entry) => entry.id === scope);
   return (
-    <ModalFrame title="Change role" onClose={onClose}>
+    <ModalFrame title="Manage scopes" onClose={onClose}>
       <p className="mt-3 text-sm text-zinc-400">{user.email || user.id}</p>
       <select
-        value={role}
-        onChange={(event) => setRole(event.target.value)}
+        value={scope}
+        onChange={(event) => setScope(event.target.value as 'auth:admin' | 'lwc:admin')}
         className="mt-4 min-h-11 w-full rounded-lg border border-white/10 bg-black/30 px-3 text-sm text-white outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400 focus:border-emerald-400"
       >
-        <option value="user">User</option>
-        <option value="admin">Admin</option>
+        {scopes.map((entry) => <option key={entry.id} value={entry.id}>{entry.display_name[locale] || entry.id}</option>)}
       </select>
+      {selectedScope ? <p className="mt-2 text-sm text-zinc-400">{selectedScope.description[locale] || selectedScope.description.en}</p> : null}
+      <p className="mt-2 text-sm text-zinc-400">Current state: {user.scopeStates[scope]?.state ?? 'not granted'}</p>
       {error ? <p className="mt-3 text-sm text-amber-300">{error}</p> : null}
       <ModalActions
         pending={pending}
-        submitLabel="Update role"
+        submitLabel={granted ? 'Remove scope' : 'Grant scope'}
         pendingLabel="Updating..."
-        onSubmit={() => onSubmit(role)}
+        onSubmit={() => onSubmit(scope, granted ? 'remove' : 'grant')}
         onClose={onClose}
       />
     </ModalFrame>

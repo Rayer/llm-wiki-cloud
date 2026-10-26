@@ -30,6 +30,11 @@ vi.mock('@/lib/api', () => ({
   getAdminProjects: mockGetAdminProjects,
   getAdminSettings: mockGetAdminSettings,
   getAdminUsers: mockGetAdminUsers,
+  getAdminAnnouncement: async () => '# Published',
+  getAdminManagementCatalog: async () => [
+    { id: 'auth:admin', product: 'auth', resource: 'bff', grant_mode: 'operator-only', display_name: { en: 'Platform administrator', 'zh-TW': '平台管理員' }, description: { en: 'Manage accounts.', 'zh-TW': '管理帳號。' } },
+    { id: 'lwc:admin', product: 'lwc', resource: 'bff', grant_mode: 'operator-only', display_name: { en: 'LWC administrator', 'zh-TW': 'LWC 管理員' }, description: { en: 'Manage projects.', 'zh-TW': '管理專案。' } },
+  ],
   getPublicConfig: mockGetPublicConfig,
   publishAnnouncement: mockPublishAnnouncement,
   rebuildAdminProjectIndex: vi.fn(),
@@ -344,7 +349,7 @@ describe('LWC-278 direct publish admin flow', () => {
   });
 
   it('loads the published Markdown, previews edits, and publishes the current text', async () => {
-    mockUseAuth.mockReturnValue({ hydrated: true, user: { role: 'admin' } });
+    mockUseAuth.mockReturnValue({ hydrated: true, user: { role: 'admin', management_scopes: ['auth:admin', 'lwc:admin'] } });
     mockGetAdminProjects.mockResolvedValue([]);
     mockGetAdminUsers.mockResolvedValue([]);
     mockGetAdminSettings.mockResolvedValue({ registration_enabled: true, announcement_markdown: '# Published' });
@@ -365,7 +370,7 @@ describe('LWC-278 direct publish admin flow', () => {
   });
 
   it('disables Publish when unchanged and while the direct publish is pending', async () => {
-    mockUseAuth.mockReturnValue({ hydrated: true, user: { role: 'admin' } });
+    mockUseAuth.mockReturnValue({ hydrated: true, user: { role: 'admin', management_scopes: ['auth:admin', 'lwc:admin'] } });
     mockGetAdminProjects.mockResolvedValue([]);
     mockGetAdminUsers.mockResolvedValue([]);
     mockGetAdminSettings.mockResolvedValue({ registration_enabled: true, announcement_markdown: '# Published' });
@@ -391,7 +396,7 @@ describe('LWC-278 direct publish admin flow', () => {
   });
 
   it('keeps the editor dirty and reports an invalid publish response', async () => {
-    mockUseAuth.mockReturnValue({ hydrated: true, user: { role: 'admin' } });
+    mockUseAuth.mockReturnValue({ hydrated: true, user: { role: 'admin', management_scopes: ['auth:admin', 'lwc:admin'] } });
     mockGetAdminProjects.mockResolvedValue([]);
     mockGetAdminUsers.mockResolvedValue([]);
     mockGetAdminSettings.mockResolvedValue({ registration_enabled: true, announcement_markdown: '# Published' });
@@ -414,7 +419,7 @@ describe('LWC-278 direct publish admin flow', () => {
   });
 
   it('confirms before publishing empty content', async () => {
-    mockUseAuth.mockReturnValue({ hydrated: true, user: { role: 'admin' } });
+    mockUseAuth.mockReturnValue({ hydrated: true, user: { role: 'admin', management_scopes: ['auth:admin', 'lwc:admin'] } });
     mockGetAdminProjects.mockResolvedValue([]);
     mockGetAdminUsers.mockResolvedValue([]);
     mockGetAdminSettings.mockResolvedValue({ registration_enabled: true, announcement_markdown: '# Published' });
@@ -433,7 +438,7 @@ describe('LWC-278 direct publish admin flow', () => {
   });
 
   it('publishes confirmed empty content and clears the navigation blocker on success', async () => {
-    mockUseAuth.mockReturnValue({ hydrated: true, user: { role: 'admin' } });
+    mockUseAuth.mockReturnValue({ hydrated: true, user: { role: 'admin', management_scopes: ['auth:admin', 'lwc:admin'] } });
     mockGetAdminProjects.mockResolvedValue([]);
     mockGetAdminUsers.mockResolvedValue([]);
     mockGetAdminSettings.mockResolvedValue({ registration_enabled: true, announcement_markdown: '# Published' });
@@ -455,7 +460,7 @@ describe('LWC-278 direct publish admin flow', () => {
   });
 
   it('uses the existing navigation blocker while the editor is dirty', async () => {
-    mockUseAuth.mockReturnValue({ hydrated: true, user: { role: 'admin' } });
+    mockUseAuth.mockReturnValue({ hydrated: true, user: { role: 'admin', management_scopes: ['auth:admin', 'lwc:admin'] } });
     mockGetAdminProjects.mockResolvedValue([]);
     mockGetAdminUsers.mockResolvedValue([]);
     mockGetAdminSettings.mockResolvedValue({ registration_enabled: true, announcement_markdown: '# Published' });

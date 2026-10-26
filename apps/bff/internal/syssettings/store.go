@@ -26,6 +26,12 @@ type Settings struct {
 	AnnouncementMarkdown      string `json:"announcement_markdown"`
 }
 
+type RegistrationSettings struct {
+	RegistrationEnabled       bool `json:"registration_enabled"`
+	EmailRegistrationEnabled  bool `json:"email_registration_enabled"`
+	GoogleRegistrationEnabled bool `json:"google_registration_enabled"`
+}
+
 // PublicSettings exposes effective method capabilities, not saved preferences.
 type PublicSettings struct {
 	RegistrationEnabled       bool   `json:"registration_enabled"` // Master switch; method preferences are retained when off.
@@ -43,6 +49,10 @@ type RegistrationGate interface {
 	GetSettings(ctx context.Context) (Settings, error)
 	SetRegistrationSettings(ctx context.Context, master, email, google *bool) (Settings, error)
 	PublishAnnouncement(ctx context.Context, markdown string) (Settings, error)
+}
+
+type AnnouncementReader interface {
+	GetAnnouncementMarkdown(ctx context.Context) (string, error)
 }
 
 // Store resolves and persists registration settings in Firestore with env fallback.
@@ -109,6 +119,30 @@ func (s *Store) GetSettings(ctx context.Context) (Settings, error) {
 	return resolveSettings(doc.Data(), s.envValue), nil
 }
 
+func (s *Store) GetAnnouncementMarkdown(ctx context.Context) (string, error) {
+	if s == nil || s.fs == nil {
+		return "", nil
+	}
+	doc, err := s.settingsRef().Get(ctx)
+	if status.Code(err) == codes.NotFound {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("get announcement: %w", err)
+	}
+	markdown, _ := doc.Data()["announcement_published_markdown"].(string)
+	return markdown, nil
+}
+
+func (s *Store) GetRegistrationSettings(ctx context.Context) (RegistrationSettings, error) {
+	settings, err := s.GetSettings(ctx)
+	if err != nil {
+		return RegistrationSettings{}, err
+	}
+	return RegistrationSettings{RegistrationEnabled: settings.RegistrationEnabled,
+		EmailRegistrationEnabled: settings.EmailRegistrationEnabled, GoogleRegistrationEnabled: settings.GoogleRegistrationEnabled}, nil
+}
+
 func validateMarkdown(markdown string) error {
 	if !utf8.ValidString(markdown) {
 		return fmt.Errorf("announcement markdown is not valid UTF-8")
@@ -132,7 +166,11 @@ func (s *Store) PublishAnnouncement(ctx context.Context, markdown string) (Setti
 	if err != nil {
 		return Settings{}, fmt.Errorf("publish announcement: %w", err)
 	}
-	return s.GetSettings(ctx)
+	markdown, err = s.GetAnnouncementMarkdown(ctx)
+	if err != nil {
+		return Settings{}, err
+	}
+	return Settings{AnnouncementMarkdown: markdown}, nil
 }
 
 // SetRegistrationSettings updates the master and preferences atomically.
@@ -141,14 +179,31 @@ func (s *Store) SetRegistrationSettings(ctx context.Context, master, email, goog
 	if s.fs == nil {
 		return Settings{}, fmt.Errorf("Firestore client is not configured")
 	}
-	var settings Settings
 	err := s.fs.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+		_, err := s.SetRegistrationSettingsInTransaction(ctx, tx, master, email, google)
+		return err
+	})
+	if err != nil {
+		return Settings{}, fmt.Errorf("set system settings: %w", err)
+	}
+	return s.GetSettings(ctx)
+}
+
+// SetRegistrationSettingsInTransaction lets Auth combine the policy write
+// with its actor, account-version, and management-scope checks.
+func (s *Store) SetRegistrationSettingsInTransaction(ctx context.Context, tx *firestore.Transaction,
+	master, email, google *bool) (RegistrationSettings, error) {
+	if s == nil || s.fs == nil || tx == nil {
+		return RegistrationSettings{}, fmt.Errorf("Firestore client is not configured")
+	}
+	var settings Settings
+	{
 		doc, err := tx.Get(s.settingsRef())
 		var data map[string]interface{}
 		if err == nil {
 			data = doc.Data()
 		} else if status.Code(err) != codes.NotFound {
-			return err
+			return RegistrationSettings{}, err
 		}
 		settings = resolveSettings(data, s.envValue)
 		if master != nil {
@@ -160,31 +215,32 @@ func (s *Store) SetRegistrationSettings(ctx context.Context, master, email, goog
 		if google != nil {
 			settings.GoogleRegistrationEnabled = *google
 		}
-		return tx.Set(s.settingsRef(), map[string]interface{}{
+		if err := tx.Set(s.settingsRef(), map[string]interface{}{
 			"email_registration_enabled":  settings.EmailRegistrationEnabled,
 			"google_registration_enabled": settings.GoogleRegistrationEnabled,
 			"registration_enabled":        settings.RegistrationEnabled,
-		}, firestore.MergeAll)
-	})
-	if err != nil {
-		return Settings{}, fmt.Errorf("set system settings: %w", err)
+		}, firestore.MergeAll); err != nil {
+			return RegistrationSettings{}, err
+		}
 	}
-	return settings, nil
+	return RegistrationSettings{RegistrationEnabled: settings.RegistrationEnabled,
+		EmailRegistrationEnabled: settings.EmailRegistrationEnabled, GoogleRegistrationEnabled: settings.GoogleRegistrationEnabled}, nil
 }
 
 // FakeStore is an in-memory RegistrationGate for tests.
 type FakeStore struct {
-	Enabled       bool
-	EmailEnabled  *bool
-	GoogleEnabled *bool
-	Err           error
-	Persisted     *bool
-	GetCalls      int
-	SetCalls      int
-	LastSetValue  bool
-	Published     string
-	PublishErr    error
-	mu            sync.RWMutex
+	Enabled              bool
+	EmailEnabled         *bool
+	GoogleEnabled        *bool
+	Err                  error
+	Persisted            *bool
+	GetCalls             int
+	SetCalls             int
+	LastSetValue         bool
+	Published            string
+	AnnouncementGetCalls int
+	PublishErr           error
+	mu                   sync.RWMutex
 }
 
 func (f *FakeStore) IsRegistrationEnabled(ctx context.Context, method string) (bool, error) {
@@ -223,6 +279,16 @@ func (f *FakeStore) GetSettings(ctx context.Context) (Settings, error) {
 	return f.settings(), nil
 }
 
+func (f *FakeStore) GetAnnouncementMarkdown(context.Context) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.AnnouncementGetCalls++
+	if f.Err != nil {
+		return "", f.Err
+	}
+	return f.Published, nil
+}
+
 func (f *FakeStore) PublishAnnouncement(ctx context.Context, markdown string) (Settings, error) {
 	if err := validateMarkdown(markdown); err != nil {
 		return Settings{}, err
@@ -233,7 +299,7 @@ func (f *FakeStore) PublishAnnouncement(ctx context.Context, markdown string) (S
 		return Settings{}, f.PublishErr
 	}
 	f.Published = markdown
-	return f.settings(), nil
+	return Settings{AnnouncementMarkdown: f.Published}, nil
 }
 
 func (f *FakeStore) SetRegistrationSettings(ctx context.Context, master, email, google *bool) (Settings, error) {

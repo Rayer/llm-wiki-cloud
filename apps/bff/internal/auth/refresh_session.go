@@ -138,8 +138,17 @@ type RefreshSessionAuthority struct {
 	fs                  *firestore.Client
 	environment         string
 	migration           RefreshSessionMigrationMode
+	management          *ManagementAuthority
+	consumerResource    string
 	now                 func() time.Time
 	beforeCleanupDelete func()
+}
+
+func (a *RefreshSessionAuthority) SetManagementAuthority(management *ManagementAuthority, resource string) {
+	if a != nil {
+		a.management = management
+		a.consumerResource = strings.TrimSpace(resource)
+	}
 }
 
 // NewRefreshSessionAuthority constructs an authority with migration disabled.
@@ -268,7 +277,7 @@ func (a *RefreshSessionAuthority) IssueCLISession(ctx context.Context, userID, c
 		if !user.Active() {
 			return ErrCLISessionRevoked
 		}
-		credential, err := a.createCLISessionInTransaction(tx, userID, &user, clientName, jwtSecret, sessionID, refreshToken, now)
+		credential, err := a.createCLISessionInTransaction(ctx, tx, userID, &user, clientName, jwtSecret, sessionID, refreshToken, now)
 		if err != nil {
 			return err
 		}
@@ -281,11 +290,11 @@ func (a *RefreshSessionAuthority) IssueCLISession(ctx context.Context, userID, c
 	return result, nil
 }
 
-func (a *RefreshSessionAuthority) createCLISessionInTransaction(tx *firestore.Transaction, userID string, user *UserRecord, clientName, jwtSecret, sessionID, refreshToken string, now time.Time) (CLISessionCredential, error) {
+func (a *RefreshSessionAuthority) createCLISessionInTransaction(ctx context.Context, tx *firestore.Transaction, userID string, user *UserRecord, clientName, jwtSecret, sessionID, refreshToken string, now time.Time) (CLISessionCredential, error) {
 	if user == nil || !user.Active() || !ValidPathSegment(userID) || !ValidPathSegment(sessionID) || !a.ready() {
 		return CLISessionCredential{}, ErrCLISessionRevoked
 	}
-	accessToken, err := GenerateCLIAccessToken(userID, user.Role, sessionID, jwtSecret, user.AuthVersion)
+	accessToken, err := issueManagedCLIAccessToken(ctx, a.management, a.consumerResource, userID, user.Role, sessionID, jwtSecret, user.AuthVersion)
 	if err != nil {
 		return CLISessionCredential{}, err
 	}
@@ -351,7 +360,7 @@ func (a *RefreshSessionAuthority) RotateCLISession(ctx context.Context, rawToken
 			if err != nil || hashRefreshToken(retryToken) != session.TokenHash {
 				return ErrCLISessionReplay
 			}
-			accessToken, err := GenerateCLIAccessToken(session.UserID, user.Role, sessionID, jwtSecret, user.AuthVersion)
+			accessToken, err := issueManagedCLIAccessToken(ctx, a.management, a.consumerResource, session.UserID, user.Role, sessionID, jwtSecret, user.AuthVersion)
 			if err != nil {
 				return err
 			}
@@ -370,7 +379,7 @@ func (a *RefreshSessionAuthority) RotateCLISession(ctx context.Context, rawToken
 		if err != nil {
 			return err
 		}
-		accessToken, err := GenerateCLIAccessToken(session.UserID, user.Role, sessionID, jwtSecret, user.AuthVersion)
+		accessToken, err := issueManagedCLIAccessToken(ctx, a.management, a.consumerResource, session.UserID, user.Role, sessionID, jwtSecret, user.AuthVersion)
 		if err != nil {
 			return err
 		}

@@ -113,7 +113,7 @@ func (r *fakeSecretReader) Access(_ context.Context, resource string) (string, [
 	return resolved, r.value, r.err
 }
 
-func TestRealPklBFFPrepareRendersSchema2ForLocalDevelopmentAndProduction(t *testing.T) {
+func TestRealPklBFFPrepareRendersSchema3WithoutCloudJWTAndRetainsLocalSchema2(t *testing.T) {
 	realPKL := strings.TrimSpace(os.Getenv("PKL_BIN"))
 	if realPKL == "" {
 		var err error
@@ -180,13 +180,11 @@ func TestRealPklBFFPrepareRendersSchema2ForLocalDevelopmentAndProduction(t *test
 		{environment: "local", cooldown: 60, typesafe: "TEST_ONLY_LOCAL_TYPESAFE_API_KEY"},
 		{environment: "dev", cooldown: 600, typesafe: "TEST_ONLY_SYNTHETIC_CLOUD_SECRET",
 			profileAudience: "https://llm-wiki-bff-dev-a5nkmux6pq-de.a.run.app", profileService: "lwc-bff-dev@llm-wiki-cloud.iam.gserviceaccount.com", resources: []string{
-				"projects/llm-wiki-cloud/secrets/jwt-secret-dev/versions/latest",
 				"projects/llm-wiki-cloud/secrets/deepseek-apikey/versions/latest",
 				"projects/llm-wiki-cloud/secrets/typesafe-jev-api-key-dev/versions/1",
 			}},
 		{environment: "prod", cooldown: 3600, typesafe: "TEST_ONLY_SYNTHETIC_CLOUD_SECRET",
 			profileAudience: "https://llm-wiki-bff-a5nkmux6pq-de.a.run.app", profileService: "lwc-bff-prod@llm-wiki-cloud.iam.gserviceaccount.com", resources: []string{
-				"projects/llm-wiki-cloud/secrets/jwt-secret-prod/versions/latest",
 				"projects/llm-wiki-cloud/secrets/deepseek-apikey/versions/latest",
 				"projects/llm-wiki-cloud/secrets/typesafe-jev-api-key-prod/versions/1",
 			}},
@@ -212,14 +210,26 @@ func TestRealPklBFFPrepareRendersSchema2ForLocalDevelopmentAndProduction(t *test
 			}
 			generated, err := runtimeconfig.DecodeBFFFile(data)
 			if err != nil {
-				t.Fatalf("prepared BFF schema 2 failed runtime validation: %v", err)
+				t.Fatalf("prepared BFF runtime schema failed validation: %v", err)
 			}
 			wantTTL := map[string]int{"local": 0, "dev": 60_000, "prod": 300_000}[tc.environment]
-			if generated.SchemaVersion != 2 || generated.Environment != tc.environment || generated.Target != "bff" ||
+			wantSchema := 3
+			if tc.environment == "local" {
+				wantSchema = 2
+			}
+			if generated.SchemaVersion != wantSchema || generated.Environment != tc.environment || generated.Target != "bff" ||
 				generated.PipelineCooldownSeconds != tc.cooldown || generated.TypeSafeAPIKey != tc.typesafe ||
 				generated.ProfileRuntimeAudience != tc.profileAudience || generated.ProfileRuntimeServiceAccount != tc.profileService ||
 				generated.MCP == nil || generated.MCP.DiscoveryTTLMS != wantTTL || generated.MCP.ToolsListTTLMS != wantTTL {
 				t.Fatalf("prepared BFF identity or cooldown is incorrect for %s", tc.environment)
+			}
+			if tc.environment == "local" && (generated.JWTSecret == "" || generated.AuthConsumer != nil) {
+				t.Fatal("local schema-2 BFF config lost its isolated compatibility signing key")
+			}
+			if tc.environment != "local" && (generated.JWTSecret != "" || generated.AuthConsumer == nil ||
+				generated.AuthConsumer.Environment != tc.environment || generated.AuthConsumer.TimeoutSeconds != 5 ||
+				generated.AuthConsumer.Resource != generated.MCPResourceOrigin) {
+				t.Fatalf("cloud schema-3 BFF consumer projection is incorrect for %s", tc.environment)
 			}
 			if generated.PipelineSchedule.Cron != "0 * * * *" || generated.PipelineSchedule.Timezone != "UTC" ||
 				generated.PipelineSchedule.Audience != tc.profileAudience || generated.PipelineSchedule.ServiceAccount != tc.profileService {
@@ -313,10 +323,13 @@ func TestRealPklBFFPrepareRendersSchema2ForLocalDevelopmentAndProduction(t *test
 						t.Fatalf("local BFF loader did not preserve optional Jev fallback config: keyPresent=%t err=%v", missing.TypeSafeAPIKey != "", err)
 					}
 				})
-			} else if generated.Local != nil || generated.JWTSecret != "TEST_ONLY_SYNTHETIC_CLOUD_SECRET" ||
+			} else if generated.Local != nil || generated.JWTSecret != "" || generated.AuthConsumer == nil ||
 				generated.DeepSeekAPIKey != "TEST_ONLY_SYNTHETIC_CLOUD_SECRET" ||
 				generated.TypeSafeAPIKey != "TEST_ONLY_SYNTHETIC_CLOUD_SECRET" {
-				t.Fatal("cloud BFF config did not use only the selected synthetic secret fixtures")
+				t.Fatalf("cloud BFF fixture binding mismatch local=%t jwt_empty=%t consumer_missing=%t deepseek_match=%t typesafe_match=%t",
+					generated.Local != nil, generated.JWTSecret == "", generated.AuthConsumer == nil,
+					generated.DeepSeekAPIKey == "TEST_ONLY_SYNTHETIC_CLOUD_SECRET",
+					generated.TypeSafeAPIKey == "TEST_ONLY_SYNTHETIC_CLOUD_SECRET")
 			}
 			fileInfo, err := os.Stat(filepath.Join(output, "bff.json"))
 			if err != nil || fileInfo.Mode().Perm() != 0o600 {

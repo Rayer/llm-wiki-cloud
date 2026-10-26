@@ -100,11 +100,17 @@ type Config struct {
 	// MCPResourceOrigin is the explicit public BFF origin used to bind OAuth
 	// tokens and protected-resource metadata to a project resource. Empty keeps
 	// older runtime configs loadable while leaving project OAuth unavailable.
-	MCPResourceOrigin string
-	MCP               *BFFMCP
+	MCPResourceOrigin      string
+	MCP                    *BFFMCP
+	BFFAuthConsumer        *BFFAuthConsumer
+	BFFConfigSchemaVersion int
+	BFFManagementBridge    bool
 	// AuthOAuthResources is the loaded CaC policy used by every Auth OAuth
 	// consumer. BFF-only configs leave it empty.
-	AuthOAuthResources []AuthOAuthResource
+	AuthOAuthResources           []AuthOAuthResource
+	ManagementScopes             []AuthManagementScope
+	AuthConsumerVerifiers        []AuthConsumerVerifier
+	AuthConsumerPublicProjection AuthConsumerPublicProjection
 	// SyncServiceURL is the explicitly configured BFF origin returned by Auth's
 	// trusted CLI sync locator; it is never inferred from the Auth hostname.
 	SyncServiceURL                  string

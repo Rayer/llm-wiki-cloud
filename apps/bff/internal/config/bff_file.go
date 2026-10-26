@@ -44,7 +44,8 @@ type BFFFile struct {
 	AuthSessionEnvironment       string              `json:"auth_session_environment"`
 	AuthSessionMigration         string              `json:"auth_session_migration"`
 	RegistrationEnabled          *bool               `json:"registration_enabled"`
-	JWTSecret                    string              `json:"jwt_secret"`
+	JWTSecret                    string              `json:"jwt_secret,omitempty"`
+	AuthConsumer                 *BFFAuthConsumer    `json:"auth_consumer,omitempty"`
 	DeepSeekAPIKey               string              `json:"deepseek_api_key"`
 	TypeSafeAPIKey               string              `json:"typesafe_api_key"`
 	ProfileRuntimeAudience       string              `json:"profile_runtime_audience"`
@@ -54,6 +55,21 @@ type BFFFile struct {
 	Query                        BFFQuery            `json:"query"`
 	Local                        *BFFLocal           `json:"local"`
 	PortDefault                  int                 `json:"port_default"`
+}
+
+type BFFAuthConsumer struct {
+	SchemaVersion         int      `json:"schema_version"`
+	Environment           string   `json:"environment"`
+	AuthURL               string   `json:"auth_url"`
+	Issuer                string   `json:"issuer"`
+	RuntimeServiceAccount string   `json:"runtime_service_account"`
+	VerifierAudience      string   `json:"verifier_audience"`
+	Resource              string   `json:"resource"`
+	VerifierPath          string   `json:"verifier_path"`
+	AccountCheckPath      string   `json:"account_check_path"`
+	CatalogPath           string   `json:"catalog_path"`
+	AuthorityModes        []string `json:"authority_modes"`
+	TimeoutSeconds        int      `json:"timeout_seconds"`
 }
 
 type BFFLLM struct {
@@ -150,6 +166,20 @@ var bffRequiredKeys = []string{
 	"profile_runtime_service_account", "pipeline_schedule", "llm", "query", "local", "port_default",
 }
 
+func bffRequiredKeysForVersion(version int) []string {
+	keys := append([]string(nil), bffRequiredKeys...)
+	if version == 3 {
+		for index, key := range keys {
+			if key == "jwt_secret" {
+				keys = append(keys[:index], keys[index+1:]...)
+				break
+			}
+		}
+		keys = append(keys, "auth_consumer")
+	}
+	return keys
+}
+
 // LoadBFFFile reads the required mounted BFF configuration. The file locator is
 // the only bootstrap environment input; PORT is the platform listener override.
 func LoadBFFFile(path string) (Config, error) {
@@ -185,7 +215,19 @@ func LoadBFFFile(path string) (Config, error) {
 			return Config{}, errors.New("invalid PORT")
 		}
 	}
-	return configFromBFFFile(file, port), nil
+	cfg := configFromBFFFile(file, port)
+	if file.SchemaVersion == 2 && file.Environment != "local" {
+		consumer, _, err := LegacyLWCBridgeConsumer(file.Environment, file.AuthServiceURL, file.MCPResourceOrigin)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.BFFAuthConsumer = &consumer
+		cfg.BFFManagementBridge = true
+		if cfg.MCPResourceOrigin == "" {
+			cfg.MCPResourceOrigin = consumer.Resource
+		}
+	}
+	return cfg, nil
 }
 
 // DecodeBFFFile validates the complete schema before projecting it into the
@@ -201,13 +243,15 @@ func DecodeBFFFile(data []byte) (BFFFile, error) {
 	if err := json.Unmarshal(data, &fields); err != nil || fields == nil {
 		return BFFFile{}, errors.New("BFF config document is malformed")
 	}
-	if err := requireJSONKeysWithOptional(fields, bffRequiredKeys, []string{"mcp_resource_origin", "mcp"}); err != nil {
+	version := 0
+	_ = json.Unmarshal(fields["schema_version"], &version)
+	if err := requireJSONKeysWithOptional(fields, bffRequiredKeysForVersion(version), []string{"mcp_resource_origin", "mcp"}); err != nil {
 		return BFFFile{}, err
 	}
 	if err := validateBFFNestedShapes(fields); err != nil {
 		return BFFFile{}, err
 	}
-	if err := validateBFFJSONTypes(fields); err != nil {
+	if err := validateBFFJSONTypes(fields, version); err != nil {
 		return BFFFile{}, err
 	}
 	var file BFFFile
@@ -283,7 +327,7 @@ func validateBFFNestedShapes(fields map[string]json.RawMessage) error {
 	return nil
 }
 
-func validateBFFJSONTypes(fields map[string]json.RawMessage) error {
+func validateBFFJSONTypes(fields map[string]json.RawMessage, version int) error {
 	for _, field := range []struct {
 		name     string
 		kind     string
@@ -308,7 +352,6 @@ func validateBFFJSONTypes(fields map[string]json.RawMessage) error {
 		{"auth_session_environment", "string", false},
 		{"auth_session_migration", "string", false},
 		{"registration_enabled", "boolean", true},
-		{"jwt_secret", "string", false},
 		{"deepseek_api_key", "string", false},
 		{"typesafe_api_key", "string", false},
 		{"profile_runtime_audience", "string", false},
@@ -319,8 +362,35 @@ func validateBFFJSONTypes(fields map[string]json.RawMessage) error {
 		{"local", "object", true},
 		{"port_default", "integer", false},
 	} {
+		if field.name == "jwt_secret" && version == 3 {
+			continue
+		}
 		if err := requireBFFJSONType(field.name, fields[field.name], field.kind, field.nullable); err != nil {
 			return err
+		}
+	}
+	if version == 2 {
+		if raw, ok := fields["auth_consumer"]; ok && !isBFFJSONNull(raw) {
+			return errors.New("BFF config auth_consumer is only valid in schema 3")
+		}
+	}
+	if version == 3 {
+		if err := requireBFFJSONType("auth_consumer", fields["auth_consumer"], "object", false); err != nil {
+			return err
+		}
+		var consumer map[string]json.RawMessage
+		if json.Unmarshal(fields["auth_consumer"], &consumer) != nil || consumer == nil ||
+			requireJSONKeys(consumer, []string{"schema_version", "environment", "auth_url", "issuer", "runtime_service_account", "verifier_audience", "resource", "verifier_path", "account_check_path", "catalog_path", "authority_modes", "timeout_seconds"}) != nil {
+			return errors.New("BFF config auth_consumer object has missing or unknown keys")
+		}
+		for _, field := range []struct{ name, kind string }{
+			{"schema_version", "integer"}, {"environment", "string"}, {"auth_url", "string"}, {"issuer", "string"},
+			{"runtime_service_account", "string"}, {"verifier_audience", "string"}, {"resource", "string"},
+			{"verifier_path", "string"}, {"account_check_path", "string"}, {"catalog_path", "string"}, {"authority_modes", "string_array"}, {"timeout_seconds", "integer"},
+		} {
+			if err := requireBFFJSONType("auth_consumer."+field.name, consumer[field.name], field.kind, false); err != nil {
+				return err
+			}
 		}
 	}
 	if raw, ok := fields["mcp_resource_origin"]; ok {
@@ -579,7 +649,7 @@ func ensureJSONEOF(decoder *json.Decoder) error {
 }
 
 func validateBFFFile(file BFFFile) error {
-	if file.SchemaVersion != 2 || file.Target != "bff" ||
+	if (file.SchemaVersion != 2 && file.SchemaVersion != 3) || file.Target != "bff" ||
 		(file.Environment != "local" && file.Environment != "dev" && file.Environment != "prod") {
 		return errors.New("BFF config identity is invalid")
 	}
@@ -602,6 +672,23 @@ func validateBFFFile(file BFFFile) error {
 		return errors.New("BFF config auth_session_environment is invalid")
 	}
 	localMode := file.Environment == "local"
+	if file.SchemaVersion == 3 {
+		if localMode || file.JWTSecret != "" || file.AuthConsumer == nil ||
+			file.AuthConsumer.SchemaVersion != 1 || file.AuthConsumer.Environment != file.Environment ||
+			file.AuthConsumer.AuthURL != file.AuthServiceURL || file.AuthConsumer.Issuer != file.AuthServiceURL ||
+			file.AuthConsumer.TimeoutSeconds != 5 ||
+			!authServiceAccountPattern.MatchString(file.AuthConsumer.RuntimeServiceAccount) ||
+			!validVerifierAudience(file.AuthConsumer.VerifierAudience) ||
+			file.AuthConsumer.Resource != file.MCPResourceOrigin ||
+			file.AuthConsumer.VerifierPath != "/api/v1/auth/consumers/lwc/verify-credential" ||
+			file.AuthConsumer.AccountCheckPath != "/api/v1/auth/consumers/lwc/accounts/check" ||
+			file.AuthConsumer.CatalogPath != "/api/v1/auth/consumers/lwc/management/catalog" ||
+			!equalStringSet(file.AuthConsumer.AuthorityModes, []string{"legacy-shadow", "central"}) {
+			return errors.New("BFF config auth_consumer is invalid")
+		}
+	} else if file.AuthConsumer != nil {
+		return errors.New("BFF schema-2 config must not contain auth_consumer")
+	}
 	if err := validateRuntimeURL(file.AuthServiceURL, localMode); err != nil {
 		return errors.New("BFF config auth_service_url is invalid")
 	}
@@ -660,7 +747,7 @@ func validateBFFFile(file BFFFile) error {
 	} else if file.Local != nil {
 		return errors.New("BFF config local settings must be null for cloud")
 	}
-	if strings.TrimSpace(file.JWTSecret) == "" || strings.TrimSpace(file.DeepSeekAPIKey) == "" {
+	if (file.SchemaVersion == 2 && strings.TrimSpace(file.JWTSecret) == "") || strings.TrimSpace(file.DeepSeekAPIKey) == "" {
 		return errors.New("BFF config required secret is empty")
 	}
 	if file.AuthSessionMigration != "disabled" && file.AuthSessionMigration != "legacy_read_through" {
@@ -718,6 +805,12 @@ func validBFFBaseURL(raw string) bool {
 	return err == nil && (u.Scheme == "https" || u.Scheme == "http") && u.Host != "" && u.User == nil && u.RawQuery == "" && u.Fragment == ""
 }
 
+func validVerifierAudience(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && u.Scheme == "https" && u.Host != "" && u.User == nil &&
+		(u.Path == "" || u.Path == "/") && u.RawQuery == "" && !u.ForceQuery && u.Fragment == ""
+}
+
 func absoluteRuntimePath(path string) bool {
 	return filepath.IsAbs(path) && !strings.ContainsAny(path, "\r\n\x00")
 }
@@ -758,9 +851,11 @@ func configFromBFFFile(file BFFFile, port string) Config {
 		PipelineCooldownSeconds: file.PipelineCooldownSeconds, PipelineMinNewRaw: file.PipelineMinNewRaw,
 		PipelineDemoUserIDs: file.PipelineDemoUserIDs, RegistrationEnabled: file.RegistrationEnabled,
 		AuthServiceURL: file.AuthServiceURL, AuthSessionEnvironment: file.AuthSessionEnvironment,
-		MCPResourceOrigin:    file.MCPResourceOrigin,
-		MCP:                  file.MCP,
-		AuthSessionMigration: file.AuthSessionMigration, ProfileRuntimeAudience: file.ProfileRuntimeAudience,
+		MCPResourceOrigin:      file.MCPResourceOrigin,
+		MCP:                    file.MCP,
+		BFFAuthConsumer:        file.AuthConsumer,
+		BFFConfigSchemaVersion: file.SchemaVersion,
+		AuthSessionMigration:   file.AuthSessionMigration, ProfileRuntimeAudience: file.ProfileRuntimeAudience,
 		ProfileRuntimeServiceAccount: file.ProfileRuntimeServiceAccount,
 		PipelineScheduleCron:         file.PipelineSchedule.Cron, PipelineScheduleTimezone: file.PipelineSchedule.Timezone,
 		ScheduledPipelineAudience: file.PipelineSchedule.Audience, ScheduledPipelineServiceAccount: file.PipelineSchedule.ServiceAccount,

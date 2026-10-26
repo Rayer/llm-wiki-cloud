@@ -554,7 +554,7 @@ func (tx *IdentityTransaction) ProvisionExternalUser(input ExternalUserProvision
 		if CanonicalizeEmail(user.Email) != input.CanonicalEmail || (user.EmailCanonical != "" && user.EmailCanonical != input.CanonicalEmail) || user.EmailVerified != input.EmailVerified {
 			return ErrCanonicalEmailConflict
 		}
-		if user.PasswordHash != "" {
+		if isPasswordConfigured(user) {
 			return ErrCanonicalEmailConflict
 		}
 	}
@@ -570,11 +570,12 @@ func (tx *IdentityTransaction) ProvisionExternalUser(input ExternalUserProvision
 	}
 
 	user := UserRecord{
-		Email:          input.DisplayEmail,
-		EmailCanonical: input.CanonicalEmail,
-		EmailVerified:  input.EmailVerified,
-		ProjectCount:   0,
-		DefaultProject: input.ProjectID,
+		Email:              input.DisplayEmail,
+		EmailCanonical:     input.CanonicalEmail,
+		PasswordConfigured: boolPointer(false),
+		EmailVerified:      input.EmailVerified,
+		ProjectCount:       0,
+		DefaultProject:     input.ProjectID,
 	}
 	reservation := EmailReservation{
 		CanonicalEmail: input.CanonicalEmail,
@@ -632,7 +633,7 @@ func (tx *IdentityTransaction) ProvisionPasswordUser(input PasswordUserProvision
 		if decodeErr != nil {
 			return decodeErr
 		}
-		if CanonicalizeEmail(user.Email) != input.CanonicalEmail || (user.EmailCanonical != "" && user.EmailCanonical != input.CanonicalEmail) || user.PasswordHash != input.PasswordHash {
+		if CanonicalizeEmail(user.Email) != input.CanonicalEmail || (user.EmailCanonical != "" && user.EmailCanonical != input.CanonicalEmail) || user.PasswordHash != input.PasswordHash || !isPasswordConfigured(user) {
 			return ErrCanonicalEmailConflict
 		}
 	}
@@ -655,13 +656,14 @@ func (tx *IdentityTransaction) ProvisionPasswordUser(input PasswordUserProvision
 	}
 	if !userSnapshot.Exists() {
 		user := UserRecord{
-			Email:          input.DisplayEmail,
-			EmailCanonical: input.CanonicalEmail,
-			PasswordHash:   input.PasswordHash,
-			Role:           input.Role,
-			EmailVerified:  false,
-			ProjectCount:   0,
-			DefaultProject: input.ProjectID,
+			Email:              input.DisplayEmail,
+			EmailCanonical:     input.CanonicalEmail,
+			PasswordHash:       input.PasswordHash,
+			PasswordConfigured: boolPointer(true),
+			Role:               input.Role,
+			EmailVerified:      false,
+			ProjectCount:       0,
+			DefaultProject:     input.ProjectID,
 		}
 		tx.writes = append(tx.writes, func(transaction *firestore.Transaction) error {
 			return transaction.Create(userRef, user)

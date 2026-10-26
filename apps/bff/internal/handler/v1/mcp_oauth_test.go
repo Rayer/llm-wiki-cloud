@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/rayer/llm-wiki-bff/internal/auth"
+	"github.com/rayer/llm-wiki-bff/internal/authconsumer"
 	"github.com/rayer/llm-wiki-bff/internal/cache"
 	internalfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"github.com/rayer/llm-wiki-bff/internal/localfs"
@@ -102,8 +104,8 @@ func TestMCPProjectOAuthRejectsConflictingProjectHeaderBeforeSDK(t *testing.T) {
 
 	const environment = "lwc389-project-header-test"
 	const resourceOrigin = "http://localhost:18080"
-	service := auth.NewMCPOAuthService(fs.Raw(), environment, "http://localhost:18081", resourceOrigin,
-		"http://localhost:13000", "mcp-oauth-test-secret")
+	service := auth.NewMCPOAuthServiceWithPolicy(fs.Raw(), environment, "local", "http://localhost:18081", resourceOrigin,
+		"http://localhost:13000", "mcp-oauth-test-secret", nil)
 	client, err := service.RegisterClient(ctx, "Hermes test", []string{"http://127.0.0.1:43123/callback"})
 	if err != nil {
 		t.Fatalf("register test client: %v", err)
@@ -140,6 +142,8 @@ func TestMCPProjectOAuthRejectsConflictingProjectHeaderBeforeSDK(t *testing.T) {
 
 	root := localfs.New(t.TempDir())
 	handler := New(root, fs, nil, nil, nil, nil)
+	handler.SetConsumerVerifier(mcpOAuthTestConsumer{service: service, issuer: "http://localhost:18081"})
+	handler.SetCLIProjectAuthorizer(auth.FirestoreProjectOwnerAuthorizer(fs.Raw()))
 	handler.pipelineEventSource = func(_ context.Context, gotUserID, gotProjectID string) (pipelineEventSnapshot, error) {
 		if gotUserID != userID || gotProjectID != projectID {
 			return pipelineEventSnapshot{}, fmt.Errorf("OAuth Pipeline source scope mismatch: %s/%s", gotUserID, gotProjectID)
@@ -150,7 +154,7 @@ func TestMCPProjectOAuthRejectsConflictingProjectHeaderBeforeSDK(t *testing.T) {
 	handler.SetQueryExecutor(executor)
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	router.Any("/mcp/projects/:projectID", handler.MCPProjectOAuthHandler(environment, resourceOrigin))
+	router.Any("/mcp/projects/:projectID", handler.MCPProjectOAuthHandler("local", resourceOrigin))
 	oauthWireRequest := func(token, body string) *httptest.ResponseRecorder {
 		t.Helper()
 		request := httptest.NewRequest(http.MethodPost, "/mcp/projects/"+projectID, strings.NewReader(body))
@@ -485,8 +489,8 @@ func TestMCPProjectOAuthRejectsConflictingProjectHeaderBeforeSDK(t *testing.T) {
 	revokedRequest.Header.Set("MCP-Protocol-Version", "2025-11-25")
 	revokedResponse := httptest.NewRecorder()
 	router.ServeHTTP(revokedResponse, revokedRequest)
-	if revokedResponse.Code != http.StatusForbidden {
-		t.Fatalf("revoked OAuth token status=%d body=%s, want forbidden", revokedResponse.Code, revokedResponse.Body.String())
+	if revokedResponse.Code != http.StatusUnauthorized {
+		t.Fatalf("revoked OAuth token status=%d body=%s, want unauthorized", revokedResponse.Code, revokedResponse.Body.String())
 	}
 
 	expiredService := auth.NewMCPOAuthService(fs.Raw(), environment, "http://localhost:18081", resourceOrigin,
@@ -541,4 +545,34 @@ func TestMCPProjectOAuthRejectsConflictingProjectHeaderBeforeSDK(t *testing.T) {
 	if _, err := root.Scope(userID, projectID).ReadFile(context.Background(), "raw/expired.md"); err == nil {
 		t.Fatal("expired grant wrote a raw source")
 	}
+}
+
+type mcpOAuthTestConsumer struct {
+	service *auth.MCPOAuthService
+	issuer  string
+}
+
+func (v mcpOAuthTestConsumer) Verify(ctx context.Context, credential, projectID string) (authconsumer.Identity, error) {
+	return v.VerifyResource(ctx, credential, v.service.ResourceURL(projectID), projectID)
+}
+
+func (v mcpOAuthTestConsumer) VerifyResource(ctx context.Context, credential, resource, projectID string) (authconsumer.Identity, error) {
+	verified, err := v.service.VerifyAccessToken(ctx, credential)
+	if err != nil {
+		if errors.Is(err, auth.ErrMCPOAuthInvalid) || errors.Is(err, auth.ErrMCPOAuthExpired) {
+			return authconsumer.Identity{}, authconsumer.ErrInvalidCredential
+		}
+		return authconsumer.Identity{}, authconsumer.ErrUnavailable
+	}
+	if verified.ProjectID != projectID || verified.Resource != resource {
+		return authconsumer.Identity{}, authconsumer.ErrForbidden
+	}
+	return authconsumer.Identity{SchemaVersion: 1, Subject: verified.UserID, CredentialKind: "mcp-oauth",
+		Environment: verified.Environment, Issuer: v.issuer, Resource: verified.Resource, ExpiresAt: verified.ExpiresAt.Unix(),
+		AuthVersion: verified.AuthVersion, Scopes: verified.Scopes, ManagementScopes: []string{},
+		GrantID: verified.GrantID, ClientID: verified.ClientID, ProjectID: verified.ProjectID}, nil
+}
+
+func (v mcpOAuthTestConsumer) CheckAccount(_ context.Context, userID string) (authconsumer.Account, error) {
+	return authconsumer.Account{SchemaVersion: 1, Subject: userID, Active: true}, nil
 }

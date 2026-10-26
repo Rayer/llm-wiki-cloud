@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
@@ -37,26 +38,60 @@ const authDailyBriefDevVerifierAudience = "https://llm-wiki-auth-dev-a5nkmux6pq-
 const authDailyBriefProdVerifierAudience = "https://llm-wiki-auth-a5nkmux6pq-de.a.run.app"
 
 type AuthFile struct {
-	SchemaVersion          int                 `json:"schema_version"`
-	Target                 string              `json:"target"`
-	Environment            string              `json:"environment"`
-	ConfigID               string              `json:"config_id"`
-	GCPProject             string              `json:"gcp_project"`
-	FirestoreDatabaseID    string              `json:"firestore_database_id"`
-	LocalCloudScope        string              `json:"local_cloud_scope"`
-	AuthServiceURL         string              `json:"auth_service_url"`
-	SyncServiceURL         string              `json:"sync_service_url"`
-	AllowedHosts           []string            `json:"allowed_hosts"`
-	AllowedOrigins         []string            `json:"allowed_origins"`
-	AuthSessionEnvironment string              `json:"auth_session_environment"`
-	AuthSessionMigration   string              `json:"auth_session_migration"`
-	RegistrationEnabled    *bool               `json:"registration_enabled"`
-	AuthDemoUserID         string              `json:"auth_demo_user_id"`
-	AuthDemoUserEmail      string              `json:"auth_demo_user_email"`
-	AuthDemoUserRole       string              `json:"auth_demo_user_role"`
-	JWTSecret              string              `json:"jwt_secret"`
-	Google                 AuthFileGoogle      `json:"google"`
-	OAuthResources         []AuthOAuthResource `json:"oauth_resources,omitempty"`
+	SchemaVersion            int                           `json:"schema_version"`
+	Target                   string                        `json:"target"`
+	Environment              string                        `json:"environment"`
+	ConfigID                 string                        `json:"config_id"`
+	GCPProject               string                        `json:"gcp_project"`
+	FirestoreDatabaseID      string                        `json:"firestore_database_id"`
+	LocalCloudScope          string                        `json:"local_cloud_scope"`
+	AuthServiceURL           string                        `json:"auth_service_url"`
+	SyncServiceURL           string                        `json:"sync_service_url"`
+	AllowedHosts             []string                      `json:"allowed_hosts"`
+	AllowedOrigins           []string                      `json:"allowed_origins"`
+	AuthSessionEnvironment   string                        `json:"auth_session_environment"`
+	AuthSessionMigration     string                        `json:"auth_session_migration"`
+	RegistrationEnabled      *bool                         `json:"registration_enabled"`
+	AuthDemoUserID           string                        `json:"auth_demo_user_id"`
+	AuthDemoUserEmail        string                        `json:"auth_demo_user_email"`
+	AuthDemoUserRole         string                        `json:"auth_demo_user_role"`
+	JWTSecret                string                        `json:"jwt_secret"`
+	Google                   AuthFileGoogle                `json:"google"`
+	OAuthResources           []AuthOAuthResource           `json:"oauth_resources,omitempty"`
+	ManagementScopes         []AuthManagementScope         `json:"management_scopes,omitempty"`
+	ConsumerVerifiers        *[]AuthConsumerVerifier       `json:"consumer_verifiers,omitempty"`
+	ConsumerPublicProjection *AuthConsumerPublicProjection `json:"consumer_public_projection,omitempty"`
+}
+
+type AuthLocalizedText struct {
+	En   string `json:"en"`
+	ZhTW string `json:"zh_tw"`
+}
+
+type AuthManagementScope struct {
+	ID            string            `json:"id"`
+	Product       string            `json:"product"`
+	Resource      string            `json:"resource"`
+	GrantMode     string            `json:"grant_mode"`
+	Name          AuthLocalizedText `json:"name"`
+	Description   AuthLocalizedText `json:"description"`
+	GrantorScopes []string          `json:"grantor_scopes"`
+}
+
+type AuthConsumerVerifier struct {
+	ID                     string   `json:"id"`
+	Environment            string   `json:"environment"`
+	CallerServiceAccount   string   `json:"caller_service_account"`
+	Audience               string   `json:"audience"`
+	Resource               string   `json:"resource"`
+	AllowedCredentialKinds []string `json:"allowed_credential_kinds"`
+	AuthorityModes         []string `json:"authority_modes"`
+}
+
+type AuthConsumerPublicProjection struct {
+	Issuer           string                `json:"issuer"`
+	Resource         string                `json:"resource"`
+	ManagementScopes []AuthManagementScope `json:"management_scopes"`
 }
 
 // AuthOAuthResource is the single CaC-owned policy entry consumed by Auth's
@@ -94,28 +129,31 @@ type AuthFileGoogle struct {
 // AuthInputSnapshot is the nonsecret Stage 1 identity retained with an Auth
 // receipt. Credential references are already pinned to numeric versions.
 type AuthInputSnapshot struct {
-	SchemaVersion          int                 `json:"schema_version"`
-	Environment            string              `json:"environment"`
-	Target                 string              `json:"target"`
-	SourceSHA              string              `json:"source_sha"`
-	ConfigID               string              `json:"config_id"`
-	GCPProject             string              `json:"gcp_project"`
-	FirestoreDatabaseID    string              `json:"firestore_database_id"`
-	LocalCloudScope        string              `json:"local_cloud_scope"`
-	AuthServiceURL         string              `json:"auth_service_url"`
-	SyncServiceURL         string              `json:"sync_service_url"`
-	AllowedHosts           []string            `json:"allowed_hosts"`
-	AllowedOrigins         []string            `json:"allowed_origins"`
-	AuthSessionEnvironment string              `json:"auth_session_environment"`
-	AuthSessionMigration   string              `json:"auth_session_migration"`
-	RegistrationEnabled    *bool               `json:"registration_enabled"`
-	AuthDemoUserID         string              `json:"auth_demo_user_id"`
-	AuthDemoUserEmail      string              `json:"auth_demo_user_email"`
-	AuthDemoUserRole       string              `json:"auth_demo_user_role"`
-	JWTSecretVersion       string              `json:"jwt_secret_version"`
-	Google                 AuthInputGoogle     `json:"google"`
-	ConfigSecretResource   string              `json:"config_secret_resource"`
-	OAuthResources         []AuthOAuthResource `json:"oauth_resources,omitempty"`
+	SchemaVersion            int                           `json:"schema_version"`
+	Environment              string                        `json:"environment"`
+	Target                   string                        `json:"target"`
+	SourceSHA                string                        `json:"source_sha"`
+	ConfigID                 string                        `json:"config_id"`
+	GCPProject               string                        `json:"gcp_project"`
+	FirestoreDatabaseID      string                        `json:"firestore_database_id"`
+	LocalCloudScope          string                        `json:"local_cloud_scope"`
+	AuthServiceURL           string                        `json:"auth_service_url"`
+	SyncServiceURL           string                        `json:"sync_service_url"`
+	AllowedHosts             []string                      `json:"allowed_hosts"`
+	AllowedOrigins           []string                      `json:"allowed_origins"`
+	AuthSessionEnvironment   string                        `json:"auth_session_environment"`
+	AuthSessionMigration     string                        `json:"auth_session_migration"`
+	RegistrationEnabled      *bool                         `json:"registration_enabled"`
+	AuthDemoUserID           string                        `json:"auth_demo_user_id"`
+	AuthDemoUserEmail        string                        `json:"auth_demo_user_email"`
+	AuthDemoUserRole         string                        `json:"auth_demo_user_role"`
+	JWTSecretVersion         string                        `json:"jwt_secret_version"`
+	Google                   AuthInputGoogle               `json:"google"`
+	ConfigSecretResource     string                        `json:"config_secret_resource"`
+	OAuthResources           []AuthOAuthResource           `json:"oauth_resources,omitempty"`
+	ManagementScopes         []AuthManagementScope         `json:"management_scopes,omitempty"`
+	ConsumerVerifiers        *[]AuthConsumerVerifier       `json:"consumer_verifiers,omitempty"`
+	ConsumerPublicProjection *AuthConsumerPublicProjection `json:"consumer_public_projection,omitempty"`
 }
 
 type AuthInputGoogle struct {
@@ -160,6 +198,8 @@ func DecodeAuthInputSnapshot(data []byte) (AuthInputSnapshot, error) {
 	keys := authInputSnapshotKeys
 	if version == 2 {
 		keys = append(append([]string(nil), authInputSnapshotKeys...), "oauth_resources")
+	} else if version == 3 {
+		keys = append(append([]string(nil), authInputSnapshotKeys...), "oauth_resources", "management_scopes", "consumer_verifiers", "consumer_public_projection")
 	}
 	if err := requireJSONKeys(fields, keys); err != nil {
 		return AuthInputSnapshot{}, errors.New("Auth input snapshot has missing or unknown keys")
@@ -183,6 +223,13 @@ func DecodeAuthInputSnapshot(data []byte) (AuthInputSnapshot, error) {
 	}
 	if version == 2 {
 		if err := validateOAuthResourcesJSON("inputs.oauth_resources", fields["oauth_resources"]); err != nil {
+			return AuthInputSnapshot{}, err
+		}
+	} else if version == 3 {
+		if err := validateOAuthResourcesJSON("inputs.oauth_resources", fields["oauth_resources"]); err != nil {
+			return AuthInputSnapshot{}, err
+		}
+		if err := validateAuthPublicPolicyJSON(fields); err != nil {
 			return AuthInputSnapshot{}, err
 		}
 	}
@@ -237,6 +284,51 @@ func authSchemaVersion(raw json.RawMessage) int {
 	return version
 }
 
+func jsonKeySetDifference(fields map[string]json.RawMessage, expected []string) (missing, unknown []string) {
+	allowed := make(map[string]struct{}, len(expected))
+	for _, key := range expected {
+		allowed[key] = struct{}{}
+		if _, ok := fields[key]; !ok {
+			missing = append(missing, key)
+		}
+	}
+	for key := range fields {
+		if _, ok := allowed[key]; !ok {
+			unknown = append(unknown, key)
+		}
+	}
+	sort.Strings(missing)
+	sort.Strings(unknown)
+	return missing, unknown
+}
+
+func validateAuthPublicPolicyJSON(fields map[string]json.RawMessage) error {
+	for _, field := range []struct{ name, kind string }{
+		{"management_scopes", "object_array"}, {"consumer_verifiers", "object_array"},
+		{"consumer_public_projection", "object"},
+	} {
+		if err := requireAuthJSONType("inputs."+field.name, fields[field.name], field.kind); err != nil {
+			return err
+		}
+	}
+	var projection map[string]json.RawMessage
+	if json.Unmarshal(fields["consumer_public_projection"], &projection) != nil || projection == nil ||
+		requireJSONKeys(projection, []string{"issuer", "resource", "management_scopes"}) != nil {
+		return errors.New("Auth consumer_public_projection has missing or unknown keys")
+	}
+	if err := requireAuthJSONType("inputs.consumer_public_projection.issuer", projection["issuer"], "string"); err != nil {
+		return err
+	}
+	if err := requireAuthJSONType("inputs.consumer_public_projection.resource", projection["resource"], "string"); err != nil {
+		return err
+	}
+	var scopes []json.RawMessage
+	if json.Unmarshal(projection["management_scopes"], &scopes) != nil || scopes == nil {
+		return errors.New("Auth consumer_public_projection management scopes are invalid")
+	}
+	return nil
+}
+
 var authInputGoogleKeys = []string{
 	"enabled", "client_id", "client_secret_version", "issuer", "jwks_url", "token_url",
 	"login_redirect_url", "link_redirect_url", "completion_url",
@@ -259,6 +351,9 @@ func requireAuthJSONType(name string, raw json.RawMessage, kind string) error {
 		valid = json.Unmarshal(raw, &value) == nil && value != nil
 	case "string_array":
 		var value []string
+		valid = json.Unmarshal(raw, &value) == nil && value != nil
+	case "object_array":
+		var value []map[string]json.RawMessage
 		valid = json.Unmarshal(raw, &value) == nil && value != nil
 	}
 	if !valid {
@@ -391,6 +486,72 @@ func validateAuthOAuthResources(file AuthFile) error {
 	return nil
 }
 
+func validateAuthPublicPolicy(scopes []AuthManagementScope, verifiers []AuthConsumerVerifier, projection AuthConsumerPublicProjection,
+	environment, issuer, resource string) error {
+	if len(scopes) != 2 || projection.Issuer != issuer || projection.Resource != resource ||
+		!reflect.DeepEqual(projection.ManagementScopes, scopes) {
+		return errors.New("Auth consumer public projection does not match its registered policy")
+	}
+	seen := map[string]bool{}
+	for _, scope := range scopes {
+		if !authOAuthScopePattern.MatchString(scope.ID) || seen[scope.ID] ||
+			(scope.ID != "auth:admin" && scope.ID != "lwc:admin") ||
+			(scope.Product != "auth" && scope.Product != "lwc") ||
+			scope.Resource != resource || scope.GrantMode != "operator-only" ||
+			strings.TrimSpace(scope.Name.En) == "" || strings.TrimSpace(scope.Name.ZhTW) == "" ||
+			strings.TrimSpace(scope.Description.En) == "" || strings.TrimSpace(scope.Description.ZhTW) == "" ||
+			len(scope.GrantorScopes) != 1 || scope.GrantorScopes[0] != "auth:admin" {
+			return errors.New("Auth management scope registry is invalid")
+		}
+		seen[scope.ID] = true
+		if (scope.ID == "auth:admin") != (scope.Product == "auth") || (scope.ID == "lwc:admin") != (scope.Product == "lwc") {
+			return errors.New("Auth management scope product binding is invalid")
+		}
+	}
+	if !seen["auth:admin"] || !seen["lwc:admin"] {
+		return errors.New("Auth management scope registry is incomplete")
+	}
+	expectedVerifierCount := 1
+	if environment == "local" {
+		expectedVerifierCount = 0
+	}
+	if len(verifiers) != expectedVerifierCount {
+		return errors.New("Auth consumer verifier registry is invalid")
+	}
+	for _, verifier := range verifiers {
+		if verifier.ID != "lwc-bff" || verifier.Environment != environment || !authServiceAccountPattern.MatchString(verifier.CallerServiceAccount) ||
+			!validAuthVerifierAudience(verifier.Audience) || verifier.Resource != resource ||
+			!equalStringSlices(verifier.AllowedCredentialKinds, []string{"web-access", "cli-access", "mcp-oauth"}) ||
+			!equalStringSet(verifier.AuthorityModes, []string{"legacy-shadow", "central"}) {
+			return errors.New("Auth consumer verifier identity is invalid")
+		}
+	}
+	return nil
+}
+
+func equalStringSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	left, right := append([]string(nil), a...), append([]string(nil), b...)
+	sort.Strings(left)
+	sort.Strings(right)
+	return reflect.DeepEqual(left, right)
+}
+
+// ValidateAuthPublicPolicy exposes the strict CaC policy check to the
+// pre-materialization source projection validator.
+func ValidateAuthPublicPolicy(scopes []AuthManagementScope, verifiers []AuthConsumerVerifier,
+	projection AuthConsumerPublicProjection, environment, issuer, resource string) error {
+	return validateAuthPublicPolicy(scopes, verifiers, projection, environment, issuer, resource)
+}
+
+func validAuthVerifierAudience(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && u.Scheme == "https" && u.Host != "" && u.User == nil &&
+		(u.Path == "" || u.Path == "/") && u.RawQuery == "" && !u.ForceQuery && u.Fragment == ""
+}
+
 func validAuthOAuthVerifierAudience(environment, audience string) bool {
 	switch environment {
 	case "local":
@@ -451,7 +612,7 @@ func equalStringSetSlices(a, b [][]string) bool {
 // ValidateAuthInputSnapshot ensures Stage 2 receives a complete immutable
 // nonsecret snapshot and exact numeric credential versions.
 func ValidateAuthInputSnapshot(inputs AuthInputSnapshot) error {
-	if (inputs.SchemaVersion != 1 && inputs.SchemaVersion != 2) || inputs.Target != "auth" ||
+	if (inputs.SchemaVersion != 1 && inputs.SchemaVersion != 2 && inputs.SchemaVersion != 3) || inputs.Target != "auth" ||
 		(inputs.Environment != "dev" && inputs.Environment != "prod") ||
 		!authSourceSHAPattern.MatchString(inputs.SourceSHA) || !authConfigIDPattern.MatchString(inputs.ConfigID) ||
 		inputs.GCPProject != "llm-wiki-cloud" || inputs.LocalCloudScope != "" ||
@@ -496,7 +657,9 @@ func ValidateAuthInputSnapshot(inputs AuthInputSnapshot) error {
 			LoginRedirectURL: inputs.Google.LoginRedirectURL, LinkRedirectURL: inputs.Google.LinkRedirectURL,
 			CompletionURL: inputs.Google.CompletionURL,
 		},
-		OAuthResources: inputs.OAuthResources,
+		OAuthResources:   inputs.OAuthResources,
+		ManagementScopes: inputs.ManagementScopes, ConsumerVerifiers: inputs.ConsumerVerifiers,
+		ConsumerPublicProjection: inputs.ConsumerPublicProjection,
 	}
 	return validateAuthFile(file)
 }
@@ -506,6 +669,20 @@ func valueWhen(enabled bool, value string) string {
 		return ""
 	}
 	return value
+}
+
+func authConsumerProjectionOrZero(projection *AuthConsumerPublicProjection) AuthConsumerPublicProjection {
+	if projection == nil {
+		return AuthConsumerPublicProjection{}
+	}
+	return *projection
+}
+
+func authConsumerVerifiersOrEmpty(verifiers *[]AuthConsumerVerifier) []AuthConsumerVerifier {
+	if verifiers == nil {
+		return nil
+	}
+	return *verifiers
 }
 
 var authFileKeys = []string{
@@ -518,6 +695,8 @@ var authFileKeys = []string{
 func authFileKeysForVersion(version int) []string {
 	if version == 2 {
 		return append(append([]string(nil), authFileKeys...), "oauth_resources")
+	} else if version == 3 {
+		return append(append([]string(nil), authFileKeys...), "oauth_resources", "management_scopes", "consumer_verifiers", "consumer_public_projection")
 	}
 	return authFileKeys
 }
@@ -580,11 +759,13 @@ func LoadAuthFile(path string) (Config, error) {
 		GoogleLoginRedirectURL: file.Google.LoginRedirectURL, GoogleLinkRedirectURL: file.Google.LinkRedirectURL,
 		GoogleCompletionURL: file.Google.CompletionURL,
 		AuthOAuthResources:  runtimeAuthOAuthResources(file),
+		ManagementScopes:    file.ManagementScopes, AuthConsumerVerifiers: authConsumerVerifiersOrEmpty(file.ConsumerVerifiers),
+		AuthConsumerPublicProjection: authConsumerProjectionOrZero(file.ConsumerPublicProjection),
 	}, nil
 }
 
 func runtimeAuthOAuthResources(file AuthFile) []AuthOAuthResource {
-	if file.SchemaVersion == 2 {
+	if file.SchemaVersion >= 2 {
 		return file.OAuthResources
 	}
 	return LegacyAuthOAuthResources(file.SyncServiceURL)
@@ -615,8 +796,10 @@ func DecodeAuthFile(data []byte) (AuthFile, error) {
 		return AuthFile{}, errors.New("Auth config document is malformed")
 	}
 	version := authSchemaVersion(fields["schema_version"])
-	if err := requireJSONKeys(fields, authFileKeysForVersion(version)); err != nil {
-		return AuthFile{}, errors.New("Auth config has missing or unknown keys")
+	expectedKeys := authFileKeysForVersion(version)
+	if err := requireJSONKeys(fields, expectedKeys); err != nil {
+		missing, unknown := jsonKeySetDifference(fields, expectedKeys)
+		return AuthFile{}, fmt.Errorf("Auth config has missing or unknown keys (missing=%s unknown=%s)", strings.Join(missing, ","), strings.Join(unknown, ","))
 	}
 	if err := validateAuthFileTypes(fields); err != nil {
 		return AuthFile{}, err
@@ -656,8 +839,14 @@ func validateAuthFileTypes(fields map[string]json.RawMessage) error {
 			return err
 		}
 	}
-	if authSchemaVersion(fields["schema_version"]) == 2 {
+	version := authSchemaVersion(fields["schema_version"])
+	if version >= 2 {
 		if err := validateOAuthResourcesJSON("auth.oauth_resources", fields["oauth_resources"]); err != nil {
+			return err
+		}
+	}
+	if version == 3 {
+		if err := validateAuthPublicPolicyJSON(fields); err != nil {
 			return err
 		}
 	}
@@ -684,7 +873,7 @@ func validateAuthFileTypes(fields map[string]json.RawMessage) error {
 }
 
 func validateAuthFile(file AuthFile) error {
-	if (file.SchemaVersion != 1 && file.SchemaVersion != 2) || file.Target != "auth" ||
+	if (file.SchemaVersion != 1 && file.SchemaVersion != 2 && file.SchemaVersion != 3) || file.Target != "auth" ||
 		(file.Environment != "local" && file.Environment != "dev" && file.Environment != "prod") ||
 		!authConfigIDPattern.MatchString(file.ConfigID) {
 		return errors.New("Auth config identity is invalid")
@@ -724,6 +913,17 @@ func validateAuthFile(file AuthFile) error {
 			return errors.New("Auth schema-1 config must not contain OAuth resource policy")
 		}
 	} else if err := validateAuthOAuthResources(file); err != nil {
+		return err
+	}
+	if file.SchemaVersion < 3 {
+		if len(file.ManagementScopes) != 0 || file.ConsumerVerifiers != nil ||
+			file.ConsumerPublicProjection != nil {
+			return errors.New("Auth legacy config must not contain consumer policy")
+		}
+	} else if file.ConsumerPublicProjection == nil || file.ConsumerVerifiers == nil {
+		return errors.New("Auth consumer public projection is missing")
+	} else if err := validateAuthPublicPolicy(file.ManagementScopes, *file.ConsumerVerifiers,
+		*file.ConsumerPublicProjection, file.Environment, file.AuthServiceURL, trimAuthOrigin(file.SyncServiceURL)); err != nil {
 		return err
 	}
 	for _, host := range file.AllowedHosts {

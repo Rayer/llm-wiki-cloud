@@ -103,6 +103,14 @@ func newProjectKeyService(store projectKeyStore, usage projectKeyUsageStore, loo
 	return &ProjectKeyService{store: store, usage: usage, lookup: lookup, authorize: authorize}
 }
 
+// SetAccountLookup replaces the default local account reader when the BFF is
+// wired to Auth's trusted account-check consumer protocol.
+func (s *ProjectKeyService) SetAccountLookup(lookup AccountLookup) {
+	if s != nil {
+		s.lookup = lookup
+	}
+}
+
 func (r ProjectKeyRecord) Metadata() ProjectKeyMetadata {
 	metadata := ProjectKeyMetadata{
 		KeyID: r.KeyID, Name: r.Name, ProjectID: r.ProjectID,
