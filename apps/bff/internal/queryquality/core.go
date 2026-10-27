@@ -1303,6 +1303,8 @@ func (s *QueryRetrievalPipeline) execute(ctx context.Context, reader cache.Reade
 		attribute.Int("query.expansion.fallback_count", max(info.FallbackCount, 0)),
 	)
 	if err != nil {
+		class := query.AIOperationFailureClass(err)
+		query.RecordStageFailure(stageCtx, class, query.AIFallbackNone)
 		query.FinishStage(stageCtx, "failure")
 		appendTraceStage(trace, StageTrace{Name: "expansion", Outcome: "failure", ElapsedMS: elapsedSince(started), FallbackReason: "expansion_failure"})
 		return query.Result{}, err
@@ -1338,6 +1340,15 @@ func (s *QueryRetrievalPipeline) execute(ctx context.Context, reader cache.Reade
 	}
 	if trace != nil {
 		trace.Expansion = expansionTraceForPolicy(ExpansionTrace{RequestedAttempts: info.RequestedAttempts, SuccessfulAttempts: info.SuccessfulAttempts, ProviderFailedAttempts: info.ProviderFailedAttempts, FallbackCount: info.FallbackCount, KeywordsPerAttempt: info.KeywordsPerAttempt, KeywordConsensusMinimum: MinimumKeywordConsensusSupport, KeywordSupport: append([]KeywordSupport(nil), plan.KeywordSupport...), AttemptOutcomes: append([]ExpansionAttemptInfo(nil), info.AttemptOutcomes...)}, matchingPolicyForOptions(s.options))
+	}
+	var operationFailure *query.AIOperationFailure
+	if plan.Fallback {
+		if class := queryExpansionFailureClass(info); class != "" {
+			if failure, ok := query.AIOperationFailureFromCategory(query.AIOperationQueryExpansion, class, query.AIFallbackDeterministicPlan); ok {
+				operationFailure = &failure
+				query.RecordStageFailure(stageCtx, failure.Class, failure.Fallback)
+			}
+		}
 	}
 	appendTraceStage(trace, StageTrace{
 		Name: "expansion", Outcome: PlanOutcome(plan), Source: info.Source, FallbackReason: info.FallbackReason,
@@ -1454,7 +1465,37 @@ func (s *QueryRetrievalPipeline) execute(ctx context.Context, reader cache.Reade
 		}
 	}
 	status, reason := ResultStatus(len(results))
-	return query.Result{Query: request.Query, Mode: request.Mode, Results: results, Expand: expandFromPlan(plan), Status: status, Reason: reason}, nil
+	result := query.Result{Query: request.Query, Mode: request.Mode, Results: results, Expand: expandFromPlan(plan), Status: status, Reason: reason}
+	if operationFailure != nil {
+		result.AIOperationFailures = append(result.AIOperationFailures, *operationFailure)
+	}
+	return result, nil
+}
+
+func queryExpansionFailureClass(info ExpansionInfo) string {
+	switch info.FallbackReason {
+	case "invalid_plan", "conflicting_hard_constraints":
+		return query.AIFailureInvalidResponse
+	case "all_provider_attempts_failed":
+		class := ""
+		for _, attempt := range info.AttemptOutcomes {
+			if attempt.Diagnostic == "" {
+				continue
+			}
+			candidate := query.AIOperationFailureClassFromCategory(attempt.Diagnostic)
+			if candidate == "" {
+				continue
+			}
+			if class == "" {
+				class = candidate
+			} else if class != candidate {
+				return query.AIFailureProvider
+			}
+		}
+		return class
+	default:
+		return ""
+	}
 }
 
 func rejectionHistogram(candidates []CandidateEvidence) map[string]int {

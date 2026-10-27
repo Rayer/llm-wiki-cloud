@@ -4,6 +4,7 @@ package llm
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -45,6 +46,39 @@ func (profileFixtureRoundTripper) RoundTrip(request *http.Request) (*http.Respon
 			system = message.Content
 		case "user":
 			user = message.Content
+		}
+	}
+	if request.Header.Get("Authorization") == "Bearer synthetic-invalid-fixture-key" {
+		writeProfileFixtureReceipt("openai_chat_completions", input.Model, request.URL.Path)
+		body := `{"error":{"type":"invalid_request_error","message":"fixture rejected credentials"}}`
+		return &http.Response{
+			StatusCode: http.StatusUnauthorized, Header: http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(body)), ContentLength: int64(len(body)), Request: request,
+		}, nil
+	}
+	if request.Header.Get("Authorization") == "Bearer synthetic-invalid-expansion-fixture-key" &&
+		strings.Contains(system, "raw_query string") && strings.Contains(system, "Criterion") {
+		writeProfileFixtureReceipt("openai_chat_completions", input.Model, request.URL.Path)
+		body := `{"choices":[]}`
+		return &http.Response{
+			StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(body)), ContentLength: int64(len(body)), Request: request,
+		}, nil
+	}
+	if strings.Contains(system, "CITATION FORMAT RULES") {
+		switch request.Header.Get("Authorization") {
+		case "Bearer synthetic-body-timeout-fixture-key":
+			writeProfileFixtureReceipt("openai_chat_completions", input.Model, request.URL.Path)
+			return &http.Response{
+				StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}},
+				Body: &profileFixtureTimeoutBody{ctx: request.Context()}, Request: request,
+			}, nil
+		case "Bearer synthetic-cancel-fixture-key":
+			writeProfileFixtureReceipt("openai_chat_completions", input.Model, request.URL.Path)
+			return &http.Response{
+				StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}},
+				Body: &profileFixtureCancelBody{ctx: request.Context(), readyFile: os.Getenv("LWC_BYOK_PROFILE_FIXTURE_BODY_READY_FILE")}, Request: request,
+			}, nil
 		}
 	}
 	content := profileFixtureContent(system, user)
@@ -95,6 +129,13 @@ func profileFixtureContent(system, user string) string {
 		return `{"terms":[]}`
 	case strings.Contains(system, `"relations"`) && strings.Contains(system, `"subject"`):
 		return `{"relations":[]}`
+	case strings.Contains(system, "CITATION FORMAT RULES"):
+		if start := strings.Index(user, "[CITATION_REF_"); start >= 0 {
+			if end := strings.IndexByte(user[start:], ']'); end >= 0 {
+				return "The retrieved Wiki explains BYOK profile routing. " + user[start:start+end+1]
+			}
+		}
+		return "The retrieved Wiki explains BYOK profile routing."
 	case strings.Contains(system, "Return exactly 20 distinct questions"):
 		var input struct {
 			Concepts []struct {
@@ -132,5 +173,37 @@ func writeProfileFixtureReceipt(protocol, model, path string) {
 	_ = file.Chmod(0o600)
 	_, _ = fmt.Fprintf(file, "%s\t%s\t%s\t%s\n", time.Now().UTC().Format(time.RFC3339Nano), protocol, model, path)
 }
+
+type profileFixtureTimeoutBody struct{ ctx context.Context }
+
+func (b *profileFixtureTimeoutBody) Read([]byte) (int, error) {
+	if err := b.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return 0, profileFixtureTimeoutError{}
+}
+
+func (*profileFixtureTimeoutBody) Close() error { return nil }
+
+type profileFixtureTimeoutError struct{}
+
+func (profileFixtureTimeoutError) Error() string   { return "synthetic body read timed out" }
+func (profileFixtureTimeoutError) Timeout() bool   { return true }
+func (profileFixtureTimeoutError) Temporary() bool { return true }
+
+type profileFixtureCancelBody struct {
+	ctx       context.Context
+	readyFile string
+}
+
+func (b *profileFixtureCancelBody) Read([]byte) (int, error) {
+	if b.readyFile != "" {
+		_ = os.WriteFile(b.readyFile, []byte("body read started"), 0o600)
+	}
+	<-b.ctx.Done()
+	return 0, b.ctx.Err()
+}
+
+func (*profileFixtureCancelBody) Close() error { return nil }
 
 var _ http.RoundTripper = profileFixtureRoundTripper{}

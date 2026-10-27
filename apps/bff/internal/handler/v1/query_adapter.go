@@ -44,14 +44,15 @@ func mapQueryResult(result query.Result) handler.QueryResponse {
 		results[i] = item
 	}
 	return handler.QueryResponse{
-		Query:       result.Query,
-		Mode:        result.Mode,
-		Results:     results,
-		Expand:      result.Expand,
-		AISynth:     result.AISynth,
-		Citations:   result.Citations,
-		Status:      result.Status,
-		Reason:      result.Reason,
-		AnswerBasis: result.AnswerBasis, WikiEvidenceStatus: result.WikiEvidenceStatus, DisclosureRequired: result.DisclosureRequired,
+		Query:               result.Query,
+		Mode:                result.Mode,
+		Results:             results,
+		Expand:              result.Expand,
+		AIOperationFailures: append([]query.AIOperationFailure(nil), result.AIOperationFailures...),
+		AISynth:             result.AISynth,
+		Citations:           result.Citations,
+		Status:              result.Status,
+		Reason:              result.Reason,
+		AnswerBasis:         result.AnswerBasis, WikiEvidenceStatus: result.WikiEvidenceStatus, DisclosureRequired: result.DisclosureRequired,
 	}
 }

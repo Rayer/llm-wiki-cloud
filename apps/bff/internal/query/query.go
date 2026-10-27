@@ -51,6 +51,7 @@ type Result struct {
 	Mode                  string
 	Results               []search.Result
 	Expand                *llm.ExpandResult
+	AIOperationFailures   []AIOperationFailure `json:"ai_operation_failures,omitempty"`
 	AISynth               string
 	Citations             []search.Citation
 	Status                string
@@ -59,6 +60,141 @@ type Result struct {
 	WikiEvidenceStatus    string                 `json:"wiki_evidence_status,omitempty"`
 	DisclosureRequired    bool                   `json:"disclosure_required,omitempty"`
 	RuntimeConfigIdentity *RuntimeConfigIdentity `json:"-"`
+}
+
+const (
+	AIOperationQueryExpansion  = "query_expansion"
+	AIOperationAnswerSynthesis = "answer_synthesis"
+
+	AIFailureAuthentication      = "authentication"
+	AIFailureRateLimited         = "rate_limited"
+	AIFailureQuotaExhausted      = "quota_exhausted"
+	AIFailureBilling             = "billing"
+	AIFailureTimeout             = "timeout"
+	AIFailureInvalidResponse     = "invalid_response"
+	AIFailureOutputTruncated     = "output_truncated"
+	AIFailureProviderUnavailable = "provider_unavailable"
+	AIFailureProvider            = "provider_error"
+	AIFailureContextUnavailable  = "context_unavailable"
+	AIFailureCanceled            = "canceled"
+
+	AIFallbackNone              = "none"
+	AIFallbackRawQuery          = "raw_query"
+	AIFallbackDeterministicPlan = "deterministic_plan"
+	AIFallbackRetrievalOnly     = "retrieval_only"
+
+	AIOperationSourcePersonal = "personal"
+	AIOperationSourceShared   = "shared"
+	AIOperationSourceUnknown  = "unknown"
+)
+
+// AIOperationFailure records a safe, bounded failure from an optional AI step
+// and the fallback the query used to keep useful retrieval results available.
+type AIOperationFailure struct {
+	Stage    string `json:"stage"`
+	Class    string `json:"class"`
+	Fallback string `json:"fallback"`
+	Source   string `json:"source,omitempty"`
+}
+
+func NewAIOperationFailure(stage string, err error, fallback string) (AIOperationFailure, bool) {
+	return AIOperationFailureFromCategory(stage, AIOperationFailureClass(err), fallback)
+}
+
+func AIOperationFailureFromCategory(stage, category, fallback string) (AIOperationFailure, bool) {
+	if stage != AIOperationQueryExpansion && stage != AIOperationAnswerSynthesis {
+		return AIOperationFailure{}, false
+	}
+	class := AIOperationFailureClassFromCategory(category)
+	if class == "" {
+		return AIOperationFailure{}, false
+	}
+	switch fallback {
+	case AIFallbackNone, AIFallbackRawQuery, AIFallbackDeterministicPlan, AIFallbackRetrievalOnly:
+	default:
+		return AIOperationFailure{}, false
+	}
+	return AIOperationFailure{Stage: stage, Class: class, Fallback: fallback}, true
+}
+
+func AIOperationFailureClass(err error) string {
+	if errors.Is(err, context.Canceled) {
+		return AIFailureCanceled
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return AIFailureTimeout
+	}
+	var profileErr *llm.ProfileCallError
+	if errors.As(err, &profileErr) {
+		switch profileErr.Kind {
+		case llm.ProviderAuthentication:
+			return AIFailureAuthentication
+		case llm.ProviderRateLimited:
+			return AIFailureRateLimited
+		case llm.ProviderTimeout:
+			return AIFailureTimeout
+		case llm.ProviderBilling:
+			return AIFailureBilling
+		case llm.ProviderQuotaExhausted:
+			return AIFailureQuotaExhausted
+		case llm.ProviderResponseInvalid:
+			return AIFailureInvalidResponse
+		case llm.ProviderOutputTruncated:
+			return AIFailureOutputTruncated
+		default:
+			return AIFailureProvider
+		}
+	}
+	var providerErr *llm.ProviderCallError
+	if errors.As(err, &providerErr) {
+		return AIOperationFailureClassFromCategory(llm.SafeErrorCategory(err))
+	}
+	return AIFailureProvider
+}
+
+func AIOperationFailureClassFromCategory(category string) string {
+	switch category {
+	case "provider_auth_rejected", "provider_authentication", AIFailureAuthentication:
+		return AIFailureAuthentication
+	case "provider_rate_limited", AIFailureRateLimited:
+		return AIFailureRateLimited
+	case "quota_exhausted":
+		return AIFailureQuotaExhausted
+	case "provider_billing", AIFailureBilling:
+		return AIFailureBilling
+	case "provider_timeout", AIFailureTimeout:
+		return AIFailureTimeout
+	case AIFailureCanceled:
+		return AIFailureCanceled
+	case "provider_response_invalid", "provider_response_invalid_json", "invalid_plan", AIFailureInvalidResponse:
+		return AIFailureInvalidResponse
+	case "provider_output_truncated", AIFailureOutputTruncated:
+		return AIFailureOutputTruncated
+	case "provider_server_error", "provider_transport_or_response_error":
+		return AIFailureProviderUnavailable
+	case AIFailureProviderUnavailable:
+		return AIFailureProviderUnavailable
+	case AIFailureProvider:
+		return AIFailureProvider
+	case AIFailureContextUnavailable:
+		return AIFailureContextUnavailable
+	case "provider_not_configured":
+		return ""
+	default:
+		return AIFailureProvider
+	}
+}
+
+func (r *Result) addAIOperationFailure(failure AIOperationFailure) {
+	if r == nil {
+		return
+	}
+	for _, existing := range r.AIOperationFailures {
+		if existing == failure {
+			return
+		}
+	}
+	r.AIOperationFailures = append(r.AIOperationFailures, failure)
 }
 
 // RuntimeConfigIdentity is the privacy-safe identity of the sealed runtime
@@ -256,6 +392,7 @@ func (s *Service) SynthesizeWithError(ctx context.Context, reader cache.Reader, 
 		synthesisCtx = llm.WithCallPurpose(synthesisCtx, "model_prior")
 		answer, err := s.llm.Chat(synthesisCtx, buildModelPriorSystemPrompt(), buildModelPriorUserPrompt(request.Query))
 		if err != nil {
+			RecordStageFailure(synthesisCtx, AIOperationFailureClass(err), AIFallbackNone)
 			FinishStage(synthesisCtx, "failure")
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return response, ctxErr
@@ -264,6 +401,7 @@ func (s *Service) SynthesizeWithError(ctx context.Context, reader cache.Reader, 
 		}
 		answer = strings.TrimSpace(search.NeutralizeCitationReferences(answer))
 		if answer == "" {
+			RecordStageFailure(synthesisCtx, AIFailureInvalidResponse, AIFallbackNone)
 			FinishStage(synthesisCtx, "failure")
 			return response, errors.New("model-prior synthesis returned blank content")
 		}
@@ -276,17 +414,21 @@ func (s *Service) SynthesizeWithError(ctx context.Context, reader cache.Reader, 
 		return response, nil
 	}
 
-	authority, err := search.NewCitationAuthority(response.Results)
-	if err != nil {
-		log.Printf("citation capability issuance failed: %v", err)
-		return response, nil
-	}
 	synthesisCtx := ctx
 	modelIdentity, _ := s.llm.ModelIdentity()
 	if recorder := ReceiptRecorderFromContext(ctx); recorder != nil {
 		synthesisCtx = recorder.StartStage(ctx, "answer_synthesis", modelIdentity.Provider, modelIdentity.Model, modelIdentity.Reasoning)
 	}
 	synthesisCtx = llm.WithCallPurpose(synthesisCtx, "evidence_answer")
+	authority, err := search.NewCitationAuthority(response.Results)
+	if err != nil {
+		log.Printf("citation capability issuance failed: %v", err)
+		failure, _ := AIOperationFailureFromCategory(AIOperationAnswerSynthesis, AIFailureContextUnavailable, AIFallbackRetrievalOnly)
+		response.addAIOperationFailure(failure)
+		RecordStageFailure(synthesisCtx, failure.Class, failure.Fallback)
+		FinishStage(synthesisCtx, "degraded")
+		return response, nil
+	}
 	contextCtx, contextSpan := otel.Tracer("llm-wiki-bff/query").Start(synthesisCtx, "query.context.acquire")
 	contextCtx = observability.WithStorageReadBudget(contextCtx)
 	var contexts []string
@@ -297,12 +439,30 @@ func (s *Service) SynthesizeWithError(ctx context.Context, reader cache.Reader, 
 	}
 	if err != nil {
 		finishContextAcquire(contextSpan, err, 0)
-		FinishStage(synthesisCtx, "failure")
-		return response, err
+		if ctxErr := ctx.Err(); ctxErr != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			failureClass := AIOperationFailureClass(err)
+			if ctxErr != nil {
+				failureClass = AIOperationFailureClass(ctxErr)
+			}
+			RecordStageFailure(synthesisCtx, failureClass, AIFallbackNone)
+			FinishStage(synthesisCtx, "failure")
+			if ctxErr != nil {
+				return response, ctxErr
+			}
+			return response, err
+		}
+		failure, _ := AIOperationFailureFromCategory(AIOperationAnswerSynthesis, AIFailureContextUnavailable, AIFallbackRetrievalOnly)
+		response.addAIOperationFailure(failure)
+		RecordStageFailure(synthesisCtx, failure.Class, failure.Fallback)
+		FinishStage(synthesisCtx, "degraded")
+		return response, nil
 	}
 	finishContextAcquire(contextSpan, nil, len(contexts))
 	if len(contexts) == 0 {
-		FinishStage(synthesisCtx, "success")
+		failure, _ := AIOperationFailureFromCategory(AIOperationAnswerSynthesis, AIFailureContextUnavailable, AIFallbackRetrievalOnly)
+		response.addAIOperationFailure(failure)
+		RecordStageFailure(synthesisCtx, failure.Class, failure.Fallback)
+		FinishStage(synthesisCtx, "degraded")
 		return response, nil
 	}
 	answer, err := s.llm.Chat(synthesisCtx, buildSystemPrompt(request.Mode), buildUserPrompt(request.Query, contexts))
@@ -314,14 +474,21 @@ func (s *Service) SynthesizeWithError(ctx context.Context, reader cache.Reader, 
 		}
 	}
 	if err != nil {
-		FinishStage(synthesisCtx, outcome)
 		if ctxErr := ctx.Err(); ctxErr != nil {
+			RecordStageFailure(synthesisCtx, AIOperationFailureClass(ctxErr), AIFallbackNone)
+			FinishStage(synthesisCtx, outcome)
 			return response, ctxErr
 		}
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			RecordStageFailure(synthesisCtx, AIOperationFailureClass(err), AIFallbackNone)
+			FinishStage(synthesisCtx, "failure")
 			return response, err
 		}
 		log.Printf("LLM synthesis failed: %v", err)
+		failure, _ := NewAIOperationFailure(AIOperationAnswerSynthesis, err, AIFallbackRetrievalOnly)
+		response.addAIOperationFailure(failure)
+		RecordStageFailure(synthesisCtx, failure.Class, failure.Fallback)
+		FinishStage(synthesisCtx, "degraded")
 		return response, nil
 	}
 

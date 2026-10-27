@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   user: { id: 'account-a' },
   hydrated: true,
   projectsLoading: false,
+  isDemoSession: false,
   locale: 'en' as 'en' | 'zh-TW',
   useRealLocaleCopy: false,
   getConcepts: vi.fn(),
@@ -57,6 +58,7 @@ vi.mock('@/components/WorkspaceProvider', () => ({
     user: mocks.user,
     hydrated: mocks.hydrated,
     projectsLoading: mocks.projectsLoading,
+    isDemoSession: mocks.isDemoSession,
   }),
 }));
 
@@ -121,6 +123,7 @@ beforeEach(() => {
   mocks.user = { id: 'account-a' };
   mocks.hydrated = true;
   mocks.projectsLoading = false;
+  mocks.isDemoSession = false;
   mocks.locale = 'en';
   mocks.useRealLocaleCopy = false;
   mocks.getStatus.mockResolvedValue(status());
@@ -573,6 +576,7 @@ describe('LWC-342 completed query history restoration', () => {
       aiAnswer: 'First answer from this submission.',
       citations: [{ text: 'First citation', type: 'source', slug: 'source-one', id: 'source-one', path: 'source-one.md' }],
       expand: { keywords: ['first keyword'] },
+      ai_operation_failures: [{ stage: 'query_expansion', class: 'authentication', fallback: 'deterministic_plan', source: 'personal' }],
     };
     const secondResponse = {
       results: [{ id: 'second-result', slug: 'second-result', title: 'Second result', type: 'concept', excerpt: 'second excerpt', content: '' }],
@@ -600,6 +604,7 @@ describe('LWC-342 completed query history restoration', () => {
       fireEvent.submit(form);
     });
     expect(await screen.findByText('First answer from this submission.')).toBeTruthy();
+    expect(screen.getByText('QueryResults.aiFailure.heading')).toBeTruthy();
     expect(mocks.searchWiki).toHaveBeenCalledTimes(1);
 
     window.history.pushState({}, '', '/concepts/first-result');
@@ -613,6 +618,8 @@ describe('LWC-342 completed query history restoration', () => {
     expect(screen.getByText(searchMode === 'wiki' ? 'QueryResults.wikiMode' : 'QueryResults.fullMode')).toBeTruthy();
     expect(screen.getByText('First citation')).toBeTruthy();
     expect(screen.getByText('QueryResults.expansionKeywords')).toBeTruthy();
+    expect(screen.getByText('QueryResults.aiFailure.heading')).toBeTruthy();
+    expect(screen.getByText('QueryResults.aiFailure.sourceAdvice.personal')).toBeTruthy();
     expect(mocks.searchWiki).toHaveBeenCalledTimes(1);
 
     await act(async () => {
@@ -739,6 +746,7 @@ describe('LWC-342 completed query history restoration', () => {
     expect(screen.getByText(insufficientCopy)).toBeTruthy();
     expect(screen.getByText(disclosureCopy)).toBeTruthy();
     expect(screen.getByText(locale === 'en' ? 'Full mode' : '完整模式')).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
     expect(screen.queryByText(noResultsCopy)).toBeNull();
     expect(screen.queryByText('QueryResults.modelPriorDisclosure')).toBeNull();
 
@@ -751,6 +759,7 @@ describe('LWC-342 completed query history restoration', () => {
     expect(screen.getByText(insufficientCopy)).toBeTruthy();
     expect(screen.getByText(disclosureCopy)).toBeTruthy();
     expect(screen.queryByText(noResultsCopy)).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
     expect(mocks.searchWiki).toHaveBeenCalledTimes(1);
   });
 
@@ -767,5 +776,137 @@ describe('LWC-342 completed query history restoration', () => {
     expect(await screen.findByText('QueryErrors.queryFailure')).toBeTruthy();
     expect(screen.queryByText('QueryResults.insufficientEvidence')).toBeNull();
     expect(screen.queryByText('QueryResults.noResults')).toBeNull();
+  });
+
+  it.each([
+    {
+      name: 'personal authentication', source: 'personal', demo: false, failureClass: 'authentication',
+      classCopy: 'The AI provider used for this request rejected authentication.',
+      sourceCopy: 'This request used your personal AI profile. Review its saved key, usage, or billing settings as applicable.',
+      action: 'Review personal provider settings',
+    },
+    {
+      name: 'shared authentication', source: 'shared', demo: false, failureClass: 'authentication',
+      classCopy: 'The AI provider used for this request rejected authentication.',
+      sourceCopy: 'This request used the shared AI service. Its configuration and billing are managed by the service operator; try again later or contact your administrator. Your personal profile was not used.',
+      action: 'Choose an optional personal provider',
+    },
+    {
+      name: 'Demo authentication', source: 'shared', demo: true, failureClass: 'authentication',
+      classCopy: 'The AI provider used for this request rejected authentication.',
+      sourceCopy: 'Demo uses a shared AI service managed by the service operator. This issue is not tied to your personal API key or billing.',
+      action: null,
+    },
+    {
+      name: 'personal quota', source: 'personal', demo: false, failureClass: 'quota_exhausted',
+      classCopy: 'The AI provider used for this request confirmed that its quota is exhausted.',
+      sourceCopy: 'This request used your personal AI profile. Review its saved key, usage, or billing settings as applicable.',
+      action: 'Review personal provider settings',
+    },
+    {
+      name: 'shared quota', source: 'shared', demo: false, failureClass: 'quota_exhausted',
+      classCopy: 'The AI provider used for this request confirmed that its quota is exhausted.',
+      sourceCopy: 'This request used the shared AI service. Its configuration and billing are managed by the service operator; try again later or contact your administrator. Your personal profile was not used.',
+      action: 'Choose an optional personal provider',
+    },
+    {
+      name: 'Demo quota', source: 'shared', demo: true, failureClass: 'quota_exhausted',
+      classCopy: 'The AI provider used for this request confirmed that its quota is exhausted.',
+      sourceCopy: 'Demo uses a shared AI service managed by the service operator. This issue is not tied to your personal API key or billing.',
+      action: null,
+    },
+  ] as const)('renders truthful $name guidance and controls', async ({ source, demo, failureClass, classCopy, sourceCopy, action }) => {
+    mocks.useRealLocaleCopy = true;
+    mocks.locale = 'en';
+    mocks.isDemoSession = demo;
+    mocks.searchWiki.mockResolvedValueOnce({
+      results: [{ id: 'routing', slug: 'byok-profile-routing', title: 'BYOK Profile Routing', type: 'concept', excerpt: 'Project profile routing.', content: '' }],
+      aiAnswer: '',
+      citations: [],
+      ai_operation_failures: [
+        { stage: 'answer_synthesis', class: failureClass, fallback: 'retrieval_only', source },
+      ],
+    });
+    const settingsEvent = vi.fn();
+    const onSettingsEvent = (event: Event) => settingsEvent((event as CustomEvent).detail);
+    window.addEventListener('lwc-open-account-settings', onSettingsEvent);
+
+    try {
+      render(<HomeClient />);
+      await waitForInitialSearchState();
+      const input = screen.getByRole('textbox');
+      await act(async () => {
+        fireEvent.change(input, { target: { value: 'How does BYOK profile routing work?' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Full' }));
+        fireEvent.submit(input.closest('form') as HTMLFormElement);
+      });
+
+      const warning = await screen.findByRole('alert');
+      expect(warning.textContent).toContain('An AI step could not be completed.');
+      expect(warning.textContent).toContain(classCopy);
+      expect(warning.textContent).toContain(sourceCopy);
+      expect(warning.textContent).toContain('Retrieval results are available without an AI answer.');
+      expect(warning.textContent).not.toContain('synthetic-invalid-fixture-key');
+      expect(await screen.findByRole('button', { name: /BYOK Profile Routing/ })).toBeTruthy();
+
+      if (action) {
+        fireEvent.click(screen.getByRole('button', { name: action }));
+        expect(settingsEvent).toHaveBeenCalledWith({ focusBYOK: true });
+      } else {
+        expect(screen.queryByRole('button', { name: /personal provider/i })).toBeNull();
+        expect(settingsEvent).not.toHaveBeenCalled();
+      }
+    } finally {
+      window.removeEventListener('lwc-open-account-settings', onSettingsEvent);
+    }
+  });
+
+  it('keeps a successful synthesized baseline visible without an AI failure notice', async () => {
+    mocks.useRealLocaleCopy = true;
+    mocks.locale = 'en';
+    mocks.searchWiki.mockResolvedValueOnce({
+      results: [{ id: 'routing', slug: 'byok-profile-routing', title: 'BYOK Profile Routing', type: 'concept', content: '' }],
+      aiAnswer: 'A Project uses its selected provider for model calls.',
+      citations: [{ text: 'BYOK Profile Routing', type: 'concept', slug: 'byok-profile-routing', id: 'routing' }],
+      ai_operation_failures: [],
+    });
+    render(<HomeClient />);
+    await waitForInitialSearchState();
+    const input = screen.getByRole('textbox');
+    await act(async () => {
+      fireEvent.change(input, { target: { value: 'How does BYOK profile routing work?' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Full' }));
+      fireEvent.submit(input.closest('form') as HTMLFormElement);
+    });
+    expect(await screen.findByText('A Project uses its selected provider for model calls.')).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'BYOK Profile Routing' })).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByRole('button', { name: /provider settings/i })).toBeNull();
+  });
+
+  it('reports an expansion fallback without claiming a successful answer failed', async () => {
+    mocks.useRealLocaleCopy = true;
+    mocks.locale = 'en';
+    mocks.searchWiki.mockResolvedValueOnce({
+      results: [{ id: 'routing', slug: 'byok-profile-routing', title: 'BYOK Profile Routing', type: 'concept', excerpt: 'Project profile routing.', content: '' }],
+      aiAnswer: 'The Project uses its selected profile for model calls.',
+      citations: [],
+      ai_operation_failures: [
+        { stage: 'query_expansion', class: 'authentication', fallback: 'deterministic_plan' },
+      ],
+    });
+    render(<HomeClient />);
+    await waitForInitialSearchState();
+    const input = screen.getByRole('textbox');
+    await act(async () => {
+      fireEvent.change(input, { target: { value: 'How does BYOK profile routing work?' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Full' }));
+      fireEvent.submit(input.closest('form') as HTMLFormElement);
+    });
+
+    const warning = await screen.findByRole('alert');
+    expect(warning.textContent).toContain('Search expansion failed; the original question was searched.');
+    expect(warning.textContent).not.toContain('The AI answer could not be generated');
+    expect(await screen.findByText('The Project uses its selected profile for model calls.')).toBeTruthy();
   });
 });

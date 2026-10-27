@@ -73,7 +73,7 @@ func TestServiceWikiSuccess(t *testing.T) {
 	if len(result.Results) != 1 || result.Results[0].Slug != "coffee-shops" {
 		t.Fatalf("results = %#v, want single coffee-shops result", result.Results)
 	}
-	if result.AISynth != "" || len(result.Citations) != 0 {
+	if result.AISynth != "" || len(result.Citations) != 0 || len(result.AIOperationFailures) != 0 {
 		t.Fatalf("synthesis/citations present unexpectedly: %#v", result)
 	}
 }
@@ -96,6 +96,9 @@ func TestServiceFullSynthesizesAndResolvesCitations(t *testing.T) {
 	}
 	if len(result.Citations) != 1 || result.Citations[0].Slug != "alpha-coffee" {
 		t.Fatalf("citations = %#v, want one alpha-coffee citation", result.Citations)
+	}
+	if len(result.AIOperationFailures) != 0 {
+		t.Fatalf("successful synthesis acquired failure metadata: %+v", result.AIOperationFailures)
 	}
 	if len(result.Results) != 1 || result.Results[0].Slug != "alpha-coffee" {
 		t.Fatalf("results = %#v, want resolved alpha-coffee result", result.Results)
@@ -584,6 +587,55 @@ func TestServiceSynthesisFailurePreservesRankedResults(t *testing.T) {
 	}
 	if result.AISynth != "" || len(result.Citations) != 0 || len(result.Results) != 1 || result.Results[0].Slug != "coffee-shops" {
 		t.Fatalf("synthesis failure response = %#v, want ranked result preserved", result)
+	}
+	wantFailure := AIOperationFailure{Stage: AIOperationAnswerSynthesis, Class: AIFailureProviderUnavailable, Fallback: AIFallbackRetrievalOnly}
+	if !reflect.DeepEqual(result.AIOperationFailures, []AIOperationFailure{wantFailure}) {
+		t.Fatalf("synthesis failure metadata = %+v, want %+v", result.AIOperationFailures, wantFailure)
+	}
+}
+
+func TestAIOperationFailureClassUsesTypedProviderCategories(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "authentication", err: &llm.ProfileCallError{Kind: llm.ProviderAuthentication, StatusCode: http.StatusUnauthorized}, want: AIFailureAuthentication},
+		{name: "rate limited", err: &llm.ProfileCallError{Kind: llm.ProviderRateLimited, StatusCode: http.StatusTooManyRequests}, want: AIFailureRateLimited},
+		{name: "quota exhausted", err: &llm.ProfileCallError{Kind: llm.ProviderQuotaExhausted, StatusCode: http.StatusTooManyRequests}, want: AIFailureQuotaExhausted},
+		{name: "timeout", err: &llm.ProfileCallError{Kind: llm.ProviderTimeout}, want: AIFailureTimeout},
+		{name: "invalid response", err: &llm.ProfileCallError{Kind: llm.ProviderResponseInvalid}, want: AIFailureInvalidResponse},
+		{name: "truncated output", err: &llm.ProfileCallError{Kind: llm.ProviderOutputTruncated}, want: AIFailureOutputTruncated},
+		{name: "provider failure", err: &llm.ProfileCallError{Kind: llm.ProviderFailure}, want: AIFailureProvider},
+		{name: "provider server status", err: &llm.ProviderCallError{Err: &llm.HTTPStatusError{StatusCode: http.StatusServiceUnavailable}}, want: AIFailureProviderUnavailable},
+		{name: "canceled", err: context.Canceled, want: AIFailureCanceled},
+		{name: "deadline", err: context.DeadlineExceeded, want: AIFailureTimeout},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := AIOperationFailureClass(test.err); got != test.want {
+				t.Fatalf("AIOperationFailureClass(%T) = %q, want %q", test.err, got, test.want)
+			}
+		})
+	}
+}
+
+func TestAIOperationFailureCanonicalClassesRoundTripAndUnconfiguredProviderIsOmitted(t *testing.T) {
+	classes := []string{
+		AIFailureAuthentication, AIFailureRateLimited, AIFailureQuotaExhausted, AIFailureBilling,
+		AIFailureTimeout, AIFailureInvalidResponse, AIFailureOutputTruncated, AIFailureProviderUnavailable,
+		AIFailureProvider, AIFailureContextUnavailable, AIFailureCanceled,
+	}
+	for _, class := range classes {
+		t.Run(class, func(t *testing.T) {
+			failure, ok := AIOperationFailureFromCategory(AIOperationAnswerSynthesis, class, AIFallbackRetrievalOnly)
+			if !ok || failure.Class != class {
+				t.Fatalf("canonical class %q normalized to %+v, ok=%v", class, failure, ok)
+			}
+		})
+	}
+	if failure, ok := AIOperationFailureFromCategory(AIOperationAnswerSynthesis, "provider_not_configured", AIFallbackRetrievalOnly); ok {
+		t.Fatalf("unconfigured provider produced a wire warning: %+v", failure)
 	}
 }
 

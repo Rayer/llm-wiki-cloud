@@ -437,7 +437,7 @@ func (h *Handler) Ready(c *gin.Context) {
 // Query handles POST /api/v1/query using the request's GCS scope.
 //
 //	@Summary		Search wiki content
-//	@Description	Full-text search across sources and concepts. Mode "wiki" returns raw results, "full" adds AI-synthesized answer. Model-prior full responses with insufficient_evidence/no_qualified_evidence include citations:[] and the model-prior evidence metadata; legacy nil citations remain omitted.
+//	@Description	Full-text search across sources and concepts. Mode "wiki" returns raw results, "full" adds AI-synthesized answer. Recovered optional AI failures include bounded ai_operation_failures with the source resolved for this request while retaining retrieval results. Model-prior full responses with insufficient_evidence/no_qualified_evidence include citations:[] and the model-prior evidence metadata; legacy nil citations remain omitted.
 //	@Tags			search
 //	@Accept			json
 //	@Produce		json

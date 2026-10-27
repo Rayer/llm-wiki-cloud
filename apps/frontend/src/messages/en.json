@@ -761,7 +761,42 @@
     "openEntryFallback": "Open this wiki entry.",
     "insufficientEvidence": "This Wiki retrieval did not find sufficient evidence to answer this question.",
     "modelPriorDisclosure": "This Full mode answer may use general model knowledge and is not supported by the retrieved Wiki evidence.",
-    "expansionKeywords": "Expanded keywords: {keywords}"
+    "expansionKeywords": "Expanded keywords: {keywords}",
+    "aiFailure": {
+      "heading": "An AI step could not be completed.",
+      "stage": {
+        "query_expansion": "Search expansion failed; the original question was searched.",
+        "answer_synthesis": "The AI answer could not be generated; Wiki results are shown below."
+      },
+      "class": {
+        "authentication": "The AI provider used for this request rejected authentication.",
+        "rate_limited": "The selected AI provider is rate limiting requests. Try again later.",
+        "quota_exhausted": "The AI provider used for this request confirmed that its quota is exhausted.",
+        "billing": "The AI provider used for this request reported a billing issue.",
+        "timeout": "The selected AI provider did not respond in time. Try again.",
+        "invalid_response": "The selected AI provider returned a response that could not be used. Try again or review its settings.",
+        "output_truncated": "The selected AI provider stopped before completing its response. Try again.",
+        "provider_unavailable": "The selected AI provider is temporarily unavailable. Try again later.",
+        "provider_error": "The selected AI provider could not complete this step. Try again later.",
+        "context_unavailable": "The answer could not be prepared from the retrieved Wiki content. The search results are still available below.",
+        "canceled": "The AI request was canceled before it could complete."
+      },
+      "sourceAdvice": {
+        "personal": "This request used your personal AI profile. Review its saved key, usage, or billing settings as applicable.",
+        "shared": "This request used the shared AI service. Its configuration and billing are managed by the service operator; try again later or contact your administrator. Your personal profile was not used.",
+        "demo": "Demo uses a shared AI service managed by the service operator. This issue is not tied to your personal API key or billing.",
+        "unknown": "We could not confirm which AI service this request used. Contact your administrator; if you manage a personal profile, you may review its settings."
+      },
+      "fallback": {
+        "none": "",
+        "raw_query": "",
+        "deterministic_plan": "Search continued with a safe fallback plan.",
+        "retrieval_only": "Retrieval results are available without an AI answer."
+      },
+      "openPersonalSettings": "Review personal provider settings",
+      "choosePersonalSettings": "Choose an optional personal provider",
+      "openOptionalSettings": "Review optional personal provider settings"
+    }
   },
   "QueryErrors": {
     "queryFailure": "We could not complete your search. Try again; if the issue continues, share the diagnostic ID with support.",

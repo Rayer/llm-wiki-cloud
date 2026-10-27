@@ -26,6 +26,139 @@ func (c *profileCallCapture) StartProfileCallAtContext(_ context.Context, profil
 	return func(outcome, _ string, _ time.Time) { c.outcome = outcome }
 }
 
+type profileReadFailureBody struct {
+	ctx           context.Context
+	err           error
+	waitForCancel bool
+	started       chan<- struct{}
+}
+
+func (b *profileReadFailureBody) Read([]byte) (int, error) {
+	if b.started != nil {
+		close(b.started)
+	}
+	if b.waitForCancel {
+		<-b.ctx.Done()
+		return 0, b.ctx.Err()
+	}
+	if err := b.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return 0, b.err
+}
+
+func (*profileReadFailureBody) Close() error { return nil }
+
+type profileBodyTimeoutError struct{}
+
+func (profileBodyTimeoutError) Error() string   { return "synthetic response body timeout" }
+func (profileBodyTimeoutError) Timeout() bool   { return true }
+func (profileBodyTimeoutError) Temporary() bool { return true }
+
+func TestProfileClientClassifiesResponseBodyTimeoutAsProviderTimeout(t *testing.T) {
+	requestCtx := context.Background()
+	transport := profileRoundTripper(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       &profileReadFailureBody{ctx: request.Context(), err: profileBodyTimeoutError{}},
+			Request:    request,
+		}, nil
+	})
+	client, err := newProfileClient(ProfileConfig{ID: "p-timeout", Revision: 1, Provider: "custom", Protocol: ProtocolOpenAIChatCompletions,
+		Endpoint: "https://fixture.example/v1", Model: "fixture-model"}, "synthetic-key", ProfileClientOptions{}, false, transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	capture := &profileCallCapture{}
+	ctx := context.WithValue(requestCtx, recorderKey{}, capture)
+	_, err = client.Complete(ctx, "rules", "question")
+	var callErr *ProfileCallError
+	if !errors.As(err, &callErr) || callErr.Kind != ProviderTimeout {
+		t.Fatalf("Complete() error = %v, want typed timeout after HTTP 200 headers", err)
+	}
+	if ctx.Err() != nil {
+		t.Fatalf("caller context ended during provider timeout: %v", ctx.Err())
+	}
+	if capture.outcome != string(ProviderTimeout) {
+		t.Fatalf("recorded provider outcome = %q, want %q", capture.outcome, ProviderTimeout)
+	}
+}
+
+func TestProfileClientKeepsNonTimeoutResponseBodyReadAsInvalidResponse(t *testing.T) {
+	transport := profileRoundTripper(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       &profileReadFailureBody{ctx: request.Context(), err: errors.New("synthetic body read failure")},
+			Request:    request,
+		}, nil
+	})
+	client, err := newProfileClient(ProfileConfig{ID: "p-invalid-body", Revision: 1, Provider: "custom", Protocol: ProtocolOpenAIChatCompletions,
+		Endpoint: "https://fixture.example/v1", Model: "fixture-model"}, "synthetic-key", ProfileClientOptions{}, false, transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	_, err = client.Complete(context.Background(), "rules", "question")
+	var callErr *ProfileCallError
+	if !errors.As(err, &callErr) || callErr.Kind != ProviderResponseInvalid {
+		t.Fatalf("Complete() error = %v, want invalid response for a non-timeout body read error", err)
+	}
+	if strings.Contains(err.Error(), "synthetic body read failure") {
+		t.Fatalf("body reader detail leaked in safe error: %v", err)
+	}
+}
+
+func TestProfileClientKeepsCallerCancellationTerminalDuringResponseBodyRead(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	started := make(chan struct{})
+	transport := profileRoundTripper(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       &profileReadFailureBody{ctx: request.Context(), waitForCancel: true, started: started},
+			Request:    request,
+		}, nil
+	})
+	client, err := newProfileClient(ProfileConfig{ID: "p-canceled", Revision: 1, Provider: "custom", Protocol: ProtocolOpenAIChatCompletions,
+		Endpoint: "https://fixture.example/v1", Model: "fixture-model"}, "synthetic-key", ProfileClientOptions{}, false, transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	capture := &profileCallCapture{}
+	ctx = context.WithValue(ctx, recorderKey{}, capture)
+	type completion struct {
+		result CompletionResult
+		err    error
+	}
+	done := make(chan completion, 1)
+	go func() {
+		result, completeErr := client.Complete(ctx, "rules", "question")
+		done <- completion{result: result, err: completeErr}
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("HTTP 200 body was not read")
+	}
+	cancel()
+	select {
+	case got := <-done:
+		if got.err != context.Canceled || got.result.Text != "" {
+			t.Fatalf("Complete() = (%+v, %v), want empty result and terminal caller cancellation", got.result, got.err)
+		}
+		if capture.outcome != "canceled" {
+			t.Fatalf("recorded provider outcome = %q, want canceled", capture.outcome)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Complete() did not stop after caller cancellation")
+	}
+}
+
 func TestProfileClientUsesOpenAIChatCompletionsProtocol(t *testing.T) {
 	transport := profileRoundTripper(func(request *http.Request) (*http.Response, error) {
 		if request.URL.String() != "https://fixture.example/v1/chat/completions" || request.Header.Get("Authorization") != "Bearer synthetic-key" {

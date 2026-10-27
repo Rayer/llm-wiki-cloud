@@ -38,6 +38,7 @@ export function copyQueryTerminalMetadata(source: QueryTerminalMetadata): QueryT
     answer_basis: source.answer_basis,
     wiki_evidence_status: source.wiki_evidence_status,
     disclosure_required: source.disclosure_required,
+    ai_operation_failures: source.ai_operation_failures?.map((failure) => ({ ...failure })),
   };
 }
 

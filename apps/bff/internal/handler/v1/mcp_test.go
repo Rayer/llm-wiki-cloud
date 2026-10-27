@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -56,8 +57,41 @@ func TestMCPQuerySchemaIsQueryOnly(t *testing.T) {
 		!strings.Contains(mode.Description, "Defaults to wiki") {
 		t.Fatalf("mode description does not match query behavior: %q", mode.Description)
 	}
-	if !strings.Contains(string(queryProjectOutputSchema), `"citations"`) || !strings.Contains(string(queryProjectOutputSchema), `"disclosure_required"`) {
+	if !strings.Contains(string(queryProjectOutputSchema), `"citations"`) || !strings.Contains(string(queryProjectOutputSchema), `"disclosure_required"`) ||
+		!strings.Contains(string(queryProjectOutputSchema), `"ai_operation_failures"`) || !strings.Contains(string(queryProjectOutputSchema), `"authentication"`) ||
+		!strings.Contains(string(queryProjectOutputSchema), `"source":{"type":"string","enum":["personal","shared","unknown"]}`) {
 		t.Fatal("output schema omits QueryResponse fields")
+	}
+}
+
+func TestMCPQueryPreservesRecoveredAIOperationFailure(t *testing.T) {
+	h := New(localfs.New(t.TempDir()), nil, nil, nil, nil, nil)
+	failure := query.AIOperationFailure{Stage: query.AIOperationAnswerSynthesis, Class: query.AIFailureAuthentication, Fallback: query.AIFallbackRetrievalOnly}
+	h.SetQueryExecutor(&mcpTestExecutor{result: query.Result{
+		Query: "coffee", Mode: "full", Results: []search.Result{{Slug: "coffee-shops", Title: "Coffee Shops"}},
+		AIOperationFailures: []query.AIOperationFailure{failure},
+	}})
+	ctx := context.WithValue(context.Background(), mcpProjectKeyIdentityContextKey{}, mcpProjectKeyIdentity{
+		userID: "fixture-user", projectID: "bound-project", keyID: "lwc_pk_fixture",
+	})
+	result, _, err := h.callMCPQuery(ctx, nil, queryProjectInput{Query: "coffee", Mode: "full"})
+	if err != nil || result.IsError {
+		t.Fatalf("callMCPQuery() error=%v result=%+v", err, result)
+	}
+	textContent, ok := result.Content[0].(*mcp.TextContent)
+	if !ok {
+		t.Fatalf("content type = %T, want text", result.Content[0])
+	}
+	var response struct {
+		Results             []search.Result            `json:"results"`
+		AIOperationFailures []query.AIOperationFailure `json:"ai_operation_failures"`
+	}
+	if err := json.Unmarshal([]byte(textContent.Text), &response); err != nil {
+		t.Fatal(err)
+	}
+	failure.Source = query.AIOperationSourceShared
+	if len(response.Results) != 1 || response.Results[0].Slug != "coffee-shops" || !reflect.DeepEqual(response.AIOperationFailures, []query.AIOperationFailure{failure}) {
+		t.Fatalf("MCP QueryResponse = %+v, want retrieval and typed recovered failure", response)
 	}
 }
 

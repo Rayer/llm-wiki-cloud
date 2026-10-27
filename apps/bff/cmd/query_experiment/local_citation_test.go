@@ -70,8 +70,9 @@ func checkStagedAndDirectCitationParity(t *testing.T, req localRequest, answer s
 		if want >= 0 && len(result.Result.Citations) != want {
 			t.Fatalf("staged citations=%d want=%d", len(result.Result.Citations), want)
 		}
-		if want == -1 && result.Status != "execution_failure" {
-			t.Fatal("rejected route was not honestly classified")
+		if want == -1 && (result.Status != "no_grounded_answer" || result.Result.AISynth != "" || len(result.Result.AIOperationFailures) != 1 ||
+			result.Result.AIOperationFailures[0] != (query.AIOperationFailure{Stage: query.AIOperationAnswerSynthesis, Class: query.AIFailureContextUnavailable, Fallback: query.AIFallbackRetrievalOnly})) {
+			t.Fatalf("unusable citation mapping was not honestly classified: status=%s result=%+v", result.Status, result.Result)
 		}
 		if want > 0 && result.Status != "success" {
 			t.Fatal("safe synthetic control failed")
@@ -89,10 +90,11 @@ func checkStagedAndDirectCitationParity(t *testing.T, req localRequest, answer s
 		service := query.NewService(prepared.cache, nil, llm.NewClientWithOptions("explicit-mock-citation-key", llm.ClientOptions{Model: "deepseek-v4-pro"}))
 		direct, err := service.SynthesizeWithError(context.Background(), prepared.reader, query.Request{Query: req.Saved[id].Replay.Plan.RawQuery, Mode: "wiki"}, query.Result{Results: selected, Status: "ok", Reason: "qualified_evidence"})
 		if want == -1 {
-			if err == nil || !strings.Contains(err.Error(), "citation identity:") {
-				t.Fatalf("expected explicit mapping failure, got %v", err)
+			if err != nil || direct.AISynth != "" || len(direct.Citations) != 0 || len(direct.Results) != len(selected) || len(direct.AIOperationFailures) != 1 ||
+				direct.AIOperationFailures[0].Class != query.AIFailureContextUnavailable || direct.AIOperationFailures[0].Fallback != query.AIFallbackRetrievalOnly {
+				t.Fatalf("expected retrieval-only mapping warning, result=%+v err=%v", direct, err)
 			}
-			t.Logf("%s: rejected existing map: %v; no LLM calls, no new answer; frozen inline label remains unresolved", id, err)
+			t.Logf("%s: unusable existing map reported safely; retrieval retained, no LLM calls or new answer", id)
 			if dir := os.Getenv("LWC335_REPLAY_OUTPUT"); dir != "" {
 				data, _ := json.MarshalIndent(result, "", "  ")
 				if err := os.WriteFile(filepath.Join(dir, "rejected-"+id+".json"), data, 0600); err != nil {

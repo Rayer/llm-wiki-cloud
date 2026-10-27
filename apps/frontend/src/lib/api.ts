@@ -172,6 +172,25 @@ export type QueryTerminalMetadata = {
   answer_basis?: string;
   wiki_evidence_status?: string;
   disclosure_required?: boolean;
+  ai_operation_failures?: QueryOperationFailure[];
+};
+
+export type QueryOperationFailure = {
+  stage: 'query_expansion' | 'answer_synthesis';
+  source?: 'personal' | 'shared' | 'unknown';
+  class:
+    | 'authentication'
+    | 'rate_limited'
+    | 'quota_exhausted'
+    | 'billing'
+    | 'timeout'
+    | 'invalid_response'
+    | 'output_truncated'
+    | 'provider_unavailable'
+    | 'provider_error'
+    | 'context_unavailable'
+    | 'canceled';
+  fallback: 'none' | 'raw_query' | 'deterministic_plan' | 'retrieval_only';
 };
 
 export type SearchResponse = QueryTerminalMetadata & {
@@ -1134,6 +1153,18 @@ function normalizeQueryExpansion(value: unknown): QueryExpansion | undefined {
   return keywords.length > 0 ? { keywords } : undefined;
 }
 
+function isQueryOperationFailure(value: unknown): value is QueryOperationFailure {
+  if (!isRecord(value)) return false;
+  return (value.stage === 'query_expansion' || value.stage === 'answer_synthesis')
+    && (!('source' in value) || ['personal', 'shared', 'unknown'].includes(String(value.source)))
+    && ['authentication', 'rate_limited', 'quota_exhausted', 'billing', 'timeout', 'invalid_response', 'output_truncated', 'provider_unavailable', 'provider_error', 'context_unavailable', 'canceled'].includes(String(value.class))
+    && ['none', 'raw_query', 'deterministic_plan', 'retrieval_only'].includes(String(value.fallback));
+}
+
+function normalizeQueryOperationFailures(value: unknown): QueryOperationFailure[] {
+  return Array.isArray(value) ? value.filter(isQueryOperationFailure) : [];
+}
+
 export function normalizeSearchResponse(payload: unknown): SearchResponse {
   const record = isRecord(payload) ? payload : {};
   const citationItems = Array.isArray(record.citations) ? record.citations : [];
@@ -1144,6 +1175,7 @@ export function normalizeSearchResponse(payload: unknown): SearchResponse {
     answer_basis: asString(record.answer_basis),
     wiki_evidence_status: asString(record.wiki_evidence_status),
     disclosure_required: asBoolean(record.disclosure_required),
+    ai_operation_failures: normalizeQueryOperationFailures(record.ai_operation_failures),
     results: extractArray(payload).map(normalizeSearchResult),
     aiAnswer: firstString(record, ['ai_synth', 'ai_answer', 'aiAnswer', 'answer']) ?? '',
     citations: citationItems
@@ -1316,10 +1348,12 @@ export async function searchWiki(query: string, mode: 'wiki' | 'full') {
     const arrayFields = ['results', 'items', 'sources', 'concepts', 'data', 'citations'];
     const hasInvalidArray = arrayFields.some((key) => key in payload && !Array.isArray(payload[key]));
     const hasInvalidExpand = 'expand' in payload && payload.expand !== null && !isRecord(payload.expand);
+    const hasInvalidAIOperationFailures = 'ai_operation_failures' in payload
+      && (!Array.isArray(payload.ai_operation_failures) || payload.ai_operation_failures.some((item) => !isQueryOperationFailure(item)));
     const hasInvalidMetadata = ['status', 'reason', 'answer_basis', 'wiki_evidence_status']
       .some((key) => key in payload && payload[key] !== null && typeof payload[key] !== 'string')
       || ('disclosure_required' in payload && payload.disclosure_required !== null && typeof payload.disclosure_required !== 'boolean');
-    if (hasInvalidArray || hasInvalidExpand || hasInvalidMetadata) {
+    if (hasInvalidArray || hasInvalidExpand || hasInvalidMetadata || hasInvalidAIOperationFailures) {
       throw new QueryApiError('The query response did not match the expected schema.', 502, 'invalid_response', diagnosticIdFromPayload(payload));
     }
   }

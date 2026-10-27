@@ -212,9 +212,10 @@ func TestCitationMissingMapFailsBeforeLLM(t *testing.T) {
 	http.DefaultTransport = roundTripFunc(func(*http.Request) (*http.Response, error) { calls++; return nil, errors.New("unexpected LLM call") })
 	t.Cleanup(func() { http.DefaultTransport = old })
 	service.llm = llm.NewClient("explicit-mock")
-	_, err := service.SynthesizeWithError(context.Background(), missing, Request{Query: "coffee", Mode: "wiki"}, Result{Results: []search.Result{{ID: "abcdef123456", Slug: "coffee", Title: "Coffee", Type: "concept"}}})
-	if err == nil || !strings.Contains(err.Error(), "citation identity: read ID map") || calls != 0 {
-		t.Fatalf("err=%v calls=%d", err, calls)
+	result, err := service.SynthesizeWithError(context.Background(), missing, Request{Query: "coffee", Mode: "wiki"}, Result{Results: []search.Result{{ID: "abcdef123456", Slug: "coffee", Title: "Coffee", Type: "concept"}}})
+	wantFailure := AIOperationFailure{Stage: AIOperationAnswerSynthesis, Class: AIFailureContextUnavailable, Fallback: AIFallbackRetrievalOnly}
+	if err != nil || len(result.Results) != 1 || result.AISynth != "" || len(result.AIOperationFailures) != 1 || result.AIOperationFailures[0] != wantFailure || calls != 0 {
+		t.Fatalf("result=%+v err=%v calls=%d, want retrieval preserved and safe context failure without an LLM call", result, err, calls)
 	}
 }
 
@@ -229,9 +230,10 @@ func TestCitationIDMapGenerationMismatchFailsBeforeLLM(t *testing.T) {
 	t.Cleanup(func() { http.DefaultTransport = old })
 	service.llm = llm.NewClient("explicit-mock")
 	readerWithMismatch := generationMismatchCitationMapReader{Store: reader}
-	_, err := service.SynthesizeWithError(context.Background(), readerWithMismatch, Request{Query: "coffee", Mode: "wiki"}, Result{Results: []search.Result{{ID: "000000000001", Slug: "coffee", Title: "Coffee", Type: "concept"}}})
-	if !errors.Is(err, storage.ErrGenerationMismatch) || calls != 0 {
-		t.Fatalf("err=%v calls=%d, want generation mismatch before LLM", err, calls)
+	result, err := service.SynthesizeWithError(context.Background(), readerWithMismatch, Request{Query: "coffee", Mode: "wiki"}, Result{Results: []search.Result{{ID: "000000000001", Slug: "coffee", Title: "Coffee", Type: "concept"}}})
+	wantFailure := AIOperationFailure{Stage: AIOperationAnswerSynthesis, Class: AIFailureContextUnavailable, Fallback: AIFallbackRetrievalOnly}
+	if err != nil || len(result.Results) != 1 || result.AISynth != "" || len(result.AIOperationFailures) != 1 || result.AIOperationFailures[0] != wantFailure || calls != 0 {
+		t.Fatalf("result=%+v err=%v calls=%d, want retrieval preserved after generation mismatch without an LLM call", result, err, calls)
 	}
 }
 
