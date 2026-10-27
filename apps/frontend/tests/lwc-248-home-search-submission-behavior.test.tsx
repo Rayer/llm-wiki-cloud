@@ -573,6 +573,7 @@ describe('LWC-342 completed query history restoration', () => {
       aiAnswer: 'First answer from this submission.',
       citations: [{ text: 'First citation', type: 'source', slug: 'source-one', id: 'source-one', path: 'source-one.md' }],
       expand: { keywords: ['first keyword'] },
+      ai_operation_failures: [{ stage: 'query_expansion', class: 'authentication', fallback: 'deterministic_plan' }],
     };
     const secondResponse = {
       results: [{ id: 'second-result', slug: 'second-result', title: 'Second result', type: 'concept', excerpt: 'second excerpt', content: '' }],
@@ -600,6 +601,7 @@ describe('LWC-342 completed query history restoration', () => {
       fireEvent.submit(form);
     });
     expect(await screen.findByText('First answer from this submission.')).toBeTruthy();
+    expect(screen.getByText('QueryResults.aiFailure.heading')).toBeTruthy();
     expect(mocks.searchWiki).toHaveBeenCalledTimes(1);
 
     window.history.pushState({}, '', '/concepts/first-result');
@@ -613,6 +615,7 @@ describe('LWC-342 completed query history restoration', () => {
     expect(screen.getByText(searchMode === 'wiki' ? 'QueryResults.wikiMode' : 'QueryResults.fullMode')).toBeTruthy();
     expect(screen.getByText('First citation')).toBeTruthy();
     expect(screen.getByText('QueryResults.expansionKeywords')).toBeTruthy();
+    expect(screen.getByText('QueryResults.aiFailure.heading')).toBeTruthy();
     expect(mocks.searchWiki).toHaveBeenCalledTimes(1);
 
     await act(async () => {
@@ -739,6 +742,7 @@ describe('LWC-342 completed query history restoration', () => {
     expect(screen.getByText(insufficientCopy)).toBeTruthy();
     expect(screen.getByText(disclosureCopy)).toBeTruthy();
     expect(screen.getByText(locale === 'en' ? 'Full mode' : '完整模式')).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
     expect(screen.queryByText(noResultsCopy)).toBeNull();
     expect(screen.queryByText('QueryResults.modelPriorDisclosure')).toBeNull();
 
@@ -751,6 +755,7 @@ describe('LWC-342 completed query history restoration', () => {
     expect(screen.getByText(insufficientCopy)).toBeTruthy();
     expect(screen.getByText(disclosureCopy)).toBeTruthy();
     expect(screen.queryByText(noResultsCopy)).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
     expect(mocks.searchWiki).toHaveBeenCalledTimes(1);
   });
 
@@ -767,5 +772,72 @@ describe('LWC-342 completed query history restoration', () => {
     expect(await screen.findByText('QueryErrors.queryFailure')).toBeTruthy();
     expect(screen.queryByText('QueryResults.insufficientEvidence')).toBeNull();
     expect(screen.queryByText('QueryResults.noResults')).toBeNull();
+  });
+
+  it('shows safe authentication failures while keeping Wiki results and opening BYOK settings', async () => {
+    mocks.useRealLocaleCopy = true;
+    mocks.locale = 'en';
+    mocks.searchWiki.mockResolvedValueOnce({
+      results: [{ id: 'routing', slug: 'byok-profile-routing', title: 'BYOK Profile Routing', type: 'concept', excerpt: 'Project profile routing.', content: '' }],
+      aiAnswer: '',
+      citations: [],
+      ai_operation_failures: [
+        { stage: 'query_expansion', class: 'authentication', fallback: 'deterministic_plan' },
+        { stage: 'answer_synthesis', class: 'authentication', fallback: 'retrieval_only' },
+      ],
+    });
+    const settingsEvent = vi.fn();
+    const onSettingsEvent = (event: Event) => settingsEvent((event as CustomEvent).detail);
+    window.addEventListener('lwc-open-account-settings', onSettingsEvent);
+
+    try {
+      render(<HomeClient />);
+      await waitForInitialSearchState();
+      const input = screen.getByRole('textbox');
+      const form = input.closest('form') as HTMLFormElement;
+      await act(async () => {
+        fireEvent.change(input, { target: { value: 'How does BYOK profile routing work?' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Full' }));
+        fireEvent.submit(form);
+      });
+
+      const warning = await screen.findByRole('alert');
+      expect(warning.textContent).toContain('An AI step could not be completed.');
+      expect(warning.textContent).toContain('The selected AI provider rejected authentication. Check its API key and settings.');
+      expect(warning.textContent).toContain('Wiki results are shown below.');
+      expect(warning.textContent).not.toContain('synthetic-invalid-fixture-key');
+      expect(await screen.findByRole('button', { name: /BYOK Profile Routing/ })).toBeTruthy();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Review AI provider settings' }));
+      expect(settingsEvent).toHaveBeenCalledWith({ focusBYOK: true });
+    } finally {
+      window.removeEventListener('lwc-open-account-settings', onSettingsEvent);
+    }
+  });
+
+  it('reports an expansion fallback without claiming a successful answer failed', async () => {
+    mocks.useRealLocaleCopy = true;
+    mocks.locale = 'en';
+    mocks.searchWiki.mockResolvedValueOnce({
+      results: [{ id: 'routing', slug: 'byok-profile-routing', title: 'BYOK Profile Routing', type: 'concept', excerpt: 'Project profile routing.', content: '' }],
+      aiAnswer: 'The Project uses its selected profile for model calls.',
+      citations: [],
+      ai_operation_failures: [
+        { stage: 'query_expansion', class: 'authentication', fallback: 'deterministic_plan' },
+      ],
+    });
+    render(<HomeClient />);
+    await waitForInitialSearchState();
+    const input = screen.getByRole('textbox');
+    await act(async () => {
+      fireEvent.change(input, { target: { value: 'How does BYOK profile routing work?' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Full' }));
+      fireEvent.submit(input.closest('form') as HTMLFormElement);
+    });
+
+    const warning = await screen.findByRole('alert');
+    expect(warning.textContent).toContain('Search expansion failed; the original question was searched.');
+    expect(warning.textContent).not.toContain('The AI answer could not be generated');
+    expect(await screen.findByText('The Project uses its selected profile for model calls.')).toBeTruthy();
   });
 });

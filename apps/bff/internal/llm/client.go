@@ -436,6 +436,10 @@ func SafeErrorCategory(err error) string {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return "timeout"
 	}
+	var profileErr *ProfileCallError
+	if errors.As(err, &profileErr) {
+		return string(profileErr.Kind)
+	}
 	var status *HTTPStatusError
 	if errors.As(err, &status) {
 		switch {

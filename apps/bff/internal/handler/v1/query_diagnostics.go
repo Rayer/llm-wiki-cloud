@@ -184,9 +184,15 @@ func (d *queryDiagnostic) succeed(responseStatus, responseReason string, receipt
 	}
 	degraded := false
 	for _, stage := range receipt.Stages {
+		if stage.FailureClass != "" {
+			d.span.AddEvent("query.ai_operation_failure", trace.WithAttributes(
+				attribute.String("query.failure_stage", stage.Name),
+				attribute.String("query.failure_class", stage.FailureClass),
+				attribute.String("query.fallback_outcome", stage.FallbackOutcome),
+			))
+		}
 		if stage.Outcome == "fallback" || stage.Outcome == "degraded" {
 			degraded = true
-			break
 		}
 	}
 	d.mu.Lock()

@@ -47,6 +47,23 @@ func (profileFixtureRoundTripper) RoundTrip(request *http.Request) (*http.Respon
 			user = message.Content
 		}
 	}
+	if request.Header.Get("Authorization") == "Bearer synthetic-invalid-fixture-key" {
+		writeProfileFixtureReceipt("openai_chat_completions", input.Model, request.URL.Path)
+		body := `{"error":{"type":"invalid_request_error","message":"fixture rejected credentials"}}`
+		return &http.Response{
+			StatusCode: http.StatusUnauthorized, Header: http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(body)), ContentLength: int64(len(body)), Request: request,
+		}, nil
+	}
+	if request.Header.Get("Authorization") == "Bearer synthetic-invalid-expansion-fixture-key" &&
+		strings.Contains(system, "raw_query string") && strings.Contains(system, "Criterion") {
+		writeProfileFixtureReceipt("openai_chat_completions", input.Model, request.URL.Path)
+		body := `{"choices":[]}`
+		return &http.Response{
+			StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(body)), ContentLength: int64(len(body)), Request: request,
+		}, nil
+	}
 	content := profileFixtureContent(system, user)
 	writeProfileFixtureReceipt("openai_chat_completions", input.Model, request.URL.Path)
 	responseBody, err := json.Marshal(map[string]any{
@@ -95,6 +112,13 @@ func profileFixtureContent(system, user string) string {
 		return `{"terms":[]}`
 	case strings.Contains(system, `"relations"`) && strings.Contains(system, `"subject"`):
 		return `{"relations":[]}`
+	case strings.Contains(system, "CITATION FORMAT RULES"):
+		if start := strings.Index(user, "[CITATION_REF_"); start >= 0 {
+			if end := strings.IndexByte(user[start:], ']'); end >= 0 {
+				return "The retrieved Wiki explains BYOK profile routing. " + user[start:start+end+1]
+			}
+		}
+		return "The retrieved Wiki explains BYOK profile routing."
 	case strings.Contains(system, "Return exactly 20 distinct questions"):
 		var input struct {
 			Concepts []struct {

@@ -53,6 +53,42 @@ func TestV1QueryDelegatesTrimmedDefaultRequestAndScopedReader(t *testing.T) {
 	}
 }
 
+func TestV1QuerySerializesRecoveredAIOperationFailure(t *testing.T) {
+	root := newQueryAdapterRoot(t)
+	failure := query.AIOperationFailure{
+		Stage: query.AIOperationAnswerSynthesis, Class: query.AIFailureAuthentication, Fallback: query.AIFallbackRetrievalOnly,
+	}
+	executor := &recordingQueryExecutor{result: query.Result{
+		Query: "coffee", Mode: "full", Results: []search.Result{{Slug: "coffee-shops", Title: "Coffee Shops"}},
+		AIOperationFailures: []query.AIOperationFailure{failure},
+	}}
+	h := New(root, nil, search.NewIndex(), cache.New(), nil, nil)
+	h.queryExecutor = executor
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/query", strings.NewReader(`{"q":"coffee","mode":"full"}`))
+	c.Set("userID", "user")
+	c.Set("projectID", "project")
+	h.Query(c)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var response handler.QueryResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Results) != 1 || response.Results[0].Slug != "coffee-shops" || !reflect.DeepEqual(response.AIOperationFailures, []query.AIOperationFailure{failure}) {
+		t.Fatalf("query response = %+v, want retrieval and typed recovered failure", response)
+	}
+	var wire map[string]json.RawMessage
+	if err := json.Unmarshal(recorder.Body.Bytes(), &wire); err != nil {
+		t.Fatal(err)
+	}
+	if string(wire["ai_operation_failures"]) != `[{"stage":"answer_synthesis","class":"authentication","fallback":"retrieval_only"}]` {
+		t.Fatalf("wire ai_operation_failures = %s", wire["ai_operation_failures"])
+	}
+}
+
 func TestMapQueryResultIncludesOptionalEvidenceMetadata(t *testing.T) {
 	response := mapQueryResult(query.Result{Query: "q", Mode: "full", AnswerBasis: "model_prior", WikiEvidenceStatus: "no_relevant_evidence", DisclosureRequired: true})
 	if response.AnswerBasis != "model_prior" || response.WikiEvidenceStatus != "no_relevant_evidence" || !response.DisclosureRequired {
@@ -323,9 +359,10 @@ func newQueryAdapterRoot(t *testing.T) *queryAdapterRoot {
 }
 
 func TestQueryAdapterMappingIsExplicit(t *testing.T) {
-	result := query.Result{Query: "q", Mode: "full", Results: []search.Result{{Slug: "s"}}}
+	failure := query.AIOperationFailure{Stage: query.AIOperationQueryExpansion, Class: query.AIFailureAuthentication, Fallback: query.AIFallbackDeterministicPlan}
+	result := query.Result{Query: "q", Mode: "full", Results: []search.Result{{Slug: "s"}}, AIOperationFailures: []query.AIOperationFailure{failure}}
 	got := mapQueryResult(result)
-	want := handler.QueryResponse{Query: "q", Mode: "full", Results: []search.Result{{Slug: "s"}}}
+	want := handler.QueryResponse{Query: "q", Mode: "full", Results: []search.Result{{Slug: "s"}}, AIOperationFailures: []query.AIOperationFailure{failure}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("mapQueryResult = %#v, want %#v", got, want)
 	}

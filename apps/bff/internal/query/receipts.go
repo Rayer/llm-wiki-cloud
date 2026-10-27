@@ -136,15 +136,17 @@ func (r *ReceiptRecorder) SetExpansionAttemptOutcomes(outcomes []ExpansionAttemp
 }
 
 type StageReceipt struct {
-	Name        string    `json:"name"`
-	StartedAt   time.Time `json:"started_at"`
-	FinishedAt  time.Time `json:"finished_at"`
-	ElapsedMS   int64     `json:"elapsed_ms"`
-	Provider    string    `json:"provider,omitempty"`
-	Model       string    `json:"model,omitempty"`
-	Reasoning   string    `json:"reasoning,omitempty"`
-	Outcome     string    `json:"outcome"`
-	startedMono time.Time
+	Name            string    `json:"name"`
+	StartedAt       time.Time `json:"started_at"`
+	FinishedAt      time.Time `json:"finished_at"`
+	ElapsedMS       int64     `json:"elapsed_ms"`
+	Provider        string    `json:"provider,omitempty"`
+	Model           string    `json:"model,omitempty"`
+	Reasoning       string    `json:"reasoning,omitempty"`
+	Outcome         string    `json:"outcome"`
+	FailureClass    string    `json:"failure_class,omitempty"`
+	FallbackOutcome string    `json:"fallback_outcome,omitempty"`
+	startedMono     time.Time
 }
 type HostCallReceipt struct {
 	Sequence        int       `json:"sequence"`
@@ -263,6 +265,39 @@ func FinishStage(ctx context.Context, outcome string) {
 	}
 	key.span.End()
 }
+
+// RecordStageFailure stores only bounded labels for a failed query stage and
+// its recovery path. The stage may still complete the request successfully.
+func RecordStageFailure(ctx context.Context, class, fallback string) {
+	r, ok := ctx.Value(receiptKey{}).(*ReceiptRecorder)
+	if !ok {
+		return
+	}
+	key, ok := ctx.Value(stageContextKey{}).(stageKey)
+	if !ok {
+		return
+	}
+	class = AIOperationFailureClassFromCategory(class)
+	if class == "" {
+		return
+	}
+	switch fallback {
+	case AIFallbackNone, AIFallbackRawQuery, AIFallbackDeterministicPlan, AIFallbackRetrievalOnly:
+	default:
+		fallback = AIFallbackNone
+	}
+	r.mu.Lock()
+	stage := &r.receipt.Stages[key.index]
+	stage.FailureClass = class
+	stage.FallbackOutcome = fallback
+	r.mu.Unlock()
+	key.span.SetAttributes(
+		attribute.String("query.failure_class", class),
+		attribute.String("query.fallback_outcome", fallback),
+	)
+	observability.RecordQueryAIOperationFailure(ctx, key.name, class, fallback)
+}
+
 func (r *ReceiptRecorder) StartCall(stageName, model, reasoning string) func(string) {
 	return r.StartCallAt(stageName, model, reasoning, "https://api.deepseek.com")
 }

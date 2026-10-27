@@ -761,7 +761,34 @@
     "openEntryFallback": "開啟此 Wiki 條目。",
     "insufficientEvidence": "目前的 Wiki 檢索未找到足夠證據回答這個問題。",
     "modelPriorDisclosure": "此完整模式回答可能使用模型的一般知識，並非由檢索到的 Wiki 證據支持。",
-    "expansionKeywords": "擴展搜尋關鍵字：{keywords}"
+    "expansionKeywords": "擴展搜尋關鍵字：{keywords}",
+    "aiFailure": {
+      "heading": "AI 步驟無法完成。",
+      "stage": {
+        "query_expansion": "搜尋條件擴展失敗；已改用原始問題搜尋。",
+        "answer_synthesis": "AI 回答無法產生；下方仍顯示 Wiki 檢索結果。"
+      },
+      "class": {
+        "authentication": "選取的 AI 服務拒絕了驗證。請檢查 API 金鑰與服務設定。",
+        "rate_limited": "選取的 AI 服務目前限制請求頻率，請稍後再試。",
+        "quota_exhausted": "選取的 AI 服務已確認額度用盡。請檢查使用量或帳務。",
+        "billing": "選取的 AI 服務回報帳務問題，請檢查帳務設定。",
+        "timeout": "選取的 AI 服務未能及時回應，請再試一次。",
+        "invalid_response": "選取的 AI 服務回傳了無法使用的內容。請再試一次或檢查服務設定。",
+        "output_truncated": "選取的 AI 服務在完成回答前就停止了，請再試一次。",
+        "provider_unavailable": "選取的 AI 服務暫時無法使用，請稍後再試。",
+        "provider_error": "選取的 AI 服務無法完成此步驟，請稍後再試。",
+        "context_unavailable": "無法使用檢索到的 Wiki 內容準備回答；搜尋結果仍可在下方查看。",
+        "canceled": "AI 請求在完成前已取消。"
+      },
+      "fallback": {
+        "none": "",
+        "raw_query": "",
+        "deterministic_plan": "搜尋已改用安全的備援條件繼續。",
+        "retrieval_only": "檢索結果仍可使用，但沒有 AI 回答。"
+      },
+      "openSettings": "檢查 AI 服務設定"
+    }
   },
   "QueryErrors": {
     "queryFailure": "無法完成搜尋。請再試一次；若問題持續，請將診斷編號提供給支援人員。",

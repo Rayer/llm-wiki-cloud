@@ -90,17 +90,18 @@ type QueryRequest struct {
 
 // QueryResponse is the response for a query endpoint.
 type QueryResponse struct {
-	Query              string            `json:"query"`
-	Mode               string            `json:"mode"`
-	Results            []search.Result   `json:"results"`
-	Expand             *llm.ExpandResult `json:"expand,omitempty"`
-	AISynth            string            `json:"ai_synth,omitempty"`
-	Citations          []search.Citation `json:"citations,omitempty"`
-	Status             string            `json:"status,omitempty"`
-	Reason             string            `json:"reason,omitempty"`
-	AnswerBasis        string            `json:"answer_basis,omitempty"`
-	WikiEvidenceStatus string            `json:"wiki_evidence_status,omitempty"`
-	DisclosureRequired bool              `json:"disclosure_required,omitempty"`
+	Query               string                     `json:"query"`
+	Mode                string                     `json:"mode"`
+	Results             []search.Result            `json:"results"`
+	Expand              *llm.ExpandResult          `json:"expand,omitempty"`
+	AIOperationFailures []query.AIOperationFailure `json:"ai_operation_failures,omitempty"`
+	AISynth             string                     `json:"ai_synth,omitempty"`
+	Citations           []search.Citation          `json:"citations,omitempty"`
+	Status              string                     `json:"status,omitempty"`
+	Reason              string                     `json:"reason,omitempty"`
+	AnswerBasis         string                     `json:"answer_basis,omitempty"`
+	WikiEvidenceStatus  string                     `json:"wiki_evidence_status,omitempty"`
+	DisclosureRequired  bool                       `json:"disclosure_required,omitempty"`
 }
 
 // MarshalJSON keeps citations optional for legacy responses while making the

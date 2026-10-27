@@ -827,6 +827,10 @@ export function HomeClient() {
     type === 'source' ? 'source' : 'concept';
   const suggestedQueries = status?.suggestedQueries ?? [];
   const insufficientEvidence = queryOutcome.status === 'insufficient_evidence';
+  const aiOperationFailures = queryOutcome.ai_operation_failures ?? [];
+  const canReviewAISettings = !isDemoSession && aiOperationFailures.some((failure) => (
+    failure.class === 'authentication' || failure.class === 'quota_exhausted' || failure.class === 'billing'
+  ));
   const showModelPriorDisclosure = submittedMode === 'full'
     && Boolean(aiAnswer)
     && (queryOutcome.answer_basis === 'model_prior' || queryOutcome.disclosure_required === true);
@@ -1004,6 +1008,31 @@ export function HomeClient() {
           <div role="status" className="rounded-md border border-amber-300/30 bg-amber-500/10 p-4">
             <p className="text-sm text-amber-100">{t('QueryResults.insufficientEvidence')}</p>
           </div>
+        ) : null}
+        {!loading && !error && !resultUnavailable && aiOperationFailures.length > 0 ? (
+          <aside role="alert" className="rounded-md border border-amber-300/30 bg-amber-500/10 p-4">
+            <h3 className="text-sm font-semibold text-amber-100">{t('QueryResults.aiFailure.heading')}</h3>
+            <ul className="mt-2 space-y-3">
+              {aiOperationFailures.map((failure, index) => (
+                <li key={`${failure.stage}-${failure.class}-${index}`} className="text-sm leading-6 text-amber-100">
+                  <p>{t(`QueryResults.aiFailure.stage.${failure.stage}`)}</p>
+                  <p>{t(`QueryResults.aiFailure.class.${failure.class}`)}</p>
+                  {failure.fallback !== 'none' ? (
+                    <p>{t(`QueryResults.aiFailure.fallback.${failure.fallback}`)}</p>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+            {canReviewAISettings ? (
+              <button
+                type="button"
+                className="mt-3 min-h-11 rounded-lg border border-amber-200/50 px-4 py-2 text-sm font-medium text-amber-50 hover:bg-amber-100/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-200"
+                onClick={() => window.dispatchEvent(new CustomEvent('lwc-open-account-settings', { detail: { focusBYOK: true } }))}
+              >
+                {t('QueryResults.aiFailure.openSettings')}
+              </button>
+            ) : null}
+          </aside>
         ) : null}
         {!loading && !error && aiAnswer ? (
           <article className="relative overflow-hidden rounded-[var(--radius-lg)] border border-emerald-400/20 bg-emerald-400/[0.06] p-5 backdrop-blur-sm">
