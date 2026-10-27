@@ -110,7 +110,11 @@ func (r *fakeSecretReader) Access(_ context.Context, resource string) (string, [
 			resolved = strings.TrimSuffix(resource, "latest") + "1"
 		}
 	}
-	return resolved, r.value, r.err
+	value := r.value
+	if strings.Contains(resource, "/byok-credential-encryption-key-") {
+		value = []byte(strings.Repeat("a", 64))
+	}
+	return resolved, value, r.err
 }
 
 func TestRealPklBFFPrepareRendersSchema3WithoutCloudJWTAndRetainsLocalSchema2(t *testing.T) {
@@ -182,11 +186,13 @@ func TestRealPklBFFPrepareRendersSchema3WithoutCloudJWTAndRetainsLocalSchema2(t 
 			profileAudience: "https://llm-wiki-bff-dev-a5nkmux6pq-de.a.run.app", profileService: "lwc-bff-dev@llm-wiki-cloud.iam.gserviceaccount.com", resources: []string{
 				"projects/llm-wiki-cloud/secrets/deepseek-apikey/versions/latest",
 				"projects/llm-wiki-cloud/secrets/typesafe-jev-api-key-dev/versions/1",
+				"projects/llm-wiki-cloud/secrets/byok-credential-encryption-key-dev/versions/1",
 			}},
 		{environment: "prod", cooldown: 3600, typesafe: "TEST_ONLY_SYNTHETIC_CLOUD_SECRET",
 			profileAudience: "https://llm-wiki-bff-a5nkmux6pq-de.a.run.app", profileService: "lwc-bff-prod@llm-wiki-cloud.iam.gserviceaccount.com", resources: []string{
 				"projects/llm-wiki-cloud/secrets/deepseek-apikey/versions/latest",
 				"projects/llm-wiki-cloud/secrets/typesafe-jev-api-key-prod/versions/1",
+				"projects/llm-wiki-cloud/secrets/byok-credential-encryption-key-prod/versions/1",
 			}},
 	} {
 		t.Run(tc.environment, func(t *testing.T) {
@@ -213,12 +219,21 @@ func TestRealPklBFFPrepareRendersSchema3WithoutCloudJWTAndRetainsLocalSchema2(t 
 				t.Fatalf("prepared BFF runtime schema failed validation: %v", err)
 			}
 			wantTTL := map[string]int{"local": 0, "dev": 60_000, "prod": 300_000}[tc.environment]
+			wantBYOKKey := ""
+			if tc.environment != "local" {
+				wantBYOKKey = strings.Repeat("a", 64)
+			}
+			wantDeepSeekReference := "projects/llm-wiki-cloud/secrets/deepseek-apikey/versions/latest"
+			if tc.environment == "local" {
+				wantDeepSeekReference = "environment:LLM_API_KEY"
+			}
 			wantSchema := 3
 			if tc.environment == "local" {
 				wantSchema = 2
 			}
 			if generated.SchemaVersion != wantSchema || generated.Environment != tc.environment || generated.Target != "bff" ||
 				generated.PipelineCooldownSeconds != tc.cooldown || generated.TypeSafeAPIKey != tc.typesafe ||
+				generated.BYOKCredentialEncryptionKey != wantBYOKKey || generated.DeepSeekAPIKeyReference != wantDeepSeekReference ||
 				generated.ProfileRuntimeAudience != tc.profileAudience || generated.ProfileRuntimeServiceAccount != tc.profileService ||
 				generated.MCP == nil || generated.MCP.DiscoveryTTLMS != wantTTL || generated.MCP.ToolsListTTLMS != wantTTL {
 				t.Fatalf("prepared BFF identity or cooldown is incorrect for %s", tc.environment)

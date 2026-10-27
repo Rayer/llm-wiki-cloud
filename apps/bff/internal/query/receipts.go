@@ -147,18 +147,21 @@ type StageReceipt struct {
 	startedMono time.Time
 }
 type HostCallReceipt struct {
-	Sequence    int       `json:"sequence"`
-	Stage       string    `json:"stage"`
-	Scheme      string    `json:"scheme"`
-	Host        string    `json:"host"`
-	StartedAt   time.Time `json:"started_at"`
-	FinishedAt  time.Time `json:"finished_at"`
-	ElapsedMS   int64     `json:"elapsed_ms"`
-	Provider    string    `json:"provider"`
-	Model       string    `json:"model"`
-	Reasoning   string    `json:"reasoning"`
-	Outcome     string    `json:"outcome"`
-	startedMono time.Time
+	Sequence        int       `json:"sequence"`
+	Stage           string    `json:"stage"`
+	Scheme          string    `json:"scheme"`
+	Host            string    `json:"host"`
+	StartedAt       time.Time `json:"started_at"`
+	FinishedAt      time.Time `json:"finished_at"`
+	ElapsedMS       int64     `json:"elapsed_ms"`
+	Provider        string    `json:"provider"`
+	Model           string    `json:"model"`
+	ProfileID       string    `json:"profile_id,omitempty"`
+	ProfileRevision int64     `json:"profile_revision,omitempty"`
+	Protocol        string    `json:"protocol,omitempty"`
+	Reasoning       string    `json:"reasoning"`
+	Outcome         string    `json:"outcome"`
+	startedMono     time.Time
 }
 
 type receiptKey struct{}
@@ -288,12 +291,16 @@ func (r *ReceiptRecorder) StartCallAtContext(ctx context.Context, stageName, mod
 	return r.startHostCallWithContext(ctx, stageName, u.Scheme, u.Hostname(), "deepseek", model, reasoning)
 }
 
-func (r *ReceiptRecorder) StartProfileCallAtContext(ctx context.Context, provider, stageName, model, rawURL string) func(string, string, time.Time) {
+func (r *ReceiptRecorder) StartProfileCallAtContext(ctx context.Context, profile llm.ProfileConfig, stageName, rawURL string) func(string, string, time.Time) {
 	u, err := url.Parse(rawURL)
 	if err != nil || u.Scheme == "" || u.Hostname() == "" {
 		return func(string, string, time.Time) {}
 	}
-	return r.startHostCallWithContext(ctx, stageName, u.Scheme, u.Hostname(), provider, model, "")
+	return r.startProfileHostCallWithContext(ctx, stageName, u.Scheme, u.Hostname(), profile)
+}
+
+func (r *ReceiptRecorder) startProfileHostCallWithContext(ctx context.Context, stageName, scheme, host string, profile llm.ProfileConfig) func(string, string, time.Time) {
+	return r.startHostCallWithProfileOnContext(ctx, stageName, scheme, host, profile.Provider, profile.Model, "", profile)
 }
 
 func (r *ReceiptRecorder) StartHostCall(stage, scheme, host string) func(string) {
@@ -328,6 +335,10 @@ func (r *ReceiptRecorder) startHostCallWithContext(ctx context.Context, stageNam
 }
 
 func (r *ReceiptRecorder) startHostCallOnContext(ctx context.Context, stageName, scheme, host, provider, model, reasoning string) func(string, string, time.Time) {
+	return r.startHostCallWithProfileOnContext(ctx, stageName, scheme, host, provider, model, reasoning, llm.ProfileConfig{})
+}
+
+func (r *ReceiptRecorder) startHostCallWithProfileOnContext(ctx context.Context, stageName, scheme, host, provider, model, reasoning string, profile llm.ProfileConfig) func(string, string, time.Time) {
 	if net.ParseIP(host) != nil {
 		return func(string, string, time.Time) {}
 	}
@@ -340,6 +351,13 @@ func (r *ReceiptRecorder) startHostCallOnContext(ctx context.Context, stageName,
 	attrs := []attribute.KeyValue{
 		attribute.String("query.stage", stageName), attribute.String("query.provider", provider),
 		attribute.String("query.model", model), attribute.String("query.reasoning", reasoning),
+	}
+	if profile.ID != "" {
+		attrs = append(attrs,
+			attribute.String("llm.profile.id", profile.ID),
+			attribute.Int64("llm.profile.revision", profile.Revision),
+			attribute.String("llm.protocol", string(profile.Protocol)),
+		)
 	}
 	if purpose := llm.CallPurpose(ctx); purpose != "" {
 		attrs = append(attrs, attribute.String("query.llm_purpose", purpose))
@@ -354,7 +372,7 @@ func (r *ReceiptRecorder) startHostCallOnContext(ctx context.Context, stageName,
 		if finished.IsZero() {
 			finished = time.Now()
 		}
-		r.receipt.HostCalls = append(r.receipt.HostCalls, HostCallReceipt{Sequence: seq, Stage: stageName, Scheme: scheme, Host: host, StartedAt: started.UTC(), FinishedAt: finished.UTC(), startedMono: started, ElapsedMS: finished.Sub(started).Milliseconds(), Provider: provider, Model: model, Reasoning: reasoning, Outcome: receiptOutcome})
+		r.receipt.HostCalls = append(r.receipt.HostCalls, HostCallReceipt{Sequence: seq, Stage: stageName, Scheme: scheme, Host: host, StartedAt: started.UTC(), FinishedAt: finished.UTC(), startedMono: started, ElapsedMS: finished.Sub(started).Milliseconds(), Provider: provider, Model: model, ProfileID: profile.ID, ProfileRevision: profile.Revision, Protocol: string(profile.Protocol), Reasoning: reasoning, Outcome: receiptOutcome})
 		r.mu.Unlock()
 		span.SetAttributes(attribute.String("query.outcome", transportOutcome))
 		if transportOutcome != "success" {

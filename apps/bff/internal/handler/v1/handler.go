@@ -48,6 +48,8 @@ type Handler struct {
 	pipelineEventTiming            *pipelineEventTiming
 	profileRepository              profileRepository
 	byokCredentialBox              *byok.CredentialBox
+	byokEnvironment                string
+	byokDeploymentCredentials      map[string]BYOKDeploymentCredential
 	pipelineWorkerAudience         string
 	pipelineWorkerServiceAccount   string
 	validatePipelineWorkerIdentity func(context.Context, string, string) (string, error)

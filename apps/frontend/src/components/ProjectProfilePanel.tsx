@@ -1071,7 +1071,10 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
         <AccountSettingsModal
           focusBYOK
           onClose={() => setByokSettingsOpen(false)}
-          onProfileCreated={(profile) => setNewlyCreatedProfile(profile)}
+          onProfileCreated={(profile) => {
+            setNewlyCreatedProfile(profile);
+            setByokSettingsOpen(false);
+          }}
         />
       ) : null}
     </section>

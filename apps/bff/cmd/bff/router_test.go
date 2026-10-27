@@ -304,6 +304,9 @@ func TestTrialDemoRestrictionCoversProfileAndExportForExactUserIDs(t *testing.T)
 	}
 
 	for _, route := range []struct{ method, path string }{
+		{http.MethodPost, "/api/v1/llm/profiles"},
+		{http.MethodPut, "/api/v1/llm/profiles/profile-a"},
+		{http.MethodDelete, "/api/v1/llm/profiles/profile-a"},
 		{http.MethodGet, "/api/v1/projects/project-a/profile"},
 		{http.MethodPost, "/api/v1/projects/project-a/profile/candidates/candidate-a/confirm"},
 		{http.MethodGet, "/api/v1/exports"},
@@ -319,6 +322,9 @@ func TestTrialDemoRestrictionCoversProfileAndExportForExactUserIDs(t *testing.T)
 	}
 	if got := request("non-listed-user", http.MethodGet, "/api/v1/exports").Code; got == http.StatusForbidden {
 		t.Fatal("non-listed user was blocked from Export")
+	}
+	if got := request("non-listed-user", http.MethodPost, "/api/v1/llm/profiles").Code == http.StatusForbidden; got {
+		t.Fatal("non-listed user was blocked from personal LLM profiles")
 	}
 }
 

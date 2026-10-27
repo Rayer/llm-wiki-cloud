@@ -726,6 +726,17 @@ func validateBFFSecretReference(name string, ref bffSecretReference, environment
 	return nil
 }
 
+func deploymentCredentialReference(ref bffSecretReference) string {
+	switch ref.Source {
+	case "secret-manager":
+		return strings.TrimSpace(ref.Resource)
+	case "environment":
+		return "environment:" + strings.TrimSpace(ref.EnvName)
+	default:
+		return ""
+	}
+}
+
 func absoluteURL(raw string) bool {
 	u, err := url.Parse(raw)
 	return err == nil && (u.Scheme == "https" || u.Scheme == "http") && u.Host != "" && u.User == nil && u.Fragment == ""
@@ -864,8 +875,9 @@ func prepareBFFRuntimeConfig(ctx context.Context, root, output string, source bf
 		PipelineMinNewRaw: source.PipelineMinNewRaw, PipelineDemoUserIDs: source.PipelineDemoUserIDs,
 		AuthSessionEnvironment: source.AuthSessionEnvironment, AuthSessionMigration: source.AuthSessionMigration,
 		RegistrationEnabled: source.RegistrationEnabled, JWTSecret: string(jwt), DeepSeekAPIKey: string(deepseek),
-		AuthConsumer:   source.AuthConsumer,
-		TypeSafeAPIKey: string(typesafe), BYOKCredentialEncryptionKey: string(byokEncryptionKey), ProfileRuntimeAudience: source.ProfileRuntimeAudience,
+		DeepSeekAPIKeyReference: deploymentCredentialReference(source.DeepSeekAPIKeyReference),
+		AuthConsumer:            source.AuthConsumer,
+		TypeSafeAPIKey:          string(typesafe), BYOKCredentialEncryptionKey: string(byokEncryptionKey), ProfileRuntimeAudience: source.ProfileRuntimeAudience,
 		ProfileRuntimeServiceAccount: source.ProfileRuntimeServiceAccount,
 		PipelineWorkerServiceAccount: source.PipelineWorkerServiceAccount,
 		PipelineSchedule: runtimeconfig.BFFPipelineSchedule{

@@ -53,6 +53,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
   } = useWorkspace();
   const [renameTarget, setRenameTarget] = useState<{ id: string; name: string } | null>(null);
   const [accountSettingsOpen, setAccountSettingsOpen] = useState(false);
+  const [accountSettingsFocusBYOK, setAccountSettingsFocusBYOK] = useState(false);
   const accountSettingsTriggerRef = useRef<HTMLButtonElement>(null);
   const accountSettingsWasOpenRef = useRef(false);
   const [jitAccountId, setJitAccountId] = useState<string | null>(null);
@@ -61,6 +62,17 @@ function ShellContent({ children }: { children: React.ReactNode }) {
     if (accountSettingsWasOpenRef.current && !accountSettingsOpen) accountSettingsTriggerRef.current?.focus();
     accountSettingsWasOpenRef.current = accountSettingsOpen;
   }, [accountSettingsOpen]);
+
+  useEffect(() => {
+    const openAccountSettings = (event: Event) => {
+      if (isDemoSession) return;
+      const focusBYOK = (event as CustomEvent<{ focusBYOK?: boolean }>).detail?.focusBYOK === true;
+      setAccountSettingsFocusBYOK(focusBYOK);
+      setAccountSettingsOpen(true);
+    };
+    window.addEventListener('lwc-open-account-settings', openAccountSettings);
+    return () => window.removeEventListener('lwc-open-account-settings', openAccountSettings);
+  }, [isDemoSession]);
 
   useEffect(() => {
     const onGoogleJITCompleted = (event: Event) => {
@@ -269,7 +281,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
               </button>
             </div>
             <div className="mt-2 grid gap-0.5">
-              <button ref={accountSettingsTriggerRef} type="button" onClick={() => setAccountSettingsOpen(true)} className="flex min-h-11 items-center gap-3 rounded-md px-3 text-sm text-zinc-300 transition hover:bg-white/5 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400">
+              <button ref={accountSettingsTriggerRef} type="button" onClick={() => { setAccountSettingsFocusBYOK(false); setAccountSettingsOpen(true); }} className="flex min-h-11 items-center gap-3 rounded-md px-3 text-sm text-zinc-300 transition hover:bg-white/5 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400">
                 <SettingsIcon className="size-4" aria-hidden="true" />{t('AccountSettings.title')}
               </button>
               <button type="button" onClick={() => void signOut()} className="flex min-h-11 items-center gap-3 rounded-md px-3 text-sm text-zinc-300 transition hover:bg-white/5 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400">
@@ -339,7 +351,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
           }}
         />
       ) : null}
-      {accountSettingsOpen && token ? <AccountSettingsModal onClose={() => setAccountSettingsOpen(false)} /> : null}
+      {accountSettingsOpen && token ? <AccountSettingsModal onClose={() => setAccountSettingsOpen(false)} focusBYOK={accountSettingsFocusBYOK} /> : null}
       {token ? <ScrollToTopButton /> : null}
       {paletteOpen ? (
         <CommandPalette

@@ -196,6 +196,12 @@ func main() {
 
 	// Handlers
 	hV1 := handlerv1.New(wikiStore, fsClient, idx, conceptCache, nil, nil)
+	hV1.SetBYOKCredentialEnvironment(authSessionEnvironment(cfg))
+	if cfg.DeepSeekAPIKeyReference != "" && cfg.DeepSeekAPIKey != "" {
+		hV1.SetBYOKDeploymentCredentials([]handlerv1.BYOKDeploymentCredential{{
+			Reference: cfg.DeepSeekAPIKeyReference, Label: "Existing deployment LLM credential", Value: []byte(cfg.DeepSeekAPIKey),
+		}})
+	}
 	if err := configureBYOKCredentialBox(hV1, cfg); err != nil {
 		log.Fatalf("configure BYOK credential custody: %v", err)
 	}
@@ -562,9 +568,11 @@ func newProductionRouter(
 		v1.POST("/init-project", hV1.InitProject)
 		v1.PATCH("/projects/:projectID", hV1.RenameProject)
 		v1.GET("/llm/profiles", hV1.UserLLMProfiles)
-		v1.POST("/llm/profiles", hV1.CreateUserLLMProfile)
-		v1.PUT("/llm/profiles/:profileID", hV1.UpdateUserLLMProfile)
-		v1.DELETE("/llm/profiles/:profileID", hV1.DeleteUserLLMProfile)
+		personalLLMProfiles := v1.Group("/llm/profiles")
+		personalLLMProfiles.Use(hV1.TrialDemoAccessGuard())
+		personalLLMProfiles.POST("", hV1.CreateUserLLMProfile)
+		personalLLMProfiles.PUT("/:profileID", hV1.UpdateUserLLMProfile)
+		personalLLMProfiles.DELETE("/:profileID", hV1.DeleteUserLLMProfile)
 		v1.GET("/projects/:pid/status", hV1.ProjectStatus)
 	}
 

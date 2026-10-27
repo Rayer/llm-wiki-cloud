@@ -64,22 +64,20 @@ func (h *Handler) executeQuery(ctx context.Context, reader storage.Store, profil
 	if selectedSource != "" {
 		span.SetAttributes(attribute.String("llm.source", selectedSource))
 	}
-	if selectedClient != nil {
-		if identity, ok := selectedClient.(llm.ProfileIdentityProvider); ok {
-			profile := identity.ProfileIdentity()
-			span.SetAttributes(
-				attribute.String("llm.profile.id", profile.ID),
-				attribute.Int64("llm.profile.revision", profile.Revision),
-				attribute.String("llm.provider", profile.Provider),
-				attribute.String("llm.protocol", profile.Protocol),
-				attribute.String("llm.model", profile.Model),
-			)
-		}
-	}
 	result, err := h.queryExecutor.Execute(stageCtx, reader, request)
-	finishQueryStage(span, err)
 	if err != nil {
+		finishQueryStage(span, err)
 		return handler.QueryResponse{}, nil, queryExecutorFailure(queryStageFailure("runtime", err), reader)
 	}
+	if identity := result.RuntimeConfigIdentity; identity != nil && identity.LLMProfileID != "" {
+		span.SetAttributes(
+			attribute.String("llm.profile.id", identity.LLMProfileID),
+			attribute.Int64("llm.profile.revision", identity.LLMProfileRevision),
+			attribute.String("llm.provider", identity.ExpansionProvider),
+			attribute.String("llm.protocol", identity.LLMProtocol),
+			attribute.String("llm.model", identity.ExpansionModel),
+		)
+	}
+	finishQueryStage(span, nil)
 	return mapQueryResult(result), result.RuntimeConfigIdentity, nil
 }

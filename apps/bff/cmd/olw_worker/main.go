@@ -1455,7 +1455,45 @@ var suggestedQueryProvider = func(cfg workerConfig) suggestedqueries.Provider {
 	if !cfg.SuggestedQueries {
 		return nil
 	}
-	return llm.NewClient(cfg.APIKey)
+	if cfg.ActiveLLMProfile == nil {
+		return unavailableSuggestedQueryProvider{}
+	}
+	profile := cfg.ActiveLLMProfile
+	client, err := llm.NewProfileClient(llm.ProfileConfig{ID: profile.ID, Revision: profile.Revision, Provider: profile.Provider,
+		Protocol: profile.Protocol, Endpoint: profile.Endpoint, Model: profile.Model}, string(profile.APIKey), llm.ProfileClientOptions{})
+	if err != nil {
+		return unavailableSuggestedQueryProvider{}
+	}
+	if cfg.SharedProfilePool && cfg.QuotaMarkerPath != "" {
+		return quotaAwareSuggestedQueryProvider{provider: client, markerPath: cfg.QuotaMarkerPath}
+	}
+	return client
+}
+
+type unavailableSuggestedQueryProvider struct{}
+
+func (unavailableSuggestedQueryProvider) Chat(context.Context, string, string) (string, error) {
+	return "", errors.New("Project LLM profile is unavailable")
+}
+
+type quotaAwareSuggestedQueryProvider struct {
+	provider   suggestedqueries.Provider
+	markerPath string
+}
+
+func (p quotaAwareSuggestedQueryProvider) Chat(ctx context.Context, systemPrompt, userMessage string) (string, error) {
+	text, err := p.provider.Chat(ctx, systemPrompt, userMessage)
+	if llm.IsQuotaExhausted(err) && p.markerPath != "" {
+		file, markerErr := os.OpenFile(p.markerPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if markerErr != nil {
+			return "", errors.Join(err, errors.New("shared quota retry marker could not be recorded"))
+		}
+		if closeErr := file.Close(); closeErr != nil {
+			_ = os.Remove(p.markerPath)
+			return "", errors.Join(err, errors.New("shared quota retry marker could not be recorded"))
+		}
+	}
+	return text, err
 }
 
 // runPostprocessWithProvider rebuilds cache/index artifacts, then regenerates
@@ -1572,10 +1610,7 @@ func writeSuggestedQueriesObserved(ctx context.Context, vault string, provider s
 		report("corpus_decode_failed")
 		return fmt.Errorf("decode suggested query concepts: %w", err)
 	}
-	artifact, err := suggestedqueries.Generate(ctx, provider, "", entries, mtimes, suggestedqueries.GenerationMetadata{
-		Model:         suggestedQueryModel,
-		PromptVersion: suggestedqueries.PromptVersion,
-	}, time.Now())
+	artifact, err := suggestedqueries.Generate(ctx, provider, "", entries, mtimes, suggestedQueryGenerationMetadata(provider), time.Now())
 	if err != nil {
 		logicalOutcome = "degraded"
 		category := suggestedFailureCategory(err)
@@ -1586,6 +1621,9 @@ func writeSuggestedQueriesObserved(ctx context.Context, vault string, provider s
 		observability.FinishPipelineSpan(fallbackSpan, workerTraceOutcome(fallbackErr))
 		if fallbackErr != nil {
 			logicalOutcome = workerTraceOutcome(fallbackErr)
+		}
+		if llm.IsQuotaExhausted(err) {
+			return errors.Join(err, fallbackErr)
 		}
 		return fallbackErr
 	}
@@ -1611,6 +1649,19 @@ func suggestedFailureCategory(err error) string {
 		}
 	}
 	return llm.SafeErrorCategory(err)
+}
+
+func suggestedQueryGenerationMetadata(provider suggestedqueries.Provider) suggestedqueries.GenerationMetadata {
+	metadata := suggestedqueries.GenerationMetadata{Model: suggestedQueryModel, PromptVersion: suggestedqueries.PromptVersion}
+	if identityProvider, ok := provider.(llm.ProfileIdentityProvider); ok {
+		identity := identityProvider.ProfileIdentity()
+		metadata.Model = identity.Model
+		metadata.ProfileID = identity.ID
+		metadata.ProfileRevision = identity.Revision
+		metadata.Provider = identity.Provider
+		metadata.Protocol = identity.Protocol
+	}
+	return metadata
 }
 
 func ensureEmptySuggestedQueries(ctx context.Context, vault string) error {

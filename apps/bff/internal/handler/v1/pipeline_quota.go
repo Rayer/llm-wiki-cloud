@@ -78,15 +78,23 @@ func (h *Handler) isDemoUser(userID string) bool {
 }
 
 // TrialDemoAccessGuard applies Pipeline's configured user-ID restriction to
-// Profile and Export routes; it does not infer trial mode from an email label.
+// Profile, Export, and personal credential mutation routes; it does not infer
+// trial mode from an email label.
 func (h *Handler) TrialDemoAccessGuard() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if h.isDemoUser(c.GetString("userID")) {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "demo users cannot access this feature"})
+		if h.rejectTrialDemo(c) {
 			return
 		}
 		c.Next()
 	}
+}
+
+func (h *Handler) rejectTrialDemo(c *gin.Context) bool {
+	if !h.isDemoUser(c.GetString("userID")) {
+		return false
+	}
+	c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "demo users cannot access this feature"})
+	return true
 }
 
 func (h *Handler) pipelineLimits() pipelinequota.Limits {

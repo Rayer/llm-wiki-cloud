@@ -19,7 +19,7 @@ import (
 const maxProfileResponseBytes = 1 << 20
 
 type profileContextualCallRecorder interface {
-	StartProfileCallAtContext(context.Context, string, string, string, string) func(string, string, time.Time)
+	StartProfileCallAtContext(context.Context, ProfileConfig, string, string) func(string, string, time.Time)
 }
 
 type Protocol string
@@ -101,6 +101,7 @@ const (
 	ProviderFailure         ProviderErrorKind = "provider_failure"
 	ProviderQuotaExhausted  ProviderErrorKind = "quota_exhausted"
 	ProviderResponseInvalid ProviderErrorKind = "provider_response_invalid"
+	ProviderOutputTruncated ProviderErrorKind = "provider_output_truncated"
 )
 
 // ProfileCallError contains only a safe category and status, never provider bodies or keys.
@@ -274,7 +275,7 @@ func (c *ProfileClient) Complete(ctx context.Context, systemPrompt, userMessage 
 	callOutcome := string(ProviderFailure)
 	finishCall := func(string, string, time.Time) {}
 	if recorder, ok := ctx.Value(recorderKey{}).(profileContextualCallRecorder); ok {
-		finishCall = recorder.StartProfileCallAtContext(ctx, c.profile.Provider, CallStage(ctx), c.profile.Model, endpoint)
+		finishCall = recorder.StartProfileCallAtContext(ctx, c.profile, CallStage(ctx), endpoint)
 	}
 	defer func() { finishCall(callOutcome, callOutcome, time.Now()) }()
 	response, err := c.client.Do(request)
@@ -335,6 +336,10 @@ func (c *ProfileClient) Complete(ctx context.Context, systemPrompt, userMessage 
 		callOutcome = string(ProviderResponseInvalid)
 		return CompletionResult{}, &ProfileCallError{Kind: ProviderResponseInvalid, StatusCode: response.StatusCode}
 	}
+	if truncatedProfileFinishReason(result.Metadata.FinishReason) {
+		callOutcome = string(ProviderOutputTruncated)
+		return CompletionResult{}, &ProfileCallError{Kind: ProviderOutputTruncated, StatusCode: response.StatusCode}
+	}
 	callOutcome = "success"
 	result.Metadata.ProfileID = c.profile.ID
 	result.Metadata.ProfileRevision = c.profile.Revision
@@ -342,6 +347,15 @@ func (c *ProfileClient) Complete(ctx context.Context, systemPrompt, userMessage 
 	result.Metadata.Protocol = string(c.profile.Protocol)
 	result.Metadata.RequestedModel = c.profile.Model
 	return result, nil
+}
+
+func truncatedProfileFinishReason(reason string) bool {
+	switch strings.ToLower(strings.TrimSpace(reason)) {
+	case "length", "max_tokens":
+		return true
+	default:
+		return false
+	}
 }
 
 func profileCallTraceOutcome(err error) string {

@@ -56,8 +56,12 @@ type ConceptEvidence struct {
 // GenerationMetadata identifies the generation contract that produced a
 // candidate. It is retained in the published artifact for auditability.
 type GenerationMetadata struct {
-	Model         string `json:"model"`
-	PromptVersion string `json:"prompt_version"`
+	Model            string `json:"model"`
+	PromptVersion    string `json:"prompt_version"`
+	ProfileID        string `json:"profile_id,omitempty"`
+	ProfileRevision  int64  `json:"profile_revision,omitempty"`
+	Provider         string `json:"provider,omitempty"`
+	Protocol         string `json:"protocol,omitempty"`
 }
 
 // Candidate is the validated candidate retained in the published artifact.

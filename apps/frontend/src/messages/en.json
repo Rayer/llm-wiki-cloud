@@ -181,7 +181,7 @@
     "saveError": "Unable to save this Project source.",
     "sharedNoticeTitle": "This Project currently uses the platform shared service.",
     "sharedNoticeBody": "The platform shared service may have quotas or usage limits. Add an API key in Personal settings → My BYOK, then select your profile for this Project.",
-    "mobileHint": "On mobile, open navigation and choose Personal settings → My BYOK.",
+    "personalSettingsCTA": "Open Personal settings",
     "dismiss": "Dismiss shared service notice",
     "unknown": "The current source is unavailable. Check the Project source below.",
     "accountAssignments": "Project assignments",

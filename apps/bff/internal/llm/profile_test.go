@@ -15,10 +15,14 @@ type profileRoundTripper func(*http.Request) (*http.Response, error)
 
 func (f profileRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
-type profileCallCapture struct{ provider, stage, model, endpoint, outcome string }
+type profileCallCapture struct {
+	provider, stage, model, endpoint, outcome string
+	profile                                   ProfileConfig
+}
 
-func (c *profileCallCapture) StartProfileCallAtContext(_ context.Context, provider, stage, model, endpoint string) func(string, string, time.Time) {
-	c.provider, c.stage, c.model, c.endpoint = provider, stage, model, endpoint
+func (c *profileCallCapture) StartProfileCallAtContext(_ context.Context, profile ProfileConfig, stage, endpoint string) func(string, string, time.Time) {
+	c.provider, c.stage, c.model, c.endpoint = profile.Provider, stage, profile.Model, endpoint
+	c.profile = profile
 	return func(outcome, _ string, _ time.Time) { c.outcome = outcome }
 }
 
@@ -72,7 +76,7 @@ func TestProfileClientRecordsItsProviderAndModel(t *testing.T) {
 	if _, err := client.Complete(ctx, "rules", "question"); err != nil {
 		t.Fatal(err)
 	}
-	if capture.provider != "custom" || capture.stage != "query_expansion" || capture.model != "fixture-model" || capture.endpoint != "https://fixture.example/v1/chat/completions" || capture.outcome != "success" {
+	if capture.provider != "custom" || capture.stage != "query_expansion" || capture.model != "fixture-model" || capture.endpoint != "https://fixture.example/v1/chat/completions" || capture.outcome != "success" || capture.profile.ID != "p1" || capture.profile.Revision != 3 || capture.profile.Protocol != ProtocolOpenAIChatCompletions {
 		t.Fatalf("recorded profile call = %+v", capture)
 	}
 }
@@ -110,6 +114,50 @@ func TestProfileClientUsesAnthropicMessagesProtocol(t *testing.T) {
 	}
 	if result.Text != "one two" || result.Metadata.ReturnedModel != "claude-returned" || result.Metadata.FinishReason != "end_turn" || result.Metadata.Usage.InputTokens == nil || *result.Metadata.Usage.InputTokens != 21 || result.Metadata.Usage.CachedInputTokens == nil || *result.Metadata.Usage.CachedInputTokens != 6 || result.Metadata.Usage.CacheCreationInputTokens == nil || *result.Metadata.Usage.CacheCreationInputTokens != 2 {
 		t.Fatalf("unexpected normalized result: %+v", result)
+	}
+}
+
+func TestProfileClientRejectsSyntacticallyValidTruncatedStructuredOutput(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		protocol Protocol
+		endpoint string
+		response string
+	}{
+		{
+			name:     "OpenAI length",
+			protocol: ProtocolOpenAIChatCompletions,
+			endpoint: "https://fixture.example/v1",
+			response: `{"id":"req-truncated","model":"fixture-model","choices":[{"message":{"role":"assistant","content":"{\"valid\":true}"},"finish_reason":"length"}]}`,
+		},
+		{
+			name:     "Anthropic max_tokens",
+			protocol: ProtocolAnthropicMessages,
+			endpoint: "https://fixture.example",
+			response: `{"id":"msg-truncated","model":"fixture-model","stop_reason":"max_tokens","content":[{"type":"text","text":"{\"valid\":true}"}]}`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			transport := profileRoundTripper(func(*http.Request) (*http.Response, error) {
+				return profileResponse(http.StatusOK, test.response), nil
+			})
+			client, err := newProfileClient(ProfileConfig{ID: "profile", Revision: 7, Provider: "custom", Protocol: test.protocol,
+				Endpoint: test.endpoint, Model: "fixture-model"}, "synthetic-key", ProfileClientOptions{}, false, transport)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.Close()
+			capture := &profileCallCapture{}
+			ctx := context.WithValue(context.Background(), recorderKey{}, capture)
+			text, err := client.Chat(ctx, "return JSON", `{"valid":true}`)
+			var callErr *ProfileCallError
+			if text != "" || !errors.As(err, &callErr) || callErr.Kind != ProviderOutputTruncated {
+				t.Fatalf("Chat() = (%q, %v), want empty output and truncated error", text, err)
+			}
+			if capture.outcome != string(ProviderOutputTruncated) {
+				t.Fatalf("call outcome = %q, want %q", capture.outcome, ProviderOutputTruncated)
+			}
+		})
 	}
 }
 

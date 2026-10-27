@@ -107,6 +107,60 @@ func TestSharedProfileQuotaRetryStartsFromFreshWorkspace(t *testing.T) {
 	}
 }
 
+func TestSharedProfileQuotaRetryRevalidatesNextCandidate(t *testing.T) {
+	oldHooks := localWorkspaceBatchHooks
+	t.Cleanup(func() { localWorkspaceBatchHooks = oldHooks })
+	root := t.TempDir()
+	firstWorkspace := filepath.Join(root, "workspace-1")
+	if err := os.Mkdir(firstWorkspace, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(root, "quota.marker")
+	var selected []string
+	resolverCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resolverCalls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"source":"shared","profiles":[{"id":"shared-current","revision":3,"provider":"custom","protocol":"openai_chat_completions","endpoint":"https://fixture.example/v1","model":"current-model","api_key":"c3ludGhldGljLWN1cnJlbnQta2V5"}]}`))
+	}))
+	defer server.Close()
+	hooks := oldHooks
+	hooks.createWorkspace = func(_, _ string) (string, error) {
+		path := filepath.Join(root, "workspace-2")
+		if err := os.Mkdir(path, 0o700); err != nil {
+			return "", err
+		}
+		return path, nil
+	}
+	hooks.removeWorkspace = os.RemoveAll
+	hooks.runWorkerBatchAtVault = func(_ context.Context, cfg workerConfig, _ [][]string, _ string) error {
+		selected = append(selected, cfg.ActiveLLMProfile.ID)
+		if len(selected) == 1 {
+			if err := os.WriteFile(marker, nil, 0o600); err != nil {
+				return err
+			}
+			return errors.New("pinned provider quota exhausted")
+		}
+		return nil
+	}
+	localWorkspaceBatchHooks = hooks
+	cfg := workerConfig{
+		WorkspaceDir: root, SharedProfilePool: true, QuotaMarkerPath: marker,
+		ProfileResolverURL: server.URL + "/internal/pipeline/llm-profile", LocalCloudScope: "test-scope",
+		PipelineReservationID: "reservation-fixture", UserID: "user-fixture", ProjectID: "project-fixture",
+		ProfileCandidates: []pipelineLLMProfile{
+			{ID: "shared-first", Revision: 1},
+			{ID: "removed-second", Revision: 2},
+		},
+	}
+	if _, err := runWorkerBatchAtVaultWithProfilePool(context.Background(), cfg, [][]string{{"run"}}, root, firstWorkspace, nil, false); err != nil {
+		t.Fatalf("runWorkerBatchAtVaultWithProfilePool() error = %v", err)
+	}
+	if resolverCalls != 1 || len(selected) != 2 || selected[0] != "shared-first" || selected[1] != "shared-current" {
+		t.Fatalf("resolver calls=%d selected=%v, want one fresh resolve and no stale second candidate", resolverCalls, selected)
+	}
+}
+
 func TestCloudProfileRunnerAppliesResolvedPersonalProfile(t *testing.T) {
 	oldHooks := localWorkspaceBatchHooks
 	t.Cleanup(func() { localWorkspaceBatchHooks = oldHooks })

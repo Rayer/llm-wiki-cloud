@@ -1,6 +1,7 @@
 package v1
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base32"
@@ -9,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,54 +28,77 @@ import (
 )
 
 const (
-	userLLMProfilesCollection   = "llm_profiles"
-	sharedLLMProfilesCollection = "llm_shared_profiles"
+	userLLMProfilesCollection    = "llm_profiles"
+	sharedLLMProfilesCollection  = "llm_shared_profiles"
+	sharedLLMPoolStateCollection = "llm_shared_profile_state"
 )
 
+type sharedLLMPoolState struct {
+	Initialized bool      `firestore:"initialized"`
+	UpdatedAt   time.Time `firestore:"updated_at"`
+}
+
+type BYOKDeploymentCredential struct {
+	Reference string
+	Label     string
+	Value     []byte
+}
+
+type deploymentCredentialOption struct {
+	Reference string `json:"reference"`
+	Label     string `json:"label"`
+}
+
 type llmProfileDocument struct {
-	ID               string    `firestore:"id"`
-	OwnerID          string    `firestore:"owner_id"`
-	Name             string    `firestore:"name"`
-	Provider         string    `firestore:"provider"`
-	Protocol         string    `firestore:"protocol"`
-	Endpoint         string    `firestore:"endpoint"`
-	Model            string    `firestore:"model"`
-	Revision         int64     `firestore:"revision"`
-	EncryptedAPIKey  string    `firestore:"encrypted_api_key"`
-	SecretConfigured bool      `firestore:"secret_configured"`
-	Enabled          bool      `firestore:"enabled"`
-	Public           bool      `firestore:"public"`
-	Priority         int       `firestore:"priority"`
-	BoundProjects    []string  `firestore:"bound_projects"`
-	UpdatedAt        time.Time `firestore:"updated_at"`
+	ID                  string    `firestore:"id"`
+	OwnerID             string    `firestore:"owner_id"`
+	Name                string    `firestore:"name"`
+	Provider            string    `firestore:"provider"`
+	Protocol            string    `firestore:"protocol"`
+	Endpoint            string    `firestore:"endpoint"`
+	Model               string    `firestore:"model"`
+	Revision            int64     `firestore:"revision"`
+	CredentialRevision  int64     `firestore:"credential_revision"`
+	CredentialOrigin    string    `firestore:"credential_origin"`
+	CredentialReference string    `firestore:"credential_reference"`
+	EncryptedAPIKey     string    `firestore:"encrypted_api_key"`
+	SecretConfigured    bool      `firestore:"secret_configured"`
+	Enabled             bool      `firestore:"enabled"`
+	Public              bool      `firestore:"public"`
+	Priority            int       `firestore:"priority"`
+	BoundProjects       []string  `firestore:"bound_projects"`
+	UpdatedAt           time.Time `firestore:"updated_at"`
 }
 
 type llmProfileView struct {
-	ID               string `json:"id"`
-	Name             string `json:"name"`
-	Provider         string `json:"provider"`
-	Protocol         string `json:"protocol"`
-	Endpoint         string `json:"endpoint"`
-	Model            string `json:"model"`
-	Revision         int64  `json:"revision"`
-	SecretConfigured bool   `json:"secret_configured"`
-	Enabled          bool   `json:"enabled,omitempty"`
-	Public           bool   `json:"available_to_public,omitempty"`
-	Priority         int    `json:"priority,omitempty"`
+	ID                  string `json:"id"`
+	Name                string `json:"name"`
+	Provider            string `json:"provider"`
+	Protocol            string `json:"protocol"`
+	Endpoint            string `json:"endpoint"`
+	Model               string `json:"model"`
+	Revision            int64  `json:"revision"`
+	SecretConfigured    bool   `json:"secret_configured"`
+	CredentialOrigin    string `json:"credential_origin,omitempty"`
+	CredentialReference string `json:"credential_reference,omitempty"`
+	Enabled             bool   `json:"enabled,omitempty"`
+	Public              bool   `json:"available_to_public,omitempty"`
+	Priority            int    `json:"priority,omitempty"`
 }
 
 type llmProfileInput struct {
-	Name        string `json:"name"`
-	Provider    string `json:"provider"`
-	Protocol    string `json:"protocol"`
-	Endpoint    string `json:"endpoint"`
-	Model       string `json:"model"`
-	APIKey      string `json:"api_key,omitempty"`
-	ClearAPIKey bool   `json:"clear_api_key,omitempty"`
-	Revision    int64  `json:"revision"`
-	Enabled     *bool  `json:"enabled,omitempty"`
-	Public      *bool  `json:"available_to_public,omitempty"`
-	Priority    *int   `json:"priority,omitempty"`
+	Name                string `json:"name"`
+	Provider            string `json:"provider"`
+	Protocol            string `json:"protocol"`
+	Endpoint            string `json:"endpoint"`
+	Model               string `json:"model"`
+	APIKey              string `json:"api_key,omitempty"`
+	CredentialReference string `json:"credential_reference,omitempty"`
+	ClearAPIKey         bool   `json:"clear_api_key,omitempty"`
+	Revision            int64  `json:"revision"`
+	Enabled             *bool  `json:"enabled,omitempty"`
+	Public              *bool  `json:"available_to_public,omitempty"`
+	Priority            *int   `json:"priority,omitempty"`
 }
 
 type llmBindingInput struct {
@@ -106,6 +131,27 @@ type pipelineLLMProfileRequest struct {
 }
 
 func (h *Handler) SetBYOKCredentialBox(box *byok.CredentialBox) { h.byokCredentialBox = box }
+
+func (h *Handler) SetBYOKCredentialEnvironment(environment string) {
+	h.byokEnvironment = strings.TrimSpace(environment)
+}
+
+func (h *Handler) SetBYOKDeploymentCredentials(credentials []BYOKDeploymentCredential) {
+	for _, existing := range h.byokDeploymentCredentials {
+		clear(existing.Value)
+	}
+	h.byokDeploymentCredentials = make(map[string]BYOKDeploymentCredential, len(credentials))
+	for _, credential := range credentials {
+		reference := strings.TrimSpace(credential.Reference)
+		if reference == "" || len(credential.Value) == 0 {
+			continue
+		}
+		credential.Reference = reference
+		credential.Label = strings.TrimSpace(credential.Label)
+		credential.Value = bytes.Clone(credential.Value)
+		h.byokDeploymentCredentials[reference] = credential
+	}
+}
 
 func (h *Handler) SetPipelineWorkerIdentity(audience, serviceAccount string) {
 	h.pipelineWorkerAudience = strings.TrimSpace(audience)
@@ -226,7 +272,10 @@ func (h *Handler) resolvePipelineLLMProfiles(ctx context.Context, owner, project
 		if bindingSnapshot.DataTo(&binding) != nil {
 			return "", nil, errLLMProfileUnavailable
 		}
-		source, profileID = binding.Source, binding.ProfileID
+		source = h.effectiveProjectLLMSource(owner, binding.Source)
+		if source == "personal" {
+			profileID = binding.ProfileID
+		}
 	}
 	if source == "personal" {
 		if !auth.ValidPathSegment(profileID) {
@@ -254,6 +303,13 @@ func (h *Handler) resolvePipelineLLMProfiles(ctx context.Context, owner, project
 		return "", nil, errLLMProfileUnavailable
 	}
 	if len(docs) == 0 {
+		initialized, err := h.sharedLLMPoolInitialized(ctx)
+		if err != nil {
+			return "", nil, errLLMProfileUnavailable
+		}
+		if initialized {
+			return "", nil, errLLMSharedPoolUnavailable
+		}
 		return "bootstrap", nil, nil
 	}
 	records := make([]llmProfileDocument, 0, len(docs))
@@ -293,16 +349,40 @@ func (h *Handler) pipelineProfileForRecord(record llmProfileDocument, owner stri
 	if h.byokCredentialBox == nil {
 		return pipelineLLMProfile{}, errLLMProfileUnavailable
 	}
-	var key []byte
-	if record.SecretConfigured {
-		plaintext, err := h.byokCredentialBox.Decrypt(record.EncryptedAPIKey, llmProfileAAD(owner, record.ID))
-		if err != nil {
-			return pipelineLLMProfile{}, errLLMProfileUnavailable
-		}
-		key = plaintext
+	key, err := h.profileCredential(record, owner)
+	if err != nil {
+		return pipelineLLMProfile{}, errLLMProfileUnavailable
 	}
 	return pipelineLLMProfile{ID: record.ID, Revision: record.Revision, Provider: record.Provider,
 		Protocol: llm.Protocol(record.Protocol), Endpoint: record.Endpoint, Model: record.Model, APIKey: key}, nil
+}
+
+func (h *Handler) profileCredential(record llmProfileDocument, owner string) ([]byte, error) {
+	if !record.SecretConfigured {
+		if record.CredentialOrigin == "deployment" || record.CredentialReference != "" {
+			return nil, errLLMProfileUnavailable
+		}
+		return nil, nil
+	}
+	origin := record.CredentialOrigin
+	if origin == "" {
+		origin = "managed"
+	}
+	switch origin {
+	case "deployment":
+		credential, ok := h.byokDeploymentCredentials[record.CredentialReference]
+		if !ok || len(credential.Value) == 0 {
+			return nil, errLLMProfileUnavailable
+		}
+		return bytes.Clone(credential.Value), nil
+	case "managed":
+		if h.byokCredentialBox == nil || record.CredentialRevision < 1 {
+			return nil, errLLMProfileUnavailable
+		}
+		return h.byokCredentialBox.Decrypt(record.EncryptedAPIKey, h.llmProfileAAD(owner, record))
+	default:
+		return nil, errLLMProfileUnavailable
+	}
 }
 
 func (h *Handler) UserLLMProfiles(c *gin.Context) {
@@ -365,7 +445,16 @@ func (h *Handler) AdminLLMProfiles(c *gin.Context) {
 		}
 		return profiles[i].Priority < profiles[j].Priority
 	})
-	c.JSON(http.StatusOK, gin.H{"profiles": profiles})
+	c.JSON(http.StatusOK, gin.H{"profiles": profiles, "deployment_credentials": h.deploymentCredentialOptions()})
+}
+
+func (h *Handler) deploymentCredentialOptions() []deploymentCredentialOption {
+	options := make([]deploymentCredentialOption, 0, len(h.byokDeploymentCredentials))
+	for _, credential := range h.byokDeploymentCredentials {
+		options = append(options, deploymentCredentialOption{Reference: credential.Reference, Label: credential.Label})
+	}
+	sort.Slice(options, func(i, j int) bool { return options[i].Reference < options[j].Reference })
+	return options
 }
 
 func (h *Handler) CreateAdminLLMProfile(c *gin.Context) { h.createLLMProfile(c, true) }
@@ -396,21 +485,29 @@ func (h *Handler) ProjectLLMBinding(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Project LLM source is unreadable"})
 		return
 	}
+	if h.effectiveProjectLLMSource(userID, binding.Source) == "shared" {
+		binding.Source = "shared"
+		binding.ProfileID = ""
+		binding.ProfileRevision = 0
+	}
 	c.JSON(http.StatusOK, binding)
 }
 
 func (h *Handler) SetProjectLLMBinding(c *gin.Context) {
+	var input llmBindingInput
+	if err := c.ShouldBindJSON(&input); err != nil || (input.Source != "shared" && input.Source != "personal") || (input.Source == "personal" && input.ProfileID == "") || input.Revision < 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid Project LLM source"})
+		return
+	}
+	if input.Source == "personal" && h.rejectTrialDemo(c) {
+		return
+	}
 	if !h.requireBYOK(c) {
 		return
 	}
 	userID, projectID := c.GetString("userID"), strings.TrimSpace(c.Param("pid"))
 	if _, err := h.AuthorizeProject(c.Request.Context(), userID, projectID, ProjectEdit); err != nil {
 		writeLLMProfileError(c, err)
-		return
-	}
-	var input llmBindingInput
-	if err := c.ShouldBindJSON(&input); err != nil || (input.Source != "shared" && input.Source != "personal") || (input.Source == "personal" && input.ProfileID == "") || input.Revision < 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid Project LLM source"})
 		return
 	}
 	if input.Source == "shared" {
@@ -516,7 +613,17 @@ func (h *Handler) createLLMProfile(c *gin.Context, shared bool) {
 		return
 	}
 	ref := h.llmProfileRef(owner, profileID, shared)
-	if _, err := ref.Create(c.Request.Context(), record); err != nil {
+	if shared {
+		err = h.firestore.Raw().RunTransaction(c.Request.Context(), func(ctx context.Context, tx *cloudfirestore.Transaction) error {
+			if err := tx.Create(ref, record); err != nil {
+				return err
+			}
+			return tx.Set(h.sharedLLMPoolStateRef(), sharedLLMPoolState{Initialized: true, UpdatedAt: time.Now().UTC()})
+		})
+	} else {
+		_, err = ref.Create(c.Request.Context(), record)
+	}
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not save LLM profile"})
 		return
 	}
@@ -564,7 +671,15 @@ func (h *Handler) updateLLMProfile(c *gin.Context, shared bool) {
 		}
 		updated.BoundProjects = current.BoundProjects
 		next = updated
-		return tx.Set(ref, updated)
+		if err := tx.Set(ref, updated); err != nil {
+			return err
+		}
+		if shared {
+			if err := tx.Set(h.sharedLLMPoolStateRef(), sharedLLMPoolState{Initialized: true, UpdatedAt: time.Now().UTC()}); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		writeLLMProfileError(c, err)
@@ -598,7 +713,15 @@ func (h *Handler) deleteLLMProfile(c *gin.Context, shared bool) {
 		if len(record.BoundProjects) > 0 {
 			return errLLMProfileInUse
 		}
-		return tx.Delete(ref)
+		if err := tx.Delete(ref); err != nil {
+			return err
+		}
+		if shared {
+			if err := tx.Set(h.sharedLLMPoolStateRef(), sharedLLMPoolState{Initialized: true, UpdatedAt: time.Now().UTC()}); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		writeLLMProfileError(c, err)
@@ -634,36 +757,80 @@ func (h *Handler) buildLLMProfile(owner, profileID string, input llmProfileInput
 		}
 	}
 	key := strings.TrimSpace(input.APIKey)
-	if input.ClearAPIKey {
-		key = ""
-	} else if key == "" && current != nil && !current.SecretConfigured {
-		key = ""
-	} else if key == "" && current != nil && current.SecretConfigured {
-		// Omission is a no-op. Clear is always explicit.
+	credentialOrigin, credentialReference := "managed", ""
+	if current != nil {
+		credentialOrigin = current.CredentialOrigin
+		if credentialOrigin == "" {
+			credentialOrigin = "managed"
+		}
+		credentialReference = current.CredentialReference
 	}
-	if provider != "custom" && (input.ClearAPIKey || (key == "" && (current == nil || !current.SecretConfigured))) {
+	requestedReference := strings.TrimSpace(input.CredentialReference)
+	if requestedReference != "" {
+		if !shared || key != "" || input.ClearAPIKey || (credentialOrigin == "deployment" && requestedReference != credentialReference) {
+			return llmProfileDocument{}, errLLMProfileInvalid
+		}
+		credentialOrigin, credentialReference = "deployment", requestedReference
+	}
+	if !shared && requestedReference != "" {
+		return llmProfileDocument{}, errLLMProfileInvalid
+	}
+	if credentialOrigin == "deployment" {
+		if key != "" || input.ClearAPIKey {
+			return llmProfileDocument{}, errLLMProfileInvalid
+		}
+		credential, ok := h.byokDeploymentCredentials[credentialReference]
+		if !ok || len(credential.Value) == 0 {
+			return llmProfileDocument{}, errLLMProfileUnavailable
+		}
+		key = string(credential.Value)
+	}
+	if provider != "custom" && key == "" && !input.ClearAPIKey && (current == nil || !current.SecretConfigured) {
 		return llmProfileDocument{}, errLLMProfileKeyRequired
 	}
 	resolved := llm.ProfileConfig{ID: profileID, Revision: maxInt64(1, input.Revision+1), Provider: provider, Protocol: protocol, Endpoint: endpoint, Model: model}
-	if _, err := llm.NewProfileClient(resolved, key, llm.ProfileClientOptions{}); err != nil {
+	validationKey := key
+	if validationKey == "" && current != nil && current.SecretConfigured && !input.ClearAPIKey {
+		// Validate the nonsecret settings without decrypting or replacing the
+		// write-only key during an ordinary metadata edit.
+		validationKey = "configured-secret-placeholder"
+	}
+	if validationKey == "" && input.ClearAPIKey && provider != "custom" {
+		validationKey = "configured-secret-placeholder"
+	}
+	validator, err := llm.NewProfileClient(resolved, validationKey, llm.ProfileClientOptions{})
+	if err != nil {
 		return llmProfileDocument{}, errLLMProfileInvalid
 	}
+	validator.Close()
 	if current != nil && input.Revision != current.Revision {
 		return llmProfileDocument{}, errLLMProfileConflict
 	}
-	if current != nil && key == "" && !input.ClearAPIKey {
-		key = ""
+	revision := int64(1)
+	if current != nil {
+		revision = current.Revision + 1
 	}
 	secretConfigured := key != ""
+	credentialRevision := int64(0)
 	ciphertext := ""
-	if current != nil {
+	if current != nil && credentialOrigin == "managed" && key == "" && !input.ClearAPIKey {
 		ciphertext = current.EncryptedAPIKey
 		secretConfigured = current.SecretConfigured
+		credentialRevision = current.CredentialRevision
+	} else if current != nil && credentialOrigin == "deployment" && credentialReference == current.CredentialReference {
+		credentialRevision = current.CredentialRevision
 	}
 	if input.ClearAPIKey {
-		ciphertext, secretConfigured = "", false
+		ciphertext, secretConfigured, credentialOrigin, credentialReference = "", false, "managed", ""
+		credentialRevision = 0
+	} else if credentialOrigin == "deployment" {
+		ciphertext, secretConfigured = "", true
+		if credentialRevision == 0 {
+			credentialRevision = revision
+		}
 	} else if key != "" {
-		ciphertext, _ = h.byokCredentialBox.Encrypt([]byte(key), llmProfileAAD(owner, profileID))
+		credentialRevision = revision
+		ciphertext, _ = h.byokCredentialBox.Encrypt([]byte(key), h.llmProfileAAD(owner, llmProfileDocument{ID: profileID, CredentialRevision: credentialRevision}))
 		if ciphertext == "" {
 			return llmProfileDocument{}, errLLMProfileUnavailable
 		}
@@ -688,12 +855,9 @@ func (h *Handler) buildLLMProfile(owner, profileID string, input llmProfileInput
 	if priority < 0 || priority > 100000 {
 		return llmProfileDocument{}, errLLMProfileInvalid
 	}
-	revision := int64(1)
-	if current != nil {
-		revision = current.Revision + 1
-	}
 	return llmProfileDocument{ID: profileID, OwnerID: owner, Name: name, Provider: provider, Protocol: string(protocol), Endpoint: endpoint, Model: model,
-		Revision: revision, EncryptedAPIKey: ciphertext, SecretConfigured: secretConfigured, Enabled: enabled, Public: public, Priority: priority, UpdatedAt: time.Now().UTC()}, nil
+		Revision: revision, CredentialRevision: credentialRevision, CredentialOrigin: credentialOrigin, CredentialReference: credentialReference,
+		EncryptedAPIKey: ciphertext, SecretConfigured: secretConfigured, Enabled: enabled, Public: public, Priority: priority, UpdatedAt: time.Now().UTC()}, nil
 }
 
 func (h *Handler) requireBYOK(c *gin.Context) bool {
@@ -735,10 +899,11 @@ func (h *Handler) resolveProjectLLMProfile(ctx context.Context, owner, project s
 	if err := bindingSnapshot.DataTo(&binding); err != nil {
 		return llm.ProfileConfig{}, "", errLLMProfileUnavailable
 	}
-	if binding.Source == "shared" {
+	source := h.effectiveProjectLLMSource(owner, binding.Source)
+	if source == "shared" {
 		return llm.ProfileConfig{}, "shared", nil
 	}
-	if binding.Source != "personal" || !auth.ValidPathSegment(binding.ProfileID) {
+	if source != "personal" || !auth.ValidPathSegment(binding.ProfileID) {
 		return llm.ProfileConfig{}, "", errLLMProfileUnavailable
 	}
 	ref := h.userLLMProfileRef(owner, binding.ProfileID)
@@ -750,14 +915,12 @@ func (h *Handler) resolveProjectLLMProfile(ctx context.Context, owner, project s
 	if err := snapshot.DataTo(&record); err != nil || record.OwnerID != owner || !record.Enabled {
 		return llm.ProfileConfig{}, "", errLLMProfileUnavailable
 	}
-	key := ""
-	if record.SecretConfigured {
-		plaintext, err := h.byokCredentialBox.Decrypt(record.EncryptedAPIKey, llmProfileAAD(owner, record.ID))
-		if err != nil {
-			return llm.ProfileConfig{}, "", errLLMProfileUnavailable
-		}
-		key = string(plaintext)
+	keyBytes, err := h.profileCredential(record, owner)
+	if err != nil {
+		return llm.ProfileConfig{}, "", errLLMProfileUnavailable
 	}
+	defer clear(keyBytes)
+	key := string(keyBytes)
 	return llm.ProfileConfig{ID: record.ID, Revision: record.Revision, Provider: record.Provider, Protocol: llm.Protocol(record.Protocol), Endpoint: record.Endpoint, Model: record.Model}, key, nil
 }
 
@@ -778,7 +941,7 @@ func (h *Handler) projectLLMClient(ctx context.Context, owner, project string) (
 		if err := bindingSnapshot.DataTo(&binding); err != nil {
 			return nil, "", errLLMProfileUnavailable
 		}
-		source = binding.Source
+		source = h.effectiveProjectLLMSource(owner, binding.Source)
 	}
 	if source == "personal" {
 		if !auth.ValidPathSegment(binding.ProfileID) {
@@ -804,8 +967,13 @@ func (h *Handler) projectLLMClient(ctx context.Context, owner, project string) (
 		return nil, source, errLLMProfileUnavailable
 	}
 	if len(all) == 0 {
-		// Keep the immutable configured platform runtime until the managed pool
-		// has been deliberately initialized.
+		initialized, err := h.sharedLLMPoolInitialized(ctx)
+		if err != nil {
+			return nil, source, errLLMProfileUnavailable
+		}
+		if initialized {
+			return nil, source, errLLMSharedPoolUnavailable
+		}
 		return nil, "bootstrap", nil
 	}
 	profiles := make([]llmProfileDocument, 0, len(all))
@@ -858,18 +1026,45 @@ func (h *Handler) projectLLMClient(ctx context.Context, owner, project string) (
 	return pool, source, nil
 }
 
+func (h *Handler) sharedLLMPoolStateRef() *cloudfirestore.DocumentRef {
+	return scopedfirestore.Collection(h.firestore.Raw(), sharedLLMPoolStateCollection).Doc("platform")
+}
+
+func (h *Handler) sharedLLMPoolInitialized(ctx context.Context) (bool, error) {
+	if h.firestore == nil || h.firestore.Raw() == nil {
+		return false, errLLMProfileUnavailable
+	}
+	snapshot, err := h.sharedLLMPoolStateRef().Get(ctx)
+	if status.Code(err) == codes.NotFound {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	var state sharedLLMPoolState
+	if err := snapshot.DataTo(&state); err != nil || !state.Initialized {
+		return false, errLLMProfileUnavailable
+	}
+	return true, nil
+}
+
+func (h *Handler) effectiveProjectLLMSource(owner, source string) string {
+	if source == "personal" && h.isDemoUser(owner) {
+		return "shared"
+	}
+	return source
+}
+
 func (h *Handler) profileClientFor(profile llmProfileDocument, owner string) (*llm.ProfileClient, error) {
 	if h.byokCredentialBox == nil {
 		return nil, errLLMProfileUnavailable
 	}
-	key := ""
-	if profile.SecretConfigured {
-		plaintext, err := h.byokCredentialBox.Decrypt(profile.EncryptedAPIKey, llmProfileAAD(owner, profile.ID))
-		if err != nil {
-			return nil, errLLMProfileUnavailable
-		}
-		key = string(plaintext)
+	keyBytes, err := h.profileCredential(profile, owner)
+	if err != nil {
+		return nil, errLLMProfileUnavailable
 	}
+	defer clear(keyBytes)
+	key := string(keyBytes)
 	client, err := llm.NewProfileClient(llm.ProfileConfig{ID: profile.ID, Revision: profile.Revision, Provider: profile.Provider,
 		Protocol: llm.Protocol(profile.Protocol), Endpoint: profile.Endpoint, Model: profile.Model}, key, llm.ProfileClientOptions{})
 	if err != nil {
@@ -883,6 +1078,15 @@ func viewLLMProfile(record llmProfileDocument, admin bool) llmProfileView {
 		Endpoint: record.Endpoint, Model: record.Model, Revision: record.Revision, SecretConfigured: record.SecretConfigured}
 	if admin {
 		view.Enabled, view.Public, view.Priority = record.Enabled, record.Public, record.Priority
+		if record.SecretConfigured {
+			view.CredentialOrigin = record.CredentialOrigin
+			if view.CredentialOrigin == "" {
+				view.CredentialOrigin = "managed"
+			}
+			if view.CredentialOrigin == "deployment" {
+				view.CredentialReference = record.CredentialReference
+			}
+		}
 	}
 	return view
 }
@@ -928,8 +1132,12 @@ func newLLMProfileID() (string, error) {
 	return strings.ToLower(base32.HexEncoding.WithPadding(base32.NoPadding).EncodeToString(raw)), nil
 }
 
-func llmProfileAAD(owner, profileID string) []byte {
-	return []byte("lwc:llm-profile:v1:" + owner + ":" + profileID)
+func (h *Handler) llmProfileAAD(owner string, profile llmProfileDocument) []byte {
+	environment := strings.TrimSpace(h.byokEnvironment)
+	if environment == "" {
+		environment = "default"
+	}
+	return []byte("lwc:llm-profile:v2:" + environment + ":" + owner + ":" + profile.ID + ":" + strconv.FormatInt(profile.CredentialRevision, 10))
 }
 func maxInt64(a, b int64) int64 {
 	if a > b {

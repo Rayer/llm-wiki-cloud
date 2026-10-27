@@ -61,6 +61,7 @@ type Config struct {
 	ProjectID                   string
 	Port                        string
 	DeepSeekAPIKey              string
+	DeepSeekAPIKeyReference     string
 	TypeSafeAPIKey              string
 	BYOKCredentialEncryptionKey string
 	LLMProvider                 string

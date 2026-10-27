@@ -19,11 +19,12 @@ const mocks = vi.hoisted(() => ({
   locale: 'en' as 'en' | 'zh-TW',
   accessToken: 'web-access-token',
   userID: 'owner-1',
+  isDemoSession: false,
   refreshAccessToken: vi.fn(),
 }));
 
 vi.mock('@/lib/auth', () => ({
-  useAuth: () => ({ accessToken: mocks.accessToken, refreshAccessToken: mocks.refreshAccessToken, user: { id: mocks.userID, email: 'owner@example.test' } }),
+  useAuth: () => ({ accessToken: mocks.accessToken, refreshAccessToken: mocks.refreshAccessToken, user: { id: mocks.userID, email: 'owner@example.test' }, isDemoSession: mocks.isDemoSession }),
 }));
 vi.mock('@/components/WorkspaceProvider', () => ({ useWorkspace: () => ({ currentProject: null }) }));
 vi.mock('@/lib/api', async () => {
@@ -72,6 +73,7 @@ const getParagraph = (text: string) => screen.getByText((_content, element) => e
 beforeEach(() => {
   mocks.locale = 'en';
   mocks.userID = 'owner-1';
+  mocks.isDemoSession = false;
   mocks.listCLISessions.mockReset().mockResolvedValue([session]);
   mocks.listSyncBindings.mockReset().mockResolvedValue([binding]);
   mocks.revokeCLISession.mockReset().mockResolvedValue(undefined);
@@ -92,6 +94,15 @@ afterEach(() => {
 });
 
 describe('LWC-346 account self-service', () => {
+  it('does not enumerate or expose personal BYOK credentials in a shared Demo session', async () => {
+    mocks.isDemoSession = true;
+    render(<AccountSettingsModal onClose={vi.fn()} />);
+
+    expect(await screen.findByRole('dialog', { name: 'Account settings' })).not.toBeNull();
+    expect(screen.queryByRole('heading', { name: 'My BYOK profiles' })).toBeNull();
+    expect(mocks.listLLMProfiles).not.toHaveBeenCalled();
+  });
+
   it('lets a signed-in OAuth user optionally set an email password without an unknown old password', async () => {
     mocks.readPasswordSelfServiceStatus.mockImplementation(async () => ({
       allowed: true,

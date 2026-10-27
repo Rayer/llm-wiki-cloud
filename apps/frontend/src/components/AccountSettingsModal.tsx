@@ -25,7 +25,7 @@ export function AccountSettingsModal({ onClose, focusBYOK = false, onProfileCrea
   focusBYOK?: boolean;
   onProfileCreated?: (profile: LLMProfile) => void;
 }) {
-  const { accessToken, refreshAccessToken, user } = useAuth();
+  const { accessToken, refreshAccessToken, user, isDemoSession } = useAuth();
   if (!user) return null;
   return (
     <AccountSettingsModalContent
@@ -33,6 +33,7 @@ export function AccountSettingsModal({ onClose, focusBYOK = false, onProfileCrea
       onClose={onClose}
       focusBYOK={focusBYOK}
       onProfileCreated={onProfileCreated}
+      isDemoSession={isDemoSession}
       accessToken={accessToken}
       refreshAccessToken={refreshAccessToken}
       user={user}
@@ -44,6 +45,7 @@ function AccountSettingsModalContent({
   onClose,
   focusBYOK,
   onProfileCreated,
+  isDemoSession,
   accessToken,
   refreshAccessToken,
   user,
@@ -51,6 +53,7 @@ function AccountSettingsModalContent({
   onClose: () => void;
   focusBYOK: boolean;
   onProfileCreated?: (profile: LLMProfile) => void;
+  isDemoSession: boolean;
   accessToken: string | null;
   refreshAccessToken: ReturnType<typeof useAuth>['refreshAccessToken'];
   user: NonNullable<ReturnType<typeof useAuth>['user']>;
@@ -314,13 +317,13 @@ function AccountSettingsModalContent({
           </div>
         </dl>
 
-        <BYOKProfilesPanel onProfileCreated={onProfileCreated} />
+        {!isDemoSession ? <BYOKProfilesPanel onProfileCreated={onProfileCreated} /> : null}
 
         <section className="mt-6 border-t border-white/10 pt-6" aria-labelledby="account-project-llm-title">
           <h3 id="account-project-llm-title" className="text-lg font-semibold text-white">{t('LLMSource.accountAssignments')}</h3>
           <p className="mt-1 text-sm leading-6 text-zinc-400">{t('LLMSource.accountAssignmentsHint')}</p>
           {projects.length ? projects.map((project) => (
-            <ProjectLLMSourcePanel key={project.id} projectId={project.id} ownerId={user.id} sessionEpoch={sessionEpoch} compact />
+            <ProjectLLMSourcePanel key={project.id} projectId={project.id} ownerId={user.id} sessionEpoch={sessionEpoch} compact allowPersonalProfiles={!isDemoSession} />
           )) : <p className="mt-3 text-sm text-zinc-400">{t('LLMSource.noProjects')}</p>}
         </section>
 

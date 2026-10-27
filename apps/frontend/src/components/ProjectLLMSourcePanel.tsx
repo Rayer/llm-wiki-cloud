@@ -1,21 +1,23 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getProjectLLMBinding, listLLMProfiles, saveProjectLLMBinding, type LLMProfile, type ProjectLLMBinding } from '@/lib/api';
 import { useT } from '@/lib/i18n';
+import { SharedServiceNotice } from './SharedServiceNotice';
 
 type LoadedSource = { key: string; binding: ProjectLLMBinding; profiles: LLMProfile[] };
 
-export function ProjectLLMSourcePanel({ projectId, ownerId, sessionEpoch, compact = false, onAddProfile, newlyCreatedProfile }: {
+export function ProjectLLMSourcePanel({ projectId, ownerId, sessionEpoch, compact = false, onAddProfile, newlyCreatedProfile, allowPersonalProfiles = true }: {
   projectId: string;
   ownerId: string;
   sessionEpoch: number;
   compact?: boolean;
   onAddProfile?: () => void;
   newlyCreatedProfile?: LLMProfile | null;
+  allowPersonalProfiles?: boolean;
 }) {
   const { t } = useT();
-  const scopeKey = useMemo(() => `${ownerId}\u0000${projectId}\u0000${sessionEpoch}`, [ownerId, projectId, sessionEpoch]);
+  const scopeKey = useMemo(() => `${ownerId}\u0000${projectId}\u0000${sessionEpoch}\u0000${allowPersonalProfiles ? 'personal' : 'shared'}`, [allowPersonalProfiles, ownerId, projectId, sessionEpoch]);
   const [loaded, setLoaded] = useState<LoadedSource | null>(null);
   const [draftSource, setDraftSource] = useState<'shared' | 'personal'>('shared');
   const [draftProfileId, setDraftProfileId] = useState('');
@@ -23,17 +25,17 @@ export function ProjectLLMSourcePanel({ projectId, ownerId, sessionEpoch, compac
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
-  const [dismissedFor, setDismissedFor] = useState<string | null>(null);
+  const sourceSelectRef = useRef<HTMLSelectElement>(null);
+  const profileSelectRef = useRef<HTMLSelectElement>(null);
   const current = loaded?.key === scopeKey ? loaded : null;
   const selectedProfileExists = current?.profiles.some((profile) => profile.id === draftProfileId) ?? false;
   const dirty = Boolean(current && (draftSource !== current.binding.source || (draftSource === 'personal' && draftProfileId !== (current.binding.profile_id ?? ''))));
-  const showSharedNotice = !compact && Boolean(current?.binding.source === 'shared' && dismissedFor !== null && dismissedFor !== ownerId);
 
   const refresh = useCallback(async () => {
     try {
       const [binding, profiles] = await Promise.all([getProjectLLMBinding(projectId), listLLMProfiles()]);
       setLoaded({ key: scopeKey, binding, profiles });
-      setDraftSource(binding.source);
+      setDraftSource(binding.source === 'personal' && !allowPersonalProfiles ? 'shared' : binding.source);
       setDraftProfileId(binding.profile_id ?? '');
       setError('');
     } catch (loadError: unknown) {
@@ -41,33 +43,31 @@ export function ProjectLLMSourcePanel({ projectId, ownerId, sessionEpoch, compac
     } finally {
       setLoading(false);
     }
-  }, [projectId, scopeKey, t]);
+  }, [allowPersonalProfiles, projectId, scopeKey, t]);
 
   useEffect(() => {
     void Promise.resolve().then(refresh);
   }, [refresh]);
 
   useEffect(() => {
-    if (!ownerId) return;
-    const key = `lwc:byok-shared-notice:v1:${ownerId}`;
-    queueMicrotask(() => setDismissedFor(window.localStorage.getItem(key) === '1' ? ownerId : ''));
-  }, [ownerId]);
-
-  useEffect(() => {
-    if (!newlyCreatedProfile || !current || current.profiles.some((profile) => profile.id === newlyCreatedProfile.id)) return;
+    if (!allowPersonalProfiles || !newlyCreatedProfile || !current || current.profiles.some((profile) => profile.id === newlyCreatedProfile.id)) return;
+    const preserveDraft = dirty;
     queueMicrotask(() => {
       setLoaded({ ...current, profiles: [...current.profiles, newlyCreatedProfile] });
-      setDraftSource('personal');
-      setDraftProfileId(newlyCreatedProfile.id);
+      if (!preserveDraft) {
+        setDraftSource('personal');
+        setDraftProfileId(newlyCreatedProfile.id);
+      }
       setError('');
       setNotice('');
+      window.setTimeout(() => (preserveDraft ? sourceSelectRef.current : profileSelectRef.current ?? sourceSelectRef.current)?.focus(), 0);
     });
   // A newly created profile is a return payload from the account settings pane.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [newlyCreatedProfile?.id, current?.key]);
+  }, [allowPersonalProfiles, newlyCreatedProfile?.id, current?.key, dirty]);
 
   async function save() {
-    if (!current || !dirty || saving || (draftSource === 'personal' && !selectedProfileExists)) return;
+    if (!current || !dirty || saving || (draftSource === 'personal' && (!allowPersonalProfiles || !selectedProfileExists))) return;
     setSaving(true);
     setError('');
     setNotice('');
@@ -88,12 +88,6 @@ export function ProjectLLMSourcePanel({ projectId, ownerId, sessionEpoch, compac
     }
   }
 
-  function dismissNotice() {
-    if (!ownerId) return;
-    window.localStorage.setItem(`lwc:byok-shared-notice:v1:${ownerId}`, '1');
-    setDismissedFor(ownerId);
-  }
-
   return (
     <section className="mt-5 rounded-xl border border-white/10 bg-black/15 p-4" aria-labelledby={`llm-source-${projectId}`}>
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -106,27 +100,20 @@ export function ProjectLLMSourcePanel({ projectId, ownerId, sessionEpoch, compac
         <button type="button" disabled={loading} onClick={() => { setLoading(true); void refresh(); }} className="min-h-10 rounded-md border border-white/15 px-3 text-xs text-zinc-300 hover:bg-white/10 disabled:opacity-50">{t('BYOK.retry')}</button>
       </div>
       {!current && !loading && error ? <p role="alert" className="mt-3 text-sm text-red-200">{error}</p> : null}
-      {showSharedNotice ? (
-        <aside className="relative mt-3 rounded-lg border border-emerald-200/20 bg-emerald-200/[0.05] p-3 pr-12" aria-labelledby={`llm-shared-notice-${projectId}`}>
-          <h4 id={`llm-shared-notice-${projectId}`} className="text-sm font-semibold text-emerald-50">{t('LLMSource.sharedNoticeTitle')}</h4>
-          <p className="mt-1 text-sm leading-6 text-zinc-300">{t('LLMSource.sharedNoticeBody')}</p>
-          <p className="mt-1 text-xs leading-5 text-zinc-500 lg:hidden">{t('LLMSource.mobileHint')}</p>
-          <button type="button" onClick={dismissNotice} aria-label={t('LLMSource.dismiss')} className="absolute right-1 top-1 min-h-11 min-w-11 rounded-md text-lg text-zinc-400 hover:bg-white/10 hover:text-white">×</button>
-        </aside>
-      ) : null}
+      {current && allowPersonalProfiles ? <SharedServiceNotice ownerId={ownerId} source={current.binding.source} /> : null}
       {current ? (
         <>
           <label className="mt-3 block text-sm text-zinc-300">
             {t('LLMSource.title')}
-            <select value={draftSource} onChange={(event) => setDraftSource(event.target.value as 'shared' | 'personal')} className="mt-1 min-h-11 w-full rounded-md border border-white/10 bg-zinc-900 px-3 text-white">
-              <option value="shared">{t('LLMSource.shared')}</option><option value="personal">{t('LLMSource.personal')}</option>
+            <select ref={sourceSelectRef} value={draftSource} onChange={(event) => setDraftSource(event.target.value as 'shared' | 'personal')} className="mt-1 min-h-11 w-full rounded-md border border-white/10 bg-zinc-900 px-3 text-white">
+              <option value="shared">{t('LLMSource.shared')}</option>{allowPersonalProfiles ? <option value="personal">{t('LLMSource.personal')}</option> : null}
             </select>
           </label>
-          {draftSource === 'personal' ? (
+          {draftSource === 'personal' && allowPersonalProfiles ? (
             <div className="mt-3">
               {current.profiles.length ? (
                 <label className="block text-sm text-zinc-300">{t('LLMSource.profile')}
-                  <select value={draftProfileId} onChange={(event) => setDraftProfileId(event.target.value)} className="mt-1 min-h-11 w-full rounded-md border border-white/10 bg-zinc-900 px-3 text-white">
+                  <select ref={profileSelectRef} value={draftProfileId} onChange={(event) => setDraftProfileId(event.target.value)} className="mt-1 min-h-11 w-full rounded-md border border-white/10 bg-zinc-900 px-3 text-white">
                     {!selectedProfileExists && draftProfileId ? <option value={draftProfileId}>{t('LLMSource.missingProfile')}</option> : null}
                     <option value="">{t('LLMSource.chooseProfile')}</option>
                     {current.profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name} · {profile.provider} · {profile.model}</option>)}
@@ -140,7 +127,7 @@ export function ProjectLLMSourcePanel({ projectId, ownerId, sessionEpoch, compac
           {notice ? <p role="status" className="mt-3 text-sm text-emerald-200">{notice}</p> : null}
           <div className="mt-3 flex flex-wrap justify-end gap-2">
             {dirty ? <button type="button" onClick={() => { setDraftSource(current.binding.source); setDraftProfileId(current.binding.profile_id ?? ''); setError(''); }} className="min-h-11 rounded-md border border-white/15 px-3 text-sm text-zinc-300 hover:bg-white/10">{t('LLMSource.cancel')}</button> : null}
-            <button type="button" disabled={!dirty || saving || (draftSource === 'personal' && !selectedProfileExists)} onClick={() => void save()} className="min-h-11 rounded-md bg-emerald-300 px-4 text-sm font-semibold text-zinc-950 hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-50">{saving ? t('LLMSource.saving') : t('LLMSource.save')}</button>
+            <button type="button" disabled={!dirty || saving || (draftSource === 'personal' && (!allowPersonalProfiles || !selectedProfileExists))} onClick={() => void save()} className="min-h-11 rounded-md bg-emerald-300 px-4 text-sm font-semibold text-zinc-950 hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-50">{saving ? t('LLMSource.saving') : t('LLMSource.save')}</button>
           </div>
         </>
       ) : null}

@@ -70,6 +70,8 @@ export type LLMProfile = {
   model: string;
   revision: number;
   secret_configured: boolean;
+  credential_origin?: 'managed' | 'deployment';
+  credential_reference?: string;
   enabled?: boolean;
   available_to_public?: boolean;
   priority?: number;
@@ -89,6 +91,7 @@ export type LLMProfileInput = {
   endpoint: string;
   model: string;
   api_key?: string;
+  credential_reference?: string;
   clear_api_key?: boolean;
   revision?: number;
   enabled?: boolean;
@@ -547,9 +550,18 @@ export async function deleteLLMProfile(profileId: string): Promise<void> {
   await llmProfileRequest<void>(`/api/v1/llm/profiles/${encodeURIComponent(profileId)}`, { method: 'DELETE' });
 }
 
-export async function listAdminLLMProfiles(): Promise<LLMProfile[]> {
-  const payload = await llmProfileRequest<{ profiles?: LLMProfile[] }>('/api/v1/admin/llm/profiles');
-  return Array.isArray(payload.profiles) ? payload.profiles : [];
+export type DeploymentLLMCredentialReference = { reference: string; label: string };
+export type AdminLLMProfiles = {
+  profiles: LLMProfile[];
+  deployment_credentials: DeploymentLLMCredentialReference[];
+};
+
+export async function listAdminLLMProfiles(): Promise<AdminLLMProfiles> {
+  const payload = await llmProfileRequest<{ profiles?: LLMProfile[]; deployment_credentials?: DeploymentLLMCredentialReference[] }>('/api/v1/admin/llm/profiles');
+  return {
+    profiles: Array.isArray(payload.profiles) ? payload.profiles : [],
+    deployment_credentials: Array.isArray(payload.deployment_credentials) ? payload.deployment_credentials : [],
+  };
 }
 
 export async function createAdminLLMProfile(input: LLMProfileInput): Promise<LLMProfile> {

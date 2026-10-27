@@ -19,6 +19,7 @@ import (
 )
 
 const maxPipelineProfileResponseBytes = 1 << 20
+const maxPipelineProfileAttempts = 32
 
 type pipelineLLMProfile struct {
 	ID       string       `json:"id"`
@@ -136,21 +137,54 @@ func clearPipelineProfileKeys(profiles []pipelineLLMProfile) {
 }
 
 func runWorkerBatchAtVaultWithProfilePool(ctx context.Context, cfg workerConfig, commands [][]string, vault, workspace string, snapshots []sourceSnapshot, materialize bool) (string, error) {
-	attempts := 1
-	if cfg.SharedProfilePool && len(cfg.ProfileCandidates) > 1 {
-		attempts = len(cfg.ProfileCandidates)
-	}
-	for index := 0; index < attempts; index++ {
-		if index < len(cfg.ProfileCandidates) {
-			cfg.ActiveLLMProfile = &cfg.ProfileCandidates[index]
-		} else {
-			cfg.ActiveLLMProfile = nil
+	profiles := cfg.ProfileCandidates
+	defer func() { clearPipelineProfileKeys(profiles) }()
+	if !cfg.SharedProfilePool || len(profiles) == 0 {
+		if len(profiles) > 0 {
+			cfg.ActiveLLMProfile = &profiles[0]
 		}
+		err := localWorkspaceBatchHooks.runWorkerBatchAtVault(ctx, cfg, commands, workspace)
+		return workspace, err
+	}
+	attempted := make(map[string]struct{}, len(profiles))
+	index := 0
+	for attempt := 0; attempt < maxPipelineProfileAttempts; attempt++ {
+		if index >= len(profiles) {
+			return workspace, errors.New("shared Pipeline profile pool exhausted")
+		}
+		cfg.ProfileCandidates = profiles
+		cfg.ActiveLLMProfile = &profiles[index]
+		attempted[profiles[index].ID] = struct{}{}
 		err := localWorkspaceBatchHooks.runWorkerBatchAtVault(ctx, cfg, commands, workspace)
 		if err == nil {
 			return workspace, nil
 		}
-		if index+1 >= attempts || !pipelineProfileQuotaMarkerExists(cfg) {
+		if !pipelineProfileQuotaMarkerExists(cfg) {
+			return workspace, err
+		}
+		if attempt+1 >= maxPipelineProfileAttempts {
+			return workspace, errors.Join(err, errors.New("shared Pipeline profile attempt limit reached"))
+		}
+		if cfg.ProfileResolverURL != "" && cfg.PipelineReservationID != "" {
+			fresh, shared, resolveErr := resolvePipelineLLMProfiles(ctx, cfg)
+			if resolveErr != nil {
+				return workspace, errors.Join(err, errors.New("shared Pipeline fallback eligibility could not be revalidated"))
+			}
+			if !shared {
+				clearPipelineProfileKeys(fresh)
+				return workspace, errors.Join(err, errors.New("Project LLM source changed during shared Pipeline execution"))
+			}
+			clearPipelineProfileKeys(profiles)
+			profiles = fresh
+		}
+		index = -1
+		for candidateIndex := range profiles {
+			if _, alreadyAttempted := attempted[profiles[candidateIndex].ID]; !alreadyAttempted {
+				index = candidateIndex
+				break
+			}
+		}
+		if index < 0 {
 			return workspace, err
 		}
 		if removeErr := localWorkspaceBatchHooks.removeWorkspace(workspace); removeErr != nil {
