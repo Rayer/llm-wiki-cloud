@@ -27,11 +27,10 @@ vi.mock('@/lib/auth', () => ({
 vi.mock('@/components/WorkspaceProvider', () => ({ useWorkspace: () => ({ currentProject: null }) }));
 vi.mock('@/lib/i18n', async () => {
   const actual = await vi.importActual<typeof import('@/lib/i18n')>('@/lib/i18n');
+  const t = (key: string, params?: Record<string, string | number>) => actual.translate(mocks.locale, key, params);
   return {
     ...actual,
-    useLocale: () => ({
-      t: (key: string, params?: Record<string, string | number>) => actual.translate(mocks.locale, key, params),
-    }),
+    useLocale: () => ({ t }),
   };
 });
 vi.mock('@/lib/google-auth', async () => {
@@ -125,6 +124,62 @@ describe('LWC-346 account self-service', () => {
     expect(currentPassword.value).toBe('');
     expect(newPassword.value).toBe('');
     expect(confirmPassword.value).toBe('');
+  });
+
+  it('keeps a configured-account password change successful when the optional status refresh rejects', async () => {
+    mocks.readPasswordSelfServiceStatus
+      .mockResolvedValueOnce({ allowed: true, configured: true })
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    render(<AccountSettingsModal onClose={vi.fn()} />);
+
+    const currentPassword = await screen.findByLabelText('Current password') as HTMLInputElement;
+    const newPassword = screen.getByLabelText('New password') as HTMLInputElement;
+    const confirmPassword = screen.getByLabelText('Confirm new password') as HTMLInputElement;
+    fireEvent.change(currentPassword, { target: { value: 'old-password-431' } });
+    fireEvent.change(newPassword, { target: { value: 'new-password-431' } });
+    fireEvent.change(confirmPassword, { target: { value: 'new-password-431' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Change password' }));
+
+    await waitFor(() => expect(mocks.changeAccountPassword).toHaveBeenCalledWith(
+      'web-access-token', 'new-password-431', 'new-password-431', 'old-password-431',
+    ));
+    await waitFor(() => expect(mocks.readPasswordSelfServiceStatus).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText('Password updated. You remain signed in.')).not.toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(currentPassword.value).toBe('');
+    expect(newPassword.value).toBe('');
+    expect(confirmPassword.value).toBe('');
+  });
+
+  it('moves OAuth setup to configured after POST success despite a failed refresh, then requires proof next time', async () => {
+    mocks.readPasswordSelfServiceStatus
+      .mockResolvedValueOnce({ allowed: true, configured: false })
+      .mockRejectedValueOnce(new Error('password settings unavailable (503)'));
+    render(<AccountSettingsModal onClose={vi.fn()} />);
+
+    const firstPassword = await screen.findByLabelText('New password') as HTMLInputElement;
+    expect(screen.queryByLabelText('Current password')).toBeNull();
+    fireEvent.change(firstPassword, { target: { value: 'first-password-431' } });
+    fireEvent.change(screen.getByLabelText('Confirm new password'), { target: { value: 'first-password-431' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Set password' }));
+
+    await waitFor(() => expect(mocks.changeAccountPassword).toHaveBeenNthCalledWith(
+      1, 'web-access-token', 'first-password-431', 'first-password-431',
+    ));
+    expect(await screen.findByText('Password updated. You remain signed in.')).not.toBeNull();
+    const currentPassword = await screen.findByLabelText('Current password') as HTMLInputElement;
+    expect(currentPassword.value).toBe('');
+    expect(firstPassword.value).toBe('');
+    expect((screen.getByLabelText('Confirm new password') as HTMLInputElement).value).toBe('');
+    expect(screen.queryByRole('alert')).toBeNull();
+
+    fireEvent.change(currentPassword, { target: { value: 'first-password-431' } });
+    fireEvent.change(screen.getByLabelText('New password'), { target: { value: 'second-password-431' } });
+    fireEvent.change(screen.getByLabelText('Confirm new password'), { target: { value: 'second-password-431' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Change password' }));
+    await waitFor(() => expect(mocks.changeAccountPassword).toHaveBeenNthCalledWith(
+      2, 'web-access-token', 'second-password-431', 'second-password-431', 'first-password-431',
+    ));
   });
 
   it.each([

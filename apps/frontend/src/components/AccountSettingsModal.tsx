@@ -179,19 +179,29 @@ function AccountSettingsModalContent({
       } else {
         await changeAccountPassword(accessToken, newPassword, confirmPassword);
       }
-      const refreshed = await readPasswordSelfServiceStatus(accessToken);
-      setPasswordStatus({ userID: user.id, value: refreshed });
-      clearPasswordSecrets();
-      setPasswordNotice(t('AccountSettings.passwordUpdated'));
     } catch (requestError) {
       setPasswordError(requestError instanceof PasswordSelfServiceError
         ? requestError.code === 'current_password_required'
           ? t('AccountSettings.currentPasswordRequired')
           : t('AccountSettings.currentPasswordIncorrect')
         : requestError instanceof Error ? requestError.message : t('AccountSettings.passwordUpdateError'));
-    } finally {
       setPasswordPending(false);
+      return;
     }
+
+    const accountId = user.id;
+    clearPasswordSecrets();
+    setPasswordStatus({ userID: accountId, value: { ...passwordStatus.value, configured: true } });
+    setPasswordNotice(t('AccountSettings.passwordUpdated'));
+    setPasswordPending(false);
+
+    // The POST is authoritative. Refresh optional account metadata after the
+    // completed write, but never turn a refresh failure into a write failure.
+    void readPasswordSelfServiceStatus(accessToken).then((refreshed) => {
+      if (accountId === user.id) {
+        setPasswordStatus({ userID: accountId, value: { ...refreshed, configured: true } });
+      }
+    }).catch(() => {});
   };
 
   const refreshControlLists = async () => {
