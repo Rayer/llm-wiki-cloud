@@ -60,6 +60,8 @@
     "passwordSetupHint": "你可以繼續使用 Google 登入，也可以設定 Email 登入密碼。",
     "newPassword": "新密碼",
     "confirmNewPassword": "確認新密碼",
+    "currentPasswordRequired": "請輸入目前密碼以變更密碼。",
+    "currentPasswordIncorrect": "目前密碼不正確，請確認後再試一次。",
     "passwordMismatch": "兩次輸入的密碼不一致。",
     "forgotPasswordHint": "忘記密碼？請聯絡管理員尋求協助。",
     "changePassword": "變更密碼",

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -34,7 +35,6 @@ func TestUpdateOwnPasswordPreservesExistingCredentials(t *testing.T) {
 	oldPassword := "old-password-431"
 	newPassword := "new-password-431"
 	oldHash := passwordTestHash(t, oldPassword)
-	newHash := passwordTestHash(t, newPassword)
 	before := UserRecord{
 		Email: "owner@example.test", EmailCanonical: "owner@example.test", Role: "user",
 		PasswordHash: oldHash, PasswordConfigured: boolPointer(true), AuthVersion: 3,
@@ -52,8 +52,64 @@ func TestUpdateOwnPasswordPreservesExistingCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := UpdateOwnPassword(ctx, fs, "owner-431", 3, "demo-431", newHash); err != nil {
-		t.Fatalf("change password: %v", err)
+	passwordRouter := gin.New()
+	passwordRouter.POST("/password", JWTAuthWithAccountLookup(config.Config{JWTSecret: secret}, FirestoreAccountLookup(fs)), WebOnly(), ChangePasswordHandler(fs, "demo-431"))
+	postChange := func(currentPassword string, includeCurrent bool) *httptest.ResponseRecorder {
+		payload := map[string]any{
+			"new_password": newPassword, "confirm_password": newPassword,
+			// Client supplied state must not grant the OAuth first-setup exception.
+			"password_configured": false,
+		}
+		if includeCurrent {
+			payload["current_password"] = currentPassword
+		}
+		body, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := httptest.NewRequest(http.MethodPost, "/password", bytes.NewReader(body))
+		request.Header.Set("Authorization", "Bearer "+accessToken)
+		response := httptest.NewRecorder()
+		passwordRouter.ServeHTTP(response, request)
+		return response
+	}
+	for _, tc := range []struct {
+		name            string
+		currentPassword string
+		includeCurrent  bool
+		code            string
+	}{
+		{name: "missing proof", code: "current_password_required"},
+		{name: "wrong proof", currentPassword: "wrong-password-431", includeCurrent: true, code: "current_password_invalid"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			response := postChange(tc.currentPassword, tc.includeCurrent)
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("proof rejection status=%d body=%s", response.Code, response.Body.String())
+			}
+			var body map[string]any
+			if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil || body["code"] != tc.code {
+				t.Fatalf("proof rejection body=%v err=%v", body, err)
+			}
+		})
+	}
+	unchanged, err := GetUser(ctx, fs, "owner-431")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unchanged.PasswordHash != oldHash || unchanged.AuthVersion != before.AuthVersion {
+		t.Fatalf("missing/wrong proof mutated the account: before=%+v after=%+v", before, unchanged)
+	}
+	loginBeforeChange := gin.New()
+	loginBeforeChange.POST("/login", LoginHandlerWithRepository(NewIdentityRepository(fs), secret, LocalRefreshCookiePolicy()))
+	oldLoginRequest := httptest.NewRequest(http.MethodPost, "/login", bytes.NewBufferString(`{"email":"owner@example.test","password":"`+oldPassword+`"}`))
+	oldLoginResponse := httptest.NewRecorder()
+	loginBeforeChange.ServeHTTP(oldLoginResponse, oldLoginRequest)
+	if oldLoginResponse.Code != http.StatusOK {
+		t.Fatalf("old password login after rejected proofs status=%d body=%s", oldLoginResponse.Code, oldLoginResponse.Body.String())
+	}
+	if response := postChange(oldPassword, true); response.Code != http.StatusOK {
+		t.Fatalf("correct current password change status=%d body=%s", response.Code, response.Body.String())
 	}
 	after, err := GetUser(ctx, fs, "owner-431")
 	if err != nil {
@@ -116,15 +172,41 @@ func TestUpdateOwnPasswordPreservesExistingCredentials(t *testing.T) {
 func TestOAuthFirstPasswordAndDemoExclusion(t *testing.T) {
 	fs := accountEmulator(t)
 	ctx := context.Background()
+	generatedInitialHash := passwordTestHash(t, "unknown-generated-oauth-password")
 	if _, err := fs.Collection("users").Doc("oauth-431").Set(ctx, UserRecord{
 		Email: "oauth@example.test", EmailCanonical: "oauth@example.test", Role: "user",
-		PasswordConfigured: boolPointer(false), AuthVersion: 1,
+		PasswordHash: generatedInitialHash, PasswordConfigured: boolPointer(false), AuthVersion: 1,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	firstHash := passwordTestHash(t, "oauth-first-password")
-	if err := UpdateOwnPassword(ctx, fs, "oauth-431", 1, "demo-431", firstHash); err != nil {
-		t.Fatalf("OAuth first password setup: %v", err)
+	const secret = "oauth-password-self-service-test-secret"
+	accessToken, err := GenerateAccessToken("oauth-431", "user", secret, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	passwordRouter := gin.New()
+	passwordRouter.POST("/password", JWTAuthWithAccountLookup(config.Config{JWTSecret: secret}, FirestoreAccountLookup(fs)), WebOnly(), ChangePasswordHandler(fs, "demo-431"))
+	postChange := func(currentPassword string, includeCurrent bool, newPassword string) *httptest.ResponseRecorder {
+		payload := map[string]any{
+			"password_configured": false,
+			"new_password":        newPassword,
+			"confirm_password":    newPassword,
+		}
+		if includeCurrent {
+			payload["current_password"] = currentPassword
+		}
+		body, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := httptest.NewRequest(http.MethodPost, "/password", bytes.NewReader(body))
+		request.Header.Set("Authorization", "Bearer "+accessToken)
+		response := httptest.NewRecorder()
+		passwordRouter.ServeHTTP(response, request)
+		return response
+	}
+	if response := postChange("", false, "oauth-first-password"); response.Code != http.StatusOK {
+		t.Fatalf("OAuth first password setup status=%d body=%s", response.Code, response.Body.String())
 	}
 	configured, err := GetUser(ctx, fs, "oauth-431")
 	if err != nil {
@@ -132,6 +214,28 @@ func TestOAuthFirstPasswordAndDemoExclusion(t *testing.T) {
 	}
 	if !isPasswordConfigured(configured) || bcrypt.CompareHashAndPassword([]byte(configured.PasswordHash), []byte("oauth-first-password")) != nil {
 		t.Fatal("OAuth first password was not saved")
+	}
+	if response := postChange("", false, "missing-proof-password"); response.Code != http.StatusBadRequest || !bytes.Contains(response.Body.Bytes(), []byte(`"code":"current_password_required"`)) {
+		t.Fatalf("configured OAuth password change without proof status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := postChange("wrong-current-password", true, "wrong-proof-password"); response.Code != http.StatusBadRequest || !bytes.Contains(response.Body.Bytes(), []byte(`"code":"current_password_invalid"`)) {
+		t.Fatalf("configured OAuth password change with wrong proof status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := postChange("oauth-first-password", true, "oauth-second-password"); response.Code != http.StatusOK {
+		t.Fatalf("configured OAuth subsequent password change status=%d body=%s", response.Code, response.Body.String())
+	}
+	configured, err = GetUser(ctx, fs, "oauth-431")
+	if err != nil || bcrypt.CompareHashAndPassword([]byte(configured.PasswordHash), []byte("oauth-second-password")) != nil {
+		t.Fatalf("OAuth subsequent password change was not saved: err=%v", err)
+	}
+	if _, err := fs.Collection("users").Doc("oauth-empty-431").Set(ctx, UserRecord{
+		Email: "oauth-empty@example.test", EmailCanonical: "oauth-empty@example.test", Role: "user",
+		PasswordConfigured: boolPointer(false), AuthVersion: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := UpdateOwnPassword(ctx, fs, "oauth-empty-431", 1, "demo-431", "", passwordTestHash(t, "oauth-empty-first-password")); err != nil {
+		t.Fatalf("OAuth first password setup from empty legacy hash: %v", err)
 	}
 
 	demoHash := passwordTestHash(t, "demo-shared-password")
@@ -141,7 +245,7 @@ func TestOAuthFirstPasswordAndDemoExclusion(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	err = UpdateOwnPassword(ctx, fs, "demo-431", 0, "demo-431", passwordTestHash(t, "replacement-password"))
+	err = UpdateOwnPassword(ctx, fs, "demo-431", 0, "demo-431", "", passwordTestHash(t, "replacement-password"))
 	if !errors.Is(err, ErrPasswordSelfServiceUnavailable) {
 		t.Fatalf("Demo password change error=%v", err)
 	}
@@ -160,9 +264,70 @@ func TestOAuthFirstPasswordAndDemoExclusion(t *testing.T) {
 	if err := UpdateAccount(ctx, fs, "admin-431", "oauth-431", nil, strptr(AccountSuspended)); err != nil {
 		t.Fatal(err)
 	}
-	err = UpdateOwnPassword(ctx, fs, "oauth-431", 1, "demo-431", passwordTestHash(t, "stale-session-password"))
+	err = UpdateOwnPassword(ctx, fs, "oauth-431", 1, "demo-431", "oauth-second-password", passwordTestHash(t, "stale-session-password"))
 	if !errors.Is(err, ErrPasswordSessionInvalid) {
 		t.Fatalf("suspended account password change error=%v", err)
+	}
+}
+
+func TestConcurrentPasswordChangeRejectsStaleProof(t *testing.T) {
+	fs := accountEmulator(t)
+	ctx := context.Background()
+	oldPassword := "concurrent-old-password"
+	oldHash := passwordTestHash(t, oldPassword)
+	if _, err := fs.Collection("users").Doc("concurrent-431").Set(ctx, UserRecord{
+		Email: "concurrent@example.test", Role: "user", PasswordHash: oldHash,
+		PasswordConfigured: boolPointer(true), AuthVersion: 4,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	newHashes := []string{
+		passwordTestHash(t, "concurrent-first-new-password"),
+		passwordTestHash(t, "concurrent-second-new-password"),
+	}
+	start := make(chan struct{})
+	results := make(chan error, len(newHashes))
+	var workers sync.WaitGroup
+	for _, hash := range newHashes {
+		workers.Add(1)
+		go func(hash string) {
+			defer workers.Done()
+			<-start
+			results <- UpdateOwnPassword(ctx, fs, "concurrent-431", 4, "demo-431", oldPassword, hash)
+		}(hash)
+	}
+	close(start)
+	workers.Wait()
+	close(results)
+	successes, staleProofs := 0, 0
+	for err := range results {
+		switch {
+		case err == nil:
+			successes++
+		case errors.Is(err, ErrCurrentPasswordInvalid):
+			staleProofs++
+		default:
+			t.Fatalf("concurrent password update error=%v", err)
+		}
+	}
+	if successes != 1 || staleProofs != 1 {
+		t.Fatalf("concurrent result successes=%d stale-proof-rejections=%d, want 1 each", successes, staleProofs)
+	}
+	final, err := GetUser(ctx, fs, "concurrent-431")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.AuthVersion != 4 {
+		t.Fatalf("password change altered auth version: got %d", final.AuthVersion)
+	}
+	validCandidates := 0
+	for _, password := range []string{"concurrent-first-new-password", "concurrent-second-new-password"} {
+		if bcrypt.CompareHashAndPassword([]byte(final.PasswordHash), []byte(password)) == nil {
+			validCandidates++
+		}
+	}
+	if validCandidates != 1 {
+		t.Fatalf("final hash matched %d concurrent candidates", validCandidates)
 	}
 }
 

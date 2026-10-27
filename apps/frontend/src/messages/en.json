@@ -60,6 +60,8 @@
     "passwordSetupHint": "You can keep using Google sign-in, or set a password for email sign-in.",
     "newPassword": "New password",
     "confirmNewPassword": "Confirm new password",
+    "currentPasswordRequired": "Enter your current password to change it.",
+    "currentPasswordIncorrect": "The current password is incorrect. Check it and try again.",
     "passwordMismatch": "Passwords do not match.",
     "forgotPasswordHint": "Forgot your password? Contact an administrator for help.",
     "changePassword": "Change password",

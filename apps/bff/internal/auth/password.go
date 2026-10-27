@@ -16,6 +16,8 @@ import (
 var (
 	ErrPasswordSelfServiceUnavailable = errors.New("password self-service unavailable")
 	ErrPasswordSessionInvalid         = errors.New("account session is no longer valid")
+	ErrCurrentPasswordRequired        = errors.New("current password is required")
+	ErrCurrentPasswordInvalid         = errors.New("current password is incorrect")
 )
 
 type PasswordSelfServiceStatus struct {
@@ -24,6 +26,7 @@ type PasswordSelfServiceStatus struct {
 }
 
 type changePasswordRequest struct {
+	CurrentPassword string `json:"current_password"`
 	NewPassword     string `json:"new_password" binding:"required"`
 	ConfirmPassword string `json:"confirm_password" binding:"required"`
 }
@@ -112,12 +115,16 @@ func ChangePasswordHandler(fs *firestore.Client, demoUserID string) gin.HandlerF
 			c.JSON(http.StatusBadRequest, gin.H{"error": "password could not be accepted"})
 			return
 		}
-		if err := UpdateOwnPassword(c.Request.Context(), fs, userID, authVersion, demoUserID, string(hash)); err != nil {
+		if err := UpdateOwnPassword(c.Request.Context(), fs, userID, authVersion, demoUserID, request.CurrentPassword, string(hash)); err != nil {
 			switch {
 			case errors.Is(err, ErrPasswordSelfServiceUnavailable):
 				c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
 			case errors.Is(err, ErrPasswordSessionInvalid):
 				c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
+			case errors.Is(err, ErrCurrentPasswordRequired):
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "code": "current_password_required"})
+			case errors.Is(err, ErrCurrentPasswordInvalid):
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "code": "current_password_invalid"})
 			default:
 				c.JSON(http.StatusServiceUnavailable, gin.H{"error": "password update unavailable"})
 			}
@@ -128,10 +135,11 @@ func ChangePasswordHandler(fs *firestore.Client, demoUserID string) gin.HandlerF
 	}
 }
 
-// UpdateOwnPassword changes only password state. The token's auth_version is
-// checked again in the transaction so a concurrent suspension cannot race a
-// successful password write; other credentials remain valid.
-func UpdateOwnPassword(ctx context.Context, fs *firestore.Client, userID string, expectedVersion int64, demoUserID, passwordHash string) error {
+// UpdateOwnPassword changes only password state. The account status, auth
+// version, and persisted password proof are checked in the same transaction,
+// so stale proof or a concurrent suspension cannot race a successful write.
+// Other credentials remain valid.
+func UpdateOwnPassword(ctx context.Context, fs *firestore.Client, userID string, expectedVersion int64, demoUserID, currentPassword, passwordHash string) error {
 	if userID == demoUserID {
 		return ErrPasswordSelfServiceUnavailable
 	}
@@ -153,6 +161,14 @@ func UpdateOwnPassword(ctx context.Context, fs *firestore.Client, userID string,
 		}
 		if !user.AllowsVersion(expectedVersion) {
 			return ErrPasswordSessionInvalid
+		}
+		if isPasswordConfigured(&user) {
+			if currentPassword == "" {
+				return ErrCurrentPasswordRequired
+			}
+			if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(currentPassword)) != nil {
+				return ErrCurrentPasswordInvalid
+			}
 		}
 		return tx.Update(userRef, []firestore.Update{
 			{Path: "password_hash", Value: passwordHash},

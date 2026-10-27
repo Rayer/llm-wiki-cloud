@@ -3,7 +3,7 @@
 import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { useAuth } from '@/lib/auth';
 import { beginGoogleLink, GoogleAuthError, readGoogleIdentitySummary } from '@/lib/google-auth';
-import { changeAccountPassword, readPasswordSelfServiceStatus, type PasswordSelfServiceStatus } from '@/lib/account-password';
+import { changeAccountPassword, PasswordSelfServiceError, readPasswordSelfServiceStatus, type PasswordSelfServiceStatus } from '@/lib/account-password';
 import { useLocale } from '@/lib/i18n';
 import {
   CLIAuthError,
@@ -18,8 +18,31 @@ import {
 
 export function AccountSettingsModal({ onClose }: { onClose: () => void }) {
   const { accessToken, refreshAccessToken, user } = useAuth();
+  if (!user) return null;
+  return (
+    <AccountSettingsModalContent
+      key={user.id}
+      onClose={onClose}
+      accessToken={accessToken}
+      refreshAccessToken={refreshAccessToken}
+      user={user}
+    />
+  );
+}
+
+function AccountSettingsModalContent({
+  onClose,
+  accessToken,
+  refreshAccessToken,
+  user,
+}: {
+  onClose: () => void;
+  accessToken: string | null;
+  refreshAccessToken: ReturnType<typeof useAuth>['refreshAccessToken'];
+  user: NonNullable<ReturnType<typeof useAuth>['user']>;
+}) {
   const { t } = useLocale();
-  const userID = user?.id ?? null;
+  const userID = user.id;
   const [linkOpen, setLinkOpen] = useState(false);
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -35,12 +58,22 @@ export function AccountSettingsModal({ onClose }: { onClose: () => void }) {
   const [passwordStatusError, setPasswordStatusError] = useState<{ userID: string; message: string } | null>(null);
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [currentPassword, setCurrentPassword] = useState('');
   const [passwordPending, setPasswordPending] = useState(false);
   const [passwordError, setPasswordError] = useState('');
   const [passwordNotice, setPasswordNotice] = useState('');
   const passwordRef = useRef<HTMLInputElement>(null);
 
-  const closeSettings = useCallback(() => onClose(), [onClose]);
+  const clearPasswordSecrets = useCallback(() => {
+    setPassword('');
+    setCurrentPassword('');
+    setNewPassword('');
+    setConfirmPassword('');
+  }, []);
+  const closeSettings = useCallback(() => {
+    clearPasswordSecrets();
+    onClose();
+  }, [clearPasswordSecrets, onClose]);
   const controlErrorMessage = (requestError: unknown, fallback: string) => (
     requestError instanceof CLIAuthError && requestError.localReason === 'missing_backend_error'
       ? fallback
@@ -110,8 +143,6 @@ export function AccountSettingsModal({ onClose }: { onClose: () => void }) {
     return () => document.removeEventListener('keydown', onKeyDown);
   }, [loading, passwordPending, closeSettings]);
 
-  if (!user) return null;
-
   const handleLink = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (loading || !password || !accessToken) return;
@@ -135,21 +166,42 @@ export function AccountSettingsModal({ onClose }: { onClose: () => void }) {
       setPasswordError(t('AccountSettings.passwordMismatch'));
       return;
     }
+    if (passwordStatus.value.configured && !currentPassword) {
+      setPasswordError(t('AccountSettings.currentPasswordRequired'));
+      return;
+    }
     setPasswordPending(true);
     setPasswordError('');
     setPasswordNotice('');
     try {
-      await changeAccountPassword(accessToken, newPassword, confirmPassword);
-      const refreshed = await readPasswordSelfServiceStatus(accessToken);
-      setPasswordStatus({ userID: user.id, value: refreshed });
-      setNewPassword('');
-      setConfirmPassword('');
-      setPasswordNotice(t('AccountSettings.passwordUpdated'));
+      if (passwordStatus.value.configured) {
+        await changeAccountPassword(accessToken, newPassword, confirmPassword, currentPassword);
+      } else {
+        await changeAccountPassword(accessToken, newPassword, confirmPassword);
+      }
     } catch (requestError) {
-      setPasswordError(requestError instanceof Error ? requestError.message : t('AccountSettings.passwordUpdateError'));
-    } finally {
+      setPasswordError(requestError instanceof PasswordSelfServiceError
+        ? requestError.code === 'current_password_required'
+          ? t('AccountSettings.currentPasswordRequired')
+          : t('AccountSettings.currentPasswordIncorrect')
+        : requestError instanceof Error ? requestError.message : t('AccountSettings.passwordUpdateError'));
       setPasswordPending(false);
+      return;
     }
+
+    const accountId = user.id;
+    clearPasswordSecrets();
+    setPasswordStatus({ userID: accountId, value: { ...passwordStatus.value, configured: true } });
+    setPasswordNotice(t('AccountSettings.passwordUpdated'));
+    setPasswordPending(false);
+
+    // The POST is authoritative. Refresh optional account metadata after the
+    // completed write, but never turn a refresh failure into a write failure.
+    void readPasswordSelfServiceStatus(accessToken).then((refreshed) => {
+      if (accountId === user.id) {
+        setPasswordStatus({ userID: accountId, value: { ...refreshed, configured: true } });
+      }
+    }).catch(() => {});
   };
 
   const refreshControlLists = async () => {
@@ -251,6 +303,12 @@ export function AccountSettingsModal({ onClose }: { onClose: () => void }) {
               <p className="text-sm leading-6 text-zinc-400">
                 {passwordStatus.value.configured ? t('AccountSettings.passwordChangeHint') : t('AccountSettings.passwordSetupHint')}
               </p>
+              {passwordStatus.value.configured ? (
+                <label className="block text-sm font-medium text-zinc-300">
+                  {t('AccountSettings.currentPassword')}
+                  <input type="password" autoComplete="current-password" aria-required="true" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} className="mt-2 w-full rounded-lg border border-white/10 bg-black/30 px-4 py-3 text-white outline-none focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400" />
+                </label>
+              ) : null}
               <label className="block text-sm font-medium text-zinc-300">
                 {t('AccountSettings.newPassword')}
                 <input type="password" autoComplete="new-password" minLength={8} required value={newPassword} onChange={(event) => setNewPassword(event.target.value)} className="mt-2 w-full rounded-lg border border-white/10 bg-black/30 px-4 py-3 text-white outline-none focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400" />
