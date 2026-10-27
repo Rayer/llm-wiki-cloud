@@ -1,9 +1,9 @@
 'use client';
 
-import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
+import { type FormEvent, type MutableRefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useAuth } from '@/lib/auth';
 import { beginGoogleLink, GoogleAuthError, readGoogleIdentitySummary } from '@/lib/google-auth';
-import { changeAccountPassword, PasswordSelfServiceError, readPasswordSelfServiceStatus, type PasswordSelfServiceStatus } from '@/lib/account-password';
+import { changeAccountPassword, PasswordSelfServiceError, readPasswordSelfServiceStatus, type PasswordSelfServiceAuthContext, type PasswordSelfServiceStatus } from '@/lib/account-password';
 import { useLocale } from '@/lib/i18n';
 import type { LLMProfile } from '@/lib/api';
 import { BYOKProfilesPanel } from './BYOKProfilesPanel';
@@ -20,12 +20,18 @@ import {
   type SyncBinding,
 } from '@/lib/cli-auth';
 
+type AuthSessionSnapshot = { userID: string | null; accessToken: string | null; sessionEpoch: number };
+
 export function AccountSettingsModal({ onClose, focusBYOK = false, onProfileCreated }: {
   onClose: () => void;
   focusBYOK?: boolean;
   onProfileCreated?: (profile: LLMProfile) => void;
 }) {
-  const { accessToken, refreshAccessToken, user, isDemoSession } = useAuth();
+  const { accessToken, refreshAccessToken, sessionEpoch, user, isDemoSession } = useAuth();
+  const authSessionRef = useRef<AuthSessionSnapshot>({ userID: user?.id ?? null, accessToken, sessionEpoch });
+  useLayoutEffect(() => {
+    authSessionRef.current = { userID: user?.id ?? null, accessToken, sessionEpoch };
+  }, [accessToken, sessionEpoch, user?.id]);
   if (!user) return null;
   return (
     <AccountSettingsModalContent
@@ -36,6 +42,8 @@ export function AccountSettingsModal({ onClose, focusBYOK = false, onProfileCrea
       isDemoSession={isDemoSession}
       accessToken={accessToken}
       refreshAccessToken={refreshAccessToken}
+      sessionEpoch={sessionEpoch}
+      authSessionRef={authSessionRef}
       user={user}
     />
   );
@@ -48,6 +56,8 @@ function AccountSettingsModalContent({
   isDemoSession,
   accessToken,
   refreshAccessToken,
+  sessionEpoch,
+  authSessionRef,
   user,
 }: {
   onClose: () => void;
@@ -56,10 +66,11 @@ function AccountSettingsModalContent({
   isDemoSession: boolean;
   accessToken: string | null;
   refreshAccessToken: ReturnType<typeof useAuth>['refreshAccessToken'];
+  sessionEpoch: number;
+  authSessionRef: MutableRefObject<AuthSessionSnapshot>;
   user: NonNullable<ReturnType<typeof useAuth>['user']>;
 }) {
   const { t } = useLocale();
-  const { sessionEpoch } = useAuth();
   const { projects = [] } = useWorkspace();
   const userID = user.id;
   const [linkOpen, setLinkOpen] = useState(false);
@@ -82,6 +93,7 @@ function AccountSettingsModalContent({
   const [passwordError, setPasswordError] = useState('');
   const [passwordNotice, setPasswordNotice] = useState('');
   const passwordRef = useRef<HTMLInputElement>(null);
+  const mountedRef = useRef(false);
   const settingsDialogRef = useRef<HTMLDivElement>(null);
 
   const clearPasswordSecrets = useCallback(() => {
@@ -90,6 +102,36 @@ function AccountSettingsModalContent({
     setNewPassword('');
     setConfirmPassword('');
   }, []);
+  // Bind refresh retries to the account and session that issued each request.
+  const createPasswordAuthContext = useCallback((): PasswordSelfServiceAuthContext => {
+    let currentAccessToken = accessToken ?? '';
+    let currentSessionEpoch = sessionEpoch;
+    return {
+      get accessToken() { return currentAccessToken; },
+      refreshAccessToken: async () => {
+        const before = authSessionRef.current;
+        if (
+          !mountedRef.current
+          || !currentAccessToken
+          || before.userID !== userID
+          || before.accessToken !== currentAccessToken
+          || before.sessionEpoch !== currentSessionEpoch
+        ) return null;
+
+        const refreshed = await refreshAccessToken();
+        if (!mountedRef.current || !refreshed) return null;
+        const after = authSessionRef.current;
+        if (after.userID !== userID) return null;
+        const renderStillPending = after.accessToken === currentAccessToken && after.sessionEpoch === currentSessionEpoch;
+        const renderApplied = after.accessToken === refreshed && after.sessionEpoch === currentSessionEpoch + 1;
+        if (!renderStillPending && !renderApplied) return null;
+
+        currentAccessToken = refreshed;
+        currentSessionEpoch += 1;
+        return refreshed;
+      },
+    };
+  }, [accessToken, authSessionRef, refreshAccessToken, sessionEpoch, userID]);
   const closeSettings = useCallback(() => {
     clearPasswordSecrets();
     onClose();
@@ -99,6 +141,11 @@ function AccountSettingsModalContent({
       ? fallback
       : requestError instanceof Error ? requestError.message : fallback
   );
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   useEffect(() => {
     if (!accessToken || !user) return;
@@ -140,7 +187,7 @@ function AccountSettingsModalContent({
     if (!accessToken || !userID) return;
     let active = true;
     const accountId = userID;
-    void readPasswordSelfServiceStatus(accessToken).then((status) => {
+    void readPasswordSelfServiceStatus(createPasswordAuthContext()).then((status) => {
       if (active) {
         setPasswordStatus({ userID: accountId, value: status });
         setPasswordStatusError(null);
@@ -149,7 +196,7 @@ function AccountSettingsModalContent({
       if (active) setPasswordStatusError({ userID: accountId, message: t('AccountSettings.passwordStatusError') });
     });
     return () => { active = false; };
-  }, [accessToken, t, userID]);
+  }, [accessToken, createPasswordAuthContext, t, userID]);
 
   useEffect(() => {
     if (linkOpen) passwordRef.current?.focus();
@@ -200,11 +247,12 @@ function AccountSettingsModalContent({
     setPasswordPending(true);
     setPasswordError('');
     setPasswordNotice('');
+    const passwordAuthContext = createPasswordAuthContext();
     try {
       if (passwordStatus.value.configured) {
-        await changeAccountPassword(accessToken, newPassword, confirmPassword, currentPassword);
+        await changeAccountPassword(passwordAuthContext, newPassword, confirmPassword, currentPassword);
       } else {
-        await changeAccountPassword(accessToken, newPassword, confirmPassword);
+        await changeAccountPassword(passwordAuthContext, newPassword, confirmPassword);
       }
     } catch (requestError) {
       setPasswordError(requestError instanceof PasswordSelfServiceError
@@ -224,7 +272,7 @@ function AccountSettingsModalContent({
 
     // The POST is authoritative. Refresh optional account metadata after the
     // completed write, but never turn a refresh failure into a write failure.
-    void readPasswordSelfServiceStatus(accessToken).then((refreshed) => {
+    void readPasswordSelfServiceStatus(passwordAuthContext).then((refreshed) => {
       if (accountId === user.id) {
         setPasswordStatus({ userID: accountId, value: { ...refreshed, configured: true } });
       }

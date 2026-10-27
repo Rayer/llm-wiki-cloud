@@ -19,12 +19,13 @@ const mocks = vi.hoisted(() => ({
   locale: 'en' as 'en' | 'zh-TW',
   accessToken: 'web-access-token',
   userID: 'owner-1',
+  sessionEpoch: 1,
   isDemoSession: false,
   refreshAccessToken: vi.fn(),
 }));
 
 vi.mock('@/lib/auth', () => ({
-  useAuth: () => ({ accessToken: mocks.accessToken, refreshAccessToken: mocks.refreshAccessToken, user: { id: mocks.userID, email: 'owner@example.test' }, isDemoSession: mocks.isDemoSession }),
+  useAuth: () => ({ accessToken: mocks.accessToken, refreshAccessToken: mocks.refreshAccessToken, sessionEpoch: mocks.sessionEpoch, user: { id: mocks.userID, email: 'owner@example.test' }, isDemoSession: mocks.isDemoSession }),
 }));
 vi.mock('@/components/WorkspaceProvider', () => ({ useWorkspace: () => ({ currentProject: null }) }));
 vi.mock('@/lib/api', async () => {
@@ -64,7 +65,7 @@ vi.mock('@/lib/cli-auth', async () => {
 });
 
 import { AccountSettingsModal } from '@/components/AccountSettingsModal';
-import { PasswordSelfServiceError } from '@/lib/account-password';
+import { PasswordSelfServiceError, type PasswordSelfServiceAuthContext } from '@/lib/account-password';
 
 const session = { id: 'session-1', client_name: 'lwc-sync CLI', status: 'active', created_at: '2026-09-24T00:00:00Z', updated_at: '2026-09-24T00:00:00Z' };
 const binding = { binding_id: 'binding-1', host: 'https://auth.example.test', wiki_id: 'wiki-1', project_id: 'project-1', authorized_by: 'owner-1', status: 'active', created_at: '2026-09-24T00:00:00Z', updated_at: '2026-09-24T00:00:00Z' };
@@ -73,6 +74,8 @@ const getParagraph = (text: string) => screen.getByText((_content, element) => e
 beforeEach(() => {
   mocks.locale = 'en';
   mocks.userID = 'owner-1';
+  mocks.accessToken = 'web-access-token';
+  mocks.sessionEpoch = 1;
   mocks.isDemoSession = false;
   mocks.listCLISessions.mockReset().mockResolvedValue([session]);
   mocks.listSyncBindings.mockReset().mockResolvedValue([binding]);
@@ -117,7 +120,7 @@ describe('LWC-346 account self-service', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Set password' }));
 
     await waitFor(() => expect(mocks.changeAccountPassword).toHaveBeenCalledWith(
-      'web-access-token', 'first-password-431', 'first-password-431',
+      expect.objectContaining({ accessToken: 'web-access-token', refreshAccessToken: expect.any(Function) }), 'first-password-431', 'first-password-431',
     ));
     expect(await screen.findByText('Password updated. You remain signed in.')).not.toBeNull();
     expect(screen.getByLabelText('Current password')).not.toBeNull();
@@ -135,7 +138,7 @@ describe('LWC-346 account self-service', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Change password' }));
 
     await waitFor(() => expect(mocks.changeAccountPassword).toHaveBeenCalledWith(
-      'web-access-token', 'new-password-431', 'new-password-431', 'old-password-431',
+      expect.objectContaining({ accessToken: 'web-access-token', refreshAccessToken: expect.any(Function) }), 'new-password-431', 'new-password-431', 'old-password-431',
     ));
     expect(await screen.findByText('Password updated. You remain signed in.')).not.toBeNull();
     expect(currentPassword.value).toBe('');
@@ -158,7 +161,7 @@ describe('LWC-346 account self-service', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Change password' }));
 
     await waitFor(() => expect(mocks.changeAccountPassword).toHaveBeenCalledWith(
-      'web-access-token', 'new-password-431', 'new-password-431', 'old-password-431',
+      expect.objectContaining({ accessToken: 'web-access-token', refreshAccessToken: expect.any(Function) }), 'new-password-431', 'new-password-431', 'old-password-431',
     ));
     await waitFor(() => expect(mocks.readPasswordSelfServiceStatus).toHaveBeenCalledTimes(2));
     expect(await screen.findByText('Password updated. You remain signed in.')).not.toBeNull();
@@ -181,7 +184,7 @@ describe('LWC-346 account self-service', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Set password' }));
 
     await waitFor(() => expect(mocks.changeAccountPassword).toHaveBeenNthCalledWith(
-      1, 'web-access-token', 'first-password-431', 'first-password-431',
+      1, expect.objectContaining({ accessToken: 'web-access-token', refreshAccessToken: expect.any(Function) }), 'first-password-431', 'first-password-431',
     ));
     expect(await screen.findByText('Password updated. You remain signed in.')).not.toBeNull();
     const currentPassword = await screen.findByLabelText('Current password') as HTMLInputElement;
@@ -195,7 +198,7 @@ describe('LWC-346 account self-service', () => {
     fireEvent.change(screen.getByLabelText('Confirm new password'), { target: { value: 'second-password-431' } });
     fireEvent.click(screen.getByRole('button', { name: 'Change password' }));
     await waitFor(() => expect(mocks.changeAccountPassword).toHaveBeenNthCalledWith(
-      2, 'web-access-token', 'second-password-431', 'second-password-431', 'first-password-431',
+      2, expect.objectContaining({ accessToken: 'web-access-token', refreshAccessToken: expect.any(Function) }), 'second-password-431', 'second-password-431', 'first-password-431',
     ));
   });
 
@@ -243,6 +246,30 @@ describe('LWC-346 account self-service', () => {
     mocks.userID = 'owner-2';
     rerender(<AccountSettingsModal onClose={onClose} />);
     await waitFor(() => expect((screen.getByLabelText('Current password') as HTMLInputElement).value).toBe(''));
+  });
+
+  it.each([
+    ['account switch', 'owner-2', 'other-account-token', 2],
+    ['same-account session rotation', 'owner-1', 'new-session-token', 2],
+  ] as const)('does not refresh through a password request context after %s', async (_change, userID, accessToken, sessionEpoch) => {
+    let capturedContext: PasswordSelfServiceAuthContext | undefined;
+    mocks.changeAccountPassword.mockImplementationOnce(async (context: PasswordSelfServiceAuthContext) => {
+      capturedContext = context;
+    });
+    const { rerender } = render(<AccountSettingsModal onClose={vi.fn()} />);
+    fireEvent.change(await screen.findByLabelText('Current password'), { target: { value: 'old-password-431' } });
+    fireEvent.change(screen.getByLabelText('New password'), { target: { value: 'new-password-431' } });
+    fireEvent.change(screen.getByLabelText('Confirm new password'), { target: { value: 'new-password-431' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Change password' }));
+    await waitFor(() => expect(capturedContext).toBeDefined());
+
+    mocks.userID = userID;
+    mocks.accessToken = accessToken;
+    mocks.sessionEpoch = sessionEpoch;
+    rerender(<AccountSettingsModal onClose={vi.fn()} />);
+
+    await expect(capturedContext?.refreshAccessToken()).resolves.toBeNull();
+    expect(mocks.refreshAccessToken).not.toHaveBeenCalled();
   });
 
   it('uses Auth-qualified Demo status to suppress password controls', async () => {
