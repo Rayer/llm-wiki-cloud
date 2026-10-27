@@ -177,6 +177,7 @@ export type QueryTerminalMetadata = {
 
 export type QueryOperationFailure = {
   stage: 'query_expansion' | 'answer_synthesis';
+  source?: 'personal' | 'shared' | 'unknown';
   class:
     | 'authentication'
     | 'rate_limited'
@@ -1155,6 +1156,7 @@ function normalizeQueryExpansion(value: unknown): QueryExpansion | undefined {
 function isQueryOperationFailure(value: unknown): value is QueryOperationFailure {
   if (!isRecord(value)) return false;
   return (value.stage === 'query_expansion' || value.stage === 'answer_synthesis')
+    && (!('source' in value) || ['personal', 'shared', 'unknown'].includes(String(value.source)))
     && ['authentication', 'rate_limited', 'quota_exhausted', 'billing', 'timeout', 'invalid_response', 'output_truncated', 'provider_unavailable', 'provider_error', 'context_unavailable', 'canceled'].includes(String(value.class))
     && ['none', 'raw_query', 'deterministic_plan', 'retrieval_only'].includes(String(value.fallback));
 }

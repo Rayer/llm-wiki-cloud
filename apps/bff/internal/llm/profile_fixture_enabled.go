@@ -4,6 +4,7 @@ package llm
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -63,6 +64,22 @@ func (profileFixtureRoundTripper) RoundTrip(request *http.Request) (*http.Respon
 			StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}},
 			Body: io.NopCloser(strings.NewReader(body)), ContentLength: int64(len(body)), Request: request,
 		}, nil
+	}
+	if strings.Contains(system, "CITATION FORMAT RULES") {
+		switch request.Header.Get("Authorization") {
+		case "Bearer synthetic-body-timeout-fixture-key":
+			writeProfileFixtureReceipt("openai_chat_completions", input.Model, request.URL.Path)
+			return &http.Response{
+				StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}},
+				Body: &profileFixtureTimeoutBody{ctx: request.Context()}, Request: request,
+			}, nil
+		case "Bearer synthetic-cancel-fixture-key":
+			writeProfileFixtureReceipt("openai_chat_completions", input.Model, request.URL.Path)
+			return &http.Response{
+				StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}},
+				Body: &profileFixtureCancelBody{ctx: request.Context(), readyFile: os.Getenv("LWC_BYOK_PROFILE_FIXTURE_BODY_READY_FILE")}, Request: request,
+			}, nil
+		}
 	}
 	content := profileFixtureContent(system, user)
 	writeProfileFixtureReceipt("openai_chat_completions", input.Model, request.URL.Path)
@@ -156,5 +173,37 @@ func writeProfileFixtureReceipt(protocol, model, path string) {
 	_ = file.Chmod(0o600)
 	_, _ = fmt.Fprintf(file, "%s\t%s\t%s\t%s\n", time.Now().UTC().Format(time.RFC3339Nano), protocol, model, path)
 }
+
+type profileFixtureTimeoutBody struct{ ctx context.Context }
+
+func (b *profileFixtureTimeoutBody) Read([]byte) (int, error) {
+	if err := b.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return 0, profileFixtureTimeoutError{}
+}
+
+func (*profileFixtureTimeoutBody) Close() error { return nil }
+
+type profileFixtureTimeoutError struct{}
+
+func (profileFixtureTimeoutError) Error() string   { return "synthetic body read timed out" }
+func (profileFixtureTimeoutError) Timeout() bool   { return true }
+func (profileFixtureTimeoutError) Temporary() bool { return true }
+
+type profileFixtureCancelBody struct {
+	ctx       context.Context
+	readyFile string
+}
+
+func (b *profileFixtureCancelBody) Read([]byte) (int, error) {
+	if b.readyFile != "" {
+		_ = os.WriteFile(b.readyFile, []byte("body read started"), 0o600)
+	}
+	<-b.ctx.Done()
+	return 0, b.ctx.Err()
+}
+
+func (*profileFixtureCancelBody) Close() error { return nil }
 
 var _ http.RoundTripper = profileFixtureRoundTripper{}

@@ -293,7 +293,24 @@ func (c *ProfileClient) Complete(ctx context.Context, systemPrompt, userMessage 
 	}
 	defer response.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(response.Body, c.maxBody+1))
-	if err != nil || int64(len(data)) > c.maxBody {
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			callOutcome = "canceled"
+			return CompletionResult{}, ctxErr
+		}
+		if errors.Is(err, context.Canceled) {
+			callOutcome = "canceled"
+			return CompletionResult{}, err
+		}
+		var netErr net.Error
+		if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &netErr) && netErr.Timeout()) {
+			callOutcome = string(ProviderTimeout)
+			return CompletionResult{}, &ProfileCallError{Kind: ProviderTimeout, StatusCode: response.StatusCode}
+		}
+		callOutcome = string(ProviderResponseInvalid)
+		return CompletionResult{}, &ProfileCallError{Kind: ProviderResponseInvalid, StatusCode: response.StatusCode}
+	}
+	if int64(len(data)) > c.maxBody {
 		callOutcome = string(ProviderResponseInvalid)
 		return CompletionResult{}, &ProfileCallError{Kind: ProviderResponseInvalid, StatusCode: response.StatusCode}
 	}

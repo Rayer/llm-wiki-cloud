@@ -58,7 +58,8 @@ func TestMCPQuerySchemaIsQueryOnly(t *testing.T) {
 		t.Fatalf("mode description does not match query behavior: %q", mode.Description)
 	}
 	if !strings.Contains(string(queryProjectOutputSchema), `"citations"`) || !strings.Contains(string(queryProjectOutputSchema), `"disclosure_required"`) ||
-		!strings.Contains(string(queryProjectOutputSchema), `"ai_operation_failures"`) || !strings.Contains(string(queryProjectOutputSchema), `"authentication"`) {
+		!strings.Contains(string(queryProjectOutputSchema), `"ai_operation_failures"`) || !strings.Contains(string(queryProjectOutputSchema), `"authentication"`) ||
+		!strings.Contains(string(queryProjectOutputSchema), `"source":{"type":"string","enum":["personal","shared","unknown"]}`) {
 		t.Fatal("output schema omits QueryResponse fields")
 	}
 }
@@ -88,6 +89,7 @@ func TestMCPQueryPreservesRecoveredAIOperationFailure(t *testing.T) {
 	if err := json.Unmarshal([]byte(textContent.Text), &response); err != nil {
 		t.Fatal(err)
 	}
+	failure.Source = query.AIOperationSourceShared
 	if len(response.Results) != 1 || response.Results[0].Slug != "coffee-shops" || !reflect.DeepEqual(response.AIOperationFailures, []query.AIOperationFailure{failure}) {
 		t.Fatalf("MCP QueryResponse = %+v, want retrieval and typed recovered failure", response)
 	}

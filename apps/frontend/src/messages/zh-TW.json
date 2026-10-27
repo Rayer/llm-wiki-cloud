@@ -769,10 +769,10 @@
         "answer_synthesis": "AI 回答無法產生；下方仍顯示 Wiki 檢索結果。"
       },
       "class": {
-        "authentication": "選取的 AI 服務拒絕了驗證。請檢查 API 金鑰與服務設定。",
+        "authentication": "這次使用的 AI 服務拒絕了驗證。",
         "rate_limited": "選取的 AI 服務目前限制請求頻率，請稍後再試。",
-        "quota_exhausted": "選取的 AI 服務已確認額度用盡。請檢查使用量或帳務。",
-        "billing": "選取的 AI 服務回報帳務問題，請檢查帳務設定。",
+        "quota_exhausted": "這次使用的 AI 服務已確認額度用盡。",
+        "billing": "這次使用的 AI 服務回報帳務問題。",
         "timeout": "選取的 AI 服務未能及時回應，請再試一次。",
         "invalid_response": "選取的 AI 服務回傳了無法使用的內容。請再試一次或檢查服務設定。",
         "output_truncated": "選取的 AI 服務在完成回答前就停止了，請再試一次。",
@@ -781,13 +781,21 @@
         "context_unavailable": "無法使用檢索到的 Wiki 內容準備回答；搜尋結果仍可在下方查看。",
         "canceled": "AI 請求在完成前已取消。"
       },
+      "sourceAdvice": {
+        "personal": "這次請求使用你的個人 AI Profile。請視情況檢查已儲存的金鑰、使用量或帳務設定。",
+        "shared": "這次請求使用共用 AI 服務；其設定與帳務由服務管理者負責。請稍後重試或聯絡管理者。這次沒有使用你的個人 Profile。",
+        "demo": "Demo 使用由服務管理者維護的共用 AI 服務。此問題與你的個人 API 金鑰或帳務無關。",
+        "unknown": "無法確認這次請求使用哪個 AI 服務。請聯絡管理者；若你有設定個人 Profile，也可以自行檢查。"
+      },
       "fallback": {
         "none": "",
         "raw_query": "",
         "deterministic_plan": "搜尋已改用安全的備援條件繼續。",
         "retrieval_only": "檢索結果仍可使用，但沒有 AI 回答。"
       },
-      "openSettings": "檢查 AI 服務設定"
+      "openPersonalSettings": "檢查個人 AI 服務設定",
+      "choosePersonalSettings": "選擇個人 AI 服務（選用）",
+      "openOptionalSettings": "檢查選用的個人 AI 服務設定"
     }
   },
   "QueryErrors": {

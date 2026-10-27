@@ -77,6 +77,7 @@ func TestV1QuerySerializesRecoveredAIOperationFailure(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
+	failure.Source = query.AIOperationSourceShared
 	if len(response.Results) != 1 || response.Results[0].Slug != "coffee-shops" || !reflect.DeepEqual(response.AIOperationFailures, []query.AIOperationFailure{failure}) {
 		t.Fatalf("query response = %+v, want retrieval and typed recovered failure", response)
 	}
@@ -84,8 +85,22 @@ func TestV1QuerySerializesRecoveredAIOperationFailure(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &wire); err != nil {
 		t.Fatal(err)
 	}
-	if string(wire["ai_operation_failures"]) != `[{"stage":"answer_synthesis","class":"authentication","fallback":"retrieval_only"}]` {
+	if string(wire["ai_operation_failures"]) != `[{"stage":"answer_synthesis","class":"authentication","fallback":"retrieval_only","source":"shared"}]` {
 		t.Fatalf("wire ai_operation_failures = %s", wire["ai_operation_failures"])
+	}
+}
+
+func TestQueryAIOperationSourceIsAllowlistedFromResolvedRequestSource(t *testing.T) {
+	for _, test := range []struct{ input, want string }{
+		{"personal", query.AIOperationSourcePersonal},
+		{"shared", query.AIOperationSourceShared},
+		{"bootstrap", query.AIOperationSourceShared},
+		{"unexpected", query.AIOperationSourceUnknown},
+		{"", query.AIOperationSourceUnknown},
+	} {
+		if got := queryAIOperationSource(test.input); got != test.want {
+			t.Errorf("queryAIOperationSource(%q) = %q, want %q", test.input, got, test.want)
+		}
 	}
 }
 

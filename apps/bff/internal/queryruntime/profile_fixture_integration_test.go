@@ -4,11 +4,13 @@ package queryruntime_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rayer/llm-wiki-bff/internal/cache"
 	"github.com/rayer/llm-wiki-bff/internal/llm"
@@ -184,33 +186,6 @@ func TestQueryRuntimePreservesRetrievalAndReportsSyntheticProjectProfileAuthenti
 		stageFailures[query.AIOperationAnswerSynthesis].FallbackOutcome != "retrieval_only" {
 		t.Fatalf("invalid-profile stage receipts = %+v, want bounded failure class and fallback for both AI stages", invalidReceipt.Receipt().Stages)
 	}
-	var metrics metricdata.ResourceMetrics
-	if err := metricReader.Collect(context.Background(), &metrics); err != nil {
-		t.Fatal(err)
-	}
-	metricCounts := map[string]int64{}
-	for _, scope := range metrics.ScopeMetrics {
-		for _, instrument := range scope.Metrics {
-			if instrument.Name != "lwc.query.ai_operation_failures" {
-				continue
-			}
-			sum, ok := instrument.Data.(metricdata.Sum[int64])
-			if !ok {
-				t.Fatalf("query failure metric data = %T, want sum", instrument.Data)
-			}
-			for _, point := range sum.DataPoints {
-				stage, _ := point.Attributes.Value(attribute.Key("stage"))
-				class, _ := point.Attributes.Value(attribute.Key("failure_class"))
-				fallback, _ := point.Attributes.Value(attribute.Key("fallback_outcome"))
-				metricCounts[stage.AsString()+"/"+class.AsString()+"/"+fallback.AsString()] = point.Value
-			}
-		}
-	}
-	if metricCounts["query_expansion/authentication/deterministic_plan"] != 1 ||
-		metricCounts["answer_synthesis/authentication/retrieval_only"] != 1 {
-		t.Fatalf("recovered Query failure metric counts = %#v, want both typed stage/fallback series", metricCounts)
-	}
-
 	valid := newFixtureProfile(t, "valid-project-profile", "synthetic-valid-fixture-key")
 	validPool, err := llm.NewProfilePoolClient([]*llm.ProfileClient{valid}, nil)
 	if err != nil {
@@ -269,6 +244,78 @@ func TestQueryRuntimePreservesRetrievalAndReportsSyntheticProjectProfileAuthenti
 		t.Fatalf("expansion-only host calls = %+v, want malformed expansion response followed by successful synthesis", expansionHostCalls)
 	}
 
+	bodyTimeout := newFixtureProfile(t, "body-timeout-profile", "synthetic-body-timeout-fixture-key")
+	bodyTimeoutPool, err := llm.NewProfilePoolClient([]*llm.ProfileClient{bodyTimeout}, nil)
+	if err != nil {
+		bodyTimeout.Close()
+		t.Fatal(err)
+	}
+	defer bodyTimeoutPool.Close()
+	timeoutCtx, timeoutReceipt := query.WithReceipt(context.Background())
+	timeoutCtx = llm.WithProjectChatClient(timeoutCtx, bodyTimeoutPool)
+	timeoutResult, err := runtime.Execute(timeoutCtx, reader, request)
+	if err != nil {
+		t.Fatalf("body-timeout Execute() error = %v, want recovered response-body timeout", err)
+	}
+	query.FinishReceipt(timeoutReceipt)
+	if timeoutCtx.Err() != nil {
+		t.Fatalf("caller context was not active during recovered body timeout: %v", timeoutCtx.Err())
+	}
+	if timeoutResult.Status != "ok" || timeoutResult.Reason != "qualified_evidence" || len(timeoutResult.Results) != 1 ||
+		timeoutResult.Results[0].Slug != "byok-profile-routing" || timeoutResult.AISynth != "" || len(timeoutResult.Citations) != 0 ||
+		!reflect.DeepEqual(timeoutResult.AIOperationFailures, []query.AIOperationFailure{{
+			Stage: query.AIOperationAnswerSynthesis, Class: query.AIFailureTimeout, Fallback: query.AIFallbackRetrievalOnly,
+		}}) {
+		t.Fatalf("body-timeout result = %+v, want qualified retrieval and timeout/retrieval-only warning", timeoutResult)
+	}
+	var synthesisTimeout *query.StageReceipt
+	for i := range timeoutReceipt.Receipt().Stages {
+		stage := &timeoutReceipt.Receipt().Stages[i]
+		if stage.Name == query.AIOperationAnswerSynthesis {
+			synthesisTimeout = stage
+		}
+	}
+	if synthesisTimeout == nil || synthesisTimeout.FailureClass != query.AIFailureTimeout || synthesisTimeout.FallbackOutcome != query.AIFallbackRetrievalOnly {
+		t.Fatalf("body-timeout stage receipt = %+v, want bounded timeout/retrieval-only labels", timeoutReceipt.Receipt().Stages)
+	}
+	var foundTimeoutCall bool
+	for _, call := range timeoutReceipt.Receipt().HostCalls {
+		if call.Stage == query.AIOperationAnswerSynthesis && call.Outcome == string(llm.ProviderTimeout) {
+			foundTimeoutCall = true
+		}
+	}
+	if !foundTimeoutCall {
+		t.Fatalf("body-timeout host calls = %+v, want HTTP-200 response-body timeout", timeoutReceipt.Receipt().HostCalls)
+	}
+
+	var metrics metricdata.ResourceMetrics
+	if err := metricReader.Collect(context.Background(), &metrics); err != nil {
+		t.Fatal(err)
+	}
+	metricCounts := map[string]int64{}
+	for _, scope := range metrics.ScopeMetrics {
+		for _, instrument := range scope.Metrics {
+			if instrument.Name != "lwc.query.ai_operation_failures" {
+				continue
+			}
+			sum, ok := instrument.Data.(metricdata.Sum[int64])
+			if !ok {
+				t.Fatalf("query failure metric data = %T, want sum", instrument.Data)
+			}
+			for _, point := range sum.DataPoints {
+				stage, _ := point.Attributes.Value(attribute.Key("stage"))
+				class, _ := point.Attributes.Value(attribute.Key("failure_class"))
+				fallback, _ := point.Attributes.Value(attribute.Key("fallback_outcome"))
+				metricCounts[stage.AsString()+"/"+class.AsString()+"/"+fallback.AsString()] = point.Value
+			}
+		}
+	}
+	if metricCounts["query_expansion/authentication/deterministic_plan"] != 1 ||
+		metricCounts["answer_synthesis/authentication/retrieval_only"] != 1 ||
+		metricCounts["answer_synthesis/timeout/retrieval_only"] != 1 {
+		t.Fatalf("recovered Query failure metric counts = %#v, want auth and body-timeout stage/fallback series", metricCounts)
+	}
+
 	providerReceipts, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -276,6 +323,65 @@ func TestQueryRuntimePreservesRetrievalAndReportsSyntheticProjectProfileAuthenti
 	if strings.Contains(string(providerReceipts), "synthetic-invalid-fixture-key") || strings.Contains(string(providerReceipts), "synthetic-valid-fixture-key") ||
 		!strings.Contains(string(providerReceipts), "/v1/chat/completions") {
 		t.Fatalf("provider fixture receipts must prove HTTP calls without exposing keys: %q", providerReceipts)
+	}
+}
+
+func TestQueryRuntimeKeepsCallerCancellationTerminalDuringProfileResponseBodyRead(t *testing.T) {
+	t.Setenv("LWC_BYOK_PROFILE_FIXTURE_TRANSPORT", "1")
+	readyFile := filepath.Join(t.TempDir(), "body-read-started")
+	t.Setenv("LWC_BYOK_PROFILE_FIXTURE_BODY_READY_FILE", readyFile)
+	profile := newFixtureProfile(t, "cancel-profile", "synthetic-cancel-fixture-key")
+	pool, err := llm.NewProfilePoolClient([]*llm.ProfileClient{profile}, nil)
+	if err != nil {
+		profile.Close()
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	config := runtimeConfig(t)
+	config.ConfigDigest = ""
+	config, err = queryconfig.Seal(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := queryruntime.NewExecutor(config, cache.New(), &countingProvider{}, &countingLegacy{}, runtimeSynthesizer())
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := &profileFixtureCorpusReader{runtimeReader: runtimeReader{identity: storage.QueryGenerationIdentity{
+		ProjectID: "project-a", GenerationID: "generation-7", ConceptsDigest: "sha256:" + strings.Repeat("a", 64),
+	}}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ctx, receipt := query.WithReceipt(ctx)
+	ctx = llm.WithProjectChatClient(ctx, pool)
+	type execution struct {
+		result query.Result
+		err    error
+	}
+	done := make(chan execution, 1)
+	go func() {
+		result, executeErr := runtime.Execute(ctx, reader, query.Request{Query: "How does BYOK profile routing work?", Mode: "full"})
+		done <- execution{result: result, err: executeErr}
+	}()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if _, err := os.Stat(readyFile); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("synthetic HTTP 200 response body read did not start")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	select {
+	case got := <-done:
+		query.FinishReceipt(receipt)
+		if !errors.Is(got.err, context.Canceled) || got.result.Status == "ok" || len(got.result.AIOperationFailures) > 0 {
+			t.Fatalf("canceled Execute() = (%+v, %v), want terminal cancellation without partial-success warning", got.result, got.err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("query runtime did not stop after caller cancellation")
 	}
 }
 

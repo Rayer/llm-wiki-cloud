@@ -828,9 +828,16 @@ export function HomeClient() {
   const suggestedQueries = status?.suggestedQueries ?? [];
   const insufficientEvidence = queryOutcome.status === 'insufficient_evidence';
   const aiOperationFailures = queryOutcome.ai_operation_failures ?? [];
-  const canReviewAISettings = !isDemoSession && aiOperationFailures.some((failure) => (
+  const accountProviderFailure = aiOperationFailures.find((failure) => (
     failure.class === 'authentication' || failure.class === 'quota_exhausted' || failure.class === 'billing'
   ));
+  const canReviewAISettings = !isDemoSession && Boolean(accountProviderFailure);
+  const aiFailureSourceAdvice = isDemoSession ? 'demo' : accountProviderFailure?.source ?? 'unknown';
+  const aiSettingsAction = accountProviderFailure?.source === 'personal'
+    ? 'openPersonalSettings'
+    : accountProviderFailure?.source === 'shared'
+      ? 'choosePersonalSettings'
+      : 'openOptionalSettings';
   const showModelPriorDisclosure = submittedMode === 'full'
     && Boolean(aiAnswer)
     && (queryOutcome.answer_basis === 'model_prior' || queryOutcome.disclosure_required === true);
@@ -1023,13 +1030,16 @@ export function HomeClient() {
                 </li>
               ))}
             </ul>
+            {accountProviderFailure ? (
+              <p className="mt-3 text-sm leading-6 text-amber-100">{t(`QueryResults.aiFailure.sourceAdvice.${aiFailureSourceAdvice}`)}</p>
+            ) : null}
             {canReviewAISettings ? (
               <button
                 type="button"
                 className="mt-3 min-h-11 rounded-lg border border-amber-200/50 px-4 py-2 text-sm font-medium text-amber-50 hover:bg-amber-100/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-200"
                 onClick={() => window.dispatchEvent(new CustomEvent('lwc-open-account-settings', { detail: { focusBYOK: true } }))}
               >
-                {t('QueryResults.aiFailure.openSettings')}
+                {t(`QueryResults.aiFailure.${aiSettingsAction}`)}
               </button>
             ) : null}
           </aside>

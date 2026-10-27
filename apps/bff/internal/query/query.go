@@ -82,6 +82,10 @@ const (
 	AIFallbackRawQuery          = "raw_query"
 	AIFallbackDeterministicPlan = "deterministic_plan"
 	AIFallbackRetrievalOnly     = "retrieval_only"
+
+	AIOperationSourcePersonal = "personal"
+	AIOperationSourceShared   = "shared"
+	AIOperationSourceUnknown  = "unknown"
 )
 
 // AIOperationFailure records a safe, bounded failure from an optional AI step
@@ -90,6 +94,7 @@ type AIOperationFailure struct {
 	Stage    string `json:"stage"`
 	Class    string `json:"class"`
 	Fallback string `json:"fallback"`
+	Source   string `json:"source,omitempty"`
 }
 
 func NewAIOperationFailure(stage string, err error, fallback string) (AIOperationFailure, bool) {

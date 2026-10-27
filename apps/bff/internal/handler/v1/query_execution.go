@@ -79,5 +79,23 @@ func (h *Handler) executeQuery(ctx context.Context, reader storage.Store, profil
 		)
 	}
 	finishQueryStage(span, nil)
-	return mapQueryResult(result), result.RuntimeConfigIdentity, nil
+	response := mapQueryResult(result)
+	if len(response.AIOperationFailures) > 0 {
+		source := queryAIOperationSource(selectedSource)
+		for i := range response.AIOperationFailures {
+			response.AIOperationFailures[i].Source = source
+		}
+	}
+	return response, result.RuntimeConfigIdentity, nil
+}
+
+func queryAIOperationSource(source string) string {
+	switch source {
+	case "personal":
+		return query.AIOperationSourcePersonal
+	case "shared", "bootstrap":
+		return query.AIOperationSourceShared
+	default:
+		return query.AIOperationSourceUnknown
+	}
 }

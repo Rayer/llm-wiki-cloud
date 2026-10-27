@@ -67,7 +67,7 @@ var queryProjectOutputSchema = json.RawMessage(`{
 		"answer_basis":{"type":"string"},
 		"wiki_evidence_status":{"type":"string"},
 		"disclosure_required":{"type":"boolean"},
-		"ai_operation_failures":{"type":"array","items":{"type":"object","properties":{"stage":{"type":"string","enum":["query_expansion","answer_synthesis"]},"class":{"type":"string","enum":["authentication","rate_limited","quota_exhausted","billing","timeout","invalid_response","output_truncated","provider_unavailable","provider_error","context_unavailable","canceled"]},"fallback":{"type":"string","enum":["none","raw_query","deterministic_plan","retrieval_only"]}},"required":["stage","class","fallback"],"additionalProperties":false}}
+		"ai_operation_failures":{"type":"array","items":{"type":"object","properties":{"stage":{"type":"string","enum":["query_expansion","answer_synthesis"]},"class":{"type":"string","enum":["authentication","rate_limited","quota_exhausted","billing","timeout","invalid_response","output_truncated","provider_unavailable","provider_error","context_unavailable","canceled"]},"fallback":{"type":"string","enum":["none","raw_query","deterministic_plan","retrieval_only"]},"source":{"type":"string","enum":["personal","shared","unknown"]}},"required":["stage","class","fallback"],"additionalProperties":false}}
 	},
 	"required":["query","mode","results"],
 	"additionalProperties":false

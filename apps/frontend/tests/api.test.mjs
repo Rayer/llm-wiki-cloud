@@ -679,16 +679,24 @@ test('normalizeSearchResponse preserves bounded recovered AI operation failures'
   const response = normalizeSearchResponse({
     results: [{ slug: 'coffee', title: 'Coffee', type: 'concept' }],
     ai_operation_failures: [
-      { stage: 'query_expansion', class: 'authentication', fallback: 'deterministic_plan' },
-      { stage: 'answer_synthesis', class: 'authentication', fallback: 'retrieval_only' },
+      { stage: 'query_expansion', class: 'authentication', fallback: 'deterministic_plan', source: 'personal' },
+      { stage: 'answer_synthesis', class: 'authentication', fallback: 'retrieval_only', source: 'shared' },
     ],
   });
 
   assert.deepEqual(response.ai_operation_failures, [
-    { stage: 'query_expansion', class: 'authentication', fallback: 'deterministic_plan' },
-    { stage: 'answer_synthesis', class: 'authentication', fallback: 'retrieval_only' },
+    { stage: 'query_expansion', class: 'authentication', fallback: 'deterministic_plan', source: 'personal' },
+    { stage: 'answer_synthesis', class: 'authentication', fallback: 'retrieval_only', source: 'shared' },
   ]);
   assert.equal(response.results[0].slug, 'coffee');
+});
+
+test('normalizeSearchResponse accepts legacy AI failures without a resolved source', () => {
+  const response = normalizeSearchResponse({
+    results: [],
+    ai_operation_failures: [{ stage: 'answer_synthesis', class: 'timeout', fallback: 'retrieval_only' }],
+  });
+  assert.equal(response.ai_operation_failures[0].source, undefined);
 });
 
 test('searchWiki keeps a malformed successful payload in the technical error path', async () => {
@@ -732,7 +740,7 @@ test('searchWiki rejects an invalid AI operation failure contract', async () => 
     globalThis.window = { localStorage: { getItem: () => 'project-1' } };
     globalThis.fetch = async () => Response.json({
       results: [{ slug: 'coffee', title: 'Coffee', type: 'concept' }],
-      ai_operation_failures: [{ stage: 'answer_synthesis', class: 'private-provider-body', fallback: 'retrieval_only' }],
+      ai_operation_failures: [{ stage: 'answer_synthesis', class: 'authentication', fallback: 'retrieval_only', source: 'private-provider-body' }],
     });
     await assert.rejects(
       () => searchWiki('safe query', 'full'),
