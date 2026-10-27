@@ -12,6 +12,7 @@ import {
   retryProfileCandidate,
   retryProfileDerivation,
   saveProfile,
+  type LLMProfile,
   type ProfileRequirement,
   type ProfileBootstrapGuidance,
   type ProfileGuidanceArtifact,
@@ -23,6 +24,8 @@ import { useWorkspace } from './WorkspaceProvider';
 import { useNavigationBlocker } from './NavigationBlocker';
 import { ProfileHowItWorks } from './ProfileHowItWorks';
 import { ProfileRequirementsEditor } from './ProfileRequirementsEditor';
+import { AccountSettingsModal } from './AccountSettingsModal';
+import { ProjectLLMSourcePanel } from './ProjectLLMSourcePanel';
 import {
   newProfileRequirementId,
   ProfileTemplates,
@@ -131,6 +134,8 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
   const [errorProjectId, setErrorProjectId] = useState('');
   const [notice, setNotice] = useState('');
   const [introVisibleFor, setIntroVisibleFor] = useState('');
+  const [byokSettingsOpen, setByokSettingsOpen] = useState(false);
+  const [newlyCreatedProfile, setNewlyCreatedProfile] = useState<LLMProfile | null>(null);
   const profileRef = useRef<ProfileState | null>(null);
   const guideEntryRef = useRef<HTMLButtonElement>(null);
   const requirementsCardRef = useRef<HTMLButtonElement>(null);
@@ -600,6 +605,15 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
 
       {visibleProfile ? (
         <>
+          {user?.id ? (
+            <ProjectLLMSourcePanel
+              projectId={projectId}
+              ownerId={user.id}
+              sessionEpoch={sessionEpoch}
+              onAddProfile={() => setByokSettingsOpen(true)}
+              newlyCreatedProfile={newlyCreatedProfile}
+            />
+          ) : null}
           {showNewProjectIntro ? (
             <section className="mt-4 rounded-xl border border-emerald-200/25 bg-emerald-200/[0.06] p-4" aria-labelledby="new-project-profile-intro-heading">
               <div className="flex items-start justify-between gap-3">
@@ -1053,6 +1067,13 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
           setGuideOpen(false);
         }}
       />
+      {byokSettingsOpen ? (
+        <AccountSettingsModal
+          focusBYOK
+          onClose={() => setByokSettingsOpen(false)}
+          onProfileCreated={(profile) => setNewlyCreatedProfile(profile)}
+        />
+      ) : null}
     </section>
   );
 }

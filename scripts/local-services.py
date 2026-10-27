@@ -101,7 +101,7 @@ def service_command(name: str, root: Path, env: dict[str, str]) -> tuple[list[st
     if name == "auth":
         return ["go", "run", "./cmd/auth"], bff, env
     if name == "bff":
-        return ["go", "run", "./cmd/bff"], bff, env | {"PORT": env["BFF_PORT"]}
+        return ["go", "run", "./cmd/bff"], bff, env
     if name == "frontend":
         return ["npm", "run", "dev", "--", "--hostname", "localhost", "--port", env["FRONTEND_PORT"]], root / "apps" / "frontend", env | {"NODE_ENV": "development"}
     raise ValueError(f"unknown service {name}")
@@ -132,6 +132,7 @@ def child_environment(name: str, env: dict[str, str]) -> dict[str, str]:
         path = child_env.get("LOCAL_CLOUD_BFF_CONFIG_PATH", "")
         if not Path(path).is_absolute() or not Path(path).is_file():
             raise ValueError("current-worktree BFF config file is missing or invalid")
+        port = child_env.get("BFF_PORT", "")
         for key in BFF_CONFIG_ENV:
             child_env.pop(key, None)
         for key in tuple(child_env):
@@ -140,6 +141,8 @@ def child_environment(name: str, env: dict[str, str]) -> dict[str, str]:
             elif key.startswith(("PIPELINE_", "QUERY_", "ANSWER_SYNTHESIS_")):
                 child_env.pop(key, None)
         child_env["LWC_BFF_CONFIG_PATH"] = path
+        if port.isdecimal() and 1 <= int(port) <= 65535:
+            child_env["PORT"] = port
     return child_env
 
 

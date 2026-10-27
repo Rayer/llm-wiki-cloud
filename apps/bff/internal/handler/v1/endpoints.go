@@ -485,7 +485,7 @@ func (h *Handler) Query(c *gin.Context) {
 
 	response, identity, failure := h.executeQuery(c.Request.Context(), gcsClient, profileSnapshot, query.Request{
 		Query: queryText, Mode: mode, RequiredTagIDs: req.RequiredTagIDs,
-	})
+	}, c.GetString("userID"), c.GetString("projectID"))
 	if failure != nil {
 		diagnostic.fail(failure)
 		writeQueryProblem(c, failure, diagnostic.id)
@@ -1283,6 +1283,13 @@ func (h *Handler) invokePipelineJobStageWithReservation(ctx context.Context, use
 		// Keep TASK_TYPE=pipeline for ownership matching across stages.
 		{"name": "TASK_TYPE", "value": "pipeline"},
 		{"name": pipelineStageEnvName, "value": stage},
+	}
+	if h.pipelineWorkerServiceAccount != "" && h.pipelineWorkerAudience != "" {
+		resolverURL := strings.TrimRight(h.pipelineWorkerAudience, "/") + "/internal/pipeline/llm-profile"
+		env = append(env,
+			gin.H{"name": "LWC_PROFILE_RESOLVER_URL", "value": resolverURL},
+			gin.H{"name": "LWC_PROFILE_RESOLVER_AUDIENCE", "value": h.pipelineWorkerAudience},
+		)
 	}
 	if reservationID != "" {
 		env = append(env, gin.H{"name": pipelineReservationEnvName, "value": reservationID})

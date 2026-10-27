@@ -61,6 +61,41 @@ export type ApiStatus = {
 	raw: Record<string, unknown>;
 };
 
+export type LLMProfile = {
+  id: string;
+  name: string;
+  provider: 'openai' | 'xai' | 'anthropic' | 'custom';
+  protocol: 'openai_chat_completions' | 'anthropic_messages';
+  endpoint: string;
+  model: string;
+  revision: number;
+  secret_configured: boolean;
+  enabled?: boolean;
+  available_to_public?: boolean;
+  priority?: number;
+};
+
+export type ProjectLLMBinding = {
+  source: 'shared' | 'personal';
+  profile_id?: string;
+  profile_revision?: number;
+  revision: number;
+};
+
+export type LLMProfileInput = {
+  name: string;
+  provider: LLMProfile['provider'];
+  protocol: LLMProfile['protocol'];
+  endpoint: string;
+  model: string;
+  api_key?: string;
+  clear_api_key?: boolean;
+  revision?: number;
+  enabled?: boolean;
+  available_to_public?: boolean;
+  priority?: number;
+};
+
 export type WikiEntry = {
   slug: string;
   title: string;
@@ -476,6 +511,67 @@ export async function apiFetch(path: string, options: ApiFetchOptions = {}): Pro
     auth.onUnauthorized(refreshedOperation.accessToken, refreshedOperation.epoch);
   }
   return retriedResponse;
+}
+
+async function llmProfileRequest<T>(path: string, options: { method?: string; projectId?: string; body?: unknown } = {}): Promise<T> {
+  const hasBody = options.body !== undefined;
+  const response = await apiFetch(path, {
+    method: options.method,
+    projectId: options.projectId,
+    requireProject: options.projectId !== undefined ? true : false,
+    json: hasBody,
+    body: hasBody ? JSON.stringify(options.body) : undefined,
+  });
+  const payload: unknown = response.status === 204 ? null : await response.json().catch(() => null);
+  if (!response.ok) {
+    const message = isRecord(payload) ? asString(payload.error) ?? asString(payload.message) : undefined;
+    throw new ApiError(message ?? `LLM profile request failed (${response.status})`, response.status, undefined, response.headers.get('X-Request-ID'));
+  }
+  return payload as T;
+}
+
+export async function listLLMProfiles(): Promise<LLMProfile[]> {
+  const payload = await llmProfileRequest<{ profiles?: LLMProfile[] }>('/api/v1/llm/profiles');
+  return Array.isArray(payload.profiles) ? payload.profiles : [];
+}
+
+export async function createLLMProfile(input: LLMProfileInput): Promise<LLMProfile> {
+  return llmProfileRequest<LLMProfile>('/api/v1/llm/profiles', { method: 'POST', body: input });
+}
+
+export async function updateLLMProfile(profileId: string, input: LLMProfileInput): Promise<LLMProfile> {
+  return llmProfileRequest<LLMProfile>(`/api/v1/llm/profiles/${encodeURIComponent(profileId)}`, { method: 'PUT', body: input });
+}
+
+export async function deleteLLMProfile(profileId: string): Promise<void> {
+  await llmProfileRequest<void>(`/api/v1/llm/profiles/${encodeURIComponent(profileId)}`, { method: 'DELETE' });
+}
+
+export async function listAdminLLMProfiles(): Promise<LLMProfile[]> {
+  const payload = await llmProfileRequest<{ profiles?: LLMProfile[] }>('/api/v1/admin/llm/profiles');
+  return Array.isArray(payload.profiles) ? payload.profiles : [];
+}
+
+export async function createAdminLLMProfile(input: LLMProfileInput): Promise<LLMProfile> {
+  return llmProfileRequest<LLMProfile>('/api/v1/admin/llm/profiles', { method: 'POST', body: input });
+}
+
+export async function updateAdminLLMProfile(profileId: string, input: LLMProfileInput): Promise<LLMProfile> {
+  return llmProfileRequest<LLMProfile>(`/api/v1/admin/llm/profiles/${encodeURIComponent(profileId)}`, { method: 'PUT', body: input });
+}
+
+export async function deleteAdminLLMProfile(profileId: string): Promise<void> {
+  await llmProfileRequest<void>(`/api/v1/admin/llm/profiles/${encodeURIComponent(profileId)}`, { method: 'DELETE' });
+}
+
+export async function getProjectLLMBinding(projectId: string): Promise<ProjectLLMBinding> {
+  const encoded = encodeURIComponent(projectId);
+  return llmProfileRequest<ProjectLLMBinding>(`/api/v1/projects/${encoded}/llm-binding`, { projectId });
+}
+
+export async function saveProjectLLMBinding(projectId: string, binding: Omit<ProjectLLMBinding, 'profile_revision'>): Promise<ProjectLLMBinding> {
+  const encoded = encodeURIComponent(projectId);
+  return llmProfileRequest<ProjectLLMBinding>(`/api/v1/projects/${encoded}/llm-binding`, { method: 'PUT', projectId, body: binding });
 }
 
 async function requestJson<T>(path: string, options: Pick<ApiFetchOptions, 'projectId'> = {}): Promise<T> {

@@ -113,6 +113,22 @@ type ModelIdentityProvider interface {
 	ModelIdentity() (ModelIdentity, bool)
 }
 
+type ProjectChatClient interface {
+	Chat(context.Context, string, string) (string, error)
+	ModelIdentityProvider
+}
+
+type projectChatClientContextKey struct{}
+
+func WithProjectChatClient(ctx context.Context, client ProjectChatClient) context.Context {
+	return context.WithValue(ctx, projectChatClientContextKey{}, client)
+}
+
+func ProjectChatClientFromContext(ctx context.Context) (ProjectChatClient, bool) {
+	client, ok := ctx.Value(projectChatClientContextKey{}).(ProjectChatClient)
+	return client, ok && client != nil
+}
+
 func (c *Client) ModelIdentity() (ModelIdentity, bool) {
 	if c == nil {
 		return ModelIdentity{}, false

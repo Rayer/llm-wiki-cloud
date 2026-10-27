@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/rayer/llm-wiki-bff/internal/cache"
 	"github.com/rayer/llm-wiki-bff/internal/llm"
@@ -23,6 +24,7 @@ var ErrIdentityUnavailable = errors.New("query runtime identity unavailable")
 
 type Executor struct {
 	resolver            *queryconfig.Resolver
+	conceptCache        *cache.Cache
 	services            map[string]query.Executor
 	compositionServices map[string]query.Executor
 	readback            query.RuntimeConfigReadback
@@ -64,7 +66,7 @@ func newExecutor(config queryconfig.Config, conceptCache *cache.Cache, expansion
 	}
 	defaultConfig := effectiveConfigs[0]
 	return &Executor{
-		resolver: resolver, services: services, compositionServices: compositionServices,
+		resolver: resolver, conceptCache: conceptCache, services: services, compositionServices: compositionServices,
 		readback: query.RuntimeConfigReadback{
 			SchemaVersion: defaultConfig.SchemaVersion, ConfigRevision: defaultConfig.ConfigRevision, ConfigDigest: defaultConfig.ConfigDigest,
 			QueryServiceImplementation: defaultConfig.QueryServiceImplementation,
@@ -171,12 +173,56 @@ func (e *Executor) Execute(ctx context.Context, reader cache.Reader, request que
 		finishResolve(ErrIdentityUnavailable)
 		return query.Result{}, ErrIdentityUnavailable
 	}
+	projectClient, hasProjectClient := llm.ProjectChatClientFromContext(ctx)
+	runtimeIdentity := effective.RuntimeConfigIdentity()
+	if hasProjectClient {
+		modelIdentity, ok := projectClient.ModelIdentity()
+		if !ok || strings.TrimSpace(modelIdentity.Provider) == "" || strings.TrimSpace(modelIdentity.Model) == "" {
+			finishResolve(ErrIdentityUnavailable)
+			return query.Result{}, ErrIdentityUnavailable
+		}
+		runtimeIdentity.ExpansionProvider = modelIdentity.Provider
+		runtimeIdentity.ExpansionModel = modelIdentity.Model
+		runtimeIdentity.ExpansionReasoning = modelIdentity.Reasoning
+		runtimeIdentity.ExpansionTemperature = modelIdentity.Temperature
+		runtimeIdentity.SynthesisProvider = modelIdentity.Provider
+		runtimeIdentity.SynthesisModel = modelIdentity.Model
+		runtimeIdentity.SynthesisReasoning = modelIdentity.Reasoning
+		runtimeIdentity.SynthesisTemperature = modelIdentity.Temperature
+		if profileIdentity, ok := projectClient.(llm.ProfileIdentityProvider); ok {
+			identity := profileIdentity.ProfileIdentity()
+			runtimeIdentity.LLMProfileID = identity.ID
+			runtimeIdentity.LLMProfileRevision = identity.Revision
+			runtimeIdentity.LLMProtocol = identity.Protocol
+		}
+		synthesizer := query.NewProjectService(e.conceptCache, projectClient)
+		service, err = queryquality.NewStrictProductionExecutorWithQueryServiceConfig(
+			e.conceptCache, projectClient, nil, synthesizer, effective.Profile, effective.PromptID, effective.Options, runtimeIdentity,
+		)
+		if err != nil {
+			finishResolve(err)
+			return query.Result{}, err
+		}
+	}
 	finishResolve(nil)
-	result, err := service.Execute(query.WithRuntimeConfigIdentity(ctx, effective.RuntimeConfigIdentity()), reader, request)
+	result, err := service.Execute(query.WithRuntimeConfigIdentity(ctx, runtimeIdentity), reader, request)
 	if err != nil {
 		return query.Result{}, err
 	}
-	runtimeIdentity := effective.RuntimeConfigIdentity()
+	if hasProjectClient {
+		if modelIdentity, ok := projectClient.ModelIdentity(); ok {
+			runtimeIdentity.ExpansionProvider, runtimeIdentity.ExpansionModel = modelIdentity.Provider, modelIdentity.Model
+			runtimeIdentity.ExpansionReasoning, runtimeIdentity.ExpansionTemperature = modelIdentity.Reasoning, modelIdentity.Temperature
+			runtimeIdentity.SynthesisProvider, runtimeIdentity.SynthesisModel = modelIdentity.Provider, modelIdentity.Model
+			runtimeIdentity.SynthesisReasoning, runtimeIdentity.SynthesisTemperature = modelIdentity.Reasoning, modelIdentity.Temperature
+		}
+		if profileIdentity, ok := projectClient.(llm.ProfileIdentityProvider); ok {
+			identity := profileIdentity.ProfileIdentity()
+			runtimeIdentity.LLMProfileID = identity.ID
+			runtimeIdentity.LLMProfileRevision = identity.Revision
+			runtimeIdentity.LLMProtocol = identity.Protocol
+		}
+	}
 	result.RuntimeConfigIdentity = query.CloneRuntimeConfigIdentity(&runtimeIdentity)
 	return result, nil
 }

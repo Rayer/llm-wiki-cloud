@@ -5,6 +5,10 @@ import { useAuth } from '@/lib/auth';
 import { beginGoogleLink, GoogleAuthError, readGoogleIdentitySummary } from '@/lib/google-auth';
 import { changeAccountPassword, PasswordSelfServiceError, readPasswordSelfServiceStatus, type PasswordSelfServiceStatus } from '@/lib/account-password';
 import { useLocale } from '@/lib/i18n';
+import type { LLMProfile } from '@/lib/api';
+import { BYOKProfilesPanel } from './BYOKProfilesPanel';
+import { ProjectLLMSourcePanel } from './ProjectLLMSourcePanel';
+import { useWorkspace } from './WorkspaceProvider';
 import {
   CLIAuthError,
   listCLISessions,
@@ -16,13 +20,19 @@ import {
   type SyncBinding,
 } from '@/lib/cli-auth';
 
-export function AccountSettingsModal({ onClose }: { onClose: () => void }) {
+export function AccountSettingsModal({ onClose, focusBYOK = false, onProfileCreated }: {
+  onClose: () => void;
+  focusBYOK?: boolean;
+  onProfileCreated?: (profile: LLMProfile) => void;
+}) {
   const { accessToken, refreshAccessToken, user } = useAuth();
   if (!user) return null;
   return (
     <AccountSettingsModalContent
       key={user.id}
       onClose={onClose}
+      focusBYOK={focusBYOK}
+      onProfileCreated={onProfileCreated}
       accessToken={accessToken}
       refreshAccessToken={refreshAccessToken}
       user={user}
@@ -32,16 +42,22 @@ export function AccountSettingsModal({ onClose }: { onClose: () => void }) {
 
 function AccountSettingsModalContent({
   onClose,
+  focusBYOK,
+  onProfileCreated,
   accessToken,
   refreshAccessToken,
   user,
 }: {
   onClose: () => void;
+  focusBYOK: boolean;
+  onProfileCreated?: (profile: LLMProfile) => void;
   accessToken: string | null;
   refreshAccessToken: ReturnType<typeof useAuth>['refreshAccessToken'];
   user: NonNullable<ReturnType<typeof useAuth>['user']>;
 }) {
   const { t } = useLocale();
+  const { sessionEpoch } = useAuth();
+  const { projects = [] } = useWorkspace();
   const userID = user.id;
   const [linkOpen, setLinkOpen] = useState(false);
   const [password, setPassword] = useState('');
@@ -63,6 +79,7 @@ function AccountSettingsModalContent({
   const [passwordError, setPasswordError] = useState('');
   const [passwordNotice, setPasswordNotice] = useState('');
   const passwordRef = useRef<HTMLInputElement>(null);
+  const settingsDialogRef = useRef<HTMLDivElement>(null);
 
   const clearPasswordSecrets = useCallback(() => {
     setPassword('');
@@ -134,6 +151,13 @@ function AccountSettingsModalContent({
   useEffect(() => {
     if (linkOpen) passwordRef.current?.focus();
   }, [linkOpen]);
+
+  useEffect(() => {
+    if (!focusBYOK) return;
+    const target = document.getElementById('byok-profiles-heading');
+    target?.scrollIntoView({ block: 'start' });
+    target?.focus();
+  }, [focusBYOK]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -262,6 +286,7 @@ function AccountSettingsModalContent({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm" onMouseDown={closeSettings}>
       <div
+        ref={settingsDialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="account-settings-title"
@@ -288,6 +313,16 @@ function AccountSettingsModalContent({
             <p className="mt-2 text-xs leading-5 text-zinc-500">{t('AccountSettings.googleHint')}</p>
           </div>
         </dl>
+
+        <BYOKProfilesPanel onProfileCreated={onProfileCreated} />
+
+        <section className="mt-6 border-t border-white/10 pt-6" aria-labelledby="account-project-llm-title">
+          <h3 id="account-project-llm-title" className="text-lg font-semibold text-white">{t('LLMSource.accountAssignments')}</h3>
+          <p className="mt-1 text-sm leading-6 text-zinc-400">{t('LLMSource.accountAssignmentsHint')}</p>
+          {projects.length ? projects.map((project) => (
+            <ProjectLLMSourcePanel key={project.id} projectId={project.id} ownerId={user.id} sessionEpoch={sessionEpoch} compact />
+          )) : <p className="mt-3 text-sm text-zinc-400">{t('LLMSource.noProjects')}</p>}
+        </section>
 
         <section className="mt-6 border-t border-white/10 pt-6" aria-labelledby="account-password-title">
           <h3 id="account-password-title" className="text-lg font-semibold text-white">{t('AccountSettings.passwordTitle')}</h3>

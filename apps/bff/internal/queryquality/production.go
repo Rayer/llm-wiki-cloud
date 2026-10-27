@@ -3,8 +3,10 @@ package queryquality
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/rayer/llm-wiki-bff/internal/cache"
+	"github.com/rayer/llm-wiki-bff/internal/llm"
 	"github.com/rayer/llm-wiki-bff/internal/query"
 )
 
@@ -73,10 +75,15 @@ type ProductionExecutor struct {
 	synthesizer            query.Synthesizer
 	identity               query.RuntimeConfigIdentity
 	allowLegacyFallback    bool
+	allowProjectClient     bool
 }
 
 func NewProductionExecutor(conceptCache *cache.Cache, provider ChatProvider, legacy query.Executor, synthesizer query.Synthesizer, options Options) (query.Executor, error) {
-	return NewProductionExecutorWithQueryServiceConfig(conceptCache, provider, legacy, synthesizer, DefaultRetrievalProfile(), StructuredPlanPromptID, options, query.RuntimeConfigIdentity{})
+	executor, err := newProductionExecutorWithQueryServiceConfig(conceptCache, provider, legacy, synthesizer, DefaultRetrievalProfile(), StructuredPlanPromptID, options, query.RuntimeConfigIdentity{}, true)
+	if production, ok := executor.(*ProductionExecutor); ok && production != nil {
+		production.allowProjectClient = true
+	}
+	return executor, err
 }
 
 // NewProductionExecutorWithQueryServiceConfig is the production runtime
@@ -110,6 +117,54 @@ func newProductionExecutorWithQueryServiceConfig(conceptCache *cache.Cache, prov
 }
 
 func (e *ProductionExecutor) Execute(ctx context.Context, reader cache.Reader, request query.Request) (query.Result, error) {
+	if e == nil {
+		return query.Result{}, errors.New("production Query runtime is unavailable")
+	}
+	if e.allowProjectClient {
+		if projectClient, ok := llm.ProjectChatClientFromContext(ctx); ok {
+			return e.executeWithProjectClient(ctx, reader, request, projectClient)
+		}
+	}
+	return e.execute(ctx, reader, request)
+}
+
+func (e *ProductionExecutor) executeWithProjectClient(ctx context.Context, reader cache.Reader, request query.Request, projectClient llm.ProjectChatClient) (query.Result, error) {
+	if e == nil || e.queryRetrievalPipeline == nil || projectClient == nil {
+		return query.Result{}, errors.New("project Query runtime is unavailable")
+	}
+	modelIdentity, ok := projectClient.ModelIdentity()
+	if !ok || strings.TrimSpace(modelIdentity.Provider) == "" || strings.TrimSpace(modelIdentity.Model) == "" {
+		return query.Result{}, errors.New("project LLM profile identity is unavailable")
+	}
+	pipeline := *e.queryRetrievalPipeline
+	expander, err := NewParallelMinimalStructuredPlanExpanderWithPrompt(projectClient, NewDeterministicExpander(), pipeline.options, pipeline.prompt.ID)
+	if err != nil {
+		return query.Result{}, err
+	}
+	pipeline.queryExpander = expander
+	identity := e.identity
+	if contextual, exists := query.RuntimeConfigIdentityFromContext(ctx); exists {
+		identity = contextual
+	}
+	identity.ExpansionProvider, identity.ExpansionModel = modelIdentity.Provider, modelIdentity.Model
+	identity.ExpansionReasoning, identity.ExpansionTemperature = modelIdentity.Reasoning, modelIdentity.Temperature
+	identity.SynthesisProvider, identity.SynthesisModel = modelIdentity.Provider, modelIdentity.Model
+	identity.SynthesisReasoning, identity.SynthesisTemperature = modelIdentity.Reasoning, modelIdentity.Temperature
+	if profileIdentity, ok := projectClient.(llm.ProfileIdentityProvider); ok {
+		profile := profileIdentity.ProfileIdentity()
+		identity.LLMProfileID, identity.LLMProfileRevision, identity.LLMProtocol = profile.ID, profile.Revision, profile.Protocol
+	}
+	ctx = query.WithRuntimeConfigIdentity(ctx, identity)
+	projectExecutor := &ProductionExecutor{
+		queryRetrievalPipeline: &pipeline,
+		synthesizer:            query.NewProjectService(pipeline.cache, projectClient),
+		identity:               identity,
+		allowLegacyFallback:    false,
+	}
+	return projectExecutor.execute(ctx, reader, request)
+}
+
+func (e *ProductionExecutor) execute(ctx context.Context, reader cache.Reader, request query.Request) (query.Result, error) {
 	receiptCtx := ctx
 	receipt := query.ReceiptRecorderFromContext(ctx)
 	if receipt == nil {
@@ -120,7 +175,7 @@ func (e *ProductionExecutor) Execute(ctx context.Context, reader cache.Reader, r
 	if contextual, ok := query.RuntimeConfigIdentityFromContext(ctx); ok {
 		identity = contextual
 	}
-	if identity.ProfileID != "" {
+	if hasRuntimeConfigIdentity(identity) {
 		receipt.SetRuntimeConfigIdentity(identity)
 	}
 	result, err := e.queryRetrievalPipeline.Execute(receiptCtx, reader, request)
@@ -128,7 +183,7 @@ func (e *ProductionExecutor) Execute(ctx context.Context, reader cache.Reader, r
 		var expansionErr *ExpansionError
 		if request.Profile == nil && e.allowLegacyFallback && errors.As(err, &expansionErr) && ctx.Err() == nil {
 			result, err = e.legacy.Execute(receiptCtx, reader, request)
-			if err == nil && identity.ProfileID != "" {
+			if err == nil && hasRuntimeConfigIdentity(identity) {
 				result.RuntimeConfigIdentity = query.CloneRuntimeConfigIdentity(&identity)
 			}
 			return result, err
@@ -142,8 +197,12 @@ func (e *ProductionExecutor) Execute(ctx context.Context, reader cache.Reader, r
 			return query.Result{}, err
 		}
 	}
-	if identity.ProfileID != "" {
+	if hasRuntimeConfigIdentity(identity) {
 		result.RuntimeConfigIdentity = query.CloneRuntimeConfigIdentity(&identity)
 	}
 	return result, nil
+}
+
+func hasRuntimeConfigIdentity(identity query.RuntimeConfigIdentity) bool {
+	return identity.ProfileID != "" || identity.LLMProfileID != ""
 }

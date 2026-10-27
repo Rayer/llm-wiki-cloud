@@ -288,6 +288,14 @@ func (r *ReceiptRecorder) StartCallAtContext(ctx context.Context, stageName, mod
 	return r.startHostCallWithContext(ctx, stageName, u.Scheme, u.Hostname(), "deepseek", model, reasoning)
 }
 
+func (r *ReceiptRecorder) StartProfileCallAtContext(ctx context.Context, provider, stageName, model, rawURL string) func(string, string, time.Time) {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Scheme == "" || u.Hostname() == "" {
+		return func(string, string, time.Time) {}
+	}
+	return r.startHostCallWithContext(ctx, stageName, u.Scheme, u.Hostname(), provider, model, "")
+}
+
 func (r *ReceiptRecorder) StartHostCall(stage, scheme, host string) func(string) {
 	return r.startHostCall(stage, scheme, host, "gcs", "", "")
 }

@@ -36,24 +36,30 @@ import (
 )
 
 type workerConfig struct {
-	VaultPath             string
-	Bucket                string
-	DataDir               string
-	UserID                string
-	ProjectID             string
-	LocalCloudScope       string
-	ExecutionID           string
-	PipelineReservationID string
-	APIKey                string
-	InitVault             bool
-	Postprocess           bool
-	StopOnError           bool
-	Workspace             bool
-	WorkspaceDir          string
-	PipelineConfigPath    string
-	PipelineBindingsPath  string
-	SuppressOutput        bool
-	SuggestedQueries      bool
+	VaultPath               string
+	Bucket                  string
+	DataDir                 string
+	UserID                  string
+	ProjectID               string
+	LocalCloudScope         string
+	ExecutionID             string
+	PipelineReservationID   string
+	APIKey                  string
+	InitVault               bool
+	Postprocess             bool
+	StopOnError             bool
+	Workspace               bool
+	WorkspaceDir            string
+	PipelineConfigPath      string
+	PipelineBindingsPath    string
+	ProfileResolverURL      string
+	ProfileResolverAudience string
+	ProfileCandidates       []pipelineLLMProfile
+	ActiveLLMProfile        *pipelineLLMProfile
+	SharedProfilePool       bool
+	QuotaMarkerPath         string
+	SuppressOutput          bool
+	SuggestedQueries        bool
 	// CleanRebuild skips materializing prior generation outputs (wiki/.synto/
 	// cache artifacts) so Synto cold-starts from raw only. Default false.
 	CleanRebuild             bool
@@ -351,6 +357,8 @@ func runWorkerBatch(ctx context.Context, cfg workerConfig, rawCommands string) (
 	ctx, attempt := observability.StartWorkerAttemptSpan(ctx, "pipeline.worker")
 	defer func() { observability.FinishPipelineSpan(attempt, workerTraceOutcome(runErr)) }()
 	cfg = configFromEnvironment(cfg)
+	cfg.ProfileResolverURL = envOr("LWC_PROFILE_RESOLVER_URL", cfg.ProfileResolverURL)
+	cfg.ProfileResolverAudience = envOr("LWC_PROFILE_RESOLVER_AUDIENCE", cfg.ProfileResolverAudience)
 	_, validation := observability.StartWorkerSpan(ctx, "pipeline.worker.validate")
 	validationFinished := false
 	defer func() {
@@ -380,6 +388,31 @@ func runWorkerBatch(ctx context.Context, cfg workerConfig, rawCommands string) (
 	}
 	if err := validateWorkerInput(cfg, commands); err != nil {
 		return annotateError(errWorkerInputInvalid, err)
+	}
+	if cfg.PipelineReservationID != "" {
+		if cfg.ProfileResolverURL == "" {
+			return errors.New("Pipeline profile resolver is unavailable")
+		}
+		profiles, shared, resolveErr := resolvePipelineLLMProfiles(ctx, cfg)
+		if resolveErr != nil {
+			return errors.New("Project LLM source is unavailable to Pipeline")
+		}
+		cfg.ProfileCandidates, cfg.SharedProfilePool = profiles, shared
+		defer func() {
+			for i := range cfg.ProfileCandidates {
+				clear(cfg.ProfileCandidates[i].APIKey)
+			}
+		}()
+		if shared && len(profiles) > 1 {
+			marker, markerErr := os.CreateTemp("", "lwc-profile-quota-*")
+			if markerErr != nil {
+				return errors.New("Pipeline quota marker is unavailable")
+			}
+			cfg.QuotaMarkerPath = marker.Name()
+			_ = marker.Close()
+			_ = os.Remove(cfg.QuotaMarkerPath)
+			defer os.Remove(cfg.QuotaMarkerPath)
+		}
 	}
 	if cfg.Bucket != "" && (cfg.VaultPath != "" || cfg.DataDir != "" || cfg.Workspace) {
 		return errWorkerConfigInvalid
@@ -639,8 +672,9 @@ func runWorkerBatchWorkspace(ctx context.Context, cfg workerConfig, commands [][
 		if err != nil {
 			return err
 		}
-		defer localWorkspaceBatchHooks.removeWorkspace(workspace)
-		return localWorkspaceBatchHooks.runWorkerBatchAtVault(ctx, cfg, commands, workspace)
+		defer func() { _ = localWorkspaceBatchHooks.removeWorkspace(workspace) }()
+		workspace, err = runWorkerBatchAtVaultWithProfilePool(ctx, cfg, commands, vault, workspace, nil, false)
+		return err
 	}
 	if !startsWithFullOLWRun(commands) {
 		return errors.New("workspace mode requires the Synto run command before recording ingestion receipts")
@@ -699,7 +733,7 @@ func runWorkerBatchWorkspace(ctx context.Context, cfg workerConfig, commands [][
 	if err := localWorkspaceBatchHooks.materializeSnapshots(workspace, snapshots); err != nil {
 		return preserveWorkerFailure(err, failureStageInputMaterialization, failureClassUnknown)
 	}
-	err = localWorkspaceBatchHooks.runWorkerBatchAtVault(ctx, cfg, commands, workspace)
+	workspace, err = runWorkerBatchAtVaultWithProfilePool(ctx, cfg, commands, vault, workspace, snapshots, true)
 	if err != nil {
 		failure := preserveWorkerFailure(err, failureStageSyntoRun, failureClassUnknown)
 		if recordErr := recordFailure(vault, snapshots, failure); recordErr != nil {
@@ -977,6 +1011,25 @@ func prepareOLWEnvironment(cfg workerConfig) ([]string, error) {
 	if strings.TrimSpace(cfg.APIKey) != "" {
 		env = append(env, "SYNTO_API_KEY="+cfg.APIKey, "DEEPSEEK_API_KEY="+cfg.APIKey)
 	}
+	if cfg.ActiveLLMProfile != nil {
+		profile, err := json.Marshal(struct {
+			ID       string       `json:"id"`
+			Revision int64        `json:"revision"`
+			Provider string       `json:"provider"`
+			Protocol llm.Protocol `json:"protocol"`
+			Endpoint string       `json:"endpoint"`
+			Model    string       `json:"model"`
+		}{cfg.ActiveLLMProfile.ID, cfg.ActiveLLMProfile.Revision, cfg.ActiveLLMProfile.Provider, cfg.ActiveLLMProfile.Protocol, cfg.ActiveLLMProfile.Endpoint, cfg.ActiveLLMProfile.Model})
+		if err != nil {
+			return nil, errors.New("serialize Pipeline profile selection")
+		}
+		env = append(env, "LWC_PROFILE_CONFIG="+string(profile), "LWC_PROFILE_API_KEY="+string(cfg.ActiveLLMProfile.APIKey))
+		clear(profile)
+	}
+	if cfg.QuotaMarkerPath != "" {
+		env = append(env, "LWC_PROFILE_QUOTA_MARKER_PATH="+cfg.QuotaMarkerPath)
+	}
+	env = append(env, profileFixtureEnvironment()...)
 	return env, nil
 }
 
@@ -1015,7 +1068,7 @@ func runOLWBatch(ctx context.Context, vault string, commands [][]string, stopOnE
 var syntoExecutionAdapter string
 
 func execOLWCommand(ctx context.Context, vault string, command []string, env []string, stdout, stderr io.Writer) error {
-	cmd := exec.CommandContext(ctx, "python3", append([]string{"-c", syntoExecutionAdapter}, command...)...)
+	cmd := exec.CommandContext(ctx, "python3", append([]string{"-c", profileFixtureScript(syntoExecutionAdapter)}, command...)...)
 	cmd.Dir = vault
 	cmd.Env = allowlistedSyntoEnvironment(env)
 	cmd.Stdout = stdout
@@ -1034,7 +1087,9 @@ func allowlistedSyntoEnvironment(extra []string) []string {
 			continue
 		}
 		switch key {
-		case "XDG_CONFIG_HOME", "SYNTO_API_KEY", "DEEPSEEK_API_KEY", "LWC_PROFILE_SCHEMA_PATH", "LWC_PROFILE_GUIDANCE":
+		case "XDG_CONFIG_HOME", "SYNTO_API_KEY", "DEEPSEEK_API_KEY", "LWC_PROFILE_SCHEMA_PATH", "LWC_PROFILE_GUIDANCE",
+			"LWC_PROFILE_CONFIG", "LWC_PROFILE_API_KEY", "LWC_PROFILE_QUOTA_MARKER_PATH",
+			"LWC_PROFILE_FIXTURE_TRANSPORT", "LWC_PROFILE_FIXTURE_RECEIPT_FILE":
 			env = append(env, item)
 		}
 	}
@@ -1258,6 +1313,11 @@ func logSecrets(cfg workerConfig) []string {
 // they cannot disable redaction or validation by sheer size.
 func diagnosticSecrets(cfg workerConfig, _ [][]string) []string {
 	values := []string{cfg.APIKey}
+	for _, profile := range cfg.ProfileCandidates {
+		if len(profile.APIKey) > 0 {
+			values = append(values, string(profile.APIKey))
+		}
+	}
 	if cfg.apiKeySet {
 		return values
 	}

@@ -1041,6 +1041,57 @@ func TestRunPrepareRendersOnlyThePreparedProjection(t *testing.T) {
 	clear(private.LocalAPIKey)
 }
 
+func TestRealPklLocalPipelinePrepareKeepsEnvironmentKeyPrivate(t *testing.T) {
+	realPKL := strings.TrimSpace(os.Getenv("PKL_BIN"))
+	if realPKL == "" {
+		var err error
+		realPKL, err = exec.LookPath("pkl")
+		if err != nil {
+			t.Fatalf("Pkl is required for local Pipeline prepare acceptance: %v", err)
+		}
+	}
+	if _, err := os.Stat(realPKL); err != nil {
+		t.Fatalf("configured Pkl binary is unavailable: %v", err)
+	}
+	repoRoot, err := filepath.Abs(filepath.Join("..", "..", "..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const payload = "TEST_ONLY_LOCAL_ENV_PIPELINE_KEY"
+	output := t.TempDir()
+	t.Setenv("LWC_REPOSITORY_ROOT", repoRoot)
+	t.Setenv("PKL_BIN", realPKL)
+	t.Setenv("PKL_CACHE_DIR", "")
+	t.Setenv("LWC_PIPELINE_RUN_TIMEOUT_SECONDS", "23")
+	t.Setenv("LWC_PIPELINE_LOCAL_SECRET_VERSION_RESOURCE", "")
+	t.Setenv("LLM_API_KEY", payload)
+	t.Setenv("DEEPSEEK_API_KEY", "")
+	if err := runPrepare(context.Background(), "local", output, func(context.Context) (secretReader, error) {
+		return nil, errors.New("environment-backed local secret must not initialize Secret Manager")
+	}); err != nil {
+		t.Fatalf("runPrepare() with environment-backed local Pipeline key: %v", err)
+	}
+	for _, name := range []string{"pipeline.json", "synto.toml"} {
+		data, err := os.ReadFile(filepath.Join(output, name))
+		if err != nil || strings.Contains(string(data), payload) {
+			t.Fatalf("public %s contains the local key: err=%v", name, err)
+		}
+	}
+	privateInfo, err := os.Stat(filepath.Join(output, "private-bindings.json"))
+	if err != nil || privateInfo.Mode().Perm() != 0o600 {
+		t.Fatalf("private bindings permissions do not match 0600: err=%v", err)
+	}
+	privateBytes, err := os.ReadFile(filepath.Join(output, "private-bindings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var private privateBindings
+	if err := json.Unmarshal(privateBytes, &private); err != nil || private.Environment != "local" || string(private.LocalAPIKey) != payload {
+		t.Fatalf("private local Pipeline binding env=%q key length=%d err=%v", private.Environment, len(private.LocalAPIKey), err)
+	}
+	clear(private.LocalAPIKey)
+}
+
 func TestGoogleSecretManagerSDKAccessPath(t *testing.T) {
 	const resource = "projects/test-project/secrets/test-secret/versions/11"
 	const payload = "TEST_ONLY_SDK_PAYLOAD"

@@ -485,7 +485,7 @@ func (h *Handler) callMCPQuery(ctx context.Context, _ *mcp.CallToolRequest, inpu
 	if err != nil {
 		return fail("profile_resolution", err, reader)
 	}
-	response, runtimeIdentity, failure := h.executeQuery(ctx, reader, profile, query.Request{Query: queryText, Mode: mode})
+	response, runtimeIdentity, failure := h.executeQuery(ctx, reader, profile, query.Request{Query: queryText, Mode: mode}, identity.userID, identity.projectID)
 	if failure != nil {
 		diagnostic.fail(failure)
 		toolIsError = true

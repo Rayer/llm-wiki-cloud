@@ -49,6 +49,7 @@ type Config struct {
 	WorkDir              string
 	PipelineConfigPath   string
 	PipelineBindingsPath string
+	ProfileResolverURL   string
 }
 
 type Manager struct {
@@ -1107,16 +1108,17 @@ func newWorkerCommand(cfg Config, executionID, userID, projectID, stage string, 
 	cmd := exec.Command(cfg.Worker, args...)
 	cmd.Dir = cfg.WorkDir
 	overrides := map[string]string{
-		"GCP_PROJECT":             cfg.Project,
-		"GOOGLE_CLOUD_PROJECT":    cfg.Project,
-		"BUCKET":                  cfg.Bucket,
-		"FIRESTORE_DATABASE_ID":   cfg.Database,
-		"LOCAL_CLOUD_SCOPE":       cfg.Scope,
-		"USER_ID":                 userID,
-		"PROJECT_ID":              projectID,
-		"EXECUTION_ID":            executionID,
-		"PIPELINE_RESERVATION_ID": reservationID,
-		"CLEAN_REBUILD":           fmt.Sprintf("%t", cleanRebuild),
+		"GCP_PROJECT":              cfg.Project,
+		"GOOGLE_CLOUD_PROJECT":     cfg.Project,
+		"BUCKET":                   cfg.Bucket,
+		"FIRESTORE_DATABASE_ID":    cfg.Database,
+		"LOCAL_CLOUD_SCOPE":        cfg.Scope,
+		"USER_ID":                  userID,
+		"PROJECT_ID":               projectID,
+		"EXECUTION_ID":             executionID,
+		"PIPELINE_RESERVATION_ID":  reservationID,
+		"LWC_PROFILE_RESOLVER_URL": cfg.ProfileResolverURL,
+		"CLEAN_REBUILD":            fmt.Sprintf("%t", cleanRebuild),
 		// Always replace inherited carrier values, including with empty values,
 		// so a worker cannot accidentally inherit another request's origin.
 		"LWC_TRACEPARENT": traceParent,
