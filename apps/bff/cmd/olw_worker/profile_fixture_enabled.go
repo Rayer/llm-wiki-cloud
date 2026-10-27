@@ -14,6 +14,12 @@ func profileFixtureEnvironment() []string {
 	if receipt := os.Getenv("LWC_BYOK_PROFILE_FIXTURE_RECEIPT_FILE"); receipt != "" {
 		env = append(env, "LWC_PROFILE_FIXTURE_RECEIPT_FILE="+receipt)
 	}
+	if model := os.Getenv("LWC_BYOK_PROFILE_FIXTURE_QUOTA_MODEL"); model != "" {
+		env = append(env, "LWC_PROFILE_FIXTURE_QUOTA_MODEL="+model)
+	}
+	if after := os.Getenv("LWC_BYOK_PROFILE_FIXTURE_QUOTA_AFTER"); after != "" {
+		env = append(env, "LWC_PROFILE_FIXTURE_QUOTA_AFTER="+after)
+	}
 	return env
 }
 
@@ -31,6 +37,8 @@ import os as _lwc_fixture_os
 import re as _lwc_fixture_re
 import socket as _lwc_fixture_socket
 import time as _lwc_fixture_time
+
+_lwc_fixture_generation_calls = {}
 
 def _lwc_fixture_record(protocol, model, path):
     receipt = _lwc_fixture_os.environ.get("LWC_PROFILE_FIXTURE_RECEIPT_FILE", "")
@@ -72,7 +80,11 @@ def _lwc_fixture_response(request):
         body = _lwc_fixture_json.loads(request.content or b"{}")
     except Exception:
         return _lwc_fixture_httpx.Response(400, json={"error": {"message": "invalid fixture request"}})
-    model = body.get("model") or "fixture-embedding-model"
+    try:
+        selected = _lwc_fixture_json.loads(_lwc_fixture_os.environ.get("LWC_PROFILE_CONFIG", "{}"))
+    except Exception:
+        selected = {}
+    model = body.get("model") or selected.get("model") or "fixture-embedding-model"
     if request.url.host == "fixture.example" and request.url.path.endswith("/models"):
         _lwc_fixture_record("openai_models_healthcheck", model, request.url.path)
         return _lwc_fixture_httpx.Response(200, json={"object": "list", "data": []})
@@ -81,6 +93,14 @@ def _lwc_fixture_response(request):
         return _lwc_fixture_httpx.Response(200, json={"object": "list", "data": [{"object": "embedding", "index": 0, "embedding": [0.0, 0.1, 0.2, 0.3]}], "model": model, "usage": {"prompt_tokens": 1, "total_tokens": 1}})
     if request.url.host != "fixture.example" or not request.url.path.endswith("/chat/completions"):
         return _lwc_fixture_httpx.Response(502, json={"error": {"message": "fixture has no route for this endpoint"}})
+    if request.method == "POST":
+        call_number = _lwc_fixture_generation_calls.get(model, 0) + 1
+        _lwc_fixture_generation_calls[model] = call_number
+        quota_model = _lwc_fixture_os.environ.get("LWC_PROFILE_FIXTURE_QUOTA_MODEL", "")
+        quota_after = int(_lwc_fixture_os.environ.get("LWC_PROFILE_FIXTURE_QUOTA_AFTER", "0"))
+        if model == quota_model and call_number > quota_after:
+            _lwc_fixture_record("openai_chat_completions_quota", model, request.url.path)
+            return _lwc_fixture_httpx.Response(429, headers={"Retry-After": "61"}, json={"error": {"code": "insufficient_quota", "message": "fixture quota"}})
     _lwc_fixture_record("openai_chat_completions", model, request.url.path)
     content = _lwc_fixture_content(body)
     return _lwc_fixture_httpx.Response(200, json={"id": "synthetic-pipeline-fixture", "object": "chat.completion", "created": 1, "model": model, "choices": [{"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}})

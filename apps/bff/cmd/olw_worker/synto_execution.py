@@ -130,7 +130,9 @@ if _profile_raw:
 
     def _send_with_profile_call_success_marker(self, request, *args, **kwargs):
         response = _profile_httpx_send(self, request, *args, **kwargs)
-        if request.url.host.rstrip(".").lower() == _profile_host and 200 <= response.status_code < 300:
+        # Synto checks GET /models before inference; health reads are not generated work.
+        if (request.url.host.rstrip(".").lower() == _profile_host
+                and request.method.upper() != "GET" and 200 <= response.status_code < 300):
             _mark_profile_call_success()
         return response
 

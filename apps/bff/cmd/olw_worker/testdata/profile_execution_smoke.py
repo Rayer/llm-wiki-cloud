@@ -80,6 +80,8 @@ def exercise_protocol(protocol):
 
         def capture(request):
             seen.append(request)
+            if request.method == "GET":
+                return httpx.Response(200, json={"object": "list", "data": []})
             if anthropic:
                 return httpx.Response(200, json={
                     "id": "msg_fixture", "model": profile["model"],
@@ -95,11 +97,14 @@ def exercise_protocol(protocol):
         default_headers = dict(endpoint.client._client.headers)
         endpoint.client._client.close()
         endpoint.client._client = httpx.Client(headers=default_headers, transport=httpx.MockTransport(capture))
+        endpoint.client.require_healthy()
+        assert not success_marker.exists(), "read-only health check incorrectly marked generated work"
+        print(f"PASS pinned Synto {protocol} healthcheck leaves success marker unset")
         answer = endpoint.client.generate("Synthetic profile protocol probe", model=endpoint.model, options=endpoint.options)
         assert answer == "fixture answer", answer
         assert success_marker.is_file() and success_marker.stat().st_size == 0
-        assert len(seen) == 1, seen
-        request = seen[0]
+        assert len(seen) == 2 and seen[0].method == "GET" and seen[1].method == "POST", seen
+        request = seen[1]
         payload = json.loads(request.content)
         if anthropic:
             assert request.url.path == "/v1/messages", request.url
@@ -159,13 +164,17 @@ def exercise_quota(code, expected_marker):
             router = build_router(config)
             endpoint = router.endpoint("heavy")
 
-            def quota_response(_request):
+            def quota_response(request):
+                if request.method == "GET":
+                    return httpx.Response(200, json={"object": "list", "data": []})
                 return httpx.Response(429, headers={"Retry-After": "61"}, json={"error": {"code": code, "message": "fixture"}})
 
             default_headers = dict(endpoint.client._client.headers)
             endpoint.client._client.close()
             endpoint.client._client = httpx.Client(headers=default_headers, transport=httpx.MockTransport(quota_response))
             try:
+                endpoint.client.require_healthy()
+                assert not success_marker.exists(), "read-only health check incorrectly marked generated work"
                 endpoint.client.generate("Synthetic quota probe", model=endpoint.model, options=endpoint.options)
             except LLMError:
                 pass
