@@ -51,7 +51,7 @@ export function ProjectLLMSourcePanel({ projectId, ownerId, sessionEpoch, compac
 
   useEffect(() => {
     if (!allowPersonalProfiles || !newlyCreatedProfile || !current || current.profiles.some((profile) => profile.id === newlyCreatedProfile.id)) return;
-    const preserveDraft = dirty;
+    const preserveDraft = dirty && draftSource === 'personal' && Boolean(draftProfileId);
     queueMicrotask(() => {
       setLoaded({ ...current, profiles: [...current.profiles, newlyCreatedProfile] });
       if (!preserveDraft) {
