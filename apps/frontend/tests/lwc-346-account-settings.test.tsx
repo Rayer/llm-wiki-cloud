@@ -17,11 +17,12 @@ const mocks = vi.hoisted(() => ({
   changeAccountPassword: vi.fn(),
   locale: 'en' as 'en' | 'zh-TW',
   accessToken: 'web-access-token',
+  userID: 'owner-1',
   refreshAccessToken: vi.fn(),
 }));
 
 vi.mock('@/lib/auth', () => ({
-  useAuth: () => ({ accessToken: mocks.accessToken, refreshAccessToken: mocks.refreshAccessToken, user: { id: 'owner-1', email: 'owner@example.test' } }),
+  useAuth: () => ({ accessToken: mocks.accessToken, refreshAccessToken: mocks.refreshAccessToken, user: { id: mocks.userID, email: 'owner@example.test' } }),
 }));
 vi.mock('@/components/WorkspaceProvider', () => ({ useWorkspace: () => ({ currentProject: null }) }));
 vi.mock('@/lib/i18n', async () => {
@@ -37,10 +38,14 @@ vi.mock('@/lib/google-auth', async () => {
   const actual = await vi.importActual<typeof import('@/lib/google-auth')>('@/lib/google-auth');
   return { ...actual, readGoogleIdentitySummary: mocks.readGoogleIdentitySummary };
 });
-vi.mock('@/lib/account-password', () => ({
-  readPasswordSelfServiceStatus: mocks.readPasswordSelfServiceStatus,
-  changeAccountPassword: mocks.changeAccountPassword,
-}));
+vi.mock('@/lib/account-password', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/account-password')>('@/lib/account-password');
+  return {
+    ...actual,
+    readPasswordSelfServiceStatus: mocks.readPasswordSelfServiceStatus,
+    changeAccountPassword: mocks.changeAccountPassword,
+  };
+});
 vi.mock('@/lib/cli-auth', async () => {
   const actual = await vi.importActual<typeof import('@/lib/cli-auth')>('@/lib/cli-auth');
   return {
@@ -54,6 +59,7 @@ vi.mock('@/lib/cli-auth', async () => {
 });
 
 import { AccountSettingsModal } from '@/components/AccountSettingsModal';
+import { PasswordSelfServiceError } from '@/lib/account-password';
 
 const session = { id: 'session-1', client_name: 'lwc-sync CLI', status: 'active', created_at: '2026-09-24T00:00:00Z', updated_at: '2026-09-24T00:00:00Z' };
 const binding = { binding_id: 'binding-1', host: 'https://auth.example.test', wiki_id: 'wiki-1', project_id: 'project-1', authorized_by: 'owner-1', status: 'active', created_at: '2026-09-24T00:00:00Z', updated_at: '2026-09-24T00:00:00Z' };
@@ -61,6 +67,7 @@ const getParagraph = (text: string) => screen.getByText((_content, element) => e
 
 beforeEach(() => {
   mocks.locale = 'en';
+  mocks.userID = 'owner-1';
   mocks.listCLISessions.mockReset().mockResolvedValue([session]);
   mocks.listSyncBindings.mockReset().mockResolvedValue([binding]);
   mocks.revokeCLISession.mockReset().mockResolvedValue(undefined);
@@ -87,7 +94,9 @@ describe('LWC-346 account self-service', () => {
     }));
     render(<AccountSettingsModal onClose={vi.fn()} />);
 
-    fireEvent.change(await screen.findByLabelText('New password'), { target: { value: 'first-password-431' } });
+    const newPassword = await screen.findByLabelText('New password');
+    expect(screen.queryByLabelText('Current password')).toBeNull();
+    fireEvent.change(newPassword, { target: { value: 'first-password-431' } });
     fireEvent.change(screen.getByLabelText('Confirm new password'), { target: { value: 'first-password-431' } });
     fireEvent.click(screen.getByRole('button', { name: 'Set password' }));
 
@@ -95,7 +104,73 @@ describe('LWC-346 account self-service', () => {
       'web-access-token', 'first-password-431', 'first-password-431',
     ));
     expect(await screen.findByText('Password updated. You remain signed in.')).not.toBeNull();
-    expect(screen.queryByLabelText('Current password')).toBeNull();
+    expect(screen.getByLabelText('Current password')).not.toBeNull();
+  });
+
+  it('requires and sends the current password for configured accounts, then clears password fields on success', async () => {
+    render(<AccountSettingsModal onClose={vi.fn()} />);
+
+    const currentPassword = await screen.findByLabelText('Current password') as HTMLInputElement;
+    const newPassword = screen.getByLabelText('New password') as HTMLInputElement;
+    const confirmPassword = screen.getByLabelText('Confirm new password') as HTMLInputElement;
+    fireEvent.change(currentPassword, { target: { value: 'old-password-431' } });
+    fireEvent.change(newPassword, { target: { value: 'new-password-431' } });
+    fireEvent.change(confirmPassword, { target: { value: 'new-password-431' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Change password' }));
+
+    await waitFor(() => expect(mocks.changeAccountPassword).toHaveBeenCalledWith(
+      'web-access-token', 'new-password-431', 'new-password-431', 'old-password-431',
+    ));
+    expect(await screen.findByText('Password updated. You remain signed in.')).not.toBeNull();
+    expect(currentPassword.value).toBe('');
+    expect(newPassword.value).toBe('');
+    expect(confirmPassword.value).toBe('');
+  });
+
+  it.each([
+    ['en', 'Enter your current password to change it.'],
+    ['zh-TW', '請輸入目前密碼以變更密碼。'],
+  ] as const)('shows localized current-password validation in %s', async (locale, message) => {
+    mocks.locale = locale;
+    render(<AccountSettingsModal onClose={vi.fn()} />);
+    const currentPassword = await screen.findByLabelText(locale === 'en' ? 'Current password' : '目前密碼');
+    const form = currentPassword.closest('form');
+    if (!form) throw new Error('password form is missing');
+    fireEvent.submit(form);
+
+    expect(await screen.findByText(message)).not.toBeNull();
+    expect(mocks.changeAccountPassword).not.toHaveBeenCalled();
+  });
+
+  it('localizes a rejected current-password proof in Traditional Chinese', async () => {
+    mocks.locale = 'zh-TW';
+    mocks.changeAccountPassword.mockRejectedValueOnce(new PasswordSelfServiceError('current_password_invalid', 'current password is incorrect'));
+    render(<AccountSettingsModal onClose={vi.fn()} />);
+
+    fireEvent.change(await screen.findByLabelText('目前密碼'), { target: { value: 'wrong-password' } });
+    fireEvent.change(screen.getByLabelText('新密碼'), { target: { value: 'new-password-431' } });
+    fireEvent.change(screen.getByLabelText('確認新密碼'), { target: { value: 'new-password-431' } });
+    fireEvent.click(screen.getByRole('button', { name: '變更密碼' }));
+
+    expect(await screen.findByText('目前密碼不正確，請確認後再試一次。')).not.toBeNull();
+  });
+
+  it('clears password inputs on modal close and account switch', async () => {
+    const onClose = vi.fn();
+    const { rerender } = render(<AccountSettingsModal onClose={onClose} />);
+    const currentPassword = await screen.findByLabelText('Current password') as HTMLInputElement;
+    const newPassword = screen.getByLabelText('New password') as HTMLInputElement;
+    fireEvent.change(currentPassword, { target: { value: 'old-password-431' } });
+    fireEvent.change(newPassword, { target: { value: 'new-password-431' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Close account settings' }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(currentPassword.value).toBe('');
+    expect(newPassword.value).toBe('');
+
+    fireEvent.change(currentPassword, { target: { value: 'another-old-password' } });
+    mocks.userID = 'owner-2';
+    rerender(<AccountSettingsModal onClose={onClose} />);
+    await waitFor(() => expect((screen.getByLabelText('Current password') as HTMLInputElement).value).toBe(''));
   });
 
   it('uses Auth-qualified Demo status to suppress password controls', async () => {
@@ -114,6 +189,7 @@ describe('LWC-346 account self-service', () => {
     ['zh-TW', '無法連結這個 Google 帳號。', 502, { authorization_url: 'javascript:alert(1)' }],
   ] as const)('localizes explicit Google-link fallback reasons in %s without contacting a provider', async (locale, fallback, status, payload) => {
     mocks.locale = locale;
+    mocks.readPasswordSelfServiceStatus.mockResolvedValue({ allowed: true, configured: false });
     const fetchMock = vi.fn().mockResolvedValue({
       ok: status >= 200 && status < 300,
       status,
@@ -131,6 +207,7 @@ describe('LWC-346 account self-service', () => {
 
   it('keeps a backend Google-link message verbatim instead of translating it as a local fallback', async () => {
     mocks.locale = 'zh-TW';
+    mocks.readPasswordSelfServiceStatus.mockResolvedValue({ allowed: true, configured: false });
     const backendMessage = 'Provider returned an unfamiliar refusal.';
     const fetchMock = vi.fn().mockResolvedValue({
       ok: false,
