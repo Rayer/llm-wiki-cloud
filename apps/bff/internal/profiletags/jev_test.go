@@ -10,12 +10,41 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rayer/llm-wiki-bff/internal/llm"
 	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
+
+type projectProfileTagClient struct {
+	answer string
+	model  string
+}
+
+func (c projectProfileTagClient) Chat(context.Context, string, string) (string, error) {
+	return c.answer, nil
+}
+func (c projectProfileTagClient) ChatWithMetadata(context.Context, string, string) (string, string, error) {
+	return c.answer, c.model, nil
+}
+func (projectProfileTagClient) ModelIdentity() (llm.ModelIdentity, bool) {
+	return llm.ModelIdentity{Provider: "custom", Model: "fixture-model"}, true
+}
+
+func TestJevTagEvaluatorUsesResolvedProjectProfile(t *testing.T) {
+	client := projectProfileTagClient{answer: `{"applicable":true,"known":true,"match":false}`, model: "fixture-model"}
+	ctx := llm.WithProjectChatClient(context.Background(), client)
+	evaluator := NewJevEvaluator("")
+	policy := ProviderPolicy{PromptVersion: JevPromptVersion}
+	item := Item{Kind: Concept, StableID: "c1", Content: []byte("explicit project record")}
+	tag := Tag{Definition: "domain", MatchRule: "positive", NonMatchRule: "negative", UnknownRule: "ambiguous"}
+	result, err := evaluator.Evaluate(ctx, item, tag, policy)
+	if err != nil || result.Judgment != NoMatch || result.ReturnedModel != "fixture-model" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}
 
 func TestJevHTTPTransportUsesIndependentExactInputAndFailsClosed(t *testing.T) {
 	exporter := tracetest.NewSpanRecorder()

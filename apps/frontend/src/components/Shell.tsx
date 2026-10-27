@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { usePathname } from 'next/navigation';
-import { Search, FileText, Brain, Activity, Menu, X, ChevronUp, Shield, Pencil, Terminal } from 'lucide-react';
+import { Search, FileText, Brain, Activity, Menu, X, ChevronUp, Shield, Pencil, Terminal, Settings as SettingsIcon, LogOut } from 'lucide-react';
 import { useT } from '@/lib/i18n';
 import { useAuth } from '@/lib/auth';
 import { LoginModal } from './LoginModal';
@@ -53,6 +53,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
   } = useWorkspace();
   const [renameTarget, setRenameTarget] = useState<{ id: string; name: string } | null>(null);
   const [accountSettingsOpen, setAccountSettingsOpen] = useState(false);
+  const [accountSettingsFocusBYOK, setAccountSettingsFocusBYOK] = useState(false);
   const accountSettingsTriggerRef = useRef<HTMLButtonElement>(null);
   const accountSettingsWasOpenRef = useRef(false);
   const [jitAccountId, setJitAccountId] = useState<string | null>(null);
@@ -61,6 +62,17 @@ function ShellContent({ children }: { children: React.ReactNode }) {
     if (accountSettingsWasOpenRef.current && !accountSettingsOpen) accountSettingsTriggerRef.current?.focus();
     accountSettingsWasOpenRef.current = accountSettingsOpen;
   }, [accountSettingsOpen]);
+
+  useEffect(() => {
+    const openAccountSettings = (event: Event) => {
+      if (isDemoSession) return;
+      const focusBYOK = (event as CustomEvent<{ focusBYOK?: boolean }>).detail?.focusBYOK === true;
+      setAccountSettingsFocusBYOK(focusBYOK);
+      setAccountSettingsOpen(true);
+    };
+    window.addEventListener('lwc-open-account-settings', openAccountSettings);
+    return () => window.removeEventListener('lwc-open-account-settings', openAccountSettings);
+  }, [isDemoSession]);
 
   useEffect(() => {
     const onGoogleJITCompleted = (event: Event) => {
@@ -250,7 +262,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
           </div>
 
           <div className="shrink-0 border-t border-white/8 px-3 py-3">
-            <div className="mt-3 flex items-center gap-3">
+            <div className="flex items-center gap-3 px-2">
               <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-emerald-300 to-teal-400 text-xs font-semibold text-zinc-900">
                 {user?.email.slice(0, 1).toUpperCase() ?? 'U'}
               </div>
@@ -258,23 +270,6 @@ function ShellContent({ children }: { children: React.ReactNode }) {
                 <p className="truncate text-sm font-medium text-white">
                   {user?.email ?? 'User'}
                 </p>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  <button
-                    ref={accountSettingsTriggerRef}
-                    type="button"
-                    onClick={() => setAccountSettingsOpen(true)}
-                    className="inline-flex min-h-11 items-center rounded-md border border-white/10 bg-white/5 px-3 text-xs font-medium text-zinc-300 transition hover:bg-white/10 hover:text-white active:bg-white/15 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
-                  >
-                    {t('AccountSettings.title')}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void signOut()}
-                    className="inline-flex min-h-11 items-center rounded-md border border-white/10 bg-white/5 px-3 text-xs font-medium text-zinc-300 transition hover:bg-white/10 hover:text-white active:bg-white/15 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
-                  >
-                    {t('Shell.logout')}
-                  </button>
-                </div>
               </div>
               <button
                 type="button"
@@ -283,6 +278,14 @@ function ShellContent({ children }: { children: React.ReactNode }) {
                 title="Command palette"
               >
                 ⌘K
+              </button>
+            </div>
+            <div className="mt-2 grid gap-0.5">
+              <button ref={accountSettingsTriggerRef} type="button" onClick={() => { setAccountSettingsFocusBYOK(false); setAccountSettingsOpen(true); }} className="flex min-h-11 items-center gap-3 rounded-md px-3 text-sm text-zinc-300 transition hover:bg-white/5 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400">
+                <SettingsIcon className="size-4" aria-hidden="true" />{t('AccountSettings.title')}
+              </button>
+              <button type="button" onClick={() => void signOut()} className="flex min-h-11 items-center gap-3 rounded-md px-3 text-sm text-zinc-300 transition hover:bg-white/5 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400">
+                <LogOut className="size-4" aria-hidden="true" />{t('Shell.logout')}
               </button>
             </div>
           </div>
@@ -348,7 +351,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
           }}
         />
       ) : null}
-      {accountSettingsOpen && token ? <AccountSettingsModal onClose={() => setAccountSettingsOpen(false)} /> : null}
+      {accountSettingsOpen && token ? <AccountSettingsModal onClose={() => setAccountSettingsOpen(false)} focusBYOK={accountSettingsFocusBYOK} /> : null}
       {token ? <ScrollToTopButton /> : null}
       {paletteOpen ? (
         <CommandPalette

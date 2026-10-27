@@ -137,8 +137,10 @@ type bffSourceProjection struct {
 	AuthConsumer                 *runtimeconfig.BFFAuthConsumer `json:"auth_consumer,omitempty"`
 	DeepSeekAPIKeyReference      bffSecretReference             `json:"deepseek_api_key_reference"`
 	TypeSafeAPIKeyReference      *bffSecretReference            `json:"typesafe_api_key_reference"`
+	BYOKCredentialKeyReference   *bffSecretReference            `json:"byok_credential_encryption_key_reference"`
 	ProfileRuntimeAudience       string                         `json:"profile_runtime_audience"`
 	ProfileRuntimeServiceAccount string                         `json:"profile_runtime_service_account"`
+	PipelineWorkerServiceAccount string                         `json:"pipeline_worker_service_account,omitempty"`
 	PipelineSchedule             bffPipelineSchedule            `json:"pipeline_schedule"`
 	LLM                          bffLLM                         `json:"llm"`
 	Query                        bffQuery                       `json:"query"`
@@ -495,9 +497,9 @@ func runPrepareTargetModeAtSource(ctx context.Context, target, environment, outp
 	private := privateBindings{Environment: environment}
 	if secret.Source == "secret-manager" {
 		private.Bindings = []secretBinding{secret}
-		if environment == "local" {
-			private.LocalAPIKey = append([]byte(nil), secretValue...)
-		}
+	}
+	if environment == "local" {
+		private.LocalAPIKey = append([]byte(nil), secretValue...)
 	}
 	privateBytes, err := json.Marshal(private)
 	if err != nil {
@@ -556,7 +558,7 @@ func decodeBFFSourceProjection(data []byte, environment string) (bffSourceProjec
 	} else if sourceVersion == 2 {
 		required = append(required, "jwt_secret_reference")
 	}
-	optional := []string{"registration_enabled", "local", "typesafe_api_key_reference"}
+	optional := []string{"registration_enabled", "local", "typesafe_api_key_reference", "byok_credential_encryption_key_reference", "pipeline_worker_service_account"}
 	if sourceVersion == 2 {
 		optional = append(optional, "auth_consumer")
 	} else if sourceVersion == 3 {
@@ -670,6 +672,11 @@ func validateBFFSourceProjection(p bffSourceProjection, environment string) erro
 			return err
 		}
 	}
+	if p.BYOKCredentialKeyReference != nil {
+		if err := validateBFFSecretReference("byok_credential_encryption_key_reference", *p.BYOKCredentialKeyReference, environment); err != nil {
+			return err
+		}
+	}
 	if environment == "local" {
 		if p.Local == nil || p.ConfigSecretResource != "" || p.GCPProject != "llm-wiki-cloud" ||
 			p.Bucket != "llm-wiki-cloud-local" || p.FirestoreDatabaseID != "llm-wiki-cloud-local" {
@@ -717,6 +724,17 @@ func validateBFFSecretReference(name string, ref bffSecretReference, environment
 		return fmt.Errorf("selected BFF %s source is invalid", name)
 	}
 	return nil
+}
+
+func deploymentCredentialReference(ref bffSecretReference) string {
+	switch ref.Source {
+	case "secret-manager":
+		return strings.TrimSpace(ref.Resource)
+	case "environment":
+		return "environment:" + strings.TrimSpace(ref.EnvName)
+	default:
+		return ""
+	}
 }
 
 func absoluteURL(raw string) bool {
@@ -831,6 +849,21 @@ func prepareBFFRuntimeConfig(ctx context.Context, root, output string, source bf
 			defer clear(typesafe)
 		}
 	}
+	byokEncryptionKey := []byte{}
+	if source.BYOKCredentialKeyReference != nil {
+		reference := *source.BYOKCredentialKeyReference
+		optionalLocalEnvMissing := source.Environment == "local" && reference.Source == "environment" && strings.TrimSpace(os.Getenv(reference.EnvName)) == ""
+		if !optionalLocalEnvMissing {
+			byokEncryptionKey, err = resolveBFFSecret(ctx, "byok_credential_encryption_key", reference, newReader)
+			if err != nil {
+				return err
+			}
+			defer clear(byokEncryptionKey)
+		}
+	}
+	if source.PipelineWorkerServiceAccount != "" && (!pipelineScheduleServiceAccountPattern.MatchString(source.PipelineWorkerServiceAccount) || source.ProfileRuntimeAudience == "") {
+		return errors.New("pipeline_worker_service_account is invalid")
+	}
 	runtimeFile := runtimeconfig.BFFFile{
 		SchemaVersion: source.SchemaVersion, Environment: source.Environment, Target: source.Target,
 		GCPProject: source.GCPProject, Bucket: source.Bucket, FirestoreDatabaseID: source.FirestoreDatabaseID,
@@ -842,9 +875,11 @@ func prepareBFFRuntimeConfig(ctx context.Context, root, output string, source bf
 		PipelineMinNewRaw: source.PipelineMinNewRaw, PipelineDemoUserIDs: source.PipelineDemoUserIDs,
 		AuthSessionEnvironment: source.AuthSessionEnvironment, AuthSessionMigration: source.AuthSessionMigration,
 		RegistrationEnabled: source.RegistrationEnabled, JWTSecret: string(jwt), DeepSeekAPIKey: string(deepseek),
-		AuthConsumer:   source.AuthConsumer,
-		TypeSafeAPIKey: string(typesafe), ProfileRuntimeAudience: source.ProfileRuntimeAudience,
+		DeepSeekAPIKeyReference: deploymentCredentialReference(source.DeepSeekAPIKeyReference),
+		AuthConsumer:            source.AuthConsumer,
+		TypeSafeAPIKey:          string(typesafe), BYOKCredentialEncryptionKey: string(byokEncryptionKey), ProfileRuntimeAudience: source.ProfileRuntimeAudience,
 		ProfileRuntimeServiceAccount: source.ProfileRuntimeServiceAccount,
+		PipelineWorkerServiceAccount: source.PipelineWorkerServiceAccount,
 		PipelineSchedule: runtimeconfig.BFFPipelineSchedule{
 			Cron: source.PipelineSchedule.Cron, Timezone: source.PipelineSchedule.Timezone,
 			Audience: source.PipelineSchedule.Audience, ServiceAccount: source.PipelineSchedule.ServiceAccount,

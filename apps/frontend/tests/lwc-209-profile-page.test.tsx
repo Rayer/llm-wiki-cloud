@@ -55,7 +55,7 @@ describe('LWC-209 Profile route', () => {
   it('renders the selected project Profile on its own page', () => {
     render(<ProfilePage />);
 
-    expect(screen.getByRole('heading', { name: 'Profile' })).toBeDefined();
+    expect(screen.getByRole('heading', { name: 'Project settings' })).toBeDefined();
     expect(screen.getByTestId('profile-panel').textContent).toBe('project-a');
     expect(screen.queryByTestId('project-keys-section')).toBeNull();
     expect(screen.queryByRole('link', { name: 'Agent & MCP' })).toBeNull();
@@ -75,7 +75,7 @@ describe('LWC-209 Profile route', () => {
     localStorage.setItem('locale', 'zh-TW');
     render(<ProfilePage />);
 
-    expect(screen.getByRole('heading', { name: 'Profile' })).toBeDefined();
+    expect(screen.getByRole('heading', { name: '專案設定' })).toBeDefined();
     expect(screen.getByRole('button', { name: '重新命名專案' })).toBeDefined();
     fireEvent.click(screen.getByRole('button', { name: '重新命名專案' }));
     expect(screen.getByRole('dialog', { name: '重新命名專案' })).toBeDefined();

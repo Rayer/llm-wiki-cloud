@@ -14,6 +14,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/rayer/llm-wiki-bff/internal/llm"
 	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"github.com/rayer/llm-wiki-bff/internal/profileartifacts"
 )
@@ -478,7 +479,13 @@ func observeProfilePhase(ctx context.Context, name string, run func() error) err
 
 func chatWithProviderSpan(ctx context.Context, client ChatClient, systemPrompt, userMessage string) (string, string, error) {
 	callCtx, span := observability.StartProfileSpan(ctx, "profile.derive.provider_call")
-	text, model, err := client.ChatWithMetadata(callCtx, systemPrompt, userMessage)
+	selected := client
+	if projectClient, ok := llm.ProjectChatClientFromContext(callCtx); ok {
+		if metadataClient, ok := projectClient.(ChatClient); ok {
+			selected = metadataClient
+		}
+	}
+	text, model, err := selected.ChatWithMetadata(callCtx, systemPrompt, userMessage)
 	outcome := "success"
 	if err != nil {
 		outcome = "failure"

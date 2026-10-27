@@ -36,24 +36,32 @@ import (
 )
 
 type workerConfig struct {
-	VaultPath             string
-	Bucket                string
-	DataDir               string
-	UserID                string
-	ProjectID             string
-	LocalCloudScope       string
-	ExecutionID           string
-	PipelineReservationID string
-	APIKey                string
-	InitVault             bool
-	Postprocess           bool
-	StopOnError           bool
-	Workspace             bool
-	WorkspaceDir          string
-	PipelineConfigPath    string
-	PipelineBindingsPath  string
-	SuppressOutput        bool
-	SuggestedQueries      bool
+	VaultPath                    string
+	Bucket                       string
+	DataDir                      string
+	UserID                       string
+	ProjectID                    string
+	LocalCloudScope              string
+	ExecutionID                  string
+	PipelineReservationID        string
+	APIKey                       string
+	InitVault                    bool
+	Postprocess                  bool
+	StopOnError                  bool
+	Workspace                    bool
+	WorkspaceDir                 string
+	PipelineConfigPath           string
+	PipelineBindingsPath         string
+	ProfileResolverURL           string
+	ProfileResolverAudience      string
+	ProfileCandidates            []pipelineLLMProfile
+	ActiveLLMProfile             *pipelineLLMProfile
+	SharedProfilePool            bool
+	BootstrapLLMSource           bool
+	QuotaMarkerPath              string
+	ProfileCallSuccessMarkerPath string
+	SuppressOutput               bool
+	SuggestedQueries             bool
 	// CleanRebuild skips materializing prior generation outputs (wiki/.synto/
 	// cache artifacts) so Synto cold-starts from raw only. Default false.
 	CleanRebuild             bool
@@ -351,6 +359,8 @@ func runWorkerBatch(ctx context.Context, cfg workerConfig, rawCommands string) (
 	ctx, attempt := observability.StartWorkerAttemptSpan(ctx, "pipeline.worker")
 	defer func() { observability.FinishPipelineSpan(attempt, workerTraceOutcome(runErr)) }()
 	cfg = configFromEnvironment(cfg)
+	cfg.ProfileResolverURL = envOr("LWC_PROFILE_RESOLVER_URL", cfg.ProfileResolverURL)
+	cfg.ProfileResolverAudience = envOr("LWC_PROFILE_RESOLVER_AUDIENCE", cfg.ProfileResolverAudience)
 	_, validation := observability.StartWorkerSpan(ctx, "pipeline.worker.validate")
 	validationFinished := false
 	defer func() {
@@ -380,6 +390,31 @@ func runWorkerBatch(ctx context.Context, cfg workerConfig, rawCommands string) (
 	}
 	if err := validateWorkerInput(cfg, commands); err != nil {
 		return annotateError(errWorkerInputInvalid, err)
+	}
+	if cfg.PipelineReservationID != "" {
+		if cfg.ProfileResolverURL == "" {
+			return errors.New("Pipeline profile resolver is unavailable")
+		}
+		profiles, shared, resolveErr := resolvePipelineLLMProfiles(ctx, cfg)
+		if resolveErr != nil {
+			return errors.New("Project LLM source is unavailable to Pipeline")
+		}
+		cfg.ProfileCandidates, cfg.SharedProfilePool = profiles, shared
+		cfg.BootstrapLLMSource = len(profiles) == 0 && !shared
+		defer func() {
+			for i := range cfg.ProfileCandidates {
+				clear(cfg.ProfileCandidates[i].APIKey)
+			}
+		}()
+		if shared && len(profiles) > 1 {
+			markerDir, markerErr := os.MkdirTemp("", "lwc-profile-pool-markers-*")
+			if markerErr != nil {
+				return errors.New("Pipeline quota marker is unavailable")
+			}
+			cfg.QuotaMarkerPath = filepath.Join(markerDir, "quota")
+			cfg.ProfileCallSuccessMarkerPath = filepath.Join(markerDir, "profile-call-success")
+			defer os.RemoveAll(markerDir)
+		}
 	}
 	if cfg.Bucket != "" && (cfg.VaultPath != "" || cfg.DataDir != "" || cfg.Workspace) {
 		return errWorkerConfigInvalid
@@ -451,6 +486,8 @@ func workerTraceOutcome(err error) string {
 }
 
 func configFromEnvironment(cfg workerConfig) workerConfig {
+	cfg.ProfileResolverURL = envOr("LWC_PROFILE_RESOLVER_URL", cfg.ProfileResolverURL)
+	cfg.ProfileResolverAudience = envOr("LWC_PROFILE_RESOLVER_AUDIENCE", cfg.ProfileResolverAudience)
 	if cfg.LocalCloudScope == "" {
 		cfg.LocalCloudScope = envOr("LOCAL_CLOUD_SCOPE", "")
 	}
@@ -558,10 +595,13 @@ func runWorkerBatchAtVault(ctx context.Context, cfg workerConfig, commands [][]s
 	}
 	if cfg.Postprocess {
 		postCtx, postSpan := observability.StartWorkerSpan(ctx, "pipeline.worker.postprocess")
-		if err := runPostprocessWithProvider(postCtx, vault, suggestedQueryProvider(cfg), stderr); err != nil {
+		provider := suggestedQueryProvider(cfg)
+		if err := runPostprocessWithProvider(postCtx, vault, provider, stderr); err != nil {
+			closeSuggestedQueryProvider(provider)
 			observability.FinishPipelineSpan(postSpan, workerTraceOutcome(err))
 			return preserveWorkerFailure(err, failureStagePostprocess, failureClassIO)
 		}
+		closeSuggestedQueryProvider(provider)
 		observability.FinishPipelineSpan(postSpan, "success")
 	}
 	return nil
@@ -639,8 +679,9 @@ func runWorkerBatchWorkspace(ctx context.Context, cfg workerConfig, commands [][
 		if err != nil {
 			return err
 		}
-		defer localWorkspaceBatchHooks.removeWorkspace(workspace)
-		return localWorkspaceBatchHooks.runWorkerBatchAtVault(ctx, cfg, commands, workspace)
+		defer func() { _ = localWorkspaceBatchHooks.removeWorkspace(workspace) }()
+		workspace, err = runWorkerBatchAtVaultWithProfilePool(ctx, cfg, commands, vault, workspace, nil, false)
+		return err
 	}
 	if !startsWithFullOLWRun(commands) {
 		return errors.New("workspace mode requires the Synto run command before recording ingestion receipts")
@@ -699,7 +740,7 @@ func runWorkerBatchWorkspace(ctx context.Context, cfg workerConfig, commands [][
 	if err := localWorkspaceBatchHooks.materializeSnapshots(workspace, snapshots); err != nil {
 		return preserveWorkerFailure(err, failureStageInputMaterialization, failureClassUnknown)
 	}
-	err = localWorkspaceBatchHooks.runWorkerBatchAtVault(ctx, cfg, commands, workspace)
+	workspace, err = runWorkerBatchAtVaultWithProfilePool(ctx, cfg, commands, vault, workspace, snapshots, true)
 	if err != nil {
 		failure := preserveWorkerFailure(err, failureStageSyntoRun, failureClassUnknown)
 		if recordErr := recordFailure(vault, snapshots, failure); recordErr != nil {
@@ -766,6 +807,19 @@ func runPostprocessCommand(ctx context.Context, cfg workerConfig) (runErr error)
 		observability.FinishPipelineSpan(attempt, workerTraceOutcome(runErr))
 	}()
 	cfg = configFromEnvironment(cfg)
+	if cfg.SuggestedQueries && cfg.suggestedQueriesProvider == nil {
+		var err error
+		cfg, err = resolveSuggestedQueriesSource(ctx, cfg)
+		if err != nil {
+			return err
+		}
+		defer clearPipelineProfileKeys(cfg.ProfileCandidates)
+		cfg.suggestedQueriesProvider, err = newStandaloneSuggestedQueryProvider(ctx, cfg)
+		if err != nil {
+			return err
+		}
+		defer closeSuggestedQueryProvider(cfg.suggestedQueriesProvider)
+	}
 	vault, err := resolveVaultPath(cfg)
 	if err != nil {
 		return err
@@ -826,6 +880,8 @@ func runSuggestedQueriesCommand(ctx context.Context, cfg workerConfig) (runErr e
 		observability.FinishPipelineSpan(attempt, workerTraceOutcome(runErr))
 	}()
 	cfg = configFromEnvironment(cfg)
+	cfg.SuggestedQueries = true
+	var err error
 	if cfg.Bucket != "" {
 		cfg.cloudMode = true
 		if cfg.VaultPath != "" || cfg.DataDir != "" || cfg.Workspace {
@@ -834,11 +890,37 @@ func runSuggestedQueriesCommand(ctx context.Context, cfg workerConfig) (runErr e
 		if err := validateWorkerConfigBounds(cfg); err != nil {
 			return annotateError(errWorkerInputInvalid, err)
 		}
+		if cfg.SuggestedQueries && cfg.suggestedQueriesProvider == nil {
+			cfg, err = resolveSuggestedQueriesSource(ctx, cfg)
+			if err != nil {
+				return err
+			}
+			cfg.suggestedQueriesProvider, err = newStandaloneSuggestedQueryProvider(ctx, cfg)
+			if err != nil {
+				clearPipelineProfileKeys(cfg.ProfileCandidates)
+				return err
+			}
+			defer closeSuggestedQueryProvider(cfg.suggestedQueriesProvider)
+			defer clearPipelineProfileKeys(cfg.ProfileCandidates)
+		}
 		workspaceCtx, workspaceSpan := observability.StartWorkerSpan(ctx, "pipeline.worker.workspace")
-		err := runCloudSuggestedQueries(workspaceCtx, cfg, newCloudObjectStore(cfg.Bucket))
+		err = runCloudSuggestedQueries(workspaceCtx, cfg, newCloudObjectStore(cfg.Bucket))
 		observability.SetPipelinePublicationOutcome(workspaceSpan, cloudSuggestedQueriesPublicationOutcome(err))
 		observability.FinishPipelineSpan(workspaceSpan, workerTraceOutcome(err))
 		return err
+	}
+	if cfg.SuggestedQueries && cfg.suggestedQueriesProvider == nil {
+		cfg, err = resolveSuggestedQueriesSource(ctx, cfg)
+		if err != nil {
+			return err
+		}
+		cfg.suggestedQueriesProvider, err = newStandaloneSuggestedQueryProvider(ctx, cfg)
+		if err != nil {
+			clearPipelineProfileKeys(cfg.ProfileCandidates)
+			return err
+		}
+		defer closeSuggestedQueryProvider(cfg.suggestedQueriesProvider)
+		defer clearPipelineProfileKeys(cfg.ProfileCandidates)
 	}
 	vault, err := resolveVaultPath(cfg)
 	if err != nil {
@@ -977,6 +1059,28 @@ func prepareOLWEnvironment(cfg workerConfig) ([]string, error) {
 	if strings.TrimSpace(cfg.APIKey) != "" {
 		env = append(env, "SYNTO_API_KEY="+cfg.APIKey, "DEEPSEEK_API_KEY="+cfg.APIKey)
 	}
+	if cfg.ActiveLLMProfile != nil {
+		profile, err := json.Marshal(struct {
+			ID       string       `json:"id"`
+			Revision int64        `json:"revision"`
+			Provider string       `json:"provider"`
+			Protocol llm.Protocol `json:"protocol"`
+			Endpoint string       `json:"endpoint"`
+			Model    string       `json:"model"`
+		}{cfg.ActiveLLMProfile.ID, cfg.ActiveLLMProfile.Revision, cfg.ActiveLLMProfile.Provider, cfg.ActiveLLMProfile.Protocol, cfg.ActiveLLMProfile.Endpoint, cfg.ActiveLLMProfile.Model})
+		if err != nil {
+			return nil, errors.New("serialize Pipeline profile selection")
+		}
+		env = append(env, "LWC_PROFILE_CONFIG="+string(profile), "LWC_PROFILE_API_KEY="+string(cfg.ActiveLLMProfile.APIKey))
+		clear(profile)
+	}
+	if cfg.QuotaMarkerPath != "" {
+		env = append(env, "LWC_PROFILE_QUOTA_MARKER_PATH="+cfg.QuotaMarkerPath)
+	}
+	if cfg.ProfileCallSuccessMarkerPath != "" {
+		env = append(env, "LWC_PROFILE_CALL_SUCCESS_MARKER_PATH="+cfg.ProfileCallSuccessMarkerPath)
+	}
+	env = append(env, profileFixtureEnvironment()...)
 	return env, nil
 }
 
@@ -1015,7 +1119,7 @@ func runOLWBatch(ctx context.Context, vault string, commands [][]string, stopOnE
 var syntoExecutionAdapter string
 
 func execOLWCommand(ctx context.Context, vault string, command []string, env []string, stdout, stderr io.Writer) error {
-	cmd := exec.CommandContext(ctx, "python3", append([]string{"-c", syntoExecutionAdapter}, command...)...)
+	cmd := exec.CommandContext(ctx, "python3", append([]string{"-c", profileFixtureScript(syntoExecutionAdapter)}, command...)...)
 	cmd.Dir = vault
 	cmd.Env = allowlistedSyntoEnvironment(env)
 	cmd.Stdout = stdout
@@ -1034,7 +1138,9 @@ func allowlistedSyntoEnvironment(extra []string) []string {
 			continue
 		}
 		switch key {
-		case "XDG_CONFIG_HOME", "SYNTO_API_KEY", "DEEPSEEK_API_KEY", "LWC_PROFILE_SCHEMA_PATH", "LWC_PROFILE_GUIDANCE":
+		case "XDG_CONFIG_HOME", "SYNTO_API_KEY", "DEEPSEEK_API_KEY", "LWC_PROFILE_SCHEMA_PATH", "LWC_PROFILE_GUIDANCE",
+			"LWC_PROFILE_CONFIG", "LWC_PROFILE_API_KEY", "LWC_PROFILE_QUOTA_MARKER_PATH", "LWC_PROFILE_CALL_SUCCESS_MARKER_PATH",
+			"LWC_PROFILE_FIXTURE_TRANSPORT", "LWC_PROFILE_FIXTURE_RECEIPT_FILE", "LWC_PROFILE_FIXTURE_QUOTA_MODEL", "LWC_PROFILE_FIXTURE_QUOTA_AFTER":
 			env = append(env, item)
 		}
 	}
@@ -1258,6 +1364,11 @@ func logSecrets(cfg workerConfig) []string {
 // they cannot disable redaction or validation by sheer size.
 func diagnosticSecrets(cfg workerConfig, _ [][]string) []string {
 	values := []string{cfg.APIKey}
+	for _, profile := range cfg.ProfileCandidates {
+		if len(profile.APIKey) > 0 {
+			values = append(values, string(profile.APIKey))
+		}
+	}
 	if cfg.apiKeySet {
 		return values
 	}
@@ -1395,7 +1506,218 @@ var suggestedQueryProvider = func(cfg workerConfig) suggestedqueries.Provider {
 	if !cfg.SuggestedQueries {
 		return nil
 	}
-	return llm.NewClient(cfg.APIKey)
+	if cfg.BootstrapLLMSource {
+		client := llm.NewClient(cfg.APIKey)
+		if client == nil {
+			return unavailableSuggestedQueryProvider{}
+		}
+		return quotaAwareSuggestedQueryProvider{provider: client}
+	}
+	if cfg.ActiveLLMProfile == nil {
+		return unavailableSuggestedQueryProvider{}
+	}
+	profile := cfg.ActiveLLMProfile
+	client, err := llm.NewProfileClient(llm.ProfileConfig{ID: profile.ID, Revision: profile.Revision, Provider: profile.Provider,
+		Protocol: profile.Protocol, Endpoint: profile.Endpoint, Model: profile.Model}, string(profile.APIKey), llm.ProfileClientOptions{})
+	if err != nil {
+		return unavailableSuggestedQueryProvider{}
+	}
+	return quotaAwareSuggestedQueryProvider{provider: client, markerPath: cfg.QuotaMarkerPath}
+}
+
+type unavailableSuggestedQueryProvider struct{}
+
+func (unavailableSuggestedQueryProvider) Chat(context.Context, string, string) (string, error) {
+	return "", errors.New("Project LLM profile is unavailable")
+}
+
+type quotaAwareSuggestedQueryProvider struct {
+	provider   suggestedqueries.Provider
+	markerPath string
+}
+
+func (p quotaAwareSuggestedQueryProvider) Chat(ctx context.Context, systemPrompt, userMessage string) (string, error) {
+	text, err := p.provider.Chat(ctx, systemPrompt, userMessage)
+	if llm.IsQuotaExhausted(err) && p.markerPath != "" {
+		file, markerErr := os.OpenFile(p.markerPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if markerErr != nil {
+			return "", errors.Join(err, errors.New("shared quota retry marker could not be recorded"))
+		}
+		if closeErr := file.Close(); closeErr != nil {
+			_ = os.Remove(p.markerPath)
+			return "", errors.Join(err, errors.New("shared quota retry marker could not be recorded"))
+		}
+	}
+	return text, err
+}
+
+func (p quotaAwareSuggestedQueryProvider) ModelIdentity() (llm.ModelIdentity, bool) {
+	if identity, ok := p.provider.(llm.ModelIdentityProvider); ok {
+		return identity.ModelIdentity()
+	}
+	return llm.ModelIdentity{}, false
+}
+
+func (p quotaAwareSuggestedQueryProvider) ProfileIdentity() llm.ProfileIdentity {
+	if identity, ok := p.provider.(llm.ProfileIdentityProvider); ok {
+		return identity.ProfileIdentity()
+	}
+	return llm.ProfileIdentity{}
+}
+
+func (p quotaAwareSuggestedQueryProvider) GenerationMetadata() suggestedqueries.GenerationMetadata {
+	return suggestedQueryGenerationMetadata(p.provider)
+}
+
+func (p quotaAwareSuggestedQueryProvider) Close() {
+	closeSuggestedQueryProvider(p.provider)
+}
+
+type suggestedQueryProfileClient interface {
+	suggestedqueries.Provider
+	llm.ModelIdentityProvider
+	llm.ProfileIdentityProvider
+	Close()
+}
+
+var newSuggestedQueryProfileClient = func(profile pipelineLLMProfile) (suggestedQueryProfileClient, error) {
+	return llm.NewProfileClient(llm.ProfileConfig{ID: profile.ID, Revision: profile.Revision, Provider: profile.Provider,
+		Protocol: profile.Protocol, Endpoint: profile.Endpoint, Model: profile.Model}, string(profile.APIKey), llm.ProfileClientOptions{Timeout: 10 * time.Second})
+}
+
+var suggestedQueryProfileResolver = resolvePipelineLLMProfiles
+
+type resolvedSuggestedQueryPool struct {
+	mu        sync.Mutex
+	cfg       workerConfig
+	profiles  []pipelineLLMProfile
+	attempted map[string]struct{}
+	resolver  func(context.Context, workerConfig) ([]pipelineLLMProfile, bool, error)
+	factory   func(pipelineLLMProfile) (suggestedQueryProfileClient, error)
+	model     llm.ModelIdentity
+	profile   llm.ProfileIdentity
+	succeeded bool
+}
+
+func newStandaloneSuggestedQueryProvider(ctx context.Context, cfg workerConfig) (suggestedqueries.Provider, error) {
+	if cfg.suggestedQueriesProvider != nil {
+		return cfg.suggestedQueriesProvider, nil
+	}
+	if !cfg.SuggestedQueries {
+		return nil, nil
+	}
+	if cfg.SharedProfilePool {
+		if len(cfg.ProfileCandidates) == 0 {
+			return nil, errors.New("Project shared LLM pool is unavailable to suggested-query generation")
+		}
+		return &resolvedSuggestedQueryPool{
+			cfg: cfg, profiles: cfg.ProfileCandidates, attempted: make(map[string]struct{}),
+			resolver: suggestedQueryProfileResolver, factory: newSuggestedQueryProfileClient,
+		}, nil
+	}
+	if cfg.BootstrapLLMSource || cfg.ActiveLLMProfile != nil {
+		provider := suggestedQueryProvider(cfg)
+		if _, unavailable := provider.(unavailableSuggestedQueryProvider); unavailable {
+			return nil, errors.New("Project LLM source is unavailable to suggested-query generation")
+		}
+		return provider, nil
+	}
+	return nil, errors.New("Project LLM source is unavailable to suggested-query generation")
+}
+
+func (p *resolvedSuggestedQueryPool) Chat(ctx context.Context, systemPrompt, userMessage string) (string, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var lastQuota error
+	for attempt := 0; attempt < maxPipelineProfileAttempts; attempt++ {
+		selected := -1
+		for index := range p.profiles {
+			if _, tried := p.attempted[p.profiles[index].ID]; !tried {
+				selected = index
+				break
+			}
+		}
+		if selected < 0 {
+			if lastQuota != nil {
+				return "", errors.Join(lastQuota, errors.New("shared suggested-query profile pool exhausted"))
+			}
+			return "", errors.New("shared suggested-query profile pool is unavailable")
+		}
+		profile := p.profiles[selected]
+		client, err := p.factory(profile)
+		if err != nil {
+			return "", err
+		}
+		text, callErr := client.Chat(ctx, systemPrompt, userMessage)
+		if callErr == nil {
+			p.model, _ = client.ModelIdentity()
+			p.profile = client.ProfileIdentity()
+			p.succeeded = true
+		}
+		client.Close()
+		if callErr == nil || !llm.IsQuotaExhausted(callErr) {
+			return text, callErr
+		}
+		lastQuota = callErr
+		p.attempted[profile.ID] = struct{}{}
+		fresh, shared, resolveErr := p.resolver(ctx, p.cfg)
+		if resolveErr != nil {
+			clearPipelineProfileKeys(fresh)
+			return "", errors.Join(callErr, errors.New("shared suggested-query fallback could not revalidate the Project source"))
+		}
+		if !shared {
+			clearPipelineProfileKeys(fresh)
+			return "", errors.Join(callErr, errors.New("Project LLM source changed during shared suggested-query fallback"))
+		}
+		clearPipelineProfileKeys(p.profiles)
+		p.profiles = fresh
+	}
+	return "", errors.New("shared suggested-query profile attempt limit reached")
+}
+
+func (p *resolvedSuggestedQueryPool) ModelIdentity() (llm.ModelIdentity, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.succeeded {
+		return p.model, true
+	}
+	if len(p.profiles) == 0 {
+		return llm.ModelIdentity{}, false
+	}
+	profile := p.profiles[0]
+	return llm.ModelIdentity{Provider: profile.Provider, Model: profile.Model}, true
+}
+
+func (p *resolvedSuggestedQueryPool) ProfileIdentity() llm.ProfileIdentity {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.succeeded {
+		return p.profile
+	}
+	if len(p.profiles) == 0 {
+		return llm.ProfileIdentity{}
+	}
+	profile := p.profiles[0]
+	return llm.ProfileIdentity{ID: profile.ID, Revision: profile.Revision, Provider: profile.Provider, Protocol: string(profile.Protocol), Model: profile.Model}
+}
+
+func (p *resolvedSuggestedQueryPool) GenerationMetadata() suggestedqueries.GenerationMetadata {
+	return suggestedQueryGenerationMetadata(p)
+}
+
+func (p *resolvedSuggestedQueryPool) Close() {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	clearPipelineProfileKeys(p.profiles)
+}
+
+func closeSuggestedQueryProvider(provider suggestedqueries.Provider) {
+	if closer, ok := provider.(interface{ Close() }); ok {
+		closer.Close()
+	}
 }
 
 // runPostprocessWithProvider rebuilds cache/index artifacts, then regenerates
@@ -1512,10 +1834,7 @@ func writeSuggestedQueriesObserved(ctx context.Context, vault string, provider s
 		report("corpus_decode_failed")
 		return fmt.Errorf("decode suggested query concepts: %w", err)
 	}
-	artifact, err := suggestedqueries.Generate(ctx, provider, "", entries, mtimes, suggestedqueries.GenerationMetadata{
-		Model:         suggestedQueryModel,
-		PromptVersion: suggestedqueries.PromptVersion,
-	}, time.Now())
+	artifact, err := suggestedqueries.Generate(ctx, provider, "", entries, mtimes, suggestedQueryGenerationMetadata(provider), time.Now())
 	if err != nil {
 		logicalOutcome = "degraded"
 		category := suggestedFailureCategory(err)
@@ -1526,6 +1845,9 @@ func writeSuggestedQueriesObserved(ctx context.Context, vault string, provider s
 		observability.FinishPipelineSpan(fallbackSpan, workerTraceOutcome(fallbackErr))
 		if fallbackErr != nil {
 			logicalOutcome = workerTraceOutcome(fallbackErr)
+		}
+		if llm.IsQuotaExhausted(err) {
+			return errors.Join(err, fallbackErr)
 		}
 		return fallbackErr
 	}
@@ -1551,6 +1873,31 @@ func suggestedFailureCategory(err error) string {
 		}
 	}
 	return llm.SafeErrorCategory(err)
+}
+
+func suggestedQueryGenerationMetadata(provider suggestedqueries.Provider) suggestedqueries.GenerationMetadata {
+	metadata := suggestedqueries.GenerationMetadata{Model: suggestedQueryModel, PromptVersion: suggestedqueries.PromptVersion}
+	if identityProvider, ok := provider.(llm.ModelIdentityProvider); ok {
+		if identity, valid := identityProvider.ModelIdentity(); valid && strings.TrimSpace(identity.Model) != "" {
+			metadata.Model = identity.Model
+			metadata.Provider = identity.Provider
+		}
+	}
+	if identityProvider, ok := provider.(llm.ProfileIdentityProvider); ok {
+		identity := identityProvider.ProfileIdentity()
+		if strings.TrimSpace(identity.ID) != "" || strings.TrimSpace(identity.Model) != "" {
+			if strings.TrimSpace(identity.Model) != "" {
+				metadata.Model = identity.Model
+			}
+			metadata.ProfileID = identity.ID
+			metadata.ProfileRevision = identity.Revision
+			if strings.TrimSpace(identity.Provider) != "" {
+				metadata.Provider = identity.Provider
+			}
+			metadata.Protocol = identity.Protocol
+		}
+	}
+	return metadata
 }
 
 func ensureEmptySuggestedQueries(ctx context.Context, vault string) error {

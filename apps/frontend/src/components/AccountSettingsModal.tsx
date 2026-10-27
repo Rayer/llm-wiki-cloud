@@ -5,6 +5,10 @@ import { useAuth } from '@/lib/auth';
 import { beginGoogleLink, GoogleAuthError, readGoogleIdentitySummary } from '@/lib/google-auth';
 import { changeAccountPassword, PasswordSelfServiceError, readPasswordSelfServiceStatus, type PasswordSelfServiceAuthContext, type PasswordSelfServiceStatus } from '@/lib/account-password';
 import { useLocale } from '@/lib/i18n';
+import type { LLMProfile } from '@/lib/api';
+import { BYOKProfilesPanel } from './BYOKProfilesPanel';
+import { ProjectLLMSourcePanel } from './ProjectLLMSourcePanel';
+import { useWorkspace } from './WorkspaceProvider';
 import {
   CLIAuthError,
   listCLISessions,
@@ -18,8 +22,12 @@ import {
 
 type AuthSessionSnapshot = { userID: string | null; accessToken: string | null; sessionEpoch: number };
 
-export function AccountSettingsModal({ onClose }: { onClose: () => void }) {
-  const { accessToken, refreshAccessToken, sessionEpoch, user } = useAuth();
+export function AccountSettingsModal({ onClose, focusBYOK = false, onProfileCreated }: {
+  onClose: () => void;
+  focusBYOK?: boolean;
+  onProfileCreated?: (profile: LLMProfile) => void;
+}) {
+  const { accessToken, refreshAccessToken, sessionEpoch, user, isDemoSession } = useAuth();
   const authSessionRef = useRef<AuthSessionSnapshot>({ userID: user?.id ?? null, accessToken, sessionEpoch });
   useLayoutEffect(() => {
     authSessionRef.current = { userID: user?.id ?? null, accessToken, sessionEpoch };
@@ -29,6 +37,9 @@ export function AccountSettingsModal({ onClose }: { onClose: () => void }) {
     <AccountSettingsModalContent
       key={user.id}
       onClose={onClose}
+      focusBYOK={focusBYOK}
+      onProfileCreated={onProfileCreated}
+      isDemoSession={isDemoSession}
       accessToken={accessToken}
       refreshAccessToken={refreshAccessToken}
       sessionEpoch={sessionEpoch}
@@ -40,6 +51,9 @@ export function AccountSettingsModal({ onClose }: { onClose: () => void }) {
 
 function AccountSettingsModalContent({
   onClose,
+  focusBYOK,
+  onProfileCreated,
+  isDemoSession,
   accessToken,
   refreshAccessToken,
   sessionEpoch,
@@ -47,6 +61,9 @@ function AccountSettingsModalContent({
   user,
 }: {
   onClose: () => void;
+  focusBYOK: boolean;
+  onProfileCreated?: (profile: LLMProfile) => void;
+  isDemoSession: boolean;
   accessToken: string | null;
   refreshAccessToken: ReturnType<typeof useAuth>['refreshAccessToken'];
   sessionEpoch: number;
@@ -54,6 +71,7 @@ function AccountSettingsModalContent({
   user: NonNullable<ReturnType<typeof useAuth>['user']>;
 }) {
   const { t } = useLocale();
+  const { projects = [] } = useWorkspace();
   const userID = user.id;
   const [linkOpen, setLinkOpen] = useState(false);
   const [password, setPassword] = useState('');
@@ -76,6 +94,7 @@ function AccountSettingsModalContent({
   const [passwordNotice, setPasswordNotice] = useState('');
   const passwordRef = useRef<HTMLInputElement>(null);
   const mountedRef = useRef(false);
+  const settingsDialogRef = useRef<HTMLDivElement>(null);
 
   const clearPasswordSecrets = useCallback(() => {
     setPassword('');
@@ -182,6 +201,13 @@ function AccountSettingsModalContent({
   useEffect(() => {
     if (linkOpen) passwordRef.current?.focus();
   }, [linkOpen]);
+
+  useEffect(() => {
+    if (!focusBYOK) return;
+    const target = document.getElementById('byok-profiles-heading');
+    target?.scrollIntoView({ block: 'start' });
+    target?.focus();
+  }, [focusBYOK]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -311,6 +337,7 @@ function AccountSettingsModalContent({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm" onMouseDown={closeSettings}>
       <div
+        ref={settingsDialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="account-settings-title"
@@ -337,6 +364,16 @@ function AccountSettingsModalContent({
             <p className="mt-2 text-xs leading-5 text-zinc-500">{t('AccountSettings.googleHint')}</p>
           </div>
         </dl>
+
+        {!isDemoSession ? <BYOKProfilesPanel onProfileCreated={onProfileCreated} /> : null}
+
+        <section className="mt-6 border-t border-white/10 pt-6" aria-labelledby="account-project-llm-title">
+          <h3 id="account-project-llm-title" className="text-lg font-semibold text-white">{t('LLMSource.accountAssignments')}</h3>
+          <p className="mt-1 text-sm leading-6 text-zinc-400">{t('LLMSource.accountAssignmentsHint')}</p>
+          {projects.length ? projects.map((project) => (
+            <ProjectLLMSourcePanel key={project.id} projectId={project.id} ownerId={user.id} sessionEpoch={sessionEpoch} compact allowPersonalProfiles={!isDemoSession} />
+          )) : <p className="mt-3 text-sm text-zinc-400">{t('LLMSource.noProjects')}</p>}
+        </section>
 
         <section className="mt-6 border-t border-white/10 pt-6" aria-labelledby="account-password-title">
           <h3 id="account-password-title" className="text-lg font-semibold text-white">{t('AccountSettings.passwordTitle')}</h3>

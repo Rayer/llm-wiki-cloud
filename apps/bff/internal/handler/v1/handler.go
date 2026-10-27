@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/rayer/llm-wiki-bff/internal/auth"
+	"github.com/rayer/llm-wiki-bff/internal/byok"
 	conceptcache "github.com/rayer/llm-wiki-bff/internal/cache"
 	"github.com/rayer/llm-wiki-bff/internal/config"
 	"github.com/rayer/llm-wiki-bff/internal/firestore"
@@ -24,28 +25,35 @@ import (
 
 // Handler holds the dependencies for the V1 API.
 type Handler struct {
-	accountLookup        auth.AccountLookup
-	consumerVerifier     consumerVerifier
-	authManagementBridge bool
-	cliSessionVerifier   auth.CLIAccessSessionVerifier
-	cliProjectAuthorizer auth.ProjectOwnerAuthorizer
-	syncBindingAuthority syncBindingChecker
-	syncBindingHost      string
-	projectKeyService    *auth.ProjectKeyService
-	urlIntake            *urlintake.Service
-	mcpFrontendOrigin    string
-	mcpConfig            *config.BFFMCP
-	store                store.RootStore
-	firestore            *firestore.Client
-	index                *search.Index
-	cache                *conceptcache.Cache
-	llm                  *llm.Client
-	expander             *llm.QueryExpander
-	queryExecutor        query.Executor
-	localPipeline        LocalPipelineExecutor
-	pipelineEventSource  func(context.Context, string, string) (pipelineEventSnapshot, error)
-	pipelineEventTiming  *pipelineEventTiming
-	profileRepository    profileRepository
+	accountLookup                  auth.AccountLookup
+	consumerVerifier               consumerVerifier
+	authManagementBridge           bool
+	cliSessionVerifier             auth.CLIAccessSessionVerifier
+	cliProjectAuthorizer           auth.ProjectOwnerAuthorizer
+	syncBindingAuthority           syncBindingChecker
+	syncBindingHost                string
+	projectKeyService              *auth.ProjectKeyService
+	urlIntake                      *urlintake.Service
+	mcpFrontendOrigin              string
+	mcpConfig                      *config.BFFMCP
+	store                          store.RootStore
+	firestore                      *firestore.Client
+	index                          *search.Index
+	cache                          *conceptcache.Cache
+	llm                            *llm.Client
+	expander                       *llm.QueryExpander
+	queryExecutor                  query.Executor
+	localPipeline                  LocalPipelineExecutor
+	pipelineEventSource            func(context.Context, string, string) (pipelineEventSnapshot, error)
+	pipelineEventTiming            *pipelineEventTiming
+	profileRepository              profileRepository
+	byokCredentialBox              *byok.CredentialBox
+	projectLLMClientResolver       func(context.Context, string, string) (llm.ProjectChatClient, string, error)
+	byokEnvironment                string
+	byokDeploymentCredentials      map[string]BYOKDeploymentCredential
+	pipelineWorkerAudience         string
+	pipelineWorkerServiceAccount   string
+	validatePipelineWorkerIdentity func(context.Context, string, string) (string, error)
 
 	httpClient                   *http.Client
 	metadataTokenURL             string

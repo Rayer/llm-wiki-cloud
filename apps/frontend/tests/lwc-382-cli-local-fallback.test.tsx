@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   locale: 'en' as 'en' | 'zh-TW',
   refreshAccessToken: vi.fn(),
   readGoogleIdentitySummary: vi.fn(),
+  listLLMProfiles: vi.fn(),
 }));
 
 vi.mock('@/lib/auth', () => ({
@@ -20,6 +21,10 @@ vi.mock('@/lib/auth', () => ({
   }),
 }));
 vi.mock('@/components/WorkspaceProvider', () => ({ useWorkspace: () => ({ currentProject: null }) }));
+vi.mock('@/lib/api', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/api')>('@/lib/api');
+  return { ...actual, listLLMProfiles: mocks.listLLMProfiles };
+});
 vi.mock('@/lib/runtime-config', () => ({ getRuntimeConfig: () => ({ auth_url: 'https://auth.fixture.test' }) }));
 vi.mock('@/lib/i18n', async () => {
   const actual = await vi.importActual<typeof import('@/lib/i18n')>('@/lib/i18n');
@@ -66,6 +71,7 @@ beforeEach(() => {
   mocks.locale = 'en';
   mocks.refreshAccessToken.mockReset().mockResolvedValue(null);
   mocks.readGoogleIdentitySummary.mockReset().mockResolvedValue({ primary_email: 'owner@example.test', linked_providers: [] });
+  mocks.listLLMProfiles.mockReset().mockResolvedValue([]);
   vi.stubGlobal('confirm', vi.fn(() => true));
 });
 

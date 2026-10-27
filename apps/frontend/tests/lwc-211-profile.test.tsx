@@ -1022,14 +1022,16 @@ describe('LWC-211 Project Profile', () => {
     mocks.getProfile.mockReturnValue(profileResponse.promise);
     render(<ProjectProfilePanel projectId="project-a" />);
 
-    expect(await screen.findByRole('heading', { name: '整理與搜尋偏好' })).toBeDefined();
+    expect(await screen.findByRole('heading', { name: '專案設定' })).toBeDefined();
     expect(screen.getByText('正在載入 Profile…')).toBeDefined();
+    expect(screen.queryByRole('heading', { name: '整理與搜尋偏好' })).toBeNull();
     expect(screen.queryByText(/若要讓先前編譯好的 concept 內容套用新需求，需要全面編譯/)).toBeNull();
 
     await act(async () => {
       profileResponse.resolve(emptyProfile());
       await profileResponse.promise;
     });
+    expect(await screen.findByRole('heading', { name: '整理與搜尋偏好' })).toBeDefined();
     expect(await screen.findByText(/若要讓先前編譯好的 concept 內容套用新需求，需要全面編譯/)).toBeDefined();
     expect(screen.getByRole('button', { name: '我的整理需求' }).getAttribute('aria-expanded')).toBe('false');
     expect(screen.getByRole('button', { name: '系統如何理解我的需求' }).getAttribute('aria-expanded')).toBe('false');

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/rayer/llm-wiki-bff/internal/llm"
 	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"github.com/rayer/llm-wiki-bff/internal/storage"
 	"github.com/rayer/llm-wiki-bff/internal/urlintake"
@@ -92,6 +93,22 @@ func (h *Handler) callMCPImportURL(ctx context.Context, _ *mcp.CallToolRequest, 
 		return importURLToolResult(importURLResponse{Status: "unavailable", ProcessingStatus: "not_started", FailureStage: "setup", Reason: "The trusted Project raw page origin is not configured; the URL was not imported."}, true), nil, nil
 	}
 
+	resolveProjectLLMClient := h.projectLLMClient
+	if h.projectLLMClientResolver != nil {
+		resolveProjectLLMClient = h.projectLLMClientResolver
+	}
+	projectClient, _, profileErr := resolveProjectLLMClient(ctx, identity.userID, identity.projectID)
+	if profileErr != nil {
+		return importURLToolResult(importURLResponse{Status: "unavailable", ProcessingStatus: "not_started", FailureStage: "quality", Reason: "The Project LLM source is unavailable, so the URL was not imported."}, true), nil, nil
+	}
+	if projectClient != nil {
+		defer func() {
+			if closer, ok := projectClient.(interface{ Close() }); ok {
+				closer.Close()
+			}
+		}()
+		ctx = llm.WithProjectChatClient(ctx, projectClient)
+	}
 	result, err := h.urlIntake.ImportStrict(ctx, urlintake.ActorProject{ActorID: identity.userID, ProjectID: identity.projectID}, urlintake.ImportRequest{URL: input.URL, Tags: input.Tags})
 	if err != nil {
 		observability.RecordURLIntakeEvent(ctx, "handler", "dependency", "failure")

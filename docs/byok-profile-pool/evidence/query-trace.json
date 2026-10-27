@@ -1,0 +1,18 @@
+{
+  "trace_id": "910e9cb47de06ac3d9003167aacb5cde",
+  "route": "/api/v1/query",
+  "http_status": 200,
+  "outcome": "success",
+  "project_id": "478a24f973f7",
+  "generation_id": "g_f7c5260c131542f3737298e68ae61524",
+  "llm": {
+    "llm.source": "personal",
+    "llm.profile.id": "d4u034ek2plenct1qkog",
+    "llm.profile.revision": 2,
+    "llm.provider": "custom",
+    "llm.protocol": "openai_chat_completions",
+    "llm.model": "fixture-no-network-model"
+  },
+  "sanitized": true,
+  "payloads_or_credentials_included": false
+}

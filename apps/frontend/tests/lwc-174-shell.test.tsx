@@ -216,10 +216,9 @@ describe('LWC-174 production Shell rename behavior', () => {
     const logout = screen.getByRole('button', { name: logoutLabel });
     expect(settings.tagName).toBe('BUTTON');
     expect(logout.tagName).toBe('BUTTON');
-    expect(settings.className).toContain('border border-white/10 bg-white/5');
+    expect(settings.className).toContain('flex min-h-11 items-center gap-3 rounded-md');
     expect(settings.className).toContain('focus-visible:outline');
-    expect(settings.className).toContain('active:bg-white/15');
-    expect(settings.parentElement?.className).toContain('mt-2 flex flex-wrap gap-2');
+    expect(settings.parentElement?.className).toContain('mt-2 grid gap-0.5');
 
     fireEvent.click(logout);
     await waitFor(() => expect(mocks.logout).toHaveBeenCalledOnce());

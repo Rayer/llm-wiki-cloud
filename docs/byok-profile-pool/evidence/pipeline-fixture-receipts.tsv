@@ -1,0 +1,7 @@
+1793081664656440000	openai_models_healthcheck	fixture-embedding-model	/v1/models
+1793081664677565000	openai_chat_completions	fixture-no-network-model	/v1/chat/completions
+1793081664708890000	openai_chat_completions	fixture-no-network-model	/v1/chat/completions
+2026-10-27T06:15:10.01594Z	openai_chat_completions	fixture-no-network-model	/v1/chat/completions
+2026-10-27T06:15:10.016061Z	openai_chat_completions	fixture-no-network-model	/v1/chat/completions
+2026-10-27T06:15:10.017224Z	openai_chat_completions	fixture-no-network-model	/v1/chat/completions
+2026-10-27T06:15:10.054073Z	openai_chat_completions	fixture-no-network-model	/v1/chat/completions

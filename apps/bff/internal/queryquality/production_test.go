@@ -74,12 +74,43 @@ type countingProvider struct {
 	user   string
 }
 
+type projectProfileCountingProvider struct{ *countingProvider }
+
+func (p *projectProfileCountingProvider) ModelIdentity() (llm.ModelIdentity, bool) {
+	return llm.ModelIdentity{Provider: "custom", Model: "project-model"}, true
+}
+
+func (p *projectProfileCountingProvider) ProfileIdentity() llm.ProfileIdentity {
+	return llm.ProfileIdentity{ID: "profile-a", Revision: 3, Provider: "custom", Protocol: string(llm.ProtocolOpenAIChatCompletions), Model: "project-model"}
+}
+
 func (p *countingProvider) Chat(_ context.Context, system, user string) (string, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.calls++
 	p.system, p.user = system, user
 	return `{"raw_query":"deploy docs","preferred":[{"kind":"topic","value":"deploy","terms":["deploy"],"proof":"lexical"}]}`, nil
+}
+
+func TestLegacyProductionExecutorUsesProjectProfileFromContext(t *testing.T) {
+	defaultProvider := &countingProvider{}
+	projectProvider := &projectProfileCountingProvider{countingProvider: &countingProvider{}}
+	legacy := query.NewService(cache.New(), nil, nil)
+	executor, err := queryquality.NewProductionExecutor(cache.New(), defaultProvider, legacy, legacy, queryquality.DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := llm.WithProjectChatClient(context.Background(), projectProvider)
+	result, err := executor.Execute(ctx, &jsonlReader{}, query.Request{Query: "missing topic", Mode: "wiki"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projectProvider.calls != queryquality.DefaultOptions().ExpansionAttempts || defaultProvider.calls != 0 {
+		t.Fatalf("project calls=%d default calls=%d", projectProvider.calls, defaultProvider.calls)
+	}
+	if result.RuntimeConfigIdentity == nil || result.RuntimeConfigIdentity.LLMProfileID != "profile-a" || result.RuntimeConfigIdentity.LLMProfileRevision != 3 || result.RuntimeConfigIdentity.ExpansionProvider != "custom" || result.RuntimeConfigIdentity.ExpansionModel != "project-model" {
+		t.Fatalf("project runtime identity=%+v", result.RuntimeConfigIdentity)
+	}
 }
 
 type countingMatcher struct{ calls int }

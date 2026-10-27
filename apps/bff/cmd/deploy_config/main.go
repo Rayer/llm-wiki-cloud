@@ -103,6 +103,7 @@ type BFFConfig struct {
 	PipelineDemoUserIDs          []string                `yaml:"-" json:"pipeline_demo_user_ids,omitempty"`
 	ProfileRuntimeAudience       string                  `yaml:"-" json:"profile_runtime_audience,omitempty"`
 	ProfileRuntimeServiceAccount string                  `yaml:"-" json:"profile_runtime_service_account,omitempty"`
+	PipelineWorkerServiceAccount string                  `yaml:"-" json:"pipeline_worker_service_account,omitempty"`
 	SecretReferences             RuntimeSecretReferences `yaml:"-" json:"secret_references,omitempty"`
 	ConfigSecretResource         string                  `yaml:"-" json:"config_secret_resource,omitempty"`
 	RuntimeInputs                *BFFSourceProjection    `yaml:"-" json:"runtime_inputs,omitempty"`
@@ -179,8 +180,10 @@ type BFFSourceProjection struct {
 	AuthConsumer                 *runtimeconfig.BFFAuthConsumer `json:"auth_consumer"`
 	DeepSeekAPIKeyReference      BFFSecretReference             `json:"deepseek_api_key_reference"`
 	TypeSafeAPIKeyReference      *BFFSecretReference            `json:"typesafe_api_key_reference"`
+	BYOKCredentialKeyReference   *BFFSecretReference            `json:"byok_credential_encryption_key_reference"`
 	ProfileRuntimeAudience       string                         `json:"profile_runtime_audience"`
 	ProfileRuntimeServiceAccount string                         `json:"profile_runtime_service_account"`
+	PipelineWorkerServiceAccount string                         `json:"pipeline_worker_service_account"`
 	PipelineSchedule             BFFPipelineSchedule            `json:"pipeline_schedule"`
 	LLM                          BFFLLM                         `json:"llm"`
 	Query                        BFFQuery                       `json:"query"`
@@ -590,7 +593,8 @@ func loadBFFInputDescriptor(path, environment string) (BFFSourceProjection, erro
 		"auth_service_url", "mcp_resource_origin", "mcp", "pipeline_job_url", "export_job_url", "export_signing_service_account", "allowed_origins",
 		"allowed_hosts", "pipeline_daily_limit", "pipeline_cooldown_seconds", "pipeline_min_new_raw", "pipeline_demo_user_ids",
 		"auth_session_environment", "auth_session_migration", "registration_enabled",
-		"deepseek_api_key_reference", "typesafe_api_key_reference", "profile_runtime_audience", "profile_runtime_service_account",
+		"deepseek_api_key_reference", "typesafe_api_key_reference", "byok_credential_encryption_key_reference",
+		"profile_runtime_audience", "profile_runtime_service_account", "pipeline_worker_service_account",
 		"pipeline_schedule", "llm", "query", "local", "port_default", "config_secret_resource"}
 	var schemaVersion int
 	if err := json.Unmarshal(fields["schema_version"], &schemaVersion); err != nil || (schemaVersion != 2 && schemaVersion != 3) {
@@ -629,7 +633,8 @@ func loadBFFInputDescriptor(path, environment string) (BFFSourceProjection, erro
 		projection.GCPProject != "llm-wiki-cloud" || projection.Local != nil || projection.Bucket == "" || projection.FirestoreDatabaseID == "" ||
 		projection.PipelineCooldownSeconds <= 0 || projection.PipelineDailyLimit <= 0 || projection.PipelineMinNewRaw <= 0 ||
 		projection.PipelineDemoUserIDs == nil || projection.AuthSessionEnvironment == "" || projection.AuthSessionMigration == "" ||
-		projection.PortDefault < 1 || projection.PortDefault > 65535 || projection.ConfigSecretResource == "" {
+		projection.PortDefault < 1 || projection.PortDefault > 65535 || projection.ConfigSecretResource == "" ||
+		!validProfileRuntimeServiceAccount(projection.PipelineWorkerServiceAccount) {
 		return BFFSourceProjection{}, errors.New("generated BFF input descriptor is invalid for the selected environment")
 	}
 	if !validFrontendRuntimeURL(projection.MCPResourceOrigin, environment) {
@@ -729,6 +734,7 @@ func validateBFFDescriptorShape(fields map[string]json.RawMessage, schemaVersion
 		!exact(fields["query"], "stage_config_path", "legacy") ||
 		!exact(fields["deepseek_api_key_reference"], "source", "env_name", "resource") ||
 		!exact(fields["typesafe_api_key_reference"], "source", "env_name", "resource") ||
+		!exact(fields["byok_credential_encryption_key_reference"], "source", "env_name", "resource") ||
 		!strings.EqualFold(strings.TrimSpace(string(fields["local"])), "null") {
 		return errors.New("generated BFF input descriptor has an invalid nested shape")
 	}
@@ -768,6 +774,7 @@ func applyBFFInputDescriptor(config *EnvironmentConfig, inputs BFFSourceProjecti
 	bff.PipelineDemoUserIDs = inputs.PipelineDemoUserIDs
 	bff.ProfileRuntimeAudience = inputs.ProfileRuntimeAudience
 	bff.ProfileRuntimeServiceAccount = inputs.ProfileRuntimeServiceAccount
+	bff.PipelineWorkerServiceAccount = inputs.PipelineWorkerServiceAccount
 	bff.ConfigSecretResource = inputs.ConfigSecretResource
 	if inputs.JWTSecretReference != nil {
 		bff.SecretReferences.JWT = secretNameFromResource(inputs.JWTSecretReference.Resource)
@@ -796,6 +803,17 @@ func validateBFFDescriptorSecrets(p BFFSourceProjection, environment string) err
 		expected = "prod"
 	}
 	secretRefs := map[string]BFFSecretReference{"deepseek_api_key_reference": p.DeepSeekAPIKeyReference}
+	if p.BYOKCredentialKeyReference == nil {
+		return errors.New("generated BFF BYOK credential key reference is invalid")
+	}
+	byokSecretName := "byok-credential-encryption-key-dev"
+	if environment == "prod" {
+		byokSecretName = "byok-credential-encryption-key-prod"
+	}
+	if p.BYOKCredentialKeyReference.Source != "secret-manager" || p.BYOKCredentialKeyReference.EnvName != "" ||
+		p.BYOKCredentialKeyReference.Resource != "projects/llm-wiki-cloud/secrets/"+byokSecretName+"/versions/1" {
+		return errors.New("generated BFF BYOK credential key reference is invalid")
+	}
 	if p.SchemaVersion == 2 && p.JWTSecretReference != nil {
 		secretRefs["jwt_secret_reference"] = *p.JWTSecretReference
 	}
@@ -1222,6 +1240,9 @@ func componentInputs(config EnvironmentConfig, query QueryConfigIdentity, select
 			if config.BFF.ProfileRuntimeAudience != "" {
 				bff["profile_runtime_audience"] = config.BFF.ProfileRuntimeAudience
 				bff["profile_runtime_service_account"] = config.BFF.ProfileRuntimeServiceAccount
+			}
+			if config.BFF.PipelineWorkerServiceAccount != "" {
+				bff["pipeline_worker_service_account"] = config.BFF.PipelineWorkerServiceAccount
 			}
 			if len(config.BFF.PipelineDemoUserIDs) > 0 {
 				bff["pipeline_demo_user_ids"] = config.BFF.PipelineDemoUserIDs

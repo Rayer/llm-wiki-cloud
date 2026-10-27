@@ -61,7 +61,9 @@ type Config struct {
 	ProjectID                   string
 	Port                        string
 	DeepSeekAPIKey              string
+	DeepSeekAPIKeyReference     string
 	TypeSafeAPIKey              string
+	BYOKCredentialEncryptionKey string
 	LLMProvider                 string
 	LLMBaseURL                  string
 	LLMRequestTimeoutSeconds    int
@@ -116,6 +118,7 @@ type Config struct {
 	SyncServiceURL                  string
 	ProfileRuntimeAudience          string
 	ProfileRuntimeServiceAccount    string
+	PipelineWorkerServiceAccount    string
 	PipelineScheduleCron            string
 	PipelineScheduleTimezone        string
 	ScheduledPipelineAudience       string

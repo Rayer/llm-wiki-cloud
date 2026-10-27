@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -27,6 +28,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/auth"
 	"github.com/rayer/llm-wiki-bff/internal/authconsumer"
 	"github.com/rayer/llm-wiki-bff/internal/buildinfo"
+	"github.com/rayer/llm-wiki-bff/internal/byok"
 	conceptcache "github.com/rayer/llm-wiki-bff/internal/cache"
 	"github.com/rayer/llm-wiki-bff/internal/config"
 	"github.com/rayer/llm-wiki-bff/internal/exportjob"
@@ -194,6 +196,15 @@ func main() {
 
 	// Handlers
 	hV1 := handlerv1.New(wikiStore, fsClient, idx, conceptCache, nil, nil)
+	hV1.SetBYOKCredentialEnvironment(authSessionEnvironment(cfg))
+	if cfg.DeepSeekAPIKeyReference != "" && cfg.DeepSeekAPIKey != "" {
+		hV1.SetBYOKDeploymentCredentials([]handlerv1.BYOKDeploymentCredential{{
+			Reference: cfg.DeepSeekAPIKeyReference, Label: "Existing deployment LLM credential", Value: []byte(cfg.DeepSeekAPIKey),
+		}})
+	}
+	if err := configureBYOKCredentialBox(hV1, cfg); err != nil {
+		log.Fatalf("configure BYOK credential custody: %v", err)
+	}
 	authConsumerClient, err := configureAuthConsumer(hV1, cfg, localMode, authconsumer.NewGoogleRuntime)
 	if err != nil {
 		log.Fatalf("configure Auth consumer: %v", err)
@@ -207,6 +218,7 @@ func main() {
 		cfg.PipelineMinNewRaw,
 		cfg.PipelineDemoUserIDs,
 	)
+	hV1.SetPipelineWorkerIdentity(cfg.ProfileRuntimeAudience, cfg.PipelineWorkerServiceAccount)
 	configureScheduledPipeline(hV1, cfg)
 	settingsStore := syssettings.NewStore(fsClient.Raw(), cfg.RegistrationEnabled)
 	var nativeWorker *localpipeline.Manager
@@ -228,6 +240,7 @@ func main() {
 			Scope: cfg.LocalCloudScope, WorkDir: ".",
 			PipelineConfigPath:   cfg.LocalPipelineConfigPath,
 			PipelineBindingsPath: cfg.LocalPipelineBindingsPath,
+			ProfileResolverURL:   "http://127.0.0.1:" + cfg.Port + "/internal/pipeline/llm-profile",
 		})
 		if err != nil {
 			log.Fatalf("configure local pipeline executor: %v", err)
@@ -293,6 +306,24 @@ func newURLIntakeService(cfg config.Config, stores urlintake.StoreFactory) *urli
 		stores,
 		urlintake.DefaultQualityThresholds,
 	)
+}
+
+func configureBYOKCredentialBox(h *handlerv1.Handler, cfg config.Config) error {
+	encoded := strings.TrimSpace(cfg.BYOKCredentialEncryptionKey)
+	if encoded == "" {
+		return nil
+	}
+	key, err := hex.DecodeString(encoded)
+	if err != nil {
+		return errors.New("BYOK credential encryption key is invalid")
+	}
+	defer clear(key)
+	box, err := byok.NewCredentialBox(key)
+	if err != nil {
+		return errors.New("BYOK credential encryption key is invalid")
+	}
+	h.SetBYOKCredentialBox(box)
+	return nil
 }
 
 type localPipelineCloser interface {
@@ -480,6 +511,7 @@ func newProductionRouter(
 	registerPublicRoutes(r, settingsStore, cfg.AuthServiceURL, !localMode, registrationProvider)
 	r.POST("/internal/profile/dispatch", productionProfileDispatcher(hV1, cfg).Gin)
 	r.POST("/internal/pipeline/schedule", hV1.ScheduledPipeline)
+	r.POST("/internal/pipeline/llm-profile", hV1.PipelineLLMProfile)
 	r.GET("/api/v1/query/config", hV1.QueryConfig)
 	r.Any("/mcp", gin.WrapH(hV1.MCPHandler()))
 	r.Any("/mcp/projects/:projectID", hV1.MCPProjectOAuthHandler(cfg.AuthEnvironment, cfg.MCPResourceOrigin))
@@ -535,6 +567,12 @@ func newProductionRouter(
 		v1.GET("/projects", hV1.ListProjects)
 		v1.POST("/init-project", hV1.InitProject)
 		v1.PATCH("/projects/:projectID", hV1.RenameProject)
+		v1.GET("/llm/profiles", hV1.UserLLMProfiles)
+		personalLLMProfiles := v1.Group("/llm/profiles")
+		personalLLMProfiles.Use(hV1.TrialDemoAccessGuard())
+		personalLLMProfiles.POST("", hV1.CreateUserLLMProfile)
+		personalLLMProfiles.PUT("/:profileID", hV1.UpdateUserLLMProfile)
+		personalLLMProfiles.DELETE("/:profileID", hV1.DeleteUserLLMProfile)
 		v1.GET("/projects/:pid/status", hV1.ProjectStatus)
 	}
 
@@ -551,6 +589,8 @@ func newProductionRouter(
 
 	v1.Use(auth.ProjectMiddleware())
 	{
+		v1.GET("/projects/:pid/llm-binding", hV1.ProjectLLMBinding)
+		v1.PUT("/projects/:pid/llm-binding", hV1.SetProjectLLMBinding)
 		syncRaw := v1.Group("/sync/raw")
 		syncRaw.Use(auth.CLIOnly(), hV1.RawSyncBindingAuth())
 		syncRaw.GET("", hV1.SyncRawList)
@@ -711,6 +751,10 @@ func registerAdminRoutes(r *gin.Engine, cfg config.Config, hV1 *handlerv1.Handle
 	productAdmin.POST("/projects/:id/pipeline", hV1.AdminPipelineTrigger)
 	productAdmin.GET("/projects/:id/pipeline/status", hV1.AdminPipelineStatus)
 	productAdmin.POST("/projects/:id/rebuild-index", hV1.AdminRebuildIndex)
+	productAdmin.GET("/llm/profiles", hV1.AdminLLMProfiles)
+	productAdmin.POST("/llm/profiles", hV1.CreateAdminLLMProfile)
+	productAdmin.PUT("/llm/profiles/:profileID", hV1.UpdateAdminLLMProfile)
+	productAdmin.DELETE("/llm/profiles/:profileID", hV1.DeleteAdminLLMProfile)
 
 	deleteUser := r.Group("/api/v1/admin")
 	deleteUser.Use(hV1.AccountAuth(cfg), handlerv1.ManagementScopesRequired(auth.ManagementScopeAuthAdmin, auth.ManagementScopeLWCAdmin))

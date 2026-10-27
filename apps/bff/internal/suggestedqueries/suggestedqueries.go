@@ -198,7 +198,7 @@ func decodeGenerationMetadata(dec *json.Decoder) (GenerationMetadata, error) {
 		return GenerationMetadata{}, fmt.Errorf("expected generation object")
 	}
 	metadata := GenerationMetadata{}
-	seen := make(map[string]struct{}, 2)
+	seen := make(map[string]struct{}, 6)
 	for dec.More() {
 		key, err := dec.Token()
 		if err != nil {
@@ -217,6 +217,14 @@ func decodeGenerationMetadata(dec *json.Decoder) (GenerationMetadata, error) {
 			metadata.Model, err = decodeJSONString(dec)
 		case "prompt_version":
 			metadata.PromptVersion, err = decodeJSONString(dec)
+		case "profile_id":
+			metadata.ProfileID, err = decodeJSONString(dec)
+		case "profile_revision":
+			metadata.ProfileRevision, err = decodeJSONInt64(dec)
+		case "provider":
+			metadata.Provider, err = decodeJSONString(dec)
+		case "protocol":
+			metadata.Protocol, err = decodeJSONString(dec)
 		default:
 			return GenerationMetadata{}, fmt.Errorf("unknown generation metadata key %q", name)
 		}
@@ -283,6 +291,21 @@ func decodeJSONInt(dec *json.Decoder) (int, error) {
 		return 0, fmt.Errorf("expected JSON number")
 	}
 	var value int
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return 0, err
+	}
+	return value, nil
+}
+
+func decodeJSONInt64(dec *json.Decoder) (int64, error) {
+	var raw json.RawMessage
+	if err := dec.Decode(&raw); err != nil {
+		return 0, err
+	}
+	if string(bytes.TrimSpace(raw)) == "null" {
+		return 0, fmt.Errorf("expected JSON number")
+	}
+	var value int64
 	if err := json.Unmarshal(raw, &value); err != nil {
 		return 0, err
 	}

@@ -4,12 +4,18 @@ Config.resolve_role is the shared seam after provider/profile/CLI precedence.
 OpenAICompatClient ignores think and merges options last into the wire payload.
 """
 import hashlib
+import httpx
+import ipaddress
 import json
 import os
+import socket
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import synto
 from synto.config import Config, ResolvedModel
+from synto.openai_compat_client import LLMError, OpenAICompatClient
+from synto.providers import ProviderInfo, PROVIDER_REGISTRY
 from synto.pipeline import compile as compile_pipeline, ingest
 
 if synto.__version__ != "0.7.0":
@@ -90,6 +96,140 @@ def _resolve_flash(self, role, *, api_key_env=None):
 
 
 Config.resolve_role = _resolve_flash
+
+_profile_raw = os.environ.get("LWC_PROFILE_CONFIG", "")
+if _profile_raw:
+    _profile = json.loads(_profile_raw)
+    if not isinstance(_profile, dict) or set(_profile) != {"id", "revision", "provider", "protocol", "endpoint", "model"}:
+        raise RuntimeError("invalid resolved Project LLM profile")
+    if (not isinstance(_profile["id"], str) or not _profile["id"]
+            or not isinstance(_profile["revision"], int) or _profile["revision"] < 1
+            or not isinstance(_profile["provider"], str) or not isinstance(_profile["model"], str)
+            or not _profile["model"] or not isinstance(_profile["endpoint"], str)):
+        raise RuntimeError("invalid resolved Project LLM profile")
+    _profile_url = urlsplit(_profile["endpoint"])
+    if _profile_url.scheme != "https" or not _profile_url.hostname or _profile_url.username or _profile_url.password or _profile_url.query or _profile_url.fragment:
+        raise RuntimeError("invalid resolved Project LLM endpoint")
+    _profile_host = _profile_url.hostname.rstrip(".").lower()
+    _profile_call_success_marker_path = os.environ.get("LWC_PROFILE_CALL_SUCCESS_MARKER_PATH", "")
+    _original_getaddrinfo = socket.getaddrinfo
+
+    def _mark_profile_call_success():
+        if not _profile_call_success_marker_path:
+            return
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            fd = os.open(_profile_call_success_marker_path, flags, 0o600)
+        except FileExistsError:
+            return
+        except OSError as exc:
+            raise RuntimeError("Project profile call outcome marker is unavailable") from exc
+        os.close(fd)
+
+    _profile_httpx_send = httpx.Client.send
+
+    def _send_with_profile_call_success_marker(self, request, *args, **kwargs):
+        response = _profile_httpx_send(self, request, *args, **kwargs)
+        # Synto checks GET /models before inference; health reads are not generated work.
+        if (request.url.host.rstrip(".").lower() == _profile_host
+                and request.method.upper() != "GET" and 200 <= response.status_code < 300):
+            _mark_profile_call_success()
+        return response
+
+    httpx.Client.send = _send_with_profile_call_success_marker
+
+    def _public_profile_dns(host, *args, **kwargs):
+        if isinstance(host, str) and host.rstrip(".").lower() == _profile_host:
+            results = _original_getaddrinfo(host, *args, **kwargs)
+            if not results:
+                raise OSError("Project LLM endpoint DNS lookup failed")
+            for result in results:
+                try:
+                    address = ipaddress.ip_address(result[4][0].split("%", 1)[0])
+                except (ValueError, IndexError, TypeError) as exc:
+                    raise OSError("Project LLM endpoint DNS response is invalid") from exc
+                if not address.is_global:
+                    raise OSError("Project LLM endpoint resolved to a non-public address")
+            # Return the exact validated sockaddr records; socket.create_connection
+            # uses them directly, so a second DNS lookup cannot rebind the host.
+            return results
+        return _original_getaddrinfo(host, *args, **kwargs)
+
+    socket.getaddrinfo = _public_profile_dns
+    if _profile["protocol"] == "anthropic_messages":
+        _profile_kind = "lwc_anthropic_compat"
+        PROVIDER_REGISTRY[_profile_kind] = ProviderInfo(
+            _profile_kind, "LWC Anthropic-compatible", _profile["endpoint"], True, False, False, False,
+            120.0, "LWC_PROFILE_API_KEY", anthropic_compat=True,
+        )
+    elif _profile["protocol"] == "openai_chat_completions":
+        _profile_kind = "custom"
+    else:
+        raise RuntimeError("unsupported resolved Project LLM protocol")
+
+    _resolve_profile_base = Config.resolve_role
+
+    def _resolve_profile(self, role, *, api_key_env=None):
+        resolved = _resolve_profile_base(self, role, api_key_env=api_key_env)
+        if role == "embed":
+            return resolved
+        api_key = os.environ.get("LWC_PROFILE_API_KEY", "")
+        profile_values = vars(resolved).copy()
+        profile_values.update({
+            "provider_kind": _profile_kind,
+            "url": _profile["endpoint"],
+            "api_key": api_key or None,
+            "api_key_env": "LWC_PROFILE_API_KEY" if api_key else None,
+            "model": _profile["model"],
+            "think": None,
+            "supports_json_mode": _profile["protocol"] == "openai_chat_completions",
+            "supports_embeddings": False,
+            "azure": False,
+            "anthropic_compat": _profile["protocol"] == "anthropic_messages",
+            "options": {},
+            "headers": {},
+        })
+        return ResolvedModel(**profile_values)
+
+    Config.resolve_role = _resolve_profile
+
+# Synto 0.7.0 intentionally collapses all HTTP 429 responses to rate limits.
+# Preserve its native protocol clients but recognize only provider-confirmed
+# account quota codes for a clean shared-pool retry.
+_QUOTA_CODES = {"insufficient_quota", "quota_exhausted", "quota_exceeded", "billing_hard_limit_reached"}
+_quota_marker_path = os.environ.get("LWC_PROFILE_QUOTA_MARKER_PATH", "")
+
+def _is_explicit_quota(exc):
+    response = getattr(exc, "response", None)
+    if response is None or response.status_code != 429:
+        return False
+    try:
+        envelope = response.json()
+    except Exception:
+        return False
+    error = envelope.get("error") if isinstance(envelope, dict) else None
+    code = error.get("code") if isinstance(error, dict) else None
+    return isinstance(code, str) and code.strip().lower() in _QUOTA_CODES
+
+def _mark_explicit_quota():
+    if not _quota_marker_path:
+        return
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(_quota_marker_path, flags, 0o600)
+    os.close(fd)
+
+def _wrap_provider_error(original):
+    def wrapped(self, exc, context=""):
+        if _is_explicit_quota(exc):
+            _mark_explicit_quota()
+            return LLMError("shared provider quota exhausted")
+        return original(self, exc, context)
+    return wrapped
+
+OpenAICompatClient._wrap_error = _wrap_provider_error(OpenAICompatClient._wrap_error)
+from synto.anthropic_compat_client import AnthropicCompatClient
+AnthropicCompatClient._wrap_error = _wrap_provider_error(AnthropicCompatClient._wrap_error)
+
 # The worker supplies this temporary overlay only when it pinned nonempty
 # active Profile guidance. Synto's own CLI still owns the vault's normal schema.
 _profile_schema_path = os.environ.get("LWC_PROFILE_SCHEMA_PATH")

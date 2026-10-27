@@ -9,7 +9,34 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/rayer/llm-wiki-bff/internal/llm"
 )
+
+type profileJevTestClient struct {
+	answer        string
+	system, input string
+}
+
+func (c *profileJevTestClient) Chat(_ context.Context, system, input string) (string, error) {
+	c.system, c.input = system, input
+	return c.answer, nil
+}
+func (*profileJevTestClient) ModelIdentity() (llm.ModelIdentity, bool) {
+	return llm.ModelIdentity{Provider: "custom", Model: "fixture-model"}, true
+}
+
+func TestJevEvaluatorUsesResolvedProjectProfileWhenPresent(t *testing.T) {
+	client := &profileJevTestClient{answer: `{"access_shell":false,"readable_content":true}`}
+	ctx := llm.WithProjectChatClient(context.Background(), client)
+	evaluation, err := NewJevEvaluator("").Evaluate(ctx, QualityInput{URL: "https://example.test/page", Title: "Page", Markdown: "Readable text", Provider: "test"})
+	if err != nil || evaluation.ShellProbability != 0 || evaluation.ContentProbability != 1 || evaluation.ReturnedModel != "fixture-model" {
+		t.Fatalf("evaluation=%+v err=%v", evaluation, err)
+	}
+	if client.system == "" || !strings.Contains(client.input, "Readable text") || !strings.Contains(client.system, "untrusted data") {
+		t.Fatalf("Project profile did not receive the bounded quality task: system=%q input=%q", client.system, client.input)
+	}
+}
 
 type resolverStub []netip.Addr
 

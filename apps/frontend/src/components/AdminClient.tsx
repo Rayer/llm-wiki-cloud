@@ -29,9 +29,10 @@ import { useLocale } from '@/lib/i18n';
 import { Badge } from './ui/Badge';
 import { Surface } from './ui/Surface';
 import { AnnouncementBoard } from './AnnouncementBoard';
+import { AdminSharedProfilesPanel } from './AdminSharedProfilesPanel';
 import { useNavigationBlocker } from './NavigationBlocker';
 
-type Tab = 'projects' | 'users' | 'settings';
+type Tab = 'projects' | 'users' | 'settings' | 'shared-llm';
 type Notice = { tone: 'success' | 'error' | 'pending'; message: string } | null;
 const userReadbackFailure: Notice = { tone: 'error', message: 'Update succeeded, but current user state is unknown. Retry loading users before making another change.' };
 type Action =
@@ -385,6 +386,7 @@ export function AdminClient() {
       <Surface variant="glass" className="p-2">
         <div className="flex gap-1">
           {isLWCAdmin ? <TabButton active={tab === 'projects'} onClick={() => setTab('projects')}>Projects</TabButton> : null}
+          {isLWCAdmin ? <TabButton active={tab === 'shared-llm'} onClick={() => setTab('shared-llm')}>Shared LLM</TabButton> : null}
           {isAuthAdmin ? <TabButton active={tab === 'users'} onClick={() => setTab('users')}>Users</TabButton> : null}
           {(isAuthAdmin || isLWCAdmin) ? <TabButton active={tab === 'settings'} onClick={() => setTab('settings')}>Settings</TabButton> : null}
         </div>
@@ -399,7 +401,9 @@ export function AdminClient() {
         </Surface>
       ) : null}
 
-      {tab === 'projects' ? (
+      {tab === 'shared-llm' ? (
+        <AdminSharedProfilesPanel />
+      ) : tab === 'projects' ? (
         <ProjectsTable
           projects={projects}
           loading={projectsLoading}

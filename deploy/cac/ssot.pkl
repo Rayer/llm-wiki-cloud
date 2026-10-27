@@ -134,8 +134,10 @@ class BffConfig {
   auth_consumer: BffAuthConsumerConfig? = null
   deepseek_api_key_reference: BffSecretReference
   typesafe_api_key_reference: BffSecretReference?
+  byok_credential_encryption_key_reference: BffSecretReference? = null
   profile_runtime_audience: String
   profile_runtime_service_account: String
+  pipeline_worker_service_account: String = ""
   pipeline_schedule: PipelineScheduleConfig
   llm: BffLlm
   query: BffQueryConfig
@@ -398,6 +400,12 @@ local localTypeSafeAPIKeyReference = new BffSecretReference {
   resource = null
 }
 
+local localBYOKCredentialKeyReference = new BffSecretReference {
+  source = "environment"
+  env_name = "BYOK_CREDENTIAL_ENCRYPTION_KEY"
+  resource = null
+}
+
 local devTypeSafeSecretReference = new BffSecretReference {
   source = "secret-manager"
   env_name = null
@@ -408,6 +416,18 @@ local prodTypeSafeSecretReference = new BffSecretReference {
   source = "secret-manager"
   env_name = null
   resource = "projects/llm-wiki-cloud/secrets/typesafe-jev-api-key-prod/versions/1"
+}
+
+local devBYOKCredentialKeyReference = new BffSecretReference {
+  source = "secret-manager"
+  env_name = null
+  resource = "projects/llm-wiki-cloud/secrets/byok-credential-encryption-key-dev/versions/1"
+}
+
+local prodBYOKCredentialKeyReference = new BffSecretReference {
+  source = "secret-manager"
+  env_name = null
+  resource = "projects/llm-wiki-cloud/secrets/byok-credential-encryption-key-prod/versions/1"
 }
 
 local pipelineSchedule = new PipelineScheduleConfig {
@@ -483,15 +503,17 @@ local localBff = new BffConfig {
   pipeline_daily_limit = 2
   pipeline_cooldown_seconds = selected.pipelineCooldownSeconds
   pipeline_min_new_raw = 1
-  pipeline_demo_user_ids = if (localBffDemoUserIDs == "") new Listing {} else localBffDemoUserIDs.split(",")
+  pipeline_demo_user_ids = if (localBffDemoUserIDs == "") new Listing {} else new Listing { ...localBffDemoUserIDs.split(",") }
   auth_session_environment = "llm-wiki-cloud-local"
   auth_session_migration = "disabled"
   registration_enabled = null
   jwt_secret_reference = localJwtSecretReference
   deepseek_api_key_reference = localDeepSeekSecretReference
   typesafe_api_key_reference = localTypeSafeAPIKeyReference
+  byok_credential_encryption_key_reference = localBYOKCredentialKeyReference
   profile_runtime_audience = ""
   profile_runtime_service_account = ""
+  pipeline_worker_service_account = ""
   pipeline_schedule = pipelineSchedule
   llm = new BffLlm {
     provider = selected.llm.provider
@@ -564,8 +586,10 @@ local devBff = new BffConfig {
     resource = deepseek.secret.resource
   }
   typesafe_api_key_reference = devTypeSafeSecretReference
+  byok_credential_encryption_key_reference = devBYOKCredentialKeyReference
   profile_runtime_audience = "https://llm-wiki-bff-dev-a5nkmux6pq-de.a.run.app"
   profile_runtime_service_account = "lwc-bff-dev@llm-wiki-cloud.iam.gserviceaccount.com"
+  pipeline_worker_service_account = "lwc-pipeline-dev@llm-wiki-cloud.iam.gserviceaccount.com"
   pipeline_schedule = devPipelineSchedule
   llm = new BffLlm {
     provider = selected.llm.provider
@@ -620,8 +644,10 @@ local prodBff = new BffConfig {
     resource = deepseek.secret.resource
   }
   typesafe_api_key_reference = prodTypeSafeSecretReference
+  byok_credential_encryption_key_reference = prodBYOKCredentialKeyReference
   profile_runtime_audience = "https://llm-wiki-bff-a5nkmux6pq-de.a.run.app"
   profile_runtime_service_account = "lwc-bff-prod@llm-wiki-cloud.iam.gserviceaccount.com"
+  pipeline_worker_service_account = "lwc-pipeline-prod@llm-wiki-cloud.iam.gserviceaccount.com"
   pipeline_schedule = prodPipelineSchedule
   llm = new BffLlm {
     provider = selected.llm.provider

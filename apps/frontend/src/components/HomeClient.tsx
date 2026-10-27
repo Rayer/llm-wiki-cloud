@@ -39,6 +39,7 @@ import {
 } from '@/lib/query-result-history';
 import { displayErrorId, EmptyState, ErrorIdDetails, ErrorState, LoadingState, useErrorIdCopy } from './States';
 import { useWorkspace } from './WorkspaceProvider';
+import { SharedServiceOnboardingNotice } from './SharedServiceNotice';
 import { Badge } from './ui/Badge';
 import { Surface } from './ui/Surface';
 import { NavigationLink } from './NavigationBlocker';
@@ -196,7 +197,7 @@ export function HomeClient() {
   const searchParams = useSearchParams();
   const routeSearch = searchParams?.toString() ?? '';
   const routeLocation = `${pathname ?? ''}?${routeSearch}`;
-  const { currentProject, token, user, hydrated, projectsLoading } = useWorkspace();
+  const { currentProject, token, user, hydrated, projectsLoading, isDemoSession, sessionEpoch } = useWorkspace();
   const [initialSearch] = useState(() => readSearchParams());
   const historyResult = initialSearch.historyEntry.entryId && initialSearch.historyEntry.isCurrentDocument
     ? getCompletedQueryResult(initialSearch.historyEntry.entryId)
@@ -918,6 +919,15 @@ export function HomeClient() {
           ) : null}
         </form>
       </section>
+
+      {token && currentProject && user?.id && !isDemoSession ? (
+        <SharedServiceOnboardingNotice
+          projectId={currentProject.id}
+          ownerId={user.id}
+          sessionEpoch={sessionEpoch}
+          isDemoSession={isDemoSession}
+        />
+      ) : null}
 
       {!searched && latestConcepts.length > 0 ? (
         <section className="space-y-4" aria-labelledby="latest-concepts-heading">

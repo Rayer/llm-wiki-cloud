@@ -26,6 +26,11 @@ func setQueryIdentityHeaders(c *gin.Context, identity *query.RuntimeConfigIdenti
 		"X-Query-Binding-Exact":           strconv.FormatBool(identity.ExactBinding),
 		"X-Query-Generation-ID":           identity.GenerationID,
 		"X-Query-Concepts-Digest":         identity.ConceptsDigest,
+		"X-LLM-Profile-ID":                identity.LLMProfileID,
+		"X-LLM-Profile-Revision":          strconv.FormatInt(identity.LLMProfileRevision, 10),
+		"X-LLM-Protocol":                  identity.LLMProtocol,
+		"X-LLM-Provider":                  identity.ExpansionProvider,
+		"X-LLM-Model":                     identity.ExpansionModel,
 	}
 	for key, value := range values {
 		c.Header(key, value)

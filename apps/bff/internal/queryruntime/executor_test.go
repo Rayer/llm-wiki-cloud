@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/rayer/llm-wiki-bff/internal/cache"
 	"github.com/rayer/llm-wiki-bff/internal/gcs"
@@ -240,6 +241,152 @@ func TestRuntimeTechnicalPromptMatchesSharedProductionRenderer(t *testing.T) {
 	}
 	if provider.system != want.System || provider.user != want.User {
 		t.Fatalf("prompt mismatch system=%q user=%q", provider.system, provider.user)
+	}
+}
+
+type quotaSwitchProjectClient struct {
+	mu             sync.Mutex
+	currentModel   llm.ModelIdentity
+	currentProfile llm.ProfileIdentity
+}
+
+var (
+	quotaProfileA = llm.ProfileIdentity{ID: "profile-a", Revision: 1, Provider: "custom", Protocol: string(llm.ProtocolOpenAIChatCompletions), Model: "model-a"}
+	quotaProfileB = llm.ProfileIdentity{ID: "profile-b", Revision: 2, Provider: "custom", Protocol: string(llm.ProtocolOpenAIChatCompletions), Model: "model-b"}
+)
+
+func newQuotaSwitchProjectClient() *quotaSwitchProjectClient {
+	return &quotaSwitchProjectClient{
+		currentModel:   llm.ModelIdentity{Provider: "custom", Model: quotaProfileA.Model},
+		currentProfile: quotaProfileA,
+	}
+}
+
+func (c *quotaSwitchProjectClient) ModelIdentity() (llm.ModelIdentity, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.currentModel, true
+}
+
+func (c *quotaSwitchProjectClient) ProfileIdentity() llm.ProfileIdentity {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.currentProfile
+}
+
+func (c *quotaSwitchProjectClient) Chat(ctx context.Context, _, _ string) (string, error) {
+	recorder := query.ReceiptRecorderFromContext(ctx)
+	call := func(profile llm.ProfileIdentity, outcome string) {
+		if recorder == nil {
+			return
+		}
+		finish := recorder.StartProfileCallAtContext(ctx, llm.ProfileConfig{
+			ID: profile.ID, Revision: profile.Revision, Provider: profile.Provider,
+			Protocol: llm.Protocol(profile.Protocol), Endpoint: "https://" + profile.Model + ".example/v1", Model: profile.Model,
+		}, llm.CallStage(ctx), "https://"+profile.Model+".example/v1/chat/completions")
+		finish(outcome, outcome, time.Now())
+	}
+	switch llm.CallPurpose(ctx) {
+	case "expansion":
+		call(quotaProfileA, "success")
+		llm.RecordCallIdentity(ctx, llm.ModelIdentity{Provider: "custom", Model: quotaProfileA.Model}, quotaProfileA)
+		return `{"raw_query":"deploy docs","required":[],"excluded":[],"preferred":[{"kind":"topic","value":"deploy docs","terms":["deploy","docs"],"proof":"lexical"}],"goals":[],"supporting_dimensions":[],"acceptable_alternatives":[],"ambiguity":[],"fallback":false}`, nil
+	case "model_prior", "evidence_answer":
+		call(quotaProfileA, "quota_exhausted")
+		call(quotaProfileB, "success")
+		c.mu.Lock()
+		c.currentModel = llm.ModelIdentity{Provider: "custom", Model: quotaProfileB.Model}
+		c.currentProfile = quotaProfileB
+		c.mu.Unlock()
+		llm.RecordCallIdentity(ctx, llm.ModelIdentity{Provider: "custom", Model: quotaProfileB.Model}, quotaProfileB)
+		return "Answer from profile B.", nil
+	default:
+		return "", errors.New("unexpected Project provider call purpose")
+	}
+}
+
+// TestRuntimeAggregatesInjectedExpansionAndSynthesisIdentityAcrossQuotaFallback
+// exercises the runtime's aggregation/consumer behavior with a stub that
+// injects host-call and identity records; provider transport is covered in
+// the llm package's ProfilePoolClient transport regression.
+func TestRuntimeAggregatesInjectedExpansionAndSynthesisIdentityAcrossQuotaFallback(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(exporter)))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		_ = provider.Shutdown(context.Background())
+	})
+
+	config := runtimeConfig(t)
+	config.Stages.AnswerSynthesizer.NoEvidencePolicy = queryconfig.ModelPriorFallbackPolicy
+	config.ConfigDigest = ""
+	var err error
+	config, err = queryconfig.Seal(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := queryruntime.NewExecutor(config, cache.New(), &countingProvider{}, &countingLegacy{}, runtimeSynthesizer())
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectClient := newQuotaSwitchProjectClient()
+	ctx, receipt := query.WithReceipt(context.Background())
+	ctx = llm.WithProjectChatClient(ctx, projectClient)
+	reader := &runtimeReader{identity: storage.QueryGenerationIdentity{ProjectID: "project-a", GenerationID: "generation-7", ConceptsDigest: "sha256:" + strings.Repeat("a", 64)}}
+	result, err := runtime.Execute(ctx, reader, query.Request{Query: "deploy docs", Mode: "full"})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	query.FinishReceipt(receipt)
+	identity := result.RuntimeConfigIdentity
+	if identity == nil || identity.ExpansionProvider != "custom" || identity.ExpansionModel != "model-a" || identity.SynthesisProvider != "custom" || identity.SynthesisModel != "model-b" {
+		t.Fatalf("response stage identity = %+v, want expansion A and synthesis B", identity)
+	}
+	if result.AISynth != "Answer from profile B." {
+		t.Fatalf("response synthesis = %q", result.AISynth)
+	}
+
+	hostCalls := receipt.Receipt().HostCalls
+	seenExpansionA, seenQuotaA, seenSynthesisB := false, false, false
+	for _, hostCall := range hostCalls {
+		switch {
+		case hostCall.Stage == "query_expansion" && hostCall.ProfileID == quotaProfileA.ID && hostCall.Model == quotaProfileA.Model:
+			seenExpansionA = true
+		case hostCall.Stage == "answer_synthesis" && hostCall.ProfileID == quotaProfileA.ID && hostCall.Outcome == "quota_exhausted":
+			seenQuotaA = true
+		case hostCall.Stage == "answer_synthesis" && hostCall.ProfileID == quotaProfileB.ID && hostCall.Model == quotaProfileB.Model && hostCall.Outcome == "success":
+			seenSynthesisB = true
+		}
+	}
+	if !seenExpansionA || !seenQuotaA || !seenSynthesisB {
+		t.Fatalf("host-call receipt missed A/B fallback: %+v", hostCalls)
+	}
+
+	seenTraceA, seenTraceB := false, false
+	for _, span := range exporter.GetSpans() {
+		if span.Name != "query.host_call" {
+			continue
+		}
+		profileID, model := "", ""
+		for _, attr := range span.Attributes {
+			switch string(attr.Key) {
+			case "llm.profile.id":
+				profileID = attr.Value.AsString()
+			case "query.model":
+				model = attr.Value.AsString()
+			}
+		}
+		if profileID == quotaProfileA.ID && model == quotaProfileA.Model {
+			seenTraceA = true
+		}
+		if profileID == quotaProfileB.ID && model == quotaProfileB.Model {
+			seenTraceB = true
+		}
+	}
+	if !seenTraceA || !seenTraceB {
+		t.Fatalf("trace host-call spans missed A/B profiles: %+v", exporter.GetSpans())
 	}
 }
 

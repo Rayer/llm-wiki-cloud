@@ -132,6 +132,7 @@ type WorkspaceContextValue = {
   hydrated: boolean;
   token: string | null;
   user: AuthUser | null;
+  sessionEpoch: number;
   projects: Project[];
   currentProject: Project | null;
   projectsLoading: boolean;
@@ -479,6 +480,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     hydrated,
     token,
     user,
+    sessionEpoch,
     projects,
     currentProject,
     projectsLoading,
@@ -522,6 +524,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     projectsLoading,
     refreshProjects,
     selectProject,
+    sessionEpoch,
     signOut,
     token,
     user,

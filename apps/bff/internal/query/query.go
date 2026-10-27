@@ -95,6 +95,9 @@ type RuntimeConfigIdentity struct {
 	RareDocumentFrequency      int     `json:"rare_document_frequency"`
 	SynthesisProvider          string  `json:"synthesis_provider"`
 	NoEvidencePolicy           string  `json:"no_evidence_policy"`
+	LLMProfileID               string  `json:"llm_profile_id,omitempty"`
+	LLMProfileRevision         int64   `json:"llm_profile_revision,omitempty"`
+	LLMProtocol                string  `json:"llm_protocol,omitempty"`
 }
 
 // RuntimeConfigReadback is the sanitized global identity of a sealed runtime.
@@ -158,12 +161,19 @@ type Synthesizer interface {
 type Service struct {
 	cache    *cache.Cache
 	expander *llm.QueryExpander
-	llm      *llm.Client
+	llm      llm.ProjectChatClient
 }
 
 // NewService creates a query application service.
 func NewService(conceptCache *cache.Cache, expander *llm.QueryExpander, llmClient *llm.Client) *Service {
+	if llmClient == nil {
+		return &Service{cache: conceptCache, expander: expander}
+	}
 	return &Service{cache: conceptCache, expander: expander, llm: llmClient}
+}
+
+func NewProjectService(conceptCache *cache.Cache, client llm.ProjectChatClient) *Service {
+	return &Service{cache: conceptCache, llm: client}
 }
 
 func (s *Service) ModelIdentity() (llm.ModelIdentity, bool) {
@@ -239,8 +249,9 @@ func (s *Service) SynthesizeWithError(ctx context.Context, reader cache.Reader, 
 	}
 	if modelPrior {
 		synthesisCtx := ctx
+		modelIdentity, _ := s.llm.ModelIdentity()
 		if recorder := ReceiptRecorderFromContext(ctx); recorder != nil {
-			synthesisCtx = recorder.StartStage(ctx, "answer_synthesis_model_prior", "deepseek", s.llm.Model(), string(s.llm.Reasoning()))
+			synthesisCtx = recorder.StartStage(ctx, "answer_synthesis_model_prior", modelIdentity.Provider, modelIdentity.Model, modelIdentity.Reasoning)
 		}
 		synthesisCtx = llm.WithCallPurpose(synthesisCtx, "model_prior")
 		answer, err := s.llm.Chat(synthesisCtx, buildModelPriorSystemPrompt(), buildModelPriorUserPrompt(request.Query))
@@ -271,8 +282,9 @@ func (s *Service) SynthesizeWithError(ctx context.Context, reader cache.Reader, 
 		return response, nil
 	}
 	synthesisCtx := ctx
+	modelIdentity, _ := s.llm.ModelIdentity()
 	if recorder := ReceiptRecorderFromContext(ctx); recorder != nil {
-		synthesisCtx = recorder.StartStage(ctx, "answer_synthesis", "deepseek", s.llm.Model(), string(s.llm.Reasoning()))
+		synthesisCtx = recorder.StartStage(ctx, "answer_synthesis", modelIdentity.Provider, modelIdentity.Model, modelIdentity.Reasoning)
 	}
 	synthesisCtx = llm.WithCallPurpose(synthesisCtx, "evidence_answer")
 	contextCtx, contextSpan := otel.Tracer("llm-wiki-bff/query").Start(synthesisCtx, "query.context.acquire")

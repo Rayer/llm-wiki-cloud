@@ -47,9 +47,12 @@ type BFFFile struct {
 	JWTSecret                    string              `json:"jwt_secret,omitempty"`
 	AuthConsumer                 *BFFAuthConsumer    `json:"auth_consumer,omitempty"`
 	DeepSeekAPIKey               string              `json:"deepseek_api_key"`
+	DeepSeekAPIKeyReference      string              `json:"deepseek_api_key_reference,omitempty"`
 	TypeSafeAPIKey               string              `json:"typesafe_api_key"`
+	BYOKCredentialEncryptionKey  string              `json:"byok_credential_encryption_key,omitempty"`
 	ProfileRuntimeAudience       string              `json:"profile_runtime_audience"`
 	ProfileRuntimeServiceAccount string              `json:"profile_runtime_service_account"`
+	PipelineWorkerServiceAccount string              `json:"pipeline_worker_service_account,omitempty"`
 	PipelineSchedule             BFFPipelineSchedule `json:"pipeline_schedule"`
 	LLM                          BFFLLM              `json:"llm"`
 	Query                        BFFQuery            `json:"query"`
@@ -245,7 +248,7 @@ func DecodeBFFFile(data []byte) (BFFFile, error) {
 	}
 	version := 0
 	_ = json.Unmarshal(fields["schema_version"], &version)
-	if err := requireJSONKeysWithOptional(fields, bffRequiredKeysForVersion(version), []string{"mcp_resource_origin", "mcp"}); err != nil {
+	if err := requireJSONKeysWithOptional(fields, bffRequiredKeysForVersion(version), []string{"mcp_resource_origin", "mcp", "byok_credential_encryption_key", "deepseek_api_key_reference", "pipeline_worker_service_account"}); err != nil {
 		return BFFFile{}, err
 	}
 	if err := validateBFFNestedShapes(fields); err != nil {
@@ -353,9 +356,11 @@ func validateBFFJSONTypes(fields map[string]json.RawMessage, version int) error 
 		{"auth_session_migration", "string", false},
 		{"registration_enabled", "boolean", true},
 		{"deepseek_api_key", "string", false},
+		{"deepseek_api_key_reference", "string", false},
 		{"typesafe_api_key", "string", false},
 		{"profile_runtime_audience", "string", false},
 		{"profile_runtime_service_account", "string", false},
+		{"pipeline_worker_service_account", "string", false},
 		{"pipeline_schedule", "object", false},
 		{"llm", "object", false},
 		{"query", "object", false},
@@ -363,6 +368,12 @@ func validateBFFJSONTypes(fields map[string]json.RawMessage, version int) error 
 		{"port_default", "integer", false},
 	} {
 		if field.name == "jwt_secret" && version == 3 {
+			continue
+		}
+		if field.name == "pipeline_worker_service_account" && fields[field.name] == nil {
+			continue
+		}
+		if field.name == "deepseek_api_key_reference" && fields[field.name] == nil {
 			continue
 		}
 		if err := requireBFFJSONType(field.name, fields[field.name], field.kind, field.nullable); err != nil {
@@ -391,6 +402,11 @@ func validateBFFJSONTypes(fields map[string]json.RawMessage, version int) error 
 			if err := requireBFFJSONType("auth_consumer."+field.name, consumer[field.name], field.kind, false); err != nil {
 				return err
 			}
+		}
+	}
+	if raw, ok := fields["byok_credential_encryption_key"]; ok {
+		if err := requireBFFJSONType("byok_credential_encryption_key", raw, "string", false); err != nil {
+			return err
 		}
 	}
 	if raw, ok := fields["mcp_resource_origin"]; ok {
@@ -668,6 +684,12 @@ func validateBFFFile(file BFFFile) error {
 			return errors.New("BFF config pipeline schedule identity is invalid")
 		}
 	}
+	if file.PipelineWorkerServiceAccount != "" {
+		if file.Environment == "local" || file.ProfileRuntimeAudience == "" ||
+			!regexp.MustCompile(`^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z0-9.-]+\.iam\.gserviceaccount\.com$`).MatchString(file.PipelineWorkerServiceAccount) {
+			return errors.New("BFF config Pipeline worker identity is invalid")
+		}
+	}
 	if strings.TrimSpace(file.AuthSessionEnvironment) == "" {
 		return errors.New("BFF config auth_session_environment is invalid")
 	}
@@ -749,6 +771,20 @@ func validateBFFFile(file BFFFile) error {
 	}
 	if (file.SchemaVersion == 2 && strings.TrimSpace(file.JWTSecret) == "") || strings.TrimSpace(file.DeepSeekAPIKey) == "" {
 		return errors.New("BFF config required secret is empty")
+	}
+	if key := strings.TrimSpace(file.BYOKCredentialEncryptionKey); key != "" {
+		decoded, err := hex.DecodeString(key)
+		if err != nil || len(decoded) != 32 {
+			return errors.New("BFF config byok_credential_encryption_key is invalid")
+		}
+		clear(decoded)
+	}
+	if reference := strings.TrimSpace(file.DeepSeekAPIKeyReference); reference != "" {
+		validSecretResource := regexp.MustCompile(`^projects/[A-Za-z0-9.-]+/secrets/[A-Za-z0-9_-]+/versions/(?:latest|[1-9][0-9]*)$`).MatchString(reference)
+		validLocalEnvironment := file.Environment == "local" && regexp.MustCompile(`^environment:[A-Za-z_][A-Za-z0-9_]*$`).MatchString(reference)
+		if !validSecretResource && !validLocalEnvironment {
+			return errors.New("BFF config deepseek_api_key_reference is invalid")
+		}
 	}
 	if file.AuthSessionMigration != "disabled" && file.AuthSessionMigration != "legacy_read_through" {
 		return errors.New("BFF config auth_session_migration is invalid")
@@ -843,7 +879,9 @@ func configFromBFFFile(file BFFFile, port string) Config {
 	cfg := Config{
 		GCPProject: file.GCPProject, Bucket: file.Bucket, FirestoreDatabaseID: file.FirestoreDatabaseID,
 		LocalCloudScope: localScope(file.Local), Port: port, DeepSeekAPIKey: file.DeepSeekAPIKey,
-		TypeSafeAPIKey: file.TypeSafeAPIKey, LLMProvider: file.LLM.Provider, LLMBaseURL: file.LLM.BaseURL,
+		DeepSeekAPIKeyReference: file.DeepSeekAPIKeyReference,
+		TypeSafeAPIKey:          file.TypeSafeAPIKey, BYOKCredentialEncryptionKey: file.BYOKCredentialEncryptionKey,
+		LLMProvider: file.LLM.Provider, LLMBaseURL: file.LLM.BaseURL,
 		LLMRequestTimeoutSeconds: file.LLM.RequestTimeoutSeconds, LLMModel: llm.CanonicalDeepSeekModel(file.LLM.Model),
 		JWTSecret: file.JWTSecret, PipelineJobURL: file.PipelineJobURL, ExportJobURL: file.ExportJobURL,
 		ExportSigningServiceAccount: file.ExportSigningServiceAccount, AllowedOrigins: file.AllowedOrigins,
@@ -857,6 +895,7 @@ func configFromBFFFile(file BFFFile, port string) Config {
 		BFFConfigSchemaVersion: file.SchemaVersion,
 		AuthSessionMigration:   file.AuthSessionMigration, ProfileRuntimeAudience: file.ProfileRuntimeAudience,
 		ProfileRuntimeServiceAccount: file.ProfileRuntimeServiceAccount,
+		PipelineWorkerServiceAccount: file.PipelineWorkerServiceAccount,
 		PipelineScheduleCron:         file.PipelineSchedule.Cron, PipelineScheduleTimezone: file.PipelineSchedule.Timezone,
 		ScheduledPipelineAudience: file.PipelineSchedule.Audience, ScheduledPipelineServiceAccount: file.PipelineSchedule.ServiceAccount,
 	}

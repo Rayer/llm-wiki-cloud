@@ -12,6 +12,7 @@ import (
 
 	"github.com/rayer/llm-wiki-bff/internal/llm"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
@@ -166,6 +167,44 @@ func TestContextAwareHostUsesCallerParentAndSeparatesTransportFromReceiptOutcome
 	}
 	if outcome != "success" || purpose != "expansion" || attemptIndex != 0 {
 		t.Fatalf("host attrs outcome=%q purpose=%q attempt_index=%d", outcome, purpose, attemptIndex)
+	}
+}
+
+func TestProfileHostReceiptAndSpanCarryActualProfileIdentity(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(exporter)))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		_ = provider.Shutdown(context.Background())
+	})
+
+	rootCtx, root := otel.Tracer("llm-wiki-bff/query").Start(context.Background(), "query.request")
+	ctx, recorder := WithReceipt(rootCtx)
+	profile := llm.ProfileConfig{ID: "shared-b", Revision: 4, Provider: "custom", Protocol: llm.ProtocolAnthropicMessages, Model: "fixture-model"}
+	finish := recorder.StartProfileCallAtContext(ctx, profile, "answer_synthesis", "https://fixture.example/v1/messages")
+	finish("success", "success", time.Now())
+	root.End()
+
+	got := recorder.Receipt()
+	if len(got.HostCalls) != 1 || got.HostCalls[0].Stage != "answer_synthesis" || got.HostCalls[0].ProfileID != "shared-b" || got.HostCalls[0].ProfileRevision != 4 || got.HostCalls[0].Protocol != string(llm.ProtocolAnthropicMessages) {
+		t.Fatalf("profile host receipt = %+v", got.HostCalls)
+	}
+	var host tracetest.SpanStub
+	for _, span := range exporter.GetSpans() {
+		if span.Name == "query.host_call" {
+			host = span
+		}
+	}
+	attrs := map[string]string{}
+	for _, attr := range host.Attributes {
+		if attr.Value.Type() == attribute.STRING {
+			attrs[string(attr.Key)] = attr.Value.AsString()
+		}
+	}
+	if attrs["query.stage"] != "answer_synthesis" || attrs["llm.profile.id"] != "shared-b" || attrs["llm.protocol"] != string(llm.ProtocolAnthropicMessages) {
+		t.Fatalf("profile host span attrs = %#v", attrs)
 	}
 }
 

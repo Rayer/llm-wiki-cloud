@@ -388,7 +388,11 @@ func runCloudSuggestedQueries(ctx context.Context, cfg workerConfig, objects obj
 		}
 		return primary
 	}
-	defer os.RemoveAll(workspace)
+	defer func() {
+		if workspace != "" {
+			_ = os.RemoveAll(workspace)
+		}
+	}()
 
 	// Suggest-only always needs the current generation (never CLEAN_REBUILD).
 	snapshots, manifestData, manifestAttrs, err := materializeCloudWorkspace(materializeCtx, objects, prefix, workspace, false)
@@ -633,7 +637,13 @@ func runCloudWorkerBatch(ctx context.Context, cfg workerConfig, commands [][]str
 	// Keep SuppressOutput as configured by the caller. Cloud mode always writes
 	// a durable pipeline log; silencing console is optional and must not be the
 	// default, or local cloud runs and Cloud Logging lose live Synto output.
-	err = runWorkerBatchAtVault(ctx, cfg, commands, workspace)
+	previousWorkspace := workspace
+	workspace, err = runCloudWorkerBatchAtVaultWithProfilePool(ctx, cfg, commands, workspace)
+	if workspace != previousWorkspace {
+		if cleanupErr := os.RemoveAll(previousWorkspace); cleanupErr != nil {
+			workspaceCleanupFailed = true
+		}
+	}
 	if err != nil {
 		failure := preserveWorkerFailure(err, failureStageSyntoRun, failureClassUnknown)
 		primary := annotateError(errCloudPipelineExecution, failure)

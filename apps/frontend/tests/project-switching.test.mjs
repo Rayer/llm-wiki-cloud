@@ -11,7 +11,7 @@ test('home status reloads when the current project changes', async () => {
   assert.match(homeClient, /import \{ WorkspaceProvider, useWorkspace \}|import \{ useWorkspace \}/);
   assert.match(
     homeClient,
-    /const \{\s*currentProject\s*,\s*token\s*,\s*user\s*,\s*hydrated\s*,\s*projectsLoading\s*\} = useWorkspace\(\);/s,
+    /const \{\s*currentProject\s*,\s*token\s*,\s*user\s*,\s*hydrated\s*,\s*projectsLoading\s*,\s*isDemoSession\s*,\s*sessionEpoch\s*\} = useWorkspace\(\);/s,
   );
   assert.match(
     homeClient,
@@ -72,8 +72,10 @@ test('shell footer keeps the user account block without raw user or project ids'
 
   assert.match(shell, /import \{ useAuth \} from '@\/lib\/auth';/);
   assert.match(shell, /const \{\s*user\s*\} = useAuth\(\);/);
-  assert.match(shell, /<div className="shrink-0 border-t border-white\/8 px-3 py-3">[\s\S]*?<div className="mt-3 flex items-center gap-3">/);
+  assert.match(shell, /<div className="shrink-0 border-t border-white\/8 px-3 py-3">[\s\S]*?<div className="flex items-center gap-3 px-2">/);
   assert.match(shell, /\{user\?\.email \?\? 'User'\}/);
+  assert.match(shell, /<SettingsIcon className="size-4" aria-hidden="true" \/>\{t\('AccountSettings\.title'\)\}/);
+  assert.match(shell, /<LogOut className="size-4" aria-hidden="true" \/>\{t\('Shell\.logout'\)\}/);
   assert.match(shell, /onClick=\{\(\) => void signOut\(\)\}/);
   assert.doesNotMatch(shell, /User:\s*\{user\?\.id \?\? '—'\}/);
   assert.doesNotMatch(shell, /Project:\s*\{currentProject\?\.id \?\? '—'\}/);

@@ -15,17 +15,23 @@ const mocks = vi.hoisted(() => ({
   readGoogleIdentitySummary: vi.fn(),
   readPasswordSelfServiceStatus: vi.fn(),
   changeAccountPassword: vi.fn(),
+  listLLMProfiles: vi.fn(),
   locale: 'en' as 'en' | 'zh-TW',
   accessToken: 'web-access-token',
   userID: 'owner-1',
   sessionEpoch: 1,
+  isDemoSession: false,
   refreshAccessToken: vi.fn(),
 }));
 
 vi.mock('@/lib/auth', () => ({
-  useAuth: () => ({ accessToken: mocks.accessToken, refreshAccessToken: mocks.refreshAccessToken, sessionEpoch: mocks.sessionEpoch, user: { id: mocks.userID, email: 'owner@example.test' } }),
+  useAuth: () => ({ accessToken: mocks.accessToken, refreshAccessToken: mocks.refreshAccessToken, sessionEpoch: mocks.sessionEpoch, user: { id: mocks.userID, email: 'owner@example.test' }, isDemoSession: mocks.isDemoSession }),
 }));
 vi.mock('@/components/WorkspaceProvider', () => ({ useWorkspace: () => ({ currentProject: null }) }));
+vi.mock('@/lib/api', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/api')>('@/lib/api');
+  return { ...actual, listLLMProfiles: mocks.listLLMProfiles };
+});
 vi.mock('@/lib/i18n', async () => {
   const actual = await vi.importActual<typeof import('@/lib/i18n')>('@/lib/i18n');
   const t = (key: string, params?: Record<string, string | number>) => actual.translate(mocks.locale, key, params);
@@ -70,6 +76,7 @@ beforeEach(() => {
   mocks.userID = 'owner-1';
   mocks.accessToken = 'web-access-token';
   mocks.sessionEpoch = 1;
+  mocks.isDemoSession = false;
   mocks.listCLISessions.mockReset().mockResolvedValue([session]);
   mocks.listSyncBindings.mockReset().mockResolvedValue([binding]);
   mocks.revokeCLISession.mockReset().mockResolvedValue(undefined);
@@ -78,6 +85,7 @@ beforeEach(() => {
   mocks.readGoogleIdentitySummary.mockReset().mockResolvedValue({ primary_email: 'owner@example.test', linked_providers: [] });
   mocks.readPasswordSelfServiceStatus.mockReset().mockResolvedValue({ allowed: true, configured: true });
   mocks.changeAccountPassword.mockReset().mockResolvedValue(undefined);
+  mocks.listLLMProfiles.mockReset().mockResolvedValue([]);
   mocks.refreshAccessToken.mockReset().mockResolvedValue('fresh-web-token');
   vi.stubGlobal('confirm', vi.fn(() => true));
 });
@@ -89,6 +97,15 @@ afterEach(() => {
 });
 
 describe('LWC-346 account self-service', () => {
+  it('does not enumerate or expose personal BYOK credentials in a shared Demo session', async () => {
+    mocks.isDemoSession = true;
+    render(<AccountSettingsModal onClose={vi.fn()} />);
+
+    expect(await screen.findByRole('dialog', { name: 'Account settings' })).not.toBeNull();
+    expect(screen.queryByRole('heading', { name: 'My BYOK profiles' })).toBeNull();
+    expect(mocks.listLLMProfiles).not.toHaveBeenCalled();
+  });
+
   it('lets a signed-in OAuth user optionally set an email password without an unknown old password', async () => {
     mocks.readPasswordSelfServiceStatus.mockImplementation(async () => ({
       allowed: true,

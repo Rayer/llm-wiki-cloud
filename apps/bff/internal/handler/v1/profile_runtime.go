@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/rayer/llm-wiki-bff/internal/auth"
 	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
+	"github.com/rayer/llm-wiki-bff/internal/llm"
 	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"github.com/rayer/llm-wiki-bff/internal/profilederive"
 	"github.com/rayer/llm-wiki-bff/internal/profileruntime"
@@ -337,6 +338,18 @@ func (d *ProfileDispatcher) finish(ctx context.Context, repo *firestoreProfileRe
 func (d *ProfileDispatcher) execute(ctx context.Context, repo *firestoreProfileRepository, w profileruntime.Work) error {
 	if _, err := d.Handler.AuthorizeProject(ctx, w.UserID, w.ProjectID, ProjectEdit); err != nil {
 		return err
+	}
+	projectClient, _, err := d.Handler.projectLLMClient(ctx, w.UserID, w.ProjectID)
+	if err != nil {
+		return err
+	}
+	if projectClient != nil {
+		defer func() {
+			if closer, ok := projectClient.(interface{ Close() }); ok {
+				closer.Close()
+			}
+		}()
+		ctx = llm.WithProjectChatClient(ctx, projectClient)
 	}
 	if w.Kind == "pipeline" {
 		return d.executePipelineIntent(ctx, repo, w)
