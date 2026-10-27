@@ -120,6 +120,28 @@ func resolvePipelineLLMProfiles(ctx context.Context, cfg workerConfig) ([]pipeli
 	return result.Profiles, result.Source == "shared", nil
 }
 
+// resolveSuggestedQueriesSource resolves the Project-bound source before any
+// standalone local or cloud suggested-query work begins. Only the resolver's
+// never-managed bootstrap result can use the legacy platform client.
+func resolveSuggestedQueriesSource(ctx context.Context, cfg workerConfig) (workerConfig, error) {
+	cfg = configFromEnvironment(cfg)
+	if cfg.PipelineReservationID == "" || cfg.UserID == "" || cfg.ProjectID == "" || cfg.ProfileResolverURL == "" {
+		return workerConfig{}, errors.New("Project LLM source is unavailable to suggested-query generation")
+	}
+	profiles, shared, err := resolvePipelineLLMProfiles(ctx, cfg)
+	if err != nil {
+		return workerConfig{}, errors.New("Project LLM source is unavailable to suggested-query generation")
+	}
+	cfg.ProfileCandidates = profiles
+	cfg.SharedProfilePool = shared
+	cfg.BootstrapLLMSource = len(profiles) == 0 && !shared
+	cfg.ActiveLLMProfile = nil
+	if len(cfg.ProfileCandidates) > 0 {
+		cfg.ActiveLLMProfile = &cfg.ProfileCandidates[0]
+	}
+	return cfg, nil
+}
+
 func validatePipelineLLMProfile(profile pipelineLLMProfile) error {
 	client, err := llm.NewProfileClient(llm.ProfileConfig{ID: profile.ID, Revision: profile.Revision, Provider: profile.Provider,
 		Protocol: profile.Protocol, Endpoint: profile.Endpoint, Model: profile.Model}, string(profile.APIKey), llm.ProfileClientOptions{Timeout: 10 * time.Second})

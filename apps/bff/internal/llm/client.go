@@ -37,6 +37,28 @@ type stageKey struct{}
 type hostRecorderKey struct{}
 type callPurposeKey struct{}
 type callAttemptIndexKey struct{}
+type callIdentityRecorderKey struct{}
+
+// CallIdentityRecorder records the model/profile that completed one call.
+// Implementations must be safe for concurrent Query expansion requests.
+type CallIdentityRecorder interface {
+	RecordCallIdentity(context.Context, ModelIdentity, ProfileIdentity)
+}
+
+func WithCallIdentityRecorder(ctx context.Context, recorder CallIdentityRecorder) context.Context {
+	if recorder == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, callIdentityRecorderKey{}, recorder)
+}
+
+// RecordCallIdentity reports a successful provider call to an optional request
+// recorder. Failed quota attempts do not call this function.
+func RecordCallIdentity(ctx context.Context, model ModelIdentity, profile ProfileIdentity) {
+	if recorder, ok := ctx.Value(callIdentityRecorderKey{}).(CallIdentityRecorder); ok && recorder != nil {
+		recorder.RecordCallIdentity(ctx, model, profile)
+	}
+}
 
 type ContextHostCallRecorder interface {
 	StartHostCallContext(context.Context, string, string, string) func(string)
@@ -379,6 +401,8 @@ func (c *Client) ChatWithMetadata(ctx context.Context, systemPrompt, userMessage
 		return "", "", &ProviderCallError{Err: errors.New("provider response has no choices")}
 	}
 	finishObserved("success", "success", networkFinished)
+	modelIdentity, _ := c.ModelIdentity()
+	RecordCallIdentity(ctx, modelIdentity, ProfileIdentity{})
 
 	return cr.Choices[0].Message.Content, cr.Model, nil
 }

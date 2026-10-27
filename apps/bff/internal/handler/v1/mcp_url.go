@@ -93,7 +93,11 @@ func (h *Handler) callMCPImportURL(ctx context.Context, _ *mcp.CallToolRequest, 
 		return importURLToolResult(importURLResponse{Status: "unavailable", ProcessingStatus: "not_started", FailureStage: "setup", Reason: "The trusted Project raw page origin is not configured; the URL was not imported."}, true), nil, nil
 	}
 
-	projectClient, _, profileErr := h.projectLLMClient(ctx, identity.userID, identity.projectID)
+	resolveProjectLLMClient := h.projectLLMClient
+	if h.projectLLMClientResolver != nil {
+		resolveProjectLLMClient = h.projectLLMClientResolver
+	}
+	projectClient, _, profileErr := resolveProjectLLMClient(ctx, identity.userID, identity.projectID)
 	if profileErr != nil {
 		return importURLToolResult(importURLResponse{Status: "unavailable", ProcessingStatus: "not_started", FailureStage: "quality", Reason: "The Project LLM source is unavailable, so the URL was not imported."}, true), nil, nil
 	}

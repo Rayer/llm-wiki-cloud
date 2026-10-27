@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/rayer/llm-wiki-bff/internal/cache"
 	"github.com/rayer/llm-wiki-bff/internal/llm"
@@ -28,6 +29,39 @@ type Executor struct {
 	services            map[string]query.Executor
 	compositionServices map[string]query.Executor
 	readback            query.RuntimeConfigReadback
+}
+
+type stageCallIdentityRecorder struct {
+	mu           sync.Mutex
+	expansion    llm.ModelIdentity
+	synthesis    llm.ModelIdentity
+	lastProfile  llm.ProfileIdentity
+	hasExpand    bool
+	hasSynthesis bool
+	hasProfile   bool
+}
+
+func (r *stageCallIdentityRecorder) RecordCallIdentity(ctx context.Context, model llm.ModelIdentity, profile llm.ProfileIdentity) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	switch llm.CallPurpose(ctx) {
+	case "expansion":
+		r.expansion, r.hasExpand = model, true
+	case "evidence_answer", "model_prior":
+		r.synthesis, r.hasSynthesis = model, true
+	}
+	if profile.ID != "" {
+		r.lastProfile, r.hasProfile = profile, true
+	}
+}
+
+func (r *stageCallIdentityRecorder) snapshot() (llm.ModelIdentity, bool, llm.ModelIdentity, bool, llm.ProfileIdentity, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.expansion, r.hasExpand, r.synthesis, r.hasSynthesis, r.lastProfile, r.hasProfile
 }
 
 func NewExecutor(config queryconfig.Config, conceptCache *cache.Cache, expansionProvider queryquality.ChatProvider, legacy query.Executor, synthesizer query.Synthesizer) (*Executor, error) {
@@ -205,18 +239,28 @@ func (e *Executor) Execute(ctx context.Context, reader cache.Reader, request que
 		}
 	}
 	finishResolve(nil)
-	result, err := service.Execute(query.WithRuntimeConfigIdentity(ctx, runtimeIdentity), reader, request)
+	callIdentities := &stageCallIdentityRecorder{}
+	executeCtx := llm.WithCallIdentityRecorder(ctx, callIdentities)
+	result, err := service.Execute(query.WithRuntimeConfigIdentity(executeCtx, runtimeIdentity), reader, request)
 	if err != nil {
 		return query.Result{}, err
 	}
 	if hasProjectClient {
-		if modelIdentity, ok := projectClient.ModelIdentity(); ok {
-			runtimeIdentity.ExpansionProvider, runtimeIdentity.ExpansionModel = modelIdentity.Provider, modelIdentity.Model
-			runtimeIdentity.ExpansionReasoning, runtimeIdentity.ExpansionTemperature = modelIdentity.Reasoning, modelIdentity.Temperature
-			runtimeIdentity.SynthesisProvider, runtimeIdentity.SynthesisModel = modelIdentity.Provider, modelIdentity.Model
-			runtimeIdentity.SynthesisReasoning, runtimeIdentity.SynthesisTemperature = modelIdentity.Reasoning, modelIdentity.Temperature
+		expansionIdentity, hasExpansion, synthesisIdentity, hasSynthesis, lastProfile, hasProfile := callIdentities.snapshot()
+		if hasExpansion {
+			runtimeIdentity.ExpansionProvider, runtimeIdentity.ExpansionModel = expansionIdentity.Provider, expansionIdentity.Model
+			runtimeIdentity.ExpansionReasoning, runtimeIdentity.ExpansionTemperature = expansionIdentity.Reasoning, expansionIdentity.Temperature
 		}
-		if profileIdentity, ok := projectClient.(llm.ProfileIdentityProvider); ok {
+		if hasSynthesis {
+			runtimeIdentity.SynthesisProvider, runtimeIdentity.SynthesisModel = synthesisIdentity.Provider, synthesisIdentity.Model
+			runtimeIdentity.SynthesisReasoning, runtimeIdentity.SynthesisTemperature = synthesisIdentity.Reasoning, synthesisIdentity.Temperature
+		}
+		if hasProfile {
+			identity := lastProfile
+			runtimeIdentity.LLMProfileID = identity.ID
+			runtimeIdentity.LLMProfileRevision = identity.Revision
+			runtimeIdentity.LLMProtocol = identity.Protocol
+		} else if profileIdentity, ok := projectClient.(llm.ProfileIdentityProvider); ok {
 			identity := profileIdentity.ProfileIdentity()
 			runtimeIdentity.LLMProfileID = identity.ID
 			runtimeIdentity.LLMProfileRevision = identity.Revision

@@ -47,12 +47,12 @@ describe('LWC-434 Project BYOK return flow', () => {
   it('selects the returned profile in the unsaved Project draft, then saves only on explicit action', async () => {
     const onAddProfile = vi.fn();
     const view = render(
-      <ProjectLLMSourcePanel projectId="project-a" ownerId="owner-a" sessionEpoch={1} onAddProfile={onAddProfile} />,
+      <ProjectLLMSourcePanel projectId="project-a" ownerId="owner-a" sessionEpoch={1} onAddProfile={onAddProfile} onManageProviders={onAddProfile} />,
     );
-    await screen.findByRole('combobox', { name: 'Project LLM source' });
+    await screen.findByRole('combobox', { name: 'Service source' });
 
-    fireEvent.change(screen.getByRole('combobox', { name: 'Project LLM source' }), { target: { value: 'personal' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Go to Personal settings' }));
+    fireEvent.change(screen.getByRole('combobox', { name: 'Service source' }), { target: { value: 'personal' } });
+    fireEvent.click(screen.getAllByRole('button', { name: 'Open custom LLM providers' })[0]);
     expect(onAddProfile).toHaveBeenCalledOnce();
 
     view.rerender(
@@ -61,17 +61,56 @@ describe('LWC-434 Project BYOK return flow', () => {
         ownerId="owner-a"
         sessionEpoch={1}
         onAddProfile={onAddProfile}
+        onManageProviders={onAddProfile}
         newlyCreatedProfile={createdProfile}
       />,
     );
 
     await waitFor(() => {
-      expect((screen.getByRole('combobox', { name: 'Your profile' }) as HTMLSelectElement).value).toBe(createdProfile.id);
+      expect((screen.getByRole('combobox', { name: 'Custom LLM provider' }) as HTMLSelectElement).value).toBe(createdProfile.id);
     });
     expect(mocks.saveProjectLLMBinding).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: 'Save Project source' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save AI service settings' }));
     await waitFor(() => expect(mocks.saveProjectLLMBinding).toHaveBeenCalledWith('project-a', {
       source: 'personal', profile_id: createdProfile.id, revision: 1,
     }));
+  });
+
+  it('selects a newly returned provider over an existing draft and keeps cancellation unsaved', async () => {
+    const existingProfile: LLMProfile = { ...createdProfile, id: 'existing-profile', name: 'Existing provider' };
+    const onAddProfile = vi.fn();
+    mocks.getProjectLLMBinding.mockResolvedValue({ source: 'shared', revision: 4 });
+    mocks.listLLMProfiles.mockResolvedValue([existingProfile]);
+    const view = render(
+      <ProjectLLMSourcePanel
+        projectId="project-a"
+        ownerId="owner-a"
+        sessionEpoch={1}
+        onAddProfile={onAddProfile}
+        onManageProviders={onAddProfile}
+      />,
+    );
+    await screen.findByRole('combobox', { name: 'Service source' });
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'Service source' }), { target: { value: 'personal' } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Custom LLM provider' }), { target: { value: existingProfile.id } });
+    fireEvent.click(screen.getAllByRole('button', { name: 'Open custom LLM providers' })[1]);
+    expect(onAddProfile).toHaveBeenCalledOnce();
+    view.rerender(
+      <ProjectLLMSourcePanel
+        projectId="project-a"
+        ownerId="owner-a"
+        sessionEpoch={1}
+        newlyCreatedProfile={createdProfile}
+      />,
+    );
+
+    await waitFor(() => {
+      expect((screen.getByRole('combobox', { name: 'Custom LLM provider' }) as HTMLSelectElement).value).toBe(createdProfile.id);
+    });
+    expect(mocks.saveProjectLLMBinding).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel changes' }));
+    expect((screen.getByRole('combobox', { name: 'Service source' }) as HTMLSelectElement).value).toBe('shared');
+    expect(mocks.saveProjectLLMBinding).not.toHaveBeenCalled();
   });
 });

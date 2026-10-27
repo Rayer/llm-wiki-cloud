@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 const mocks = vi.hoisted(() => ({ getProjectLLMBinding: vi.fn() }));
 
@@ -37,7 +37,7 @@ describe('LWC-434 shared service onboarding notice', () => {
 
     expect(screen.queryByRole('heading', { name: '目前使用的是平台共用服務。' })).toBeNull();
     binding.resolve({ source: 'shared' });
-    fireEvent.click(await screen.findByRole('button', { name: '前往個人設定' }));
+    fireEvent.click(await screen.findByRole('button', { name: '開啟自訂LLM提供者' }));
 
     expect(openSettings).toHaveBeenCalledOnce();
     expect((openSettings.mock.calls[0][0] as CustomEvent<{ focusBYOK: boolean }>).detail.focusBYOK).toBe(true);
@@ -69,5 +69,18 @@ describe('LWC-434 shared service onboarding notice', () => {
     view.rerender(<SharedServiceOnboardingNotice projectId="project-b" ownerId="owner-a" sessionEpoch={2} isDemoSession={false} />);
     await Promise.resolve();
     expect(screen.queryByRole('heading', { name: '目前使用的是平台共用服務。' })).toBeNull();
+  });
+
+  it('reloads the Project binding when source settings are saved without unmounting Home', async () => {
+    let source: 'shared' | 'personal' = 'shared';
+    mocks.getProjectLLMBinding.mockImplementation(async () => ({ source }));
+    render(<SharedServiceOnboardingNotice projectId="project-a" ownerId="owner-a" sessionEpoch={1} isDemoSession={false} />);
+    await screen.findByRole('heading', { name: '目前使用的是平台共用服務。' });
+
+    source = 'personal';
+    fireEvent(window, new CustomEvent('lwc-project-llm-binding-updated', { detail: { projectId: 'project-a' } }));
+
+    await waitFor(() => expect(screen.queryByRole('heading', { name: '目前使用的是平台共用服務。' })).toBeNull());
+    expect(mocks.getProjectLLMBinding).toHaveBeenCalledTimes(2);
   });
 });

@@ -18,12 +18,26 @@ export function SharedServiceOnboardingNotice({ projectId, ownerId, sessionEpoch
   useEffect(() => {
     if (!projectId || !ownerId || isDemoSession) return;
     let active = true;
-    void getProjectLLMBinding(projectId).then((binding) => {
-      if (active) setLoaded({ key: scopeKey, source: binding.source });
-    }).catch(() => {
-      if (active) setLoaded({ key: scopeKey, source: 'unknown' });
-    });
-    return () => { active = false; };
+    let requestId = 0;
+    const loadBinding = () => {
+      const currentRequest = ++requestId;
+      setLoaded({ key: scopeKey, source: 'loading' });
+      void getProjectLLMBinding(projectId).then((binding) => {
+        if (active && currentRequest === requestId) setLoaded({ key: scopeKey, source: binding.source });
+      }).catch(() => {
+        if (active && currentRequest === requestId) setLoaded({ key: scopeKey, source: 'unknown' });
+      });
+    };
+    const handleBindingUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<{ projectId?: string }>).detail;
+      if (detail?.projectId === projectId) loadBinding();
+    };
+    loadBinding();
+    window.addEventListener('lwc-project-llm-binding-updated', handleBindingUpdated);
+    return () => {
+      active = false;
+      window.removeEventListener('lwc-project-llm-binding-updated', handleBindingUpdated);
+    };
   }, [isDemoSession, ownerId, projectId, scopeKey]);
 
   return (
@@ -35,10 +49,11 @@ export function SharedServiceOnboardingNotice({ projectId, ownerId, sessionEpoch
   );
 }
 
-export function SharedServiceNotice({ ownerId, source, isDemoSession = false }: {
+export function SharedServiceNotice({ ownerId, source, isDemoSession = false, onManageProviders }: {
   ownerId: string;
   source: LLMSource;
   isDemoSession?: boolean;
+  onManageProviders?: () => void;
 }) {
   const { t } = useT();
   const storageKey = `lwc:byok-shared-notice:v1:${ownerId}`;
@@ -69,7 +84,8 @@ export function SharedServiceNotice({ ownerId, source, isDemoSession = false }: 
   }
 
   function openBYOKSettings() {
-    window.dispatchEvent(new CustomEvent('lwc-open-account-settings', { detail: { focusBYOK: true } }));
+    if (onManageProviders) onManageProviders();
+    else window.dispatchEvent(new CustomEvent('lwc-open-account-settings', { detail: { focusBYOK: true } }));
   }
 
   if (isDemoSession || source !== 'shared' || dismissal?.key !== storageKey || dismissal.dismissed) return null;

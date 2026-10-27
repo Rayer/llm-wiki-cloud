@@ -7,12 +7,13 @@ import { SharedServiceNotice } from './SharedServiceNotice';
 
 type LoadedSource = { key: string; binding: ProjectLLMBinding; profiles: LLMProfile[] };
 
-export function ProjectLLMSourcePanel({ projectId, ownerId, sessionEpoch, compact = false, onAddProfile, newlyCreatedProfile, allowPersonalProfiles = true }: {
+export function ProjectLLMSourcePanel({ projectId, ownerId, sessionEpoch, compact = false, onAddProfile, onManageProviders, newlyCreatedProfile, allowPersonalProfiles = true }: {
   projectId: string;
   ownerId: string;
   sessionEpoch: number;
   compact?: boolean;
   onAddProfile?: () => void;
+  onManageProviders?: () => void;
   newlyCreatedProfile?: LLMProfile | null;
   allowPersonalProfiles?: boolean;
 }) {
@@ -51,16 +52,13 @@ export function ProjectLLMSourcePanel({ projectId, ownerId, sessionEpoch, compac
 
   useEffect(() => {
     if (!allowPersonalProfiles || !newlyCreatedProfile || !current || current.profiles.some((profile) => profile.id === newlyCreatedProfile.id)) return;
-    const preserveDraft = dirty && draftSource === 'personal' && Boolean(draftProfileId);
     queueMicrotask(() => {
       setLoaded({ ...current, profiles: [...current.profiles, newlyCreatedProfile] });
-      if (!preserveDraft) {
-        setDraftSource('personal');
-        setDraftProfileId(newlyCreatedProfile.id);
-      }
+      setDraftSource('personal');
+      setDraftProfileId(newlyCreatedProfile.id);
       setError('');
       setNotice('');
-      window.setTimeout(() => (preserveDraft ? sourceSelectRef.current : profileSelectRef.current ?? sourceSelectRef.current)?.focus(), 0);
+      window.setTimeout(() => profileSelectRef.current?.focus(), 0);
     });
   // A newly created profile is a return payload from the account settings pane.
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -81,6 +79,7 @@ export function ProjectLLMSourcePanel({ projectId, ownerId, sessionEpoch, compac
       setDraftSource(next.source);
       setDraftProfileId(next.profile_id ?? '');
       setNotice(t('LLMSource.saved'));
+      window.dispatchEvent(new CustomEvent('lwc-project-llm-binding-updated', { detail: { projectId } }));
     } catch (saveError: unknown) {
       setError(saveError instanceof Error ? saveError.message : t('LLMSource.saveError'));
     } finally {
@@ -100,11 +99,11 @@ export function ProjectLLMSourcePanel({ projectId, ownerId, sessionEpoch, compac
         <button type="button" disabled={loading} onClick={() => { setLoading(true); void refresh(); }} className="min-h-10 rounded-md border border-white/15 px-3 text-xs text-zinc-300 hover:bg-white/10 disabled:opacity-50">{t('BYOK.retry')}</button>
       </div>
       {!current && !loading && error ? <p role="alert" className="mt-3 text-sm text-red-200">{error}</p> : null}
-      {current && allowPersonalProfiles ? <SharedServiceNotice ownerId={ownerId} source={current.binding.source} /> : null}
+      {current && allowPersonalProfiles ? <SharedServiceNotice ownerId={ownerId} source={current.binding.source} onManageProviders={onManageProviders} /> : null}
       {current ? (
         <>
           <label className="mt-3 block text-sm text-zinc-300">
-            {t('LLMSource.title')}
+            {t('LLMSource.source')}
             <select ref={sourceSelectRef} value={draftSource} onChange={(event) => setDraftSource(event.target.value as 'shared' | 'personal')} className="mt-1 min-h-11 w-full rounded-md border border-white/10 bg-zinc-900 px-3 text-white">
               <option value="shared">{t('LLMSource.shared')}</option>{allowPersonalProfiles ? <option value="personal">{t('LLMSource.personal')}</option> : null}
             </select>

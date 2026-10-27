@@ -48,6 +48,7 @@ type Handler struct {
 	pipelineEventTiming            *pipelineEventTiming
 	profileRepository              profileRepository
 	byokCredentialBox              *byok.CredentialBox
+	projectLLMClientResolver       func(context.Context, string, string) (llm.ProjectChatClient, string, error)
 	byokEnvironment                string
 	byokDeploymentCredentials      map[string]BYOKDeploymentCredential
 	pipelineWorkerAudience         string

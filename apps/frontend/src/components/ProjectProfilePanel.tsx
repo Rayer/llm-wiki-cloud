@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   confirmProfileCandidate,
@@ -112,6 +112,7 @@ function ProfileGuidanceArtifactDetails({ projectId, revision, title }: { projec
 
 type RequestScope = { projectId: string; ownerId: string; sessionEpoch: number; identity: object };
 type ProfileSettingsCard = 'requirements' | 'interpretation' | 'active';
+type ProjectSettingsTab = 'knowledge' | 'ai-service';
 
 export function ProjectProfilePanel({ projectId }: { projectId: string }) {
   const router = useRouter();
@@ -136,9 +137,11 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
   const [introVisibleFor, setIntroVisibleFor] = useState('');
   const [byokSettingsOpen, setByokSettingsOpen] = useState(false);
   const [newlyCreatedProfile, setNewlyCreatedProfile] = useState<LLMProfile | null>(null);
+  const [activeSettingsTab, setActiveSettingsTab] = useState<ProjectSettingsTab>('knowledge');
   const profileRef = useRef<ProfileState | null>(null);
   const guideEntryRef = useRef<HTMLButtonElement>(null);
   const requirementsCardRef = useRef<HTMLButtonElement>(null);
+  const settingsTabRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const focusAfterGuideRef = useRef<'guideEntry' | 'requirements' | null>(null);
   const bootstrapRequestRef = useRef(0);
   const loadedRef = useRef(false);
@@ -549,6 +552,25 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
     router.push('/raw');
   }
 
+  function handleSettingsTabKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
+    const tabs: ProjectSettingsTab[] = ['knowledge', 'ai-service'];
+    const currentIndex = tabs.indexOf(activeSettingsTab);
+    const nextIndex = event.key === 'ArrowRight' ? (currentIndex + 1) % tabs.length
+      : event.key === 'ArrowLeft' ? (currentIndex + tabs.length - 1) % tabs.length
+        : event.key === 'Home' ? 0
+          : event.key === 'End' ? tabs.length - 1
+            : -1;
+    if (nextIndex < 0) return;
+    event.preventDefault();
+    setActiveSettingsTab(tabs[nextIndex]);
+    settingsTabRefs.current[nextIndex]?.focus();
+  }
+
+  function openProjectProviderSettings() {
+    setActiveSettingsTab('ai-service');
+    setByokSettingsOpen(true);
+  }
+
   return (
     <section
       aria-labelledby={guideOpen ? 'profile-guide-heading' : 'project-profile-heading'}
@@ -557,12 +579,28 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
       <div hidden={guideOpen}>
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-emerald-300/90">{t('Profile.settings')}</p>
-          <h2 id="project-profile-heading" className="mt-2 text-xl font-semibold text-white">{t('Profile.title')}</h2>
-          <p className="mt-2 max-w-3xl text-sm leading-6 text-zinc-400">
-            {t('Profile.intro')}
-          </p>
+          <h2 id="project-profile-heading" className="text-xl font-semibold text-white">{t('Profile.pageTitle')}</h2>
         </div>
+      </div>
+
+      <div className="mt-5 grid grid-cols-2 gap-2 rounded-xl border border-white/10 bg-black/20 p-1.5 sm:inline-grid sm:min-w-[24rem]" role="tablist" aria-label={t('Profile.settingsTabs')}>
+        {(['knowledge', 'ai-service'] as const).map((tab, index) => (
+          <button
+            key={tab}
+            ref={(element) => { settingsTabRefs.current[index] = element; }}
+            id={`project-settings-tab-${tab}`}
+            type="button"
+            role="tab"
+            aria-selected={activeSettingsTab === tab}
+            aria-controls={`project-settings-panel-${tab}`}
+            tabIndex={activeSettingsTab === tab ? 0 : -1}
+            onClick={() => setActiveSettingsTab(tab)}
+            onKeyDown={handleSettingsTabKeyDown}
+            className={`min-h-11 rounded-lg px-3 py-2 text-sm font-medium transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 ${activeSettingsTab === tab ? 'bg-emerald-300 text-zinc-950' : 'text-zinc-300 hover:bg-white/5 hover:text-white'}`}
+          >
+            {t(tab === 'knowledge' ? 'Profile.knowledgeTab' : 'Profile.aiServiceTab')}
+          </button>
+        ))}
       </div>
 
       {profileLoading ? <p className="mt-5 text-sm text-zinc-400">{t('Profile.loading')}</p> : null}
@@ -605,15 +643,35 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
 
       {visibleProfile ? (
         <>
-          {user?.id ? (
-            <ProjectLLMSourcePanel
-              projectId={projectId}
-              ownerId={user.id}
-              sessionEpoch={sessionEpoch}
-              onAddProfile={() => setByokSettingsOpen(true)}
-              newlyCreatedProfile={newlyCreatedProfile}
-            />
-          ) : null}
+          <div
+            id="project-settings-panel-ai-service"
+            role="tabpanel"
+            aria-labelledby="project-settings-tab-ai-service"
+            hidden={activeSettingsTab !== 'ai-service'}
+            tabIndex={0}
+          >
+            {user?.id ? (
+              <ProjectLLMSourcePanel
+                projectId={projectId}
+                ownerId={user.id}
+                sessionEpoch={sessionEpoch}
+                onAddProfile={openProjectProviderSettings}
+                onManageProviders={openProjectProviderSettings}
+                newlyCreatedProfile={newlyCreatedProfile}
+              />
+            ) : null}
+          </div>
+          <div
+            id="project-settings-panel-knowledge"
+            role="tabpanel"
+            aria-labelledby="project-settings-tab-knowledge"
+            hidden={activeSettingsTab !== 'knowledge'}
+            tabIndex={0}
+          >
+          <div className="mt-5">
+            <h3 className="text-lg font-semibold text-white">{t('Profile.title')}</h3>
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-zinc-400">{t('Profile.intro')}</p>
+          </div>
           {showNewProjectIntro ? (
             <section className="mt-4 rounded-xl border border-emerald-200/25 bg-emerald-200/[0.06] p-4" aria-labelledby="new-project-profile-intro-heading">
               <div className="flex items-start justify-between gap-3">
@@ -1046,6 +1104,7 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
               )}
             </div>
           </section>
+          </div>
           </div>
         </>
       ) : null}

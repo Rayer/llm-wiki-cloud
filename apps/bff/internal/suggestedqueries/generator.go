@@ -56,12 +56,12 @@ type ConceptEvidence struct {
 // GenerationMetadata identifies the generation contract that produced a
 // candidate. It is retained in the published artifact for auditability.
 type GenerationMetadata struct {
-	Model            string `json:"model"`
-	PromptVersion    string `json:"prompt_version"`
-	ProfileID        string `json:"profile_id,omitempty"`
-	ProfileRevision  int64  `json:"profile_revision,omitempty"`
-	Provider         string `json:"provider,omitempty"`
-	Protocol         string `json:"protocol,omitempty"`
+	Model           string `json:"model"`
+	PromptVersion   string `json:"prompt_version"`
+	ProfileID       string `json:"profile_id,omitempty"`
+	ProfileRevision int64  `json:"profile_revision,omitempty"`
+	Provider        string `json:"provider,omitempty"`
+	Protocol        string `json:"protocol,omitempty"`
 }
 
 // Candidate is the validated candidate retained in the published artifact.
@@ -81,6 +81,13 @@ type providerCandidate struct {
 
 type Provider interface {
 	Chat(ctx context.Context, systemPrompt, userMessage string) (string, error)
+}
+
+// GenerationMetadataProvider reports trusted identity for the call that just
+// completed. It allows bounded pool providers to record the successful
+// fallback candidate instead of the initially selected candidate.
+type GenerationMetadataProvider interface {
+	GenerationMetadata() GenerationMetadata
 }
 
 // Generate makes one bounded provider call for one postprocess operation.
@@ -116,6 +123,12 @@ func Generate(ctx context.Context, provider Provider, description string, entrie
 	observability.FinishPipelineSpan(providerSpan, providerOutcome)
 	if err != nil {
 		return Artifact{}, &GenerationError{"provider_failure", fmt.Errorf("generate suggested queries: %w", err)}
+	}
+	if metadataProvider, ok := provider.(GenerationMetadataProvider); ok {
+		if actual := metadataProvider.GenerationMetadata(); strings.TrimSpace(actual.Model) != "" {
+			actual.PromptVersion = trustedGeneration.PromptVersion
+			trustedGeneration = actual
+		}
 	}
 	validationCtx, validationSpan := observability.StartWorkerSpan(ctx, "pipeline.worker.suggested_queries.validate")
 	_ = validationCtx

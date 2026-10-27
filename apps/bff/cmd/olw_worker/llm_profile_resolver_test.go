@@ -10,6 +10,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	conceptcache "github.com/rayer/llm-wiki-bff/internal/cache"
+	"github.com/rayer/llm-wiki-bff/internal/llm"
+	"github.com/rayer/llm-wiki-bff/internal/suggestedqueries"
 )
 
 func TestResolvePipelineLLMProfilesSendsReservationIdentity(t *testing.T) {
@@ -40,6 +45,214 @@ func TestResolvePipelineLLMProfilesSendsReservationIdentity(t *testing.T) {
 	want := pipelineLLMProfileResolverRequest{ReservationID: "reservation-fixture", UserID: "user-fixture", ProjectID: "project-fixture"}
 	if received != want {
 		t.Fatalf("resolver request = %+v, want %+v", received, want)
+	}
+}
+
+type resolverSuggestedQueryClient struct {
+	profile pipelineLLMProfile
+	raw     string
+	err     error
+	calls   *[]string
+	closed  *int
+}
+
+func (c *resolverSuggestedQueryClient) Chat(context.Context, string, string) (string, error) {
+	*c.calls = append(*c.calls, c.profile.ID)
+	return c.raw, c.err
+}
+
+func (c *resolverSuggestedQueryClient) ModelIdentity() (llm.ModelIdentity, bool) {
+	return llm.ModelIdentity{Provider: c.profile.Provider, Model: c.profile.Model}, true
+}
+
+func (c *resolverSuggestedQueryClient) ProfileIdentity() llm.ProfileIdentity {
+	return llm.ProfileIdentity{ID: c.profile.ID, Revision: c.profile.Revision, Provider: c.profile.Provider, Protocol: string(c.profile.Protocol), Model: c.profile.Model}
+}
+
+func (c *resolverSuggestedQueryClient) Close() { *c.closed++ }
+
+func testResolverProfile(id, model string, revision int64) pipelineLLMProfile {
+	return pipelineLLMProfile{
+		ID: id, Revision: revision, Provider: "custom", Protocol: llm.ProtocolOpenAIChatCompletions,
+		Endpoint: "https://fixture.example/v1", Model: model, APIKey: []byte("synthetic-" + id),
+	}
+}
+
+type modelOnlySuggestedQueryProvider struct {
+	raw string
+}
+
+func (p modelOnlySuggestedQueryProvider) Chat(context.Context, string, string) (string, error) {
+	return p.raw, nil
+}
+
+func (p modelOnlySuggestedQueryProvider) ModelIdentity() (llm.ModelIdentity, bool) {
+	return llm.ModelIdentity{Provider: "legacy-fixture", Model: "legacy-model"}, true
+}
+
+func TestWrappedBootstrapSuggestedQueryArtifactKeepsLegacyModelMetadata(t *testing.T) {
+	provider := quotaAwareSuggestedQueryProvider{provider: modelOnlySuggestedQueryProvider{raw: twentySuggestedQueriesRaw("alpha-id")}}
+	entries := []conceptcache.Entry{{
+		Slug: "alpha", Title: "Alpha", Body: "Alpha evidence",
+		Frontmatter: map[string]interface{}{"id": "alpha-id"},
+	}}
+	artifact, err := suggestedqueries.Generate(context.Background(), provider, "", entries, nil,
+		suggestedQueryGenerationMetadata(provider), time.Now())
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	if len(artifact.Candidates) != suggestedqueries.RequiredQueries {
+		t.Fatalf("candidate count=%d, want %d", len(artifact.Candidates), suggestedqueries.RequiredQueries)
+	}
+	metadata := artifact.Candidates[0].Generation
+	if metadata.Model != "legacy-model" || metadata.Provider != "legacy-fixture" || metadata.ProfileID != "" || metadata.ProfileRevision != 0 || metadata.Protocol != "" {
+		t.Fatalf("bootstrap artifact metadata=%+v, want legacy model identity and no shared profile", metadata)
+	}
+}
+
+func testSuggestedQueriesVault(t *testing.T) string {
+	t.Helper()
+	vault := t.TempDir()
+	idMap := []byte(`{"concept":{"a3f7b2c01d9d":"alpha"},"source":{},"redirects":{},"concept_entity_id":{"a3f7b2c01d9d":"01JAZ5N7Y3K8M2Q4R6T9VWXABC"}}`)
+	concepts := []byte(`{"id":"a3f7b2c01d9d","slug":"alpha","title":"Alpha","body":"Alpha","frontmatter":{"id":"a3f7b2c01d9d","title":"Alpha"}}` + "\n")
+	mustWriteFile(t, filepath.Join(vault, "cache", "id_map.json"), idMap)
+	mustWriteFile(t, filepath.Join(vault, "cache", "concepts.jsonl"), concepts)
+	mustWriteFile(t, filepath.Join(vault, "wiki", "alpha.md"), []byte("---\nid: a3f7b2c01d9d\ntitle: Alpha\n---\nAlpha"))
+	mustWriteFile(t, filepath.Join(vault, "cache", "dormant_concepts.jsonl"), nil)
+	mustWriteFile(t, filepath.Join(vault, "cache", "raw_status.json"), []byte(`{"version":1,"files":{},"file_count":0}`))
+	mustWriteFile(t, filepath.Join(vault, "cache", "suggested_queries.json"), []byte(`{"version":2,"queries":[],"candidates":[],"updated_at":"2026-07-01T00:00:00Z"}`))
+	mustWriteFile(t, filepath.Join(vault, "synto.toml"), []byte("[pipeline]\nauto_commit = false\nauto_maintain = false\nrelation_extraction = false\n"))
+	mustWriteFile(t, filepath.Join(vault, ".synto", "INDEX.json"), []byte(syntoIndexFixture("a3f7b2c01d9d", "01JAZ5N7Y3K8M2Q4R6T9VWXABC", "alpha", false)))
+	writeValidSQLiteState(t, filepath.Join(vault, ".synto", "state.db"))
+	return vault
+}
+
+func TestStandaloneSuggestedQueriesResolvesSelectedProjectSourceAndFreshQuotaFallback(t *testing.T) {
+	firstProfiles := []pipelineLLMProfile{testResolverProfile("profile-a", "model-a", 1), testResolverProfile("profile-b", "model-b", 2)}
+	refreshedProfiles := []pipelineLLMProfile{testResolverProfile("profile-b", "model-b", 2)}
+	var resolverCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resolverCalls++
+		if r.URL.Path != "/internal/pipeline/llm-profile" {
+			t.Errorf("request path = %q", r.URL.Path)
+		}
+		profiles := firstProfiles
+		if resolverCalls > 1 {
+			profiles = refreshedProfiles
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(struct {
+			Source   string               `json:"source"`
+			Profiles []pipelineLLMProfile `json:"profiles"`
+		}{Source: "shared", Profiles: profiles}); err != nil {
+			t.Errorf("encode resolver response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	oldFactory := newSuggestedQueryProfileClient
+	var selected []string
+	var closed int
+	newSuggestedQueryProfileClient = func(profile pipelineLLMProfile) (suggestedQueryProfileClient, error) {
+		client := &resolverSuggestedQueryClient{profile: profile, raw: twentySuggestedQueriesRaw("a3f7b2c01d9d"), calls: &selected, closed: &closed}
+		if profile.ID == "profile-a" {
+			client.err = &llm.ProfileCallError{Kind: llm.ProviderQuotaExhausted, StatusCode: http.StatusTooManyRequests}
+		}
+		return client, nil
+	}
+	t.Cleanup(func() { newSuggestedQueryProfileClient = oldFactory })
+
+	vault := testSuggestedQueriesVault(t)
+	err := runSuggestedQueriesCommand(context.Background(), workerConfig{
+		VaultPath: vault, ExecutionID: "standalone-resolved-suggested", SuggestedQueries: true,
+		LocalCloudScope: "test-scope", ProfileResolverURL: server.URL + "/internal/pipeline/llm-profile",
+		PipelineReservationID: "reservation-fixture", UserID: "user-fixture", ProjectID: "project-fixture",
+		APIKey: "platform-fallback-must-not-run", apiKeySet: true,
+	})
+	if err != nil {
+		t.Fatalf("runSuggestedQueriesCommand() error = %v", err)
+	}
+	if resolverCalls != 2 || strings.Join(selected, ",") != "profile-a,profile-b" || closed != 2 {
+		t.Fatalf("resolver calls=%d selected=%v closed=%d, want fresh A quota -> B success", resolverCalls, selected, closed)
+	}
+	data, err := os.ReadFile(filepath.Join(vault, suggestedqueries.Path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact, err := suggestedqueries.Decode(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(artifact.Candidates) != suggestedqueries.RequiredQueries {
+		t.Fatalf("candidate count=%d, want %d", len(artifact.Candidates), suggestedqueries.RequiredQueries)
+	}
+	metadata := artifact.Candidates[0].Generation
+	if metadata.Model != "model-b" || metadata.ProfileID != "profile-b" || metadata.ProfileRevision != 2 || metadata.Provider != "custom" || metadata.Protocol != string(llm.ProtocolOpenAIChatCompletions) {
+		t.Fatalf("artifact generation metadata=%+v, want successful refreshed profile B", metadata)
+	}
+}
+
+func TestStandaloneSuggestedQueriesUnavailableSourceFailsBeforeWorkspaceAndBootstrapIsExplicit(t *testing.T) {
+	var resolverCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resolverCalls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"source":"shared","profiles":[]}`))
+	}))
+	defer server.Close()
+	vault := testSuggestedQueriesVault(t)
+	prior, err := os.ReadFile(filepath.Join(vault, "cache", "suggested_queries.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = runSuggestedQueriesCommand(context.Background(), workerConfig{
+		VaultPath: vault, ExecutionID: "unavailable-source", SuggestedQueries: true,
+		LocalCloudScope: "test-scope", ProfileResolverURL: server.URL + "/internal/pipeline/llm-profile",
+		PipelineReservationID: "reservation-fixture", UserID: "user-fixture", ProjectID: "project-fixture",
+		APIKey: "platform-fallback-must-not-run", apiKeySet: true,
+	})
+	if err == nil || resolverCalls != 1 {
+		t.Fatalf("error=%v resolver calls=%d; want unavailable source to fail closed", err, resolverCalls)
+	}
+	got, readErr := os.ReadFile(filepath.Join(vault, "cache", "suggested_queries.json"))
+	if readErr != nil || string(got) != string(prior) {
+		t.Fatalf("suggested queries changed on unavailable source: got=%q err=%v", got, readErr)
+	}
+	cloudErr := runSuggestedQueriesCommand(context.Background(), workerConfig{
+		Bucket: "worker-fixture", UserID: "user-fixture", ProjectID: "project-fixture", ExecutionID: "cloud-unavailable-source",
+		LocalCloudScope: "test-scope", ProfileResolverURL: server.URL + "/internal/pipeline/llm-profile",
+		PipelineReservationID: "reservation-fixture", APIKey: "platform-fallback-must-not-run", apiKeySet: true,
+	})
+	if cloudErr == nil || resolverCalls != 2 {
+		t.Fatalf("cloud error=%v resolver calls=%d; want cloud entrypoint to fail before object-store access", cloudErr, resolverCalls)
+	}
+
+	bootstrapServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"source":"bootstrap","profiles":[]}`))
+	}))
+	defer bootstrapServer.Close()
+	bootstrap, err := resolveSuggestedQueriesSource(context.Background(), workerConfig{
+		LocalCloudScope: "test-scope", ProfileResolverURL: bootstrapServer.URL + "/internal/pipeline/llm-profile",
+		PipelineReservationID: "reservation-bootstrap", UserID: "user-fixture", ProjectID: "project-fixture",
+	})
+	if err != nil || !bootstrap.BootstrapLLMSource || bootstrap.SharedProfilePool || len(bootstrap.ProfileCandidates) != 0 {
+		t.Fatalf("bootstrap resolution=%+v err=%v", bootstrap, err)
+	}
+	bootstrap.APIKey = "synthetic-bootstrap-key"
+	bootstrap.SuggestedQueries = true
+	provider, err := newStandaloneSuggestedQueryProvider(context.Background(), bootstrap)
+	if err != nil {
+		t.Fatalf("newStandaloneSuggestedQueryProvider(bootstrap) error = %v", err)
+	}
+	defer closeSuggestedQueryProvider(provider)
+	identity, ok := provider.(llm.ModelIdentityProvider)
+	if !ok {
+		t.Fatalf("bootstrap provider type %T does not expose model identity", provider)
+	}
+	model, ok := identity.ModelIdentity()
+	if !ok || model.Provider != "deepseek" || model.Model != "deepseek-flash" {
+		t.Fatalf("bootstrap model identity=%+v valid=%t", model, ok)
 	}
 }
 

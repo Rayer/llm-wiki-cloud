@@ -346,6 +346,10 @@ func (c *ProfileClient) Complete(ctx context.Context, systemPrompt, userMessage 
 	result.Metadata.Provider = c.profile.Provider
 	result.Metadata.Protocol = string(c.profile.Protocol)
 	result.Metadata.RequestedModel = c.profile.Model
+	RecordCallIdentity(ctx,
+		ModelIdentity{Provider: c.profile.Provider, Model: c.profile.Model},
+		ProfileIdentity{ID: c.profile.ID, Revision: c.profile.Revision, Provider: c.profile.Provider, Protocol: string(c.profile.Protocol), Model: c.profile.Model},
+	)
 	return result, nil
 }
 

@@ -1973,7 +1973,7 @@ func TestStandaloneCommandsRecordOwnedTerminalFailuresOnce(t *testing.T) {
 					localWorkspaceBatchHooks = hooks
 
 					vault := t.TempDir()
-					cfg := workerConfig{VaultPath: vault, ExecutionID: "standalone-" + command.name + "-" + strings.ReplaceAll(tc.name, " ", "-"), SuggestedQueries: true}
+					cfg := workerConfig{VaultPath: vault, ExecutionID: "standalone-" + command.name + "-" + strings.ReplaceAll(tc.name, " ", "-"), SuggestedQueries: true, suggestedQueriesProvider: &testSuggestedQueryProvider{raw: `{}`}}
 					runErr := command.run(context.Background(), cfg)
 					if runErr == nil {
 						t.Fatal("command unexpectedly succeeded")
@@ -2033,7 +2033,7 @@ func TestStandaloneCommandsKeepPrimaryAndIsolateRawLogFailure(t *testing.T) {
 			localWorkspaceBatchHooks = hooks
 
 			vault := t.TempDir()
-			cfg := workerConfig{VaultPath: vault, ExecutionID: "raw-failure-" + command.name, APIKey: "api-secret", SuggestedQueries: true}
+			cfg := workerConfig{VaultPath: vault, ExecutionID: "raw-failure-" + command.name, APIKey: "api-secret", SuggestedQueries: true, suggestedQueriesProvider: &testSuggestedQueryProvider{raw: `{}`}}
 			primary := errors.New("primary api-secret")
 			command.set(&hooks, primary)
 			hooks.runPostprocessWithProvider = func(context.Context, string, suggestedqueries.Provider, io.Writer) error {
@@ -2080,7 +2080,7 @@ func TestStandaloneCommandsHaveZeroEventsBeforeLeaseAndOnSuccess(t *testing.T) {
 			hooks := originalHooks
 			hooks.acquireVaultLease = func(string, string) (*vaultLease, error) { return nil, errors.New("lease unavailable") }
 			localWorkspaceBatchHooks = hooks
-			cfg := workerConfig{VaultPath: vault, ExecutionID: "pre-lease-" + command.name, SuggestedQueries: true}
+			cfg := workerConfig{VaultPath: vault, ExecutionID: "pre-lease-" + command.name, SuggestedQueries: true, suggestedQueriesProvider: &testSuggestedQueryProvider{raw: `{}`}}
 			if err := command.run(context.Background(), cfg); err == nil {
 				t.Fatal("pre-lease command unexpectedly succeeded")
 			}
@@ -2123,7 +2123,7 @@ func TestStandaloneCommandsRecordInvalidPublishJournalAfterLease(t *testing.T) {
 		t.Run(command.name, func(t *testing.T) {
 			vault := t.TempDir()
 			mustWriteFile(t, filepath.Join(vault, publishJournal), []byte(`{"phase":"committed","stage":"bad","backup":"bad"}`))
-			cfg := workerConfig{VaultPath: vault, ExecutionID: "invalid-journal-" + command.name, WorkspaceDir: t.TempDir(), SuggestedQueries: true}
+			cfg := workerConfig{VaultPath: vault, ExecutionID: "invalid-journal-" + command.name, WorkspaceDir: t.TempDir(), SuggestedQueries: true, suggestedQueriesProvider: &testSuggestedQueryProvider{raw: `{}`}}
 			if err := command.run(context.Background(), cfg); err == nil {
 				t.Fatal("command unexpectedly succeeded")
 			}
@@ -2167,7 +2167,7 @@ func TestStandaloneCommandsSerializeOwnedFailureRecording(t *testing.T) {
 			hooks.removeWorkspace = os.RemoveAll
 			localWorkspaceBatchHooks = hooks
 			vault := workspaceVault(t, "original")
-			cfg := workerConfig{VaultPath: vault, ExecutionID: "standalone-race-" + command.name, WorkspaceDir: workspaceDir, SuggestedQueries: true}
+			cfg := workerConfig{VaultPath: vault, ExecutionID: "standalone-race-" + command.name, WorkspaceDir: workspaceDir, SuggestedQueries: true, suggestedQueriesProvider: &testSuggestedQueryProvider{raw: `{}`}}
 			started := make(chan struct{})
 			release := make(chan struct{})
 			primary := errors.New("primary failure")

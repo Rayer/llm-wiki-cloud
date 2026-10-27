@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/rayer/llm-wiki-bff/internal/llm"
 	"github.com/rayer/llm-wiki-bff/internal/localfs"
 	"github.com/rayer/llm-wiki-bff/internal/urlintake"
 )
@@ -34,6 +35,20 @@ func (f mcpURLEvaluatorFunc) Evaluate(ctx context.Context, input urlintake.Quali
 }
 
 type mcpURLResolver struct{}
+
+type mcpURLProjectLLMClient struct{ calls atomic.Int32 }
+
+func (c *mcpURLProjectLLMClient) Chat(_ context.Context, system, input string) (string, error) {
+	if !strings.Contains(system, "Assess URL extraction usability") || !strings.Contains(input, "Readable guide") {
+		return "", errors.New("unexpected Jev Project request")
+	}
+	c.calls.Add(1)
+	return `{"access_shell":false,"readable_content":true}`, nil
+}
+
+func (*mcpURLProjectLLMClient) ModelIdentity() (llm.ModelIdentity, bool) {
+	return llm.ModelIdentity{Provider: "custom", Model: "project-fixture-model"}, true
+}
 
 type mcpURLCommitUncertainStore struct {
 	urlintake.ProjectStore
@@ -163,6 +178,47 @@ func TestMCPImportURLUsesStrictScopedIntakeAndConfiguredRawLink(t *testing.T) {
 	secondStorage, _ := secondPayload["storage"].(map[string]any)
 	if secondStorage["status"] != "already_exists" || secondStorage["path"] != path || fetches.Load() != 2 || evaluations.Load() != 2 {
 		t.Fatalf("retry storage=%#v fetches=%d evaluations=%d", secondStorage, fetches.Load(), evaluations.Load())
+	}
+}
+
+func TestMCPImportURLUsesResolvedProjectProfileForJevQualityCall(t *testing.T) {
+	root := localfs.New(t.TempDir())
+	service := urlintake.NewService(
+		mcpURLFetcherFunc(func(context.Context, string) (urlintake.Page, error) {
+			return urlintake.Page{Title: "Readable guide", Markdown: "# Readable guide\n\nA short, useful reference page.\n"}, nil
+		}),
+		urlintake.NewJevEvaluator(""),
+		func(scope urlintake.ActorProject) (urlintake.ProjectStore, error) {
+			return root.WithScope(scope.ActorID, scope.ProjectID), nil
+		},
+		urlintake.DefaultQualityThresholds,
+	)
+	service.Resolver = mcpURLResolver{}
+	h := New(root, nil, nil, nil, nil, nil)
+	h.SetURLIntakeService(service)
+	h.SetMCPFrontendOrigin("https://wiki.trusted.example")
+	client := &mcpURLProjectLLMClient{}
+	h.projectLLMClientResolver = func(_ context.Context, owner, project string) (llm.ProjectChatClient, string, error) {
+		if owner != "bound-user" || project != "bound-project" {
+			t.Fatalf("Project LLM resolver scope=(%q,%q)", owner, project)
+		}
+		return client, "personal", nil
+	}
+	identity := mcpProjectKeyIdentity{
+		userID: "bound-user", projectID: "bound-project", keyID: "write-grant",
+		capabilities: []string{mcpQueryCapability, mcpRawWriteCapability},
+	}
+	ctx := context.WithValue(context.Background(), mcpProjectKeyIdentityContextKey{}, identity)
+	result, _, err := h.callMCPImportURL(ctx, nil, importURLInput{URL: "https://example.com/article"})
+	if err != nil || result == nil || result.IsError {
+		t.Fatalf("callMCPImportURL() result=%+v err=%v", result, err)
+	}
+	var payload importURLResponse
+	if err := json.Unmarshal(result.StructuredContent.(json.RawMessage), &payload); err != nil {
+		t.Fatalf("decode import result: %v", err)
+	}
+	if payload.Status != "stored" || payload.Title != "Readable guide" || client.calls.Load() != 1 {
+		t.Fatalf("import result=%+v Project Jev calls=%d, want stored with one resolved Project-profile evaluation", payload, client.calls.Load())
 	}
 }
 

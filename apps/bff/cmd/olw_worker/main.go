@@ -57,6 +57,7 @@ type workerConfig struct {
 	ProfileCandidates       []pipelineLLMProfile
 	ActiveLLMProfile        *pipelineLLMProfile
 	SharedProfilePool       bool
+	BootstrapLLMSource      bool
 	QuotaMarkerPath         string
 	SuppressOutput          bool
 	SuggestedQueries        bool
@@ -398,6 +399,7 @@ func runWorkerBatch(ctx context.Context, cfg workerConfig, rawCommands string) (
 			return errors.New("Project LLM source is unavailable to Pipeline")
 		}
 		cfg.ProfileCandidates, cfg.SharedProfilePool = profiles, shared
+		cfg.BootstrapLLMSource = len(profiles) == 0 && !shared
 		defer func() {
 			for i := range cfg.ProfileCandidates {
 				clear(cfg.ProfileCandidates[i].APIKey)
@@ -484,6 +486,8 @@ func workerTraceOutcome(err error) string {
 }
 
 func configFromEnvironment(cfg workerConfig) workerConfig {
+	cfg.ProfileResolverURL = envOr("LWC_PROFILE_RESOLVER_URL", cfg.ProfileResolverURL)
+	cfg.ProfileResolverAudience = envOr("LWC_PROFILE_RESOLVER_AUDIENCE", cfg.ProfileResolverAudience)
 	if cfg.LocalCloudScope == "" {
 		cfg.LocalCloudScope = envOr("LOCAL_CLOUD_SCOPE", "")
 	}
@@ -591,10 +595,13 @@ func runWorkerBatchAtVault(ctx context.Context, cfg workerConfig, commands [][]s
 	}
 	if cfg.Postprocess {
 		postCtx, postSpan := observability.StartWorkerSpan(ctx, "pipeline.worker.postprocess")
-		if err := runPostprocessWithProvider(postCtx, vault, suggestedQueryProvider(cfg), stderr); err != nil {
+		provider := suggestedQueryProvider(cfg)
+		if err := runPostprocessWithProvider(postCtx, vault, provider, stderr); err != nil {
+			closeSuggestedQueryProvider(provider)
 			observability.FinishPipelineSpan(postSpan, workerTraceOutcome(err))
 			return preserveWorkerFailure(err, failureStagePostprocess, failureClassIO)
 		}
+		closeSuggestedQueryProvider(provider)
 		observability.FinishPipelineSpan(postSpan, "success")
 	}
 	return nil
@@ -800,6 +807,19 @@ func runPostprocessCommand(ctx context.Context, cfg workerConfig) (runErr error)
 		observability.FinishPipelineSpan(attempt, workerTraceOutcome(runErr))
 	}()
 	cfg = configFromEnvironment(cfg)
+	if cfg.SuggestedQueries && cfg.suggestedQueriesProvider == nil {
+		var err error
+		cfg, err = resolveSuggestedQueriesSource(ctx, cfg)
+		if err != nil {
+			return err
+		}
+		defer clearPipelineProfileKeys(cfg.ProfileCandidates)
+		cfg.suggestedQueriesProvider, err = newStandaloneSuggestedQueryProvider(ctx, cfg)
+		if err != nil {
+			return err
+		}
+		defer closeSuggestedQueryProvider(cfg.suggestedQueriesProvider)
+	}
 	vault, err := resolveVaultPath(cfg)
 	if err != nil {
 		return err
@@ -860,6 +880,8 @@ func runSuggestedQueriesCommand(ctx context.Context, cfg workerConfig) (runErr e
 		observability.FinishPipelineSpan(attempt, workerTraceOutcome(runErr))
 	}()
 	cfg = configFromEnvironment(cfg)
+	cfg.SuggestedQueries = true
+	var err error
 	if cfg.Bucket != "" {
 		cfg.cloudMode = true
 		if cfg.VaultPath != "" || cfg.DataDir != "" || cfg.Workspace {
@@ -868,11 +890,37 @@ func runSuggestedQueriesCommand(ctx context.Context, cfg workerConfig) (runErr e
 		if err := validateWorkerConfigBounds(cfg); err != nil {
 			return annotateError(errWorkerInputInvalid, err)
 		}
+		if cfg.SuggestedQueries && cfg.suggestedQueriesProvider == nil {
+			cfg, err = resolveSuggestedQueriesSource(ctx, cfg)
+			if err != nil {
+				return err
+			}
+			cfg.suggestedQueriesProvider, err = newStandaloneSuggestedQueryProvider(ctx, cfg)
+			if err != nil {
+				clearPipelineProfileKeys(cfg.ProfileCandidates)
+				return err
+			}
+			defer closeSuggestedQueryProvider(cfg.suggestedQueriesProvider)
+			defer clearPipelineProfileKeys(cfg.ProfileCandidates)
+		}
 		workspaceCtx, workspaceSpan := observability.StartWorkerSpan(ctx, "pipeline.worker.workspace")
-		err := runCloudSuggestedQueries(workspaceCtx, cfg, newCloudObjectStore(cfg.Bucket))
+		err = runCloudSuggestedQueries(workspaceCtx, cfg, newCloudObjectStore(cfg.Bucket))
 		observability.SetPipelinePublicationOutcome(workspaceSpan, cloudSuggestedQueriesPublicationOutcome(err))
 		observability.FinishPipelineSpan(workspaceSpan, workerTraceOutcome(err))
 		return err
+	}
+	if cfg.SuggestedQueries && cfg.suggestedQueriesProvider == nil {
+		cfg, err = resolveSuggestedQueriesSource(ctx, cfg)
+		if err != nil {
+			return err
+		}
+		cfg.suggestedQueriesProvider, err = newStandaloneSuggestedQueryProvider(ctx, cfg)
+		if err != nil {
+			clearPipelineProfileKeys(cfg.ProfileCandidates)
+			return err
+		}
+		defer closeSuggestedQueryProvider(cfg.suggestedQueriesProvider)
+		defer clearPipelineProfileKeys(cfg.ProfileCandidates)
 	}
 	vault, err := resolveVaultPath(cfg)
 	if err != nil {
@@ -1455,6 +1503,13 @@ var suggestedQueryProvider = func(cfg workerConfig) suggestedqueries.Provider {
 	if !cfg.SuggestedQueries {
 		return nil
 	}
+	if cfg.BootstrapLLMSource {
+		client := llm.NewClient(cfg.APIKey)
+		if client == nil {
+			return unavailableSuggestedQueryProvider{}
+		}
+		return quotaAwareSuggestedQueryProvider{provider: client}
+	}
 	if cfg.ActiveLLMProfile == nil {
 		return unavailableSuggestedQueryProvider{}
 	}
@@ -1464,10 +1519,7 @@ var suggestedQueryProvider = func(cfg workerConfig) suggestedqueries.Provider {
 	if err != nil {
 		return unavailableSuggestedQueryProvider{}
 	}
-	if cfg.SharedProfilePool && cfg.QuotaMarkerPath != "" {
-		return quotaAwareSuggestedQueryProvider{provider: client, markerPath: cfg.QuotaMarkerPath}
-	}
-	return client
+	return quotaAwareSuggestedQueryProvider{provider: client, markerPath: cfg.QuotaMarkerPath}
 }
 
 type unavailableSuggestedQueryProvider struct{}
@@ -1494,6 +1546,175 @@ func (p quotaAwareSuggestedQueryProvider) Chat(ctx context.Context, systemPrompt
 		}
 	}
 	return text, err
+}
+
+func (p quotaAwareSuggestedQueryProvider) ModelIdentity() (llm.ModelIdentity, bool) {
+	if identity, ok := p.provider.(llm.ModelIdentityProvider); ok {
+		return identity.ModelIdentity()
+	}
+	return llm.ModelIdentity{}, false
+}
+
+func (p quotaAwareSuggestedQueryProvider) ProfileIdentity() llm.ProfileIdentity {
+	if identity, ok := p.provider.(llm.ProfileIdentityProvider); ok {
+		return identity.ProfileIdentity()
+	}
+	return llm.ProfileIdentity{}
+}
+
+func (p quotaAwareSuggestedQueryProvider) GenerationMetadata() suggestedqueries.GenerationMetadata {
+	return suggestedQueryGenerationMetadata(p.provider)
+}
+
+func (p quotaAwareSuggestedQueryProvider) Close() {
+	closeSuggestedQueryProvider(p.provider)
+}
+
+type suggestedQueryProfileClient interface {
+	suggestedqueries.Provider
+	llm.ModelIdentityProvider
+	llm.ProfileIdentityProvider
+	Close()
+}
+
+var newSuggestedQueryProfileClient = func(profile pipelineLLMProfile) (suggestedQueryProfileClient, error) {
+	return llm.NewProfileClient(llm.ProfileConfig{ID: profile.ID, Revision: profile.Revision, Provider: profile.Provider,
+		Protocol: profile.Protocol, Endpoint: profile.Endpoint, Model: profile.Model}, string(profile.APIKey), llm.ProfileClientOptions{Timeout: 10 * time.Second})
+}
+
+var suggestedQueryProfileResolver = resolvePipelineLLMProfiles
+
+type resolvedSuggestedQueryPool struct {
+	mu        sync.Mutex
+	cfg       workerConfig
+	profiles  []pipelineLLMProfile
+	attempted map[string]struct{}
+	resolver  func(context.Context, workerConfig) ([]pipelineLLMProfile, bool, error)
+	factory   func(pipelineLLMProfile) (suggestedQueryProfileClient, error)
+	model     llm.ModelIdentity
+	profile   llm.ProfileIdentity
+	succeeded bool
+}
+
+func newStandaloneSuggestedQueryProvider(ctx context.Context, cfg workerConfig) (suggestedqueries.Provider, error) {
+	if cfg.suggestedQueriesProvider != nil {
+		return cfg.suggestedQueriesProvider, nil
+	}
+	if !cfg.SuggestedQueries {
+		return nil, nil
+	}
+	if cfg.SharedProfilePool {
+		if len(cfg.ProfileCandidates) == 0 {
+			return nil, errors.New("Project shared LLM pool is unavailable to suggested-query generation")
+		}
+		return &resolvedSuggestedQueryPool{
+			cfg: cfg, profiles: cfg.ProfileCandidates, attempted: make(map[string]struct{}),
+			resolver: suggestedQueryProfileResolver, factory: newSuggestedQueryProfileClient,
+		}, nil
+	}
+	if cfg.BootstrapLLMSource || cfg.ActiveLLMProfile != nil {
+		provider := suggestedQueryProvider(cfg)
+		if _, unavailable := provider.(unavailableSuggestedQueryProvider); unavailable {
+			return nil, errors.New("Project LLM source is unavailable to suggested-query generation")
+		}
+		return provider, nil
+	}
+	return nil, errors.New("Project LLM source is unavailable to suggested-query generation")
+}
+
+func (p *resolvedSuggestedQueryPool) Chat(ctx context.Context, systemPrompt, userMessage string) (string, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var lastQuota error
+	for attempt := 0; attempt < maxPipelineProfileAttempts; attempt++ {
+		selected := -1
+		for index := range p.profiles {
+			if _, tried := p.attempted[p.profiles[index].ID]; !tried {
+				selected = index
+				break
+			}
+		}
+		if selected < 0 {
+			if lastQuota != nil {
+				return "", errors.Join(lastQuota, errors.New("shared suggested-query profile pool exhausted"))
+			}
+			return "", errors.New("shared suggested-query profile pool is unavailable")
+		}
+		profile := p.profiles[selected]
+		client, err := p.factory(profile)
+		if err != nil {
+			return "", err
+		}
+		text, callErr := client.Chat(ctx, systemPrompt, userMessage)
+		if callErr == nil {
+			p.model, _ = client.ModelIdentity()
+			p.profile = client.ProfileIdentity()
+			p.succeeded = true
+		}
+		client.Close()
+		if callErr == nil || !llm.IsQuotaExhausted(callErr) {
+			return text, callErr
+		}
+		lastQuota = callErr
+		p.attempted[profile.ID] = struct{}{}
+		fresh, shared, resolveErr := p.resolver(ctx, p.cfg)
+		if resolveErr != nil {
+			clearPipelineProfileKeys(fresh)
+			return "", errors.Join(callErr, errors.New("shared suggested-query fallback could not revalidate the Project source"))
+		}
+		if !shared {
+			clearPipelineProfileKeys(fresh)
+			return "", errors.Join(callErr, errors.New("Project LLM source changed during shared suggested-query fallback"))
+		}
+		clearPipelineProfileKeys(p.profiles)
+		p.profiles = fresh
+	}
+	return "", errors.New("shared suggested-query profile attempt limit reached")
+}
+
+func (p *resolvedSuggestedQueryPool) ModelIdentity() (llm.ModelIdentity, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.succeeded {
+		return p.model, true
+	}
+	if len(p.profiles) == 0 {
+		return llm.ModelIdentity{}, false
+	}
+	profile := p.profiles[0]
+	return llm.ModelIdentity{Provider: profile.Provider, Model: profile.Model}, true
+}
+
+func (p *resolvedSuggestedQueryPool) ProfileIdentity() llm.ProfileIdentity {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.succeeded {
+		return p.profile
+	}
+	if len(p.profiles) == 0 {
+		return llm.ProfileIdentity{}
+	}
+	profile := p.profiles[0]
+	return llm.ProfileIdentity{ID: profile.ID, Revision: profile.Revision, Provider: profile.Provider, Protocol: string(profile.Protocol), Model: profile.Model}
+}
+
+func (p *resolvedSuggestedQueryPool) GenerationMetadata() suggestedqueries.GenerationMetadata {
+	return suggestedQueryGenerationMetadata(p)
+}
+
+func (p *resolvedSuggestedQueryPool) Close() {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	clearPipelineProfileKeys(p.profiles)
+}
+
+func closeSuggestedQueryProvider(provider suggestedqueries.Provider) {
+	if closer, ok := provider.(interface{ Close() }); ok {
+		closer.Close()
+	}
 }
 
 // runPostprocessWithProvider rebuilds cache/index artifacts, then regenerates
@@ -1653,13 +1874,25 @@ func suggestedFailureCategory(err error) string {
 
 func suggestedQueryGenerationMetadata(provider suggestedqueries.Provider) suggestedqueries.GenerationMetadata {
 	metadata := suggestedqueries.GenerationMetadata{Model: suggestedQueryModel, PromptVersion: suggestedqueries.PromptVersion}
+	if identityProvider, ok := provider.(llm.ModelIdentityProvider); ok {
+		if identity, valid := identityProvider.ModelIdentity(); valid && strings.TrimSpace(identity.Model) != "" {
+			metadata.Model = identity.Model
+			metadata.Provider = identity.Provider
+		}
+	}
 	if identityProvider, ok := provider.(llm.ProfileIdentityProvider); ok {
 		identity := identityProvider.ProfileIdentity()
-		metadata.Model = identity.Model
-		metadata.ProfileID = identity.ID
-		metadata.ProfileRevision = identity.Revision
-		metadata.Provider = identity.Provider
-		metadata.Protocol = identity.Protocol
+		if strings.TrimSpace(identity.ID) != "" || strings.TrimSpace(identity.Model) != "" {
+			if strings.TrimSpace(identity.Model) != "" {
+				metadata.Model = identity.Model
+			}
+			metadata.ProfileID = identity.ID
+			metadata.ProfileRevision = identity.Revision
+			if strings.TrimSpace(identity.Provider) != "" {
+				metadata.Provider = identity.Provider
+			}
+			metadata.Protocol = identity.Protocol
+		}
 	}
 	return metadata
 }
