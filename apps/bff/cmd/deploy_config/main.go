@@ -175,7 +175,7 @@ type BFFSourceProjection struct {
 	AuthSessionEnvironment       string                         `json:"auth_session_environment"`
 	AuthSessionMigration         string                         `json:"auth_session_migration"`
 	RegistrationEnabled          *bool                          `json:"registration_enabled"`
-	JWTSecretReference           *BFFSecretReference            `json:"jwt_secret_reference"`
+	JWTSecretReference           *BFFSecretReference            `json:"jwt_secret_reference,omitempty"`
 	AuthConsumer                 *runtimeconfig.BFFAuthConsumer `json:"auth_consumer"`
 	DeepSeekAPIKeyReference      BFFSecretReference             `json:"deepseek_api_key_reference"`
 	TypeSafeAPIKeyReference      *BFFSecretReference            `json:"typesafe_api_key_reference"`

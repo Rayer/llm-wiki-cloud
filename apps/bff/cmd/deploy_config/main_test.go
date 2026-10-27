@@ -290,9 +290,29 @@ func TestGeneratedBFFInputsFlowIntoNormalizedPlanIdentity(t *testing.T) {
 			t.Fatalf("LoadWithBFFInputs(%s): %v", tc.environment, err)
 		}
 		bff, ok := plan.Components["bff"].(map[string]any)
-		if !ok || plan.BFF.PipelineCooldownSeconds != tc.cooldown || bff["pipeline_cooldown_seconds"] != tc.cooldown ||
+		if !ok {
+			t.Fatalf("%s normalized BFF component has unexpected type %T", tc.environment, plan.Components["bff"])
+		}
+		var generated, normalized map[string]any
+		if err := json.Unmarshal(mustRead(t, path), &generated); err != nil {
+			t.Fatalf("decode generated %s BFF descriptor: %v", tc.environment, err)
+		}
+		normalizedBytes, err := json.Marshal(bff["runtime_inputs"])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(normalizedBytes, &normalized); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(normalized, generated) {
+			t.Fatalf("%s normalized BFF runtime inputs differ from the generated provider descriptor", tc.environment)
+		}
+		if plan.BFF.PipelineCooldownSeconds != tc.cooldown || bff["pipeline_cooldown_seconds"] != tc.cooldown ||
 			plan.BFF.RuntimeInputs == nil || plan.BFF.MCPResourceOrigin == "" || bff["mcp_resource_origin"] != plan.BFF.MCPResourceOrigin {
 			t.Fatalf("%s normalized BFF cooldown=%d component=%#v", tc.environment, plan.BFF.PipelineCooldownSeconds, bff)
+		}
+		if _, ok := normalized["jwt_secret_reference"]; ok {
+			t.Fatalf("%s schema-3 normalized inputs retained a JWT secret reference", tc.environment)
 		}
 		secretReferences, _ := bff["secret_references"].(map[string]any)
 		if plan.BFF.RuntimeInputs.SchemaVersion != 3 || plan.BFF.SecretReferences.JWT != "" || secretReferences["jwt"] != nil {
@@ -368,6 +388,12 @@ func TestGeneratedBFFDescriptorRejectsInvalidInputs(t *testing.T) {
 		func(value map[string]any) { value["schema_version"] = 1 },
 		func(value map[string]any) { value["environment"] = "prod" },
 		func(value map[string]any) { value["config_secret_resource"] = "projects/llm-wiki-cloud/secrets/wrong" },
+		func(value map[string]any) {
+			value["jwt_secret_reference"] = map[string]any{
+				"source": "secret-manager", "env_name": "",
+				"resource": "projects/other-project/secrets/jwt-secret-dev/versions/1",
+			}
+		},
 		func(value map[string]any) { value["mcp"] = nil },
 		func(value map[string]any) { delete(value["mcp"].(map[string]any), "tools_list_ttl_ms") },
 		func(value map[string]any) { value["mcp"].(map[string]any)["discovery_ttl_ms"] = -1 },

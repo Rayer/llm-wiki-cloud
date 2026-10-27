@@ -30,6 +30,7 @@ class Acceptance(unittest.TestCase):
         if not cls.real_go:
             raise RuntimeError('Go is required for deployment engine acceptance')
         env=dict(os.environ,LWC_REPOSITORY_ROOT=str(ROOT))
+        cls.bff_descriptors={}
         with tempfile.TemporaryDirectory() as directory:
             for environment,target,components,attribute in (
                     ('development','dev',','.join(engine.ORDER),'normalized'),
@@ -42,6 +43,7 @@ class Acceptance(unittest.TestCase):
                 subprocess.run(['go','run','./cmd/pipeline_config','prepare','--target','bff','--descriptor',
                     '--environment',target,'--output',str(descriptor_dir)],cwd=ROOT/'apps/bff',env=env,
                     check=True,capture_output=True,text=True)
+                cls.bff_descriptors[target]=json.loads((descriptor_dir/'bff-inputs.json').read_text())
                 normalize=['go','run','./cmd/deploy_config','--environment',environment,
                     '--config',str(ROOT/'deploy/environments'/f'{environment}.yaml'),'--components',components,
                     '--bff-inputs',str(descriptor_dir/'bff-inputs.json')]
@@ -59,6 +61,11 @@ class Acceptance(unittest.TestCase):
                      '--config', str(ROOT/'deploy/environments'/f'{environment}.yaml'),
                      '--components', 'worker'], cwd=ROOT/'apps/bff', env=env, text=True)
                 cls.worker_only_normalized[environment] = json.loads(output)
+
+    def test_dev_bff_descriptor_matches_normalized_provider_inputs(self):
+        inputs = self.normalized['bff']['runtime_inputs']
+        self.assertEqual(self.bff_descriptors['dev'], inputs)
+        self.assertNotIn('jwt_secret_reference', inputs)
 
     def setUp(self):
         self.real_node = shutil.which('node')
