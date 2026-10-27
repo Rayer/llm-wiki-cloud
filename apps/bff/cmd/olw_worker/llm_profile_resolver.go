@@ -184,6 +184,9 @@ func runWorkerBatchAtVaultWithProfilePool(ctx context.Context, cfg workerConfig,
 		if !pipelineProfileQuotaMarkerExists(cfg) {
 			return workspace, err
 		}
+		if pipelineProfileCallSuccessMarkerExists(cfg) {
+			return workspace, errors.Join(err, errors.New("shared Pipeline quota fallback stopped because no-replay safety was not proven"))
+		}
 		if attempt+1 >= maxPipelineProfileAttempts {
 			return workspace, errors.Join(err, errors.New("shared Pipeline profile attempt limit reached"))
 		}
@@ -212,9 +215,11 @@ func runWorkerBatchAtVaultWithProfilePool(ctx context.Context, cfg workerConfig,
 		if removeErr := localWorkspaceBatchHooks.removeWorkspace(workspace); removeErr != nil {
 			return "", errors.Join(err, fmt.Errorf("remove quota-exhausted Synto workspace: %w", removeErr))
 		}
-		if cfg.QuotaMarkerPath != "" {
-			if removeErr := os.Remove(cfg.QuotaMarkerPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-				return "", errors.Join(err, fmt.Errorf("clear Synto quota marker: %w", removeErr))
+		for _, marker := range []string{cfg.QuotaMarkerPath, cfg.ProfileCallSuccessMarkerPath} {
+			if marker != "" {
+				if removeErr := os.Remove(marker); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+					return "", errors.Join(err, fmt.Errorf("clear Synto profile marker: %w", removeErr))
+				}
 			}
 		}
 		workspace, err = localWorkspaceBatchHooks.createWorkspace(cfg.WorkspaceDir, vault)
@@ -262,4 +267,14 @@ func pipelineProfileQuotaMarkerExists(cfg workerConfig) bool {
 	}
 	info, err := os.Lstat(cfg.QuotaMarkerPath)
 	return err == nil && info.Mode().IsRegular() && info.Size() == 0
+}
+
+// An unset marker path or unreadable marker state fails closed: quota fallback
+// replays the Synto command only when no profile response succeeded.
+func pipelineProfileCallSuccessMarkerExists(cfg workerConfig) bool {
+	if cfg.ProfileCallSuccessMarkerPath == "" {
+		return true
+	}
+	_, err := os.Lstat(cfg.ProfileCallSuccessMarkerPath)
+	return err == nil || !errors.Is(err, os.ErrNotExist)
 }

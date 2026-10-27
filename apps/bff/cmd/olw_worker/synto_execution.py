@@ -4,6 +4,7 @@ Config.resolve_role is the shared seam after provider/profile/CLI precedence.
 OpenAICompatClient ignores think and merges options last into the wire payload.
 """
 import hashlib
+import httpx
 import ipaddress
 import json
 import os
@@ -110,7 +111,30 @@ if _profile_raw:
     if _profile_url.scheme != "https" or not _profile_url.hostname or _profile_url.username or _profile_url.password or _profile_url.query or _profile_url.fragment:
         raise RuntimeError("invalid resolved Project LLM endpoint")
     _profile_host = _profile_url.hostname.rstrip(".").lower()
+    _profile_call_success_marker_path = os.environ.get("LWC_PROFILE_CALL_SUCCESS_MARKER_PATH", "")
     _original_getaddrinfo = socket.getaddrinfo
+
+    def _mark_profile_call_success():
+        if not _profile_call_success_marker_path:
+            return
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            fd = os.open(_profile_call_success_marker_path, flags, 0o600)
+        except FileExistsError:
+            return
+        except OSError as exc:
+            raise RuntimeError("Project profile call outcome marker is unavailable") from exc
+        os.close(fd)
+
+    _profile_httpx_send = httpx.Client.send
+
+    def _send_with_profile_call_success_marker(self, request, *args, **kwargs):
+        response = _profile_httpx_send(self, request, *args, **kwargs)
+        if request.url.host.rstrip(".").lower() == _profile_host and 200 <= response.status_code < 300:
+            _mark_profile_call_success()
+        return response
+
+    httpx.Client.send = _send_with_profile_call_success_marker
 
     def _public_profile_dns(host, *args, **kwargs):
         if isinstance(host, str) and host.rstrip(".").lower() == _profile_host:

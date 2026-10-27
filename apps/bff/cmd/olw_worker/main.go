@@ -36,31 +36,32 @@ import (
 )
 
 type workerConfig struct {
-	VaultPath               string
-	Bucket                  string
-	DataDir                 string
-	UserID                  string
-	ProjectID               string
-	LocalCloudScope         string
-	ExecutionID             string
-	PipelineReservationID   string
-	APIKey                  string
-	InitVault               bool
-	Postprocess             bool
-	StopOnError             bool
-	Workspace               bool
-	WorkspaceDir            string
-	PipelineConfigPath      string
-	PipelineBindingsPath    string
-	ProfileResolverURL      string
-	ProfileResolverAudience string
-	ProfileCandidates       []pipelineLLMProfile
-	ActiveLLMProfile        *pipelineLLMProfile
-	SharedProfilePool       bool
-	BootstrapLLMSource      bool
-	QuotaMarkerPath         string
-	SuppressOutput          bool
-	SuggestedQueries        bool
+	VaultPath                    string
+	Bucket                       string
+	DataDir                      string
+	UserID                       string
+	ProjectID                    string
+	LocalCloudScope              string
+	ExecutionID                  string
+	PipelineReservationID        string
+	APIKey                       string
+	InitVault                    bool
+	Postprocess                  bool
+	StopOnError                  bool
+	Workspace                    bool
+	WorkspaceDir                 string
+	PipelineConfigPath           string
+	PipelineBindingsPath         string
+	ProfileResolverURL           string
+	ProfileResolverAudience      string
+	ProfileCandidates            []pipelineLLMProfile
+	ActiveLLMProfile             *pipelineLLMProfile
+	SharedProfilePool            bool
+	BootstrapLLMSource           bool
+	QuotaMarkerPath              string
+	ProfileCallSuccessMarkerPath string
+	SuppressOutput               bool
+	SuggestedQueries             bool
 	// CleanRebuild skips materializing prior generation outputs (wiki/.synto/
 	// cache artifacts) so Synto cold-starts from raw only. Default false.
 	CleanRebuild             bool
@@ -406,14 +407,13 @@ func runWorkerBatch(ctx context.Context, cfg workerConfig, rawCommands string) (
 			}
 		}()
 		if shared && len(profiles) > 1 {
-			marker, markerErr := os.CreateTemp("", "lwc-profile-quota-*")
+			markerDir, markerErr := os.MkdirTemp("", "lwc-profile-pool-markers-*")
 			if markerErr != nil {
 				return errors.New("Pipeline quota marker is unavailable")
 			}
-			cfg.QuotaMarkerPath = marker.Name()
-			_ = marker.Close()
-			_ = os.Remove(cfg.QuotaMarkerPath)
-			defer os.Remove(cfg.QuotaMarkerPath)
+			cfg.QuotaMarkerPath = filepath.Join(markerDir, "quota")
+			cfg.ProfileCallSuccessMarkerPath = filepath.Join(markerDir, "profile-call-success")
+			defer os.RemoveAll(markerDir)
 		}
 	}
 	if cfg.Bucket != "" && (cfg.VaultPath != "" || cfg.DataDir != "" || cfg.Workspace) {
@@ -1077,6 +1077,9 @@ func prepareOLWEnvironment(cfg workerConfig) ([]string, error) {
 	if cfg.QuotaMarkerPath != "" {
 		env = append(env, "LWC_PROFILE_QUOTA_MARKER_PATH="+cfg.QuotaMarkerPath)
 	}
+	if cfg.ProfileCallSuccessMarkerPath != "" {
+		env = append(env, "LWC_PROFILE_CALL_SUCCESS_MARKER_PATH="+cfg.ProfileCallSuccessMarkerPath)
+	}
 	env = append(env, profileFixtureEnvironment()...)
 	return env, nil
 }
@@ -1136,7 +1139,7 @@ func allowlistedSyntoEnvironment(extra []string) []string {
 		}
 		switch key {
 		case "XDG_CONFIG_HOME", "SYNTO_API_KEY", "DEEPSEEK_API_KEY", "LWC_PROFILE_SCHEMA_PATH", "LWC_PROFILE_GUIDANCE",
-			"LWC_PROFILE_CONFIG", "LWC_PROFILE_API_KEY", "LWC_PROFILE_QUOTA_MARKER_PATH",
+			"LWC_PROFILE_CONFIG", "LWC_PROFILE_API_KEY", "LWC_PROFILE_QUOTA_MARKER_PATH", "LWC_PROFILE_CALL_SUCCESS_MARKER_PATH",
 			"LWC_PROFILE_FIXTURE_TRANSPORT", "LWC_PROFILE_FIXTURE_RECEIPT_FILE":
 			env = append(env, item)
 		}

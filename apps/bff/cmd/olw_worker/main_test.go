@@ -251,6 +251,22 @@ func TestPrepareOLWEnvironmentIsolatesConfigAndMapsDeepSeekKey(t *testing.T) {
 	}
 }
 
+func TestPrepareOLWEnvironmentPassesProfileOutcomeMarkers(t *testing.T) {
+	cfg := workerConfig{
+		QuotaMarkerPath:              filepath.Join(t.TempDir(), "quota.marker"),
+		ProfileCallSuccessMarkerPath: filepath.Join(t.TempDir(), "profile-call-success.marker"),
+	}
+	env, err := prepareOLWEnvironment(cfg)
+	if err != nil {
+		t.Fatalf("prepareOLWEnvironment() error = %v", err)
+	}
+	values := envMap(env)
+	if values["LWC_PROFILE_QUOTA_MARKER_PATH"] != cfg.QuotaMarkerPath ||
+		values["LWC_PROFILE_CALL_SUCCESS_MARKER_PATH"] != cfg.ProfileCallSuccessMarkerPath {
+		t.Fatalf("profile outcome marker environment = %#v", values)
+	}
+}
+
 func TestRunWorkerBatchPassesIsolatedOLWEnvironment(t *testing.T) {
 	old := execOLW
 	defer func() { execOLW = old }()

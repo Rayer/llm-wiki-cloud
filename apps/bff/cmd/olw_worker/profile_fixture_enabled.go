@@ -29,6 +29,7 @@ import httpx as _lwc_fixture_httpx
 import json as _lwc_fixture_json
 import os as _lwc_fixture_os
 import re as _lwc_fixture_re
+import socket as _lwc_fixture_socket
 import time as _lwc_fixture_time
 
 def _lwc_fixture_record(protocol, model, path):
@@ -85,6 +86,14 @@ def _lwc_fixture_response(request):
     return _lwc_fixture_httpx.Response(200, json={"id": "synthetic-pipeline-fixture", "object": "chat.completion", "created": 1, "model": model, "choices": [{"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}})
 
 if _lwc_fixture_os.environ.get("LWC_PROFILE_FIXTURE_TRANSPORT") == "1":
+    _lwc_fixture_original_getaddrinfo = _lwc_fixture_socket.getaddrinfo
+    def _lwc_fixture_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+        if isinstance(host, str) and host.rstrip(".").lower() == "fixture.example":
+            return [(_lwc_fixture_socket.AF_INET, _lwc_fixture_socket.SOCK_STREAM,
+                     _lwc_fixture_socket.IPPROTO_TCP, "", ("93.184.216.34", int(port or 443)))]
+        return _lwc_fixture_original_getaddrinfo(host, port, family, type, proto, flags)
+    _lwc_fixture_socket.getaddrinfo = _lwc_fixture_getaddrinfo
+
     _lwc_fixture_original_client_init = _lwc_fixture_httpx.Client.__init__
     def _lwc_fixture_client_init(self, *args, **kwargs):
         kwargs["transport"] = _lwc_fixture_httpx.MockTransport(_lwc_fixture_response)

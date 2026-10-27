@@ -65,6 +65,8 @@ func (profileFixtureRoundTripper) RoundTrip(request *http.Request) (*http.Respon
 
 func profileFixtureContent(system, user string) string {
 	switch {
+	case strings.Contains(system, "boolean fields applicable, known, and match"):
+		return `{"applicable":true,"known":true,"match":true}`
 	case strings.Contains(system, "raw_query string") && strings.Contains(system, "Criterion"):
 		rawQuery := "disposable profile routing"
 		if start := strings.Index(user, "Raw query: "); start >= 0 {
@@ -93,6 +95,25 @@ func profileFixtureContent(system, user string) string {
 		return `{"terms":[]}`
 	case strings.Contains(system, `"relations"`) && strings.Contains(system, `"subject"`):
 		return `{"relations":[]}`
+	case strings.Contains(system, "Return exactly 20 distinct questions"):
+		var input struct {
+			Concepts []struct {
+				ID string `json:"id"`
+			} `json:"concepts"`
+		}
+		if json.Unmarshal([]byte(user), &input) != nil || len(input.Concepts) == 0 || input.Concepts[0].ID == "" {
+			return `{"candidates":[]}`
+		}
+		candidates := make([]map[string]any, 0, 20)
+		for index := 1; index <= 20; index++ {
+			candidates = append(candidates, map[string]any{
+				"question":                  fmt.Sprintf("How can I explore fixture profile routing scenario %d?", index),
+				"intent/use_case":           "discovery",
+				"corpus_anchor_concept_ids": []string{input.Concepts[0].ID},
+			})
+		}
+		data, _ := json.Marshal(map[string]any{"candidates": candidates})
+		return string(data)
 	default:
 		return "The Project uses its selected BYOK profile and model for this chat call."
 	}
