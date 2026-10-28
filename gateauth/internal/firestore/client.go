@@ -9,6 +9,7 @@ import (
 
 	"cloud.google.com/go/firestore"
 	"google.golang.org/api/iterator"
+	"google.golang.org/api/option"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -64,10 +65,16 @@ func NewClientWithDatabaseAndScope(project, databaseID, userID, projectID, rawSc
 }
 
 var newFirestoreClient = func(ctx context.Context, project, databaseID string) (*firestore.Client, error) {
-	if databaseID == "" {
-		return firestore.NewClient(ctx, project)
+	var options []option.ClientOption
+	if option, enabled, err := newLocalFirestoreAuditOption(); err != nil {
+		return nil, err
+	} else if enabled {
+		options = append(options, option)
 	}
-	return firestore.NewClientWithDatabase(ctx, project, databaseID)
+	if databaseID == "" {
+		return firestore.NewClient(ctx, project, options...)
+	}
+	return firestore.NewClientWithDatabase(ctx, project, databaseID, options...)
 }
 
 // GetStatus returns the current pipeline lock status.

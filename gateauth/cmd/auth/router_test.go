@@ -737,6 +737,26 @@ func TestProductionRouterCLIApprovalAndStatelessProductProxy(t *testing.T) {
 	if got := request(http.MethodGet, "/api/v1/auth/cli/pairing/decision?user_code="+pairing.UserCode, "", webToken); got.Code != http.StatusNotFound {
 		t.Fatalf("GET verification unexpectedly had a decision route: %d", got.Code)
 	}
+	for range 30 {
+		recorder := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "http://auth.example.test/api/v1/auth/cli/pairing/decision", strings.NewReader(`{"user_code":"00000000","decision":"approve"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+webToken)
+		req.Header.Set("CF-Connecting-IP", "192.0.2.31")
+		router.ServeHTTP(recorder, req)
+		if recorder.Code != http.StatusNotFound {
+			t.Fatalf("guess request before rate limit status=%d body=%s", recorder.Code, recorder.Body.String())
+		}
+	}
+	recorder := httptest.NewRecorder()
+	guessRequest := httptest.NewRequest(http.MethodPost, "http://auth.example.test/api/v1/auth/cli/pairing/decision", strings.NewReader(`{"user_code":"00000000","decision":"approve"}`))
+	guessRequest.Header.Set("Content-Type", "application/json")
+	guessRequest.Header.Set("Authorization", "Bearer "+webToken)
+	guessRequest.Header.Set("CF-Connecting-IP", "192.0.2.31")
+	router.ServeHTTP(recorder, guessRequest)
+	if recorder.Code != http.StatusTooManyRequests {
+		t.Fatalf("CLI code guess rate limit status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
 	pending := request(http.MethodPost, "/api/v1/auth/cli/pairing/poll", fmt.Sprintf(`{"pairing_id":%q,"polling_secret":%q}`, pairing.PairingID, pairing.PollingSecret), "")
 	if pending.Code != http.StatusAccepted {
 		t.Fatalf("pairing poll before approval status=%d body=%s", pending.Code, pending.Body.String())

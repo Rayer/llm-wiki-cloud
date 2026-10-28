@@ -66,8 +66,7 @@ func run() error {
 
 	settingsStore := syssettings.NewStore(fsClient.Raw(), cfg.RegistrationEnabled)
 
-	provider, err := observability.InitMetrics(context.Background(), observabilityServiceName(os.Getenv("K_SERVICE")), cfg.GCPProject)
-	if err != nil {
+	if provider, err := observability.InitMetricsForMode(context.Background(), observabilityServiceName(os.Getenv("K_SERVICE")), cfg.GCPProject, localMode); err != nil {
 		log.Printf("[observability] WARNING: metrics init failed (continuing): %v", err)
 	} else {
 		defer func() {

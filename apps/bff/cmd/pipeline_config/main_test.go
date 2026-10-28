@@ -19,7 +19,6 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/rayer/llm-wiki-bff/internal/auth"
 	runtimeconfig "github.com/rayer/llm-wiki-bff/internal/config"
 	handlerv1 "github.com/rayer/llm-wiki-bff/internal/handler/v1"
 	"github.com/rayer/llm-wiki-bff/internal/localfs"
@@ -117,7 +116,7 @@ func (r *fakeSecretReader) Access(_ context.Context, resource string) (string, [
 	return resolved, value, r.err
 }
 
-func TestRealPklBFFPrepareRendersSchema3WithoutCloudJWTAndRetainsLocalSchema2(t *testing.T) {
+func TestRealPklBFFPrepareRendersSchema3ConsumerForLocalAndCloud(t *testing.T) {
 	realPKL := strings.TrimSpace(os.Getenv("PKL_BIN"))
 	if realPKL == "" {
 		var err error
@@ -228,9 +227,6 @@ func TestRealPklBFFPrepareRendersSchema3WithoutCloudJWTAndRetainsLocalSchema2(t 
 				wantDeepSeekReference = "environment:LLM_API_KEY"
 			}
 			wantSchema := 3
-			if tc.environment == "local" {
-				wantSchema = 2
-			}
 			if generated.SchemaVersion != wantSchema || generated.Environment != tc.environment || generated.Target != "bff" ||
 				generated.PipelineCooldownSeconds != tc.cooldown || generated.TypeSafeAPIKey != tc.typesafe ||
 				generated.BYOKCredentialEncryptionKey != wantBYOKKey || generated.DeepSeekAPIKeyReference != wantDeepSeekReference ||
@@ -238,8 +234,11 @@ func TestRealPklBFFPrepareRendersSchema3WithoutCloudJWTAndRetainsLocalSchema2(t 
 				generated.MCP == nil || generated.MCP.DiscoveryTTLMS != wantTTL || generated.MCP.ToolsListTTLMS != wantTTL {
 				t.Fatalf("prepared BFF identity or cooldown is incorrect for %s", tc.environment)
 			}
-			if tc.environment == "local" && (generated.JWTSecret == "" || generated.AuthConsumer != nil) {
-				t.Fatal("local schema-2 BFF config lost its isolated compatibility signing key")
+			if tc.environment == "local" && (generated.JWTSecret != "" || generated.AuthConsumer == nil ||
+				generated.AuthConsumer.RuntimeServiceAccount != "bff-local@localhost" ||
+				generated.AuthConsumer.VerifierAudience != generated.AuthServiceURL ||
+				len(generated.AuthConsumer.AuthorityModes) != 1 || generated.AuthConsumer.AuthorityModes[0] != "synthetic-local-fixture") {
+				t.Fatal("local schema-3 BFF config lost its isolated synthetic Auth consumer")
 			}
 			if tc.environment != "local" && (generated.JWTSecret != "" || generated.AuthConsumer == nil ||
 				generated.AuthConsumer.Environment != tc.environment || generated.AuthConsumer.TimeoutSeconds != 5 ||
@@ -310,21 +309,9 @@ func TestRealPklBFFPrepareRendersSchema3WithoutCloudJWTAndRetainsLocalSchema2(t 
 			assertGeneratedConfigUsesQualityConsumers(t, started, tc.environment, tc.typesafe)
 			if tc.environment == "local" {
 				if generated.Local == nil || generated.Local.Scope != "lwc369-synthetic-acceptance" ||
-					generated.JWTSecret != strings.Repeat("a", 64) || generated.DeepSeekAPIKey != "TEST_ONLY_LOCAL_LLM_KEY" ||
+					generated.JWTSecret != "" || generated.DeepSeekAPIKey != "TEST_ONLY_LOCAL_LLM_KEY" ||
 					generated.ProfileRuntimeAudience != "" || generated.ProfileRuntimeServiceAccount != "" {
 					t.Fatal("local BFF config did not use the isolated synthetic fixtures")
-				}
-				legacyAuthConfig, err := runtimeconfig.Load(localRoot)
-				if err != nil || legacyAuthConfig.JWTSecret != started.JWTSecret {
-					t.Fatalf("Auth and BFF did not load the same local signing key: err=%v", err)
-				}
-				token, err := auth.GenerateAccessToken("lwc369-synthetic-user", "member", legacyAuthConfig.JWTSecret)
-				if err != nil {
-					t.Fatal("Auth could not issue a synthetic access token")
-				}
-				claims, err := auth.ValidateToken(token, started.JWTSecret)
-				if err != nil || claims.Sub != "lwc369-synthetic-user" {
-					t.Fatal("BFF could not validate an Auth token using the generated local config")
 				}
 				t.Run("missing optional Jev key remains loadable", func(t *testing.T) {
 					t.Setenv("TYPESAFE_API_KEY", "")

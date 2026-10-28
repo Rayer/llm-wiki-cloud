@@ -163,9 +163,6 @@ func main() {
 	}
 
 	localMode := cfg.LocalCloudScope != ""
-	if localMode && strings.TrimSpace(cfg.JWTSecret) == "" {
-		log.Fatal("local cloud signing key is missing")
-	}
 	gcsClient, err := gcs.NewClientWithScope(cfg.Bucket, cfg.LocalCloudScope)
 	if err != nil {
 		log.Fatalf("Failed to create GCS client: %v", err)
@@ -213,8 +210,7 @@ func main() {
 	}
 
 	// OpenTelemetry metrics (graceful fallback)
-	provider, err := observability.InitMetrics(context.Background(), observabilityServiceName(os.Getenv("K_SERVICE")), cfg.GCPProject)
-	if err != nil {
+	if provider, err := observability.InitMetricsForMode(context.Background(), observabilityServiceName(os.Getenv("K_SERVICE")), cfg.GCPProject, localMode); err != nil {
 		log.Printf("[observability] WARNING: metrics init failed (continuing): %v", err)
 	} else {
 		defer func() {

@@ -99,7 +99,8 @@ func runAuthLogin(args []string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := selectAPIHost(store, *apiHost); err != nil {
+	productOrigin, err := selectAPIHost(store, *apiHost)
+	if err != nil {
 		return err
 	}
 	client, err := newCLIAPIClient(origin, nil)
@@ -163,7 +164,7 @@ func runAuthLogin(args []string) error {
 				AuthVersion: result.Credentials.AuthVersion,
 			}
 			if err := store.withLock(func() error {
-				if err := store.saveConfig(cliLocalConfig{AuthHost: origin}); err != nil {
+				if err := store.saveConfig(cliLocalConfig{AuthHost: origin, APIHost: productOrigin}); err != nil {
 					return err
 				}
 				return store.saveCredentials(credentials)

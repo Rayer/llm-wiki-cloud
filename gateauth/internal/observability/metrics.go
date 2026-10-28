@@ -47,6 +47,26 @@ func InitMetrics(ctx context.Context, serviceName, projectID string) (*sdkmetric
 	return provider, nil
 }
 
+// InitMetricsForMode keeps local emulator processes off ambient cloud metrics
+// credentials while leaving the existing Cloud Monitoring setup for services.
+func InitMetricsForMode(ctx context.Context, serviceName, projectID string, localMode bool) (*sdkmetric.MeterProvider, error) {
+	if localMode {
+		return InitLocalMetrics(serviceName), nil
+	}
+	return InitMetrics(ctx, serviceName, projectID)
+}
+
+// InitLocalMetrics installs an in-process meter provider without cloud export.
+// Local emulator runs must never consult ambient Google credentials.
+func InitLocalMetrics(serviceName string) *sdkmetric.MeterProvider {
+	provider := sdkmetric.NewMeterProvider(
+		sdkmetric.WithResource(resource.NewSchemaless(semconv.ServiceName(serviceName))),
+	)
+	otel.SetMeterProvider(provider)
+	log.Printf("[observability] cloud metrics exporter disabled for local service %s", serviceName)
+	return provider
+}
+
 // GetProjectID returns the GCP project ID from env or metadata.
 func GetProjectID() string {
 	if id := os.Getenv("GOOGLE_CLOUD_PROJECT"); id != "" {

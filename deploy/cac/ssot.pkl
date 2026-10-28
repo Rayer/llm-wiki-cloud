@@ -521,7 +521,9 @@ local localBff = new BffConfig {
   auth_session_environment = "llm-wiki-cloud-local"
   auth_session_migration = "disabled"
   registration_enabled = null
-  jwt_secret_reference = localJwtSecretReference
+  // The local BFF is an Auth consumer; only GateAuth keeps the local signing
+  // key. Schema 2 remains available for explicit legacy compatibility files.
+  jwt_secret_reference = null
   deepseek_api_key_reference = localDeepSeekSecretReference
   typesafe_api_key_reference = localTypeSafeAPIKeyReference
   byok_credential_encryption_key_reference = localBYOKCredentialKeyReference

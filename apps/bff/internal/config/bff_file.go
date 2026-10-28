@@ -766,9 +766,12 @@ func validateBFFFile(file BFFFile) error {
 			!absoluteRuntimePath(file.Local.PipelineBindingsPath) {
 			return errors.New("BFF config local settings are invalid")
 		}
-		decoded, err := hex.DecodeString(file.JWTSecret)
-		if err != nil || len(decoded) != 32 {
-			return errors.New("BFF config jwt_secret is invalid")
+		if file.SchemaVersion == 2 {
+			decoded, err := hex.DecodeString(file.JWTSecret)
+			if err != nil || len(decoded) != 32 {
+				return errors.New("BFF config jwt_secret is invalid")
+			}
+			clear(decoded)
 		}
 	} else if file.Local != nil {
 		return errors.New("BFF config local settings must be null for cloud")
