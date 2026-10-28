@@ -742,6 +742,8 @@ class Engine:
                 receipt['artifact']['pipeline_config'] = self.provider.prepare_pipeline_config()
             elif c == 'auth':
                 receipt = copy.deepcopy(receipt)
+                if source_mode == 'independent':
+                    receipt['build_sha'] = self.plan['source']
             if c == 'auth':
                 receipt = self.attach_auth_input_snapshot(receipt)
             self.provider.usable(c, receipt['artifact'])

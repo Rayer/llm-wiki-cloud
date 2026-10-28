@@ -282,6 +282,57 @@ else:
                 ["git", "rev-parse", "HEAD^"], cwd=ROOT, text=True
             ).strip()
             self.assertNotEqual(newer_lwc_sha, lwc_sha)
+            selected_auth_release = root / "selected-auth-release"
+            selected_auth_plan = self.admit_plan(
+                selected_auth_release, name="auth-reuse", source_sha=newer_lwc_sha,
+                components=["auth"], auth_source=auth_source, reuse=directory)
+            selected_auth_engine = engine.Engine(selected_auth_release)
+            selected_auth_engine.provider.gcp_project_number = lambda: "580854833715"
+            auth_build_calls = []
+
+            def reject_auth_rebuild(component):
+                auth_build_calls.append(component)
+                raise AssertionError("selected Auth reuse unexpectedly started a new Auth build")
+
+            selected_auth_engine.prepare_container = reject_auth_rebuild
+            provider_calls_before_reuse = [json.loads(line) for line in provider_log.read_text().splitlines()]
+            with patch.dict(os.environ, {
+                "PATH": str(binary) + os.pathsep + os.environ["PATH"],
+                "TMPDIR": os.environ.get("TMPDIR", "/tmp"),
+                "GAT4_PROVIDER_TRAP_LOG": str(provider_log),
+                "GITHUB_REPOSITORY_ID": "101",
+                "GITHUB_RUN_ID": "1005",
+                "GITHUB_RUN_ATTEMPT": "1",
+                "GAT4_RELEASE_SOURCE_MODE": "independent",
+                "GAT4_DEV_RECEIPT_MODE": "independent",
+                "GAT4_DEV_RECEIPT_SOURCE_METADATA_FILE": str(
+                    selected_auth_release / "dev-source-metadata.json"),
+                "FAKE_GCP_PROJECT": normalized["gcp"]["project_id"],
+            }, clear=False):
+                selected_auth_engine.prepare(reuse=directory)
+                self.assertEqual(selected_auth_engine.barrier()["auth"], auth_receipt["artifact"])
+            self.assertEqual(selected_auth_plan["selected"], ["auth"])
+            self.assertEqual(auth_build_calls, [])
+            selected_auth_receipt = read(selected_auth_release / "receipts/auth.json")
+            self.assertEqual(selected_auth_receipt["build_sha"], newer_lwc_sha)
+            self.assertEqual(selected_auth_receipt["auth_config_inputs"]["source_sha"], newer_lwc_sha)
+            self.assertEqual(selected_auth_receipt["auth_source"], auth_receipt["auth_source"])
+            self.assertEqual(selected_auth_receipt["build"], auth_receipt["build"])
+            self.assertEqual(selected_auth_receipt["artifact"], auth_receipt["artifact"])
+            selected_auth_dev = read(selected_auth_release / "images/dev-receipt.json")
+            receipt_contract.validate_receipt_pair(
+                selected_auth_receipt, selected_auth_dev, "independent",
+                expected_auth_config_inputs=selected_auth_receipt["auth_config_inputs"],
+                expected_lwc_source=selected_auth_dev["source"]["lwc"],
+                expected_auth_source=selected_auth_dev["source"]["auth"],
+                expected_components=["auth"],
+            )
+            provider_calls_after_reuse = [json.loads(line) for line in provider_log.read_text().splitlines()]
+            self.assertEqual(sum(call["argv"][:2] == ["builds", "submit"]
+                                 for call in provider_calls_after_reuse),
+                             sum(call["argv"][:2] == ["builds", "submit"]
+                                 for call in provider_calls_before_reuse))
+
             bff_release = root / "bff-release"
             bff_plan = self.admit_plan(bff_release, name="bff", source_sha=newer_lwc_sha,
                                        components=["bff"], reuse=directory)
