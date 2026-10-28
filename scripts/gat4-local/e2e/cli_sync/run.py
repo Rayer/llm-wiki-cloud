@@ -27,13 +27,36 @@ from urllib.request import Request, urlopen
 ROOT = Path(__file__).resolve().parents[4]
 APP = ROOT / "apps" / "bff"
 BASELINE = "4d290cb7d2f5d9d8be9523f0ddc02b8ce1b621c9"
-SCRATCH_ROOT = Path("/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch")
-REPORT_PATH = Path(__file__).resolve().parent / "report.json"
+
+
+def required_tmpdir() -> Path:
+    value = os.environ.get("TMPDIR", "").strip()
+    if not value:
+        raise SystemExit("TMPDIR must be explicitly set to an existing writable local scratch directory; no system-temp fallback is used")
+    root = Path(value).expanduser()
+    try:
+        root = root.resolve(strict=True)
+    except OSError:
+        raise SystemExit("TMPDIR must name an existing writable local scratch directory")
+    if not root.is_dir() or not os.access(root, os.W_OK | os.X_OK):
+        raise SystemExit("TMPDIR must name an existing writable local scratch directory")
+    return root
+
+
+SCRATCH_ROOT = required_tmpdir()
+REPORT_PATH = Path(__file__).resolve().parent / "report-reconciliation.json"
 GCS_SERVER_MODULE = "github.com/fsouza/fake-gcs-server@v1.52.1"
 SCOPE = "worktree-" + __import__("secrets").token_hex(12)
 PROJECT = "llm-wiki-cloud"
 DATABASE = "llm-wiki-cloud-local"
 BUCKET = "llm-wiki-cloud-local"
+EXPECTED_NONZERO_CLI_LABELS = {
+    "v2 direct init against unowned Project",
+    "v2 explicit api_host 404 has no Auth fallback",
+    "v2 explicit api_host redirect is not followed",
+    "v2 stale pre-reauthorize binding ID is rejected",
+    "v2 subsequent raw sync access rejected after revoke",
+}
 
 SCRATCH = Path(tempfile.mkdtemp(prefix="gat4-cli-sync-", dir=SCRATCH_ROOT))
 os.chmod(SCRATCH, 0o700)
@@ -44,7 +67,7 @@ CONFIG.mkdir(mode=0o700)
 LOG_DIR = SCRATCH / "logs"
 LOG_DIR.mkdir(mode=0o700)
 REPORT: dict = {
-    "schema": "gat4-cli-local-qualification-v1",
+    "schema": "gat4-cli-local-qualification-v2",
     "started_at": datetime.now(timezone.utc).isoformat(),
     "scratch_path": str(SCRATCH),
     "source": {},
@@ -682,23 +705,69 @@ def storage_sdk_probe(prefix: str) -> dict:
             "stderr": error if result.returncode else ""}
 
 
-def capture_auth_audit() -> dict:
-    path = SCRATCH / "auth-firestore-audit.log"
-    text = read_log(path)
+def assess_auth_audit(text: str) -> dict:
     lines = [line for line in text.splitlines() if line.startswith("rpc=")]
     collection_lines = [line for line in lines if "collections=" in line and
                         re.search(r"collections=[^ ]*(users|system|auth_cli_pairings|auth_cli_sessions)", line)]
     forbidden = []
+    forbidden_field_count = 0
     for line in lines:
         if "forbidden=" in line:
+            forbidden_field_count += 1
             values = line.split("forbidden=", 1)[1].strip()
             if values:
                 forbidden.extend(value for value in values.split(",") if value)
-    evidence_ok = bool(lines and collection_lines)
+    positive_evidence = bool(lines and collection_lines)
+    forbidden_field_coverage_complete = bool(lines) and forbidden_field_count == len(lines)
+    if not lines:
+        rejection_reason = "no_rpc_records"
+    elif not positive_evidence:
+        rejection_reason = "no_positive_collection_evidence"
+    elif not forbidden_field_coverage_complete:
+        rejection_reason = "incomplete_forbidden_collection_evidence"
+    elif forbidden:
+        rejection_reason = "forbidden_collection_access"
+    else:
+        rejection_reason = None
     return {"rpc_count": len(lines), "positive_collection_count": len(collection_lines),
-            "positive_evidence": evidence_ok, "forbidden_collections": forbidden,
-            "blank_or_header_only_rejected": not evidence_ok,
-            "file_mode": oct(path.stat().st_mode & 0o777) if path.exists() else None}
+            "positive_evidence": positive_evidence, "forbidden_collections": forbidden,
+            "rpc_lines_with_forbidden_field": forbidden_field_count,
+            "forbidden_field_coverage_complete": forbidden_field_coverage_complete,
+            "evidence_accepted": rejection_reason is None, "rejection_reason": rejection_reason}
+
+
+def capture_auth_audit(path: Path | None = None) -> dict:
+    audit_path = path or (SCRATCH / "auth-firestore-audit.log")
+    result = assess_auth_audit(read_log(audit_path))
+    result["file_mode"] = oct(audit_path.stat().st_mode & 0o777) if audit_path.exists() else None
+    return result
+
+
+def auth_audit_negative_controls() -> dict:
+    controls_dir = SCRATCH / "auth-audit-negative-controls"
+    controls_dir.mkdir(mode=0o700)
+    blank_path = controls_dir / "blank.log"
+    header_path = controls_dir / "header-only.log"
+    secure_write(blank_path, b"")
+    secure_write(header_path, b"# GAT4 Firestore RPC audit v1; collection names only\n")
+    blank = capture_auth_audit(blank_path)
+    header_only = capture_auth_audit(header_path)
+    return {
+        "blank_log_checked": True,
+        "blank_log_path": str(blank_path),
+        "blank_log_evidence_accepted": blank["evidence_accepted"],
+        "blank_log_rejection_reason": blank["rejection_reason"],
+        "blank_log_rpc_count": blank["rpc_count"],
+        "blank_log_mode": blank["file_mode"],
+        "header_only_log_checked": True,
+        "header_only_log_path": str(header_path),
+        "header_only_log_evidence_accepted": header_only["evidence_accepted"],
+        "header_only_log_rejection_reason": header_only["rejection_reason"],
+        "header_only_log_rpc_count": header_only["rpc_count"],
+        "header_only_log_mode": header_only["file_mode"],
+        "both_log_controls_rejected": not blank["evidence_accepted"] and not header_only["evidence_accepted"],
+        "same_acceptance_guard_used": True,
+    }
 
 
 def stop_owned() -> None:
@@ -757,12 +826,24 @@ def write_report() -> None:
         "storage_sdk_probe_sha256": hashlib.sha256((Path(__file__).resolve().parent / "sdk_probe.go").read_bytes()).hexdigest(),
     }
     build_codes = [row["exit_code"] for row in REPORT["builds"]]
-    cli_codes = [row["exit_code"] for row in REPORT["commands"]]
+    cli_rows = REPORT["commands"]
+    cli_codes = [row["exit_code"] for row in cli_rows]
+    expected_nonzero = [row["label"] for row in cli_rows
+                        if row["label"] in EXPECTED_NONZERO_CLI_LABELS and row["exit_code"] != 0]
+    expected_control_successes = sorted(label for label in EXPECTED_NONZERO_CLI_LABELS
+                                        if any(row["label"] == label and row["exit_code"] == 0 for row in cli_rows))
+    unexpected_nonzero = [row["label"] for row in cli_rows
+                          if row["exit_code"] != 0 and row["label"] not in EXPECTED_NONZERO_CLI_LABELS]
+    missing_expected_controls = sorted(EXPECTED_NONZERO_CLI_LABELS - {row["label"] for row in cli_rows})
     REPORT["exit_counts"] = {
         "build_steps": {"total": len(build_codes), "passed": sum(code == 0 for code in build_codes),
                         "failed": sum(code != 0 for code in build_codes)},
         "cli_commands": {"total": len(cli_codes), "passed": sum(code == 0 for code in cli_codes),
-                         "nonzero_expected_controls": sum(code != 0 for code in cli_codes)},
+                         "expected_nonzero_controls": expected_nonzero,
+                         "expected_control_count": len(EXPECTED_NONZERO_CLI_LABELS),
+                         "expected_controls_that_succeeded_unexpectedly": expected_control_successes,
+                         "unexpected_nonzero_failures": unexpected_nonzero,
+                         "missing_expected_controls": missing_expected_controls},
     }
     REPORT["auth_firestore_audit"] = capture_auth_audit()
     REPORT["report_path"] = str(REPORT_PATH)
@@ -942,23 +1023,56 @@ def qualify() -> None:
 
     # Reauthorize is an explicit replacement generation in the frozen baseline.
     before_reauth = binding_metadata(vault)
+    metadata_path = vault / ".lwc-sync.json"
+    pre_reauth_metadata = metadata_path.read_bytes()
+    pre_reauth_copy = SCRATCH / "vaults" / "primary-pre-reauthorize.json"
+    secure_write(pre_reauth_copy, pre_reauth_metadata, 0o600)
     reauth = run_cli("v2 explicit binding reauthorization", BIN / "lwc-sync-v2",
                      ["binding", "reauthorize", "--vault", str(vault), "--project-id", "synthetic-project"], v2_xdg)
     after_reauth = binding_metadata(vault)
+    post_reauth_metadata = metadata_path.read_bytes()
     stable = all(before_reauth.get(field) == after_reauth.get(field) for field in ("host", "wiki_id", "project_id"))
     changed = before_reauth.get("binding_id") != after_reauth.get("binding_id")
     REPORT["checks"]["reauthorization_identity"] = {
         "exit_code": reauth.returncode, "issuer_host_preserved": before_reauth.get("host") == after_reauth.get("host"),
         "wiki_id_preserved": before_reauth.get("wiki_id") == after_reauth.get("wiki_id"),
         "project_id_preserved": before_reauth.get("project_id") == after_reauth.get("project_id"),
-        "binding_id_preserved": not changed, "baseline_generation_rotated": changed,
+        "binding_id_rotated": changed,
         "before_identity": {k: before_reauth.get(k) for k in ("host", "binding_id", "wiki_id", "project_id")},
         "after_identity": {k: after_reauth.get(k) for k in ("host", "binding_id", "wiki_id", "project_id")},
         "new_metadata_matches_product_response": after_reauth.get("binding_id") != "" and stable,
-        "interpretation": "baseline explicit reauthorization replaces the binding ID; coordinator directed this be reported as an interpretation conflict, not a new product defect",
+        "interpretation": "explicit reauthorization uses the established replacement generation; migration/restart preserve identity, and the CLI updates vault metadata to the new binding ID",
+        "pre_reauthorize_metadata_copy": str(pre_reauth_copy),
+        "pre_reauthorize_metadata_copy_mode": oct(pre_reauth_copy.stat().st_mode & 0o777),
     }
-    if reauth.returncode or not stable:
-        raise RuntimeError("explicit reauthorization did not preserve stable host/wiki/project identity")
+    if reauth.returncode or not stable or not changed:
+        raise RuntimeError("explicit reauthorization did not rotate binding generation while preserving host/wiki/project identity")
+
+    stale_start = bff_log.stat().st_size
+    try:
+        secure_write(metadata_path, pre_reauth_metadata, 0o600)
+        stale_cli = run_cli("v2 stale pre-reauthorize binding ID is rejected", BIN / "lwc-sync-v2",
+                            ["push", "--vault", str(vault), "--sync"], v2_xdg, timeout=120)
+    finally:
+        secure_write(metadata_path, post_reauth_metadata, 0o600)
+    stale_statuses = http_statuses_after(bff_log, stale_start, "/api/v1/sync/raw")
+    stale_cli_saw_403 = "HTTP 403" in (stale_cli.stderr or "")
+    stale_bff_saw_403 = 403 in stale_statuses
+    metadata_restored = binding_metadata(vault) == after_reauth
+    REPORT["checks"]["stale_binding_id_denied_after_reauthorize"] = {
+        "exit_code": stale_cli.returncode,
+        "old_binding_id": before_reauth["binding_id"],
+        "current_binding_id": after_reauth["binding_id"],
+        "private_pre_reauthorize_copy_mode": oct(pre_reauth_copy.stat().st_mode & 0o777),
+        "cli_observed_http_403": stale_cli_saw_403,
+        "bff_sync_route_statuses": stale_statuses,
+        "bff_observed_http_403": stale_bff_saw_403,
+        "current_metadata_restored": metadata_restored,
+    }
+    if (stale_cli.returncode == 0 or not stale_cli_saw_403 or not stale_bff_saw_403 or
+            not metadata_restored or before_reauth["binding_id"] == after_reauth["binding_id"]):
+        raise RuntimeError("old binding ID was not rejected after reauthorization or current vault metadata was not restored")
+
     reauthorized_sync = run_cli("v2 sync continues after explicit reauthorization", BIN / "lwc-sync-v2",
                                ["push", "--vault", str(vault), "--sync"], v2_xdg, timeout=120)
     REPORT["checks"]["reauthorized_binding_usable"] = {"exit_code": reauthorized_sync.returncode,
@@ -1046,21 +1160,32 @@ def qualify() -> None:
         raise RuntimeError("BFF binding revoke did not reject the subsequent actual sync request")
 
     audit = capture_auth_audit()
+    audit_negative = auth_audit_negative_controls()
     REPORT["checks"]["auth_firestore_audit"] = audit
-    if not audit["positive_evidence"]:
+    REPORT["checks"]["auth_firestore_audit_negative_controls"] = audit_negative
+    if not audit["evidence_accepted"] or not audit["positive_evidence"]:
         raise RuntimeError("Auth Firestore audit was blank/header-only and cannot substantiate zero forbidden access")
     if audit["forbidden_collections"]:
         raise RuntimeError("Auth Firestore audit found forbidden Project/binding collection access")
+    if not audit_negative["both_log_controls_rejected"]:
+        raise RuntimeError("Auth Firestore audit evidence guard accepted a blank or header-only log")
     REPORT["checks"]["auth_stateless_proxy_zero_product_firestore"] = {
         "positive_auth_firestore_rpc_and_collection_evidence": True,
         "forbidden_project_or_binding_collections": audit["forbidden_collections"],
         "v1_and_v2_legacy_auth_proxy_exercised": True,
     }
+    expected_nonzero = {row["label"] for row in REPORT["commands"]
+                        if row["label"] in EXPECTED_NONZERO_CLI_LABELS and row["exit_code"] != 0}
+    unexpected_nonzero = [row["label"] for row in REPORT["commands"]
+                          if row["exit_code"] != 0 and row["label"] not in EXPECTED_NONZERO_CLI_LABELS]
+    if expected_nonzero != EXPECTED_NONZERO_CLI_LABELS or unexpected_nonzero:
+        raise RuntimeError("CLI command exits did not match the expected negative controls")
     REPORT["qualification"] = {
-        "cli_acceptance_2": "PARTIAL: pairing, ACL, binding, sync, restart, refresh, and revoke pass; migration/restart preserves binding identity, while explicit baseline reauthorization rotates binding ID with host/Wiki/Project stable, so ID-preservation wording remains an interpretation conflict (not a product defect)",
+        "scope": "CLI acceptance 2 and compatibility acceptance 7 only",
+        "cli_acceptance_2": "PASS: restart preserves binding identity; explicit reauthorization rotates the generation while preserving issuer/WikiID/ProjectID, writes the new ID to the vault, rejects the old ID, and permits sync with the new ID; revoke then rejects access",
         "cli_acceptance_7": "PASS: actual baseline CLI v1 and current v2 legacy config used Auth proxy; explicit v2 api_host produced no Auth fallback or redirect",
         "persisted_sync": "PASS: product wrote to loopback GCS emulator and a fresh CLI process read exact bytes back",
-        "qualification_complete": False,
+        "qualification_complete": True,
     }
 
 
