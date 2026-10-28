@@ -24,6 +24,7 @@ var errCLILocalAuthNotFound = errors.New("local CLI credentials not found")
 // the Auth/control-plane origin; sync data services use their own future URL.
 type cliLocalConfig struct {
 	AuthHost string `json:"auth_host"`
+	APIHost  string `json:"api_host,omitempty"`
 }
 
 // cliLocalCredentials contains secrets and is written only to mode 0600.
@@ -111,12 +112,18 @@ func (s *localAuthStore) loadConfig() (cliLocalConfig, error) {
 	if err := validateAuthOrigin(config.AuthHost); err != nil {
 		return cliLocalConfig{}, fmt.Errorf("invalid auth_host in local config")
 	}
+	if config.APIHost != "" && validateAuthOrigin(config.APIHost) != nil {
+		return cliLocalConfig{}, fmt.Errorf("invalid api_host in local config")
+	}
 	return config, nil
 }
 
 func (s *localAuthStore) saveConfig(config cliLocalConfig) error {
 	if err := validateAuthOrigin(config.AuthHost); err != nil {
 		return errors.New("auth/control-plane host must be an https origin (or local http origin)")
+	}
+	if config.APIHost != "" && validateAuthOrigin(config.APIHost) != nil {
+		return errors.New("api host must be an https origin (or local http origin)")
 	}
 	return writePrivateJSON(s.configPath(), config)
 }

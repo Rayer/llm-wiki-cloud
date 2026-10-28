@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -79,9 +78,6 @@ type authConsumerFactory func(context.Context, authconsumer.Config, *http.Client
 
 func configureAuthConsumer(hV1 *handlerv1.Handler, cfg config.Config, localMode bool, factory authConsumerFactory) (*authconsumer.Client, error) {
 	hV1.SetAuthManagementBridge(cfg.BFFManagementBridge)
-	if localMode {
-		return nil, nil
-	}
 	consumer := cfg.BFFAuthConsumer
 	if consumer == nil || strings.TrimSpace(consumer.Environment) == "" || strings.TrimSpace(consumer.AuthURL) == "" ||
 		strings.TrimSpace(consumer.Issuer) == "" || strings.TrimSpace(consumer.VerifierAudience) == "" ||
@@ -90,15 +86,32 @@ func configureAuthConsumer(hV1 *handlerv1.Handler, cfg config.Config, localMode 
 	}
 	switch cfg.BFFConfigSchemaVersion {
 	case 2:
+		if localMode {
+			return nil, errors.New("local Auth consumer fixture requires BFF config schema 3")
+		}
 		if !cfg.BFFManagementBridge {
 			return nil, errors.New("schema-2 Auth consumer bridge is unavailable")
 		}
 	case 3:
-		if cfg.BFFManagementBridge {
+		if cfg.BFFManagementBridge && !localMode {
 			return nil, errors.New("schema-3 BFF cannot enable legacy management bridge")
 		}
 	default:
 		return nil, errors.New("BFF Auth consumer schema is unsupported")
+	}
+	if localMode {
+		if consumer.Environment != "local" || consumer.RuntimeServiceAccount != authconsumer.LocalFixtureCallerEmail ||
+			consumer.VerifierAudience != consumer.AuthURL || !equalConfigStringSet(consumer.AuthorityModes, []string{"synthetic-local-fixture"}) {
+			return nil, errors.New("local Auth consumer fixture identity is invalid")
+		}
+		factory = func(_ context.Context, runtimeConfig authconsumer.Config, httpClient *http.Client) (*authconsumer.Client, error) {
+			return authconsumer.New(runtimeConfig, httpClient, func(_ context.Context, audience string) (string, error) {
+				if audience != runtimeConfig.Audience {
+					return "", errors.New("local Auth fixture audience mismatch")
+				}
+				return authconsumer.LocalFixtureOIDCToken, nil
+			})
+		}
 	}
 	if factory == nil {
 		return nil, errors.New("Auth consumer factory is unavailable")
@@ -115,6 +128,23 @@ func configureAuthConsumer(hV1 *handlerv1.Handler, cfg config.Config, localMode 
 	}
 	hV1.SetConsumerVerifier(client)
 	return client, nil
+}
+
+func equalConfigStringSet(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	seen := make(map[string]int, len(left))
+	for _, value := range left {
+		seen[value]++
+	}
+	for _, value := range right {
+		if seen[value] == 0 {
+			return false
+		}
+		seen[value]--
+	}
+	return true
 }
 
 func main() {
@@ -452,26 +482,6 @@ func defaultRawScrapeHandlerFactory(scopedClient *gcs.Client, fsClient *firestor
 	return handlerraw.New(scopedClient, fsClient, nil, nil, nil)
 }
 
-func localAuthHostAllowlist(cfg config.Config) gin.HandlerFunc {
-	allowed := make(map[string]struct{})
-	for _, host := range cfg.AllowedHostsFor(true) {
-		allowed[strings.ToLower(strings.TrimSpace(host))] = struct{}{}
-	}
-	return func(c *gin.Context) {
-		host := strings.ToLower(strings.TrimSpace(c.Request.Host))
-		if parsed, _, err := net.SplitHostPort(host); err == nil {
-			host = parsed
-		}
-		if _, ok := allowed[host]; !ok {
-			observability.RecordAuthGuard(c.Request.Context(), "host", "rejected")
-			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "invalid Host header"})
-			return
-		}
-		observability.RecordAuthGuard(c.Request.Context(), "host", "passed")
-		c.Next()
-	}
-}
-
 func newProductionRouter(
 	cfg config.Config,
 	localMode bool,
@@ -517,41 +527,21 @@ func newProductionRouter(
 	r.Any("/mcp/projects/:projectID", hV1.MCPProjectOAuthHandler(cfg.AuthEnvironment, cfg.MCPResourceOrigin))
 	r.GET("/.well-known/oauth-protected-resource/mcp/projects/:projectID",
 		handlerv1.MCPProjectResourceMetadataHandler(cfg.MCPResourceOrigin, cfg.AuthServiceURL))
+	mcpConsent := r.Group("/api/v1/mcp/oauth")
+	mcpConsent.Use(hV1.AccountAuth(cfg))
+	mcpConsent.GET("/consent/:transactionID", hV1.MCPProjectConsentDetails)
+	mcpConsent.POST("/consent/:transactionID/decision", hV1.MCPProjectConsentDecision)
+	mcpConsent.GET("/grants", hV1.MCPProjectGrants)
 
-	// Temporary Stage A compatibility lane for the frontend Auth cutover.
-	var sessions *auth.RefreshSessionAuthority
-	if localMode {
-		authRoutes := r.Group("/api/v1/auth")
-		authRoutes.Use(localAuthHostAllowlist(cfg), auth.CompatibilityBodyLimit())
-		cookiePolicy := auth.LocalRefreshCookiePolicy()
-		if fsClient == nil || fsClient.Raw() == nil {
-			unavailable := func(c *gin.Context) {
-				c.JSON(http.StatusServiceUnavailable, gin.H{"error": "auth routes require Firestore"})
-			}
-			authRoutes.POST("/login", unavailable)
-			authRoutes.POST("/register", unavailable)
-			authRoutes.POST("/refresh", unavailable)
-			authRoutes.POST("/logout", auth.LogoutHandlerWithCookiePolicy(cookiePolicy))
-		} else {
-			identityRepository := auth.NewIdentityRepository(fsClient.Raw())
-			sessionEnvironment := authSessionEnvironment(cfg)
-			sessions = auth.NewRefreshSessionAuthorityWithConfig(fsClient.Raw(), auth.SessionAuthorityConfig{
-				Environment: sessionEnvironment, Migration: auth.RefreshSessionMigrationMode(cfg.AuthSessionMigration),
-			})
-			authRoutes.POST("/login", middleware.NewRateLimiter(10, time.Minute), auth.LoginHandlerWithRepositoryAndSessionAuthority(identityRepository, cfg.JWTSecret, cookiePolicy, sessions))
-			authRoutes.POST("/register", middleware.NewRateLimiter(5, time.Minute), auth.RegisterHandlerWithRepository(identityRepository, cfg.JWTSecret, settingsStore))
-			authRoutes.POST("/refresh", auth.RefreshHandlerWithSessionAuthority(sessions, cfg.JWTSecret, cookiePolicy))
-			authRoutes.POST("/logout", auth.LogoutHandlerWithSessionAuthority(sessions, cfg.JWTSecret, cookiePolicy))
-		}
-	}
 	var rawFirestore *cloudfirestore.Client
 	if fsClient != nil {
 		rawFirestore = fsClient.Raw()
 	}
-	hV1.SetSyncBindingAuthority(auth.NewSyncBindingAuthority(rawFirestore, authSessionEnvironment(cfg), cfg.AuthServiceURL))
-	hV1.SetSyncBindingHost(cfg.AuthServiceURL)
-	if fsClient != nil {
-		wireCLIAuthorities(hV1, fsClient.Raw(), sessions)
+	if rawFirestore != nil {
+		hV1.SetCLIProjectAuthorizer(auth.FirestoreProjectOwnerAuthorizer(rawFirestore))
+		hV1.SetSyncBindingAuthority(auth.NewSyncBindingAuthority(rawFirestore, authSessionEnvironment(cfg), cfg.AuthServiceURL))
+		hV1.SetSyncBindingHost(cfg.AuthServiceURL)
+		registerCLIProductRoutes(r, cfg, hV1, rawFirestore)
 	}
 
 	// ── Swagger UI ──
@@ -564,6 +554,7 @@ func newProductionRouter(
 	{
 		v1.GET("/health", hV1.Health)
 		v1.GET("/ready", hV1.Ready)
+		v1.POST("/onboarding/default-project", hV1.BootstrapDefaultProject)
 		v1.GET("/projects", hV1.ListProjects)
 		v1.POST("/init-project", hV1.InitProject)
 		v1.PATCH("/projects/:projectID", hV1.RenameProject)
@@ -661,6 +652,21 @@ func newProductionRouter(
 	})
 
 	return observability.WrapRequestLifecycleRouter(r)
+}
+
+func registerCLIProductRoutes(r *gin.Engine, cfg config.Config, hV1 *handlerv1.Handler, fs *cloudfirestore.Client) {
+	service := auth.NewCLIAuthService(fs, nil, cfg.JWTSecret, "")
+	service.SetSyncBindingAuthority(auth.NewSyncBindingAuthority(fs, authSessionEnvironment(cfg), cfg.AuthServiceURL))
+	service.SetSyncServiceURL(cfg.MCPResourceOrigin)
+	cliProducts := r.Group("/api/v1/auth/cli")
+	cliProducts.Use(hV1.AccountAuth(cfg))
+	cliProducts.GET("/projects", auth.CLIOnly(), service.ListProjectsHandler())
+	cliProducts.GET("/sync-service", auth.CLIOnly(), service.SyncServiceLocatorHandler())
+	cliProducts.GET("/bindings", service.ListBindingsHandler())
+	cliProducts.POST("/bindings", service.CreateBindingHandler())
+	cliProducts.POST("/bindings/:projectID/reauthorize", service.ReauthorizeBindingHandler())
+	cliProducts.DELETE("/bindings/:projectID/:bindingID", service.RevokeBindingHandler())
+	cliProducts.POST("/bindings/:projectID/:bindingID/revoke", service.RevokeBindingHandler())
 }
 
 func authSessionEnvironment(cfg config.Config) string {

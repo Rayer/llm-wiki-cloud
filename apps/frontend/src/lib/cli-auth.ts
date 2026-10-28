@@ -44,10 +44,13 @@ export class CLIAuthError extends Error {
 
 async function cliAuthRequest<T>(
   context: AuthContext,
+  service: 'auth' | 'api',
   route: string,
   options: RequestOptions = {},
 ): Promise<T> {
-  const url = `${getRuntimeConfig().auth_url}/api/v1/auth/cli${route}`;
+  const runtime = getRuntimeConfig();
+  const origin = service === 'auth' ? runtime.auth_url : runtime.api_url;
+  const url = `${origin}/api/v1/auth/cli${route}`;
   const makeRequest = async (token: string) => recordRequestResponse(await fetch(url, {
     method: options.method ?? 'GET',
     credentials: 'include',
@@ -79,32 +82,32 @@ export async function decideCLIPairing(
   userCode: string,
   decision: 'approve' | 'deny',
 ): Promise<void> {
-  await cliAuthRequest(context, '/pairing/decision', { method: 'POST', body: { user_code: userCode, decision } });
+  await cliAuthRequest(context, 'auth', '/pairing/decision', { method: 'POST', body: { user_code: userCode, decision } });
 }
 
 export async function listCLISessions(context: AuthContext): Promise<CLISession[]> {
-  const result = await cliAuthRequest<{ sessions: CLISession[] }>(context, '/sessions');
+  const result = await cliAuthRequest<{ sessions: CLISession[] }>(context, 'auth', '/sessions');
   return Array.isArray(result.sessions) ? result.sessions : [];
 }
 
 export async function revokeCLISession(context: AuthContext, sessionID: string): Promise<void> {
-  await cliAuthRequest(context, `/sessions/${encodeURIComponent(sessionID)}/revoke`, { method: 'POST' });
+  await cliAuthRequest(context, 'auth', `/sessions/${encodeURIComponent(sessionID)}/revoke`, { method: 'POST' });
 }
 
 export async function listSyncBindings(context: AuthContext): Promise<SyncBinding[]> {
-  const result = await cliAuthRequest<{ bindings: SyncBinding[] }>(context, '/bindings');
+  const result = await cliAuthRequest<{ bindings: SyncBinding[] }>(context, 'api', '/bindings');
   return Array.isArray(result.bindings) ? result.bindings : [];
 }
 
 export async function revokeSyncBinding(context: AuthContext, binding: SyncBinding): Promise<void> {
   const projectID = encodeURIComponent(binding.project_id);
   const bindingID = encodeURIComponent(binding.binding_id);
-  await cliAuthRequest(context, `/bindings/${projectID}/${bindingID}/revoke`, { method: 'POST' });
+  await cliAuthRequest(context, 'api', `/bindings/${projectID}/${bindingID}/revoke`, { method: 'POST' });
 }
 
 export async function reauthorizeSyncBinding(context: AuthContext, binding: SyncBinding): Promise<SyncBinding> {
   const projectID = encodeURIComponent(binding.project_id);
-  return cliAuthRequest<SyncBinding>(context, `/bindings/${projectID}/reauthorize`, {
+  return cliAuthRequest<SyncBinding>(context, 'api', `/bindings/${projectID}/reauthorize`, {
     method: 'POST',
     body: { binding_id: binding.binding_id, wiki_id: binding.wiki_id, host: binding.host },
   });

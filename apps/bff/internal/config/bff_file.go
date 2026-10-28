@@ -695,17 +695,21 @@ func validateBFFFile(file BFFFile) error {
 	}
 	localMode := file.Environment == "local"
 	if file.SchemaVersion == 3 {
-		if localMode || file.JWTSecret != "" || file.AuthConsumer == nil ||
+		if file.JWTSecret != "" || file.AuthConsumer == nil ||
 			file.AuthConsumer.SchemaVersion != 1 || file.AuthConsumer.Environment != file.Environment ||
 			file.AuthConsumer.AuthURL != file.AuthServiceURL || file.AuthConsumer.Issuer != file.AuthServiceURL ||
 			file.AuthConsumer.TimeoutSeconds != 5 ||
-			!authServiceAccountPattern.MatchString(file.AuthConsumer.RuntimeServiceAccount) ||
-			!validVerifierAudience(file.AuthConsumer.VerifierAudience) ||
 			file.AuthConsumer.Resource != file.MCPResourceOrigin ||
 			file.AuthConsumer.VerifierPath != "/api/v1/auth/consumers/lwc/verify-credential" ||
 			file.AuthConsumer.AccountCheckPath != "/api/v1/auth/consumers/lwc/accounts/check" ||
 			file.AuthConsumer.CatalogPath != "/api/v1/auth/consumers/lwc/management/catalog" ||
-			!equalStringSet(file.AuthConsumer.AuthorityModes, []string{"legacy-shadow", "central"}) {
+			(localMode && (file.AuthConsumer.RuntimeServiceAccount != "bff-local@localhost" ||
+				file.AuthConsumer.VerifierAudience != file.AuthConsumer.AuthURL ||
+				!validRuntimeLocalURL(file.AuthConsumer.VerifierAudience) ||
+				!equalStringSet(file.AuthConsumer.AuthorityModes, []string{"synthetic-local-fixture"}))) ||
+			(!localMode && (!authServiceAccountPattern.MatchString(file.AuthConsumer.RuntimeServiceAccount) ||
+				!validVerifierAudience(file.AuthConsumer.VerifierAudience) ||
+				!equalStringSet(file.AuthConsumer.AuthorityModes, []string{"legacy-shadow", "central"}))) {
 			return errors.New("BFF config auth_consumer is invalid")
 		}
 	} else if file.AuthConsumer != nil {
@@ -844,6 +848,13 @@ func validBFFBaseURL(raw string) bool {
 func validVerifierAudience(raw string) bool {
 	u, err := url.Parse(raw)
 	return err == nil && u.Scheme == "https" && u.Host != "" && u.User == nil &&
+		(u.Path == "" || u.Path == "/") && u.RawQuery == "" && !u.ForceQuery && u.Fragment == ""
+}
+
+func validRuntimeLocalURL(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && u.Scheme == "http" && u.Host != "" && u.User == nil &&
+		(u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1") &&
 		(u.Path == "" || u.Path == "/") && u.RawQuery == "" && !u.ForceQuery && u.Fragment == ""
 }
 

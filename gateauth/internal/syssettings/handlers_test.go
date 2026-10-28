@@ -1,0 +1,406 @@
+package syssettings
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/gin-gonic/gin"
+	"github.com/rayer/gateauth/internal/auth"
+	"github.com/rayer/gateauth/internal/config"
+	"github.com/stretchr/testify/assert"
+)
+
+type publicRegistrationProvider struct {
+	settings RegistrationSettings
+	err      error
+	calls    int
+}
+
+func settingBool(value bool) *bool { return &value }
+
+func (p *publicRegistrationProvider) PublicRegistrationSettings(context.Context) (RegistrationSettings, error) {
+	p.calls++
+	return p.settings, p.err
+}
+
+func expectedAnnouncementDigest(markdown string) string {
+	sum := sha256.Sum256([]byte(markdown))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func TestPublicConfig_NoAuth(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	store := &FakeStore{Enabled: false}
+	router := gin.New()
+	router.GET("/api/v1/public/config", PublicConfigHandler(store, false))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/public/config", nil)
+	router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var body PublicSettings
+	assert.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	assert.False(t, body.RegistrationEnabled)
+	assert.Equal(t, "", body.AnnouncementMarkdown)
+	assert.Nil(t, body.AnnouncementDigest)
+	assert.Equal(t, 1, store.GetCalls)
+}
+
+func TestPublicConfigUsesAuthRegistrationPolicyAndBFFAnnouncement(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := &FakeStore{Enabled: true, EmailEnabled: settingBool(true), GoogleEnabled: settingBool(true), Published: "BFF-owned announcement"}
+	provider := &publicRegistrationProvider{settings: RegistrationSettings{RegistrationEnabled: false,
+		EmailRegistrationEnabled: true, GoogleRegistrationEnabled: false}}
+	router := gin.New()
+	router.GET("/config", PublicConfigHandlerWithRegistration(store, false, provider))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/config", nil))
+	var body PublicSettings
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Code != http.StatusOK || body.RegistrationEnabled || body.EmailRegistrationEnabled || body.GoogleRegistrationEnabled ||
+		body.AnnouncementMarkdown != "BFF-owned announcement" || provider.calls != 1 || store.GetCalls != 0 || store.AnnouncementGetCalls != 1 {
+		t.Fatalf("status=%d body=%+v provider calls=%d registration reads=%d announcement reads=%d", rec.Code, body, provider.calls, store.GetCalls, store.AnnouncementGetCalls)
+	}
+	provider.err = errors.New("Auth unavailable")
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/config", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("Auth failure returned %d, want fail-closed 503", rec.Code)
+	}
+}
+
+func TestPublicConfigAnnounceDigest_EmptyAndAsciiAndMultibyte(t *testing.T) {
+	tests := map[string]string{
+		"empty":     "",
+		"ascii":     "Hello, world!",
+		"multibyte": "👋🏽 café",
+	}
+	for name, markdown := range tests {
+		t.Run(name, func(t *testing.T) {
+			gin.SetMode(gin.TestMode)
+			store := &FakeStore{Enabled: false, Published: markdown}
+			router := gin.New()
+			router.GET("/api/v1/public/config", PublicConfigHandler(store, false))
+
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/public/config", nil))
+			var body PublicSettings
+			assert.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+			if markdown == "" {
+				assert.Equal(t, http.StatusOK, rec.Code)
+				assert.Equal(t, "", body.AnnouncementMarkdown)
+				assert.Nil(t, body.AnnouncementDigest)
+				return
+			}
+
+			assert.Equal(t, http.StatusOK, rec.Code)
+			assert.Equal(t, markdown, body.AnnouncementMarkdown)
+			assert.Equal(t, expectedAnnouncementDigest(markdown), *body.AnnouncementDigest)
+		})
+	}
+}
+
+func TestPublicConfigAnnouncementDigestStableAcrossRepeatedReads(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	markdown := "same content"
+	store := &FakeStore{Enabled: false, Published: markdown}
+	router := gin.New()
+	router.GET("/api/v1/public/config", PublicConfigHandler(store, false))
+
+	rec1 := httptest.NewRecorder()
+	router.ServeHTTP(rec1, httptest.NewRequest(http.MethodGet, "/api/v1/public/config", nil))
+	var first PublicSettings
+	assert.Equal(t, http.StatusOK, rec1.Code)
+	assert.NoError(t, json.Unmarshal(rec1.Body.Bytes(), &first))
+
+	rec2 := httptest.NewRecorder()
+	router.ServeHTTP(rec2, httptest.NewRequest(http.MethodGet, "/api/v1/public/config", nil))
+	var second PublicSettings
+	assert.Equal(t, http.StatusOK, rec2.Code)
+	assert.NoError(t, json.Unmarshal(rec2.Body.Bytes(), &second))
+
+	assert.Equal(t, first.AnnouncementDigest, second.AnnouncementDigest)
+}
+
+func TestPublicConfigAnnouncementDigestChangesOnWhitespace(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := &FakeStore{Enabled: false, Published: "line\n"}
+	router := gin.New()
+	router.GET("/api/v1/public/config", PublicConfigHandler(store, false))
+
+	rec1 := httptest.NewRecorder()
+	router.ServeHTTP(rec1, httptest.NewRequest(http.MethodGet, "/api/v1/public/config", nil))
+	var first PublicSettings
+	assert.Equal(t, http.StatusOK, rec1.Code)
+	assert.NoError(t, json.Unmarshal(rec1.Body.Bytes(), &first))
+
+	store.Published = "line\n "
+	rec2 := httptest.NewRecorder()
+	router.ServeHTTP(rec2, httptest.NewRequest(http.MethodGet, "/api/v1/public/config", nil))
+	var second PublicSettings
+	assert.Equal(t, http.StatusOK, rec2.Code)
+	assert.NoError(t, json.Unmarshal(rec2.Body.Bytes(), &second))
+
+	assert.NotEqual(t, first.AnnouncementDigest, second.AnnouncementDigest)
+	assert.NotEqual(t, second.AnnouncementMarkdown, first.AnnouncementMarkdown)
+}
+
+func TestAdminGetSettings_RequiresAdmin(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	store := &FakeStore{Enabled: true}
+	router := gin.New()
+	admin := router.Group("/api/v1/admin")
+	admin.Use(auth.JWTAuth(config.Config{JWTSecret: "test-secret"}), auth.AdminOnly())
+	admin.GET("/settings", AdminGetSettingsHandler(store))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/settings", nil)
+	router.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+
+	userToken, err := auth.GenerateAccessToken("user-1", "", "test-secret")
+	assert.NoError(t, err)
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/settings", nil)
+	req.Header.Set("Authorization", "Bearer "+userToken)
+	router.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+
+	adminToken, err := auth.GenerateAccessToken("admin-1", "admin", "test-secret")
+	assert.NoError(t, err)
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/settings", nil)
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var body Settings
+	assert.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	assert.True(t, body.RegistrationEnabled)
+}
+
+func TestAdminPatchSettings_PersistsValue(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	store := &FakeStore{Enabled: true}
+	router := gin.New()
+	admin := router.Group("/api/v1/admin")
+	admin.Use(auth.JWTAuth(config.Config{JWTSecret: "test-secret"}), auth.AdminOnly())
+	admin.PATCH("/settings", AdminPatchSettingsHandler(store))
+
+	adminToken, err := auth.GenerateAccessToken("admin-1", "admin", "test-secret")
+	assert.NoError(t, err)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/admin/settings", strings.NewReader(`{"registration_enabled":false}`))
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var body Settings
+	assert.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	assert.False(t, body.RegistrationEnabled)
+	assert.Equal(t, 1, store.SetCalls)
+	assert.NotNil(t, store.Persisted)
+	assert.False(t, *store.Persisted)
+}
+
+func TestAdminPatchSettingsRejectsTrailingJSONWithoutMutation(t *testing.T) {
+	store := &FakeStore{Enabled: true}
+	router := gin.New()
+	router.PATCH("/settings", AdminPatchSettingsHandler(store))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPatch, "/settings", strings.NewReader(`{"registration_enabled":false}{}`))
+	router.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Equal(t, 0, store.SetCalls)
+	assert.Nil(t, store.Persisted)
+}
+
+func TestAnnouncementPublishReplacesPublishedContent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	store := &FakeStore{Enabled: true, Published: "old"}
+	router := gin.New()
+	router.GET("/api/v1/public/config", PublicConfigHandler(store, false))
+	admin := router.Group("/api/v1/admin")
+	admin.Use(auth.JWTAuth(config.Config{JWTSecret: "test-secret"}), auth.AdminOnly())
+	admin.GET("/settings", AdminGetSettingsHandler(store))
+	admin.PATCH("/settings", AdminPatchSettingsHandler(store))
+	admin.POST("/settings/announcement/publish", AdminPublishAnnouncementHandler(store))
+
+	getPublic := func() PublicSettings {
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/public/config", nil))
+		var body PublicSettings
+		assert.Equal(t, http.StatusOK, rec.Code)
+		assert.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+		return body
+	}
+
+	adminToken, err := auth.GenerateAccessToken("admin-1", "admin", "test-secret")
+	assert.NoError(t, err)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/settings/announcement/publish", strings.NewReader(`{"announcement_markdown":"new"}`))
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var published map[string]interface{}
+	assert.NoError(t, json.Unmarshal(rec.Body.Bytes(), &published))
+	assert.Equal(t, map[string]interface{}{"announcement_markdown": "new"}, published)
+	public := getPublic()
+	assert.Equal(t, "new", public.AnnouncementMarkdown)
+	assert.Equal(t, expectedAnnouncementDigest("new"), *public.AnnouncementDigest)
+}
+
+func TestAnnouncementPublishRejectsOversizeAndAllowsEmpty(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := &FakeStore{Enabled: true, Published: "visible"}
+	router := gin.New()
+	admin := router.Group("/api/v1/admin")
+	admin.Use(auth.JWTAuth(config.Config{JWTSecret: "test-secret"}), auth.AdminOnly())
+	admin.PATCH("/settings", AdminPatchSettingsHandler(store))
+	admin.POST("/settings/announcement/publish", AdminPublishAnnouncementHandler(store))
+	token, err := auth.GenerateAccessToken("admin-1", "admin", "test-secret")
+	assert.NoError(t, err)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/settings/announcement/publish", strings.NewReader(`{"announcement_markdown":"`+strings.Repeat("x", maxMarkdownBytes+1)+`"}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Equal(t, "visible", store.Published)
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/settings/announcement/publish", strings.NewReader(`{"announcement_markdown":""}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Empty(t, store.Published)
+}
+
+func TestAdminSettingsRejectsDraftAndExposesOnlyPublishedMarkdown(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := &FakeStore{Enabled: true, Published: "visible"}
+	router := gin.New()
+	admin := router.Group("/api/v1/admin")
+	admin.Use(auth.JWTAuth(config.Config{JWTSecret: "test-secret"}), auth.AdminOnly())
+	admin.GET("/settings", AdminGetSettingsHandler(store))
+	admin.PATCH("/settings", AdminPatchSettingsHandler(store))
+	token, err := auth.GenerateAccessToken("admin-1", "admin", "test-secret")
+	assert.NoError(t, err)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/settings", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	router.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var body map[string]interface{}
+	assert.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	assert.Equal(t, map[string]interface{}{"registration_enabled": true, "email_registration_enabled": true, "google_registration_enabled": true, "announcement_markdown": "visible"}, body)
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPatch, "/api/v1/admin/settings", strings.NewReader(`{"announcement_markdown":"stale"}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestAnnouncementPublishAcceptsMarkdownDirectly(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := &FakeStore{Enabled: true, Published: "old"}
+	router := gin.New()
+	router.GET("/api/v1/public/config", PublicConfigHandler(store, false))
+	admin := router.Group("/api/v1/admin")
+	admin.Use(auth.JWTAuth(config.Config{JWTSecret: "test-secret"}), auth.AdminOnly())
+	admin.POST("/settings/announcement/publish", AdminPublishAnnouncementHandler(store))
+	token, err := auth.GenerateAccessToken("admin-1", "admin", "test-secret")
+	assert.NoError(t, err)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/settings/announcement/publish", strings.NewReader(`{"announcement_markdown":"new"}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var body Settings
+	assert.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	assert.Equal(t, "new", body.AnnouncementMarkdown)
+
+	public := httptest.NewRecorder()
+	router.ServeHTTP(public, httptest.NewRequest(http.MethodGet, "/api/v1/public/config", nil))
+	assert.Equal(t, http.StatusOK, public.Code)
+	var publicBody PublicSettings
+	assert.NoError(t, json.Unmarshal(public.Body.Bytes(), &publicBody))
+	assert.Equal(t, "new", publicBody.AnnouncementMarkdown)
+	assert.Equal(t, expectedAnnouncementDigest("new"), *publicBody.AnnouncementDigest)
+}
+
+func TestAnnouncementPublishRejectsTrailingJSONWithoutMutation(t *testing.T) {
+	store := &FakeStore{Enabled: true, Published: "old"}
+	router := gin.New()
+	router.POST("/publish", AdminPublishAnnouncementHandler(store))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/publish", strings.NewReader(`{"announcement_markdown":"new"}{}`))
+	router.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Equal(t, "old", store.Published)
+}
+
+func TestAnnouncementPublishFailurePreservesPreviouslyPublishedMarkdownAndDigest(t *testing.T) {
+	store := &FakeStore{Enabled: true, Published: "old"}
+	store.PublishErr = assert.AnError
+	router := gin.New()
+	router.GET("/api/v1/public/config", PublicConfigHandler(store, false))
+	admin := router.Group("/api/v1/admin")
+	admin.Use(auth.JWTAuth(config.Config{JWTSecret: "test-secret"}), auth.AdminOnly())
+	admin.POST("/settings/announcement/publish", AdminPublishAnnouncementHandler(store))
+	token, err := auth.GenerateAccessToken("admin-1", "admin", "test-secret")
+	assert.NoError(t, err)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/settings/announcement/publish", strings.NewReader(`{"announcement_markdown":"changed"}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+	assert.Equal(t, "old", store.Published)
+
+	public := httptest.NewRecorder()
+	router.ServeHTTP(public, httptest.NewRequest(http.MethodGet, "/api/v1/public/config", nil))
+	assert.Equal(t, http.StatusOK, public.Code)
+	var publicBody PublicSettings
+	assert.NoError(t, json.Unmarshal(public.Body.Bytes(), &publicBody))
+	assert.Equal(t, "old", publicBody.AnnouncementMarkdown)
+	assert.Equal(t, expectedAnnouncementDigest("old"), *publicBody.AnnouncementDigest)
+}
+
+func TestAnnouncementPublishRejectsInvalidUTF8WithoutMutation(t *testing.T) {
+	store := &FakeStore{Enabled: true, Published: "old"}
+	router := gin.New()
+	router.POST("/publish", AdminPublishAnnouncementHandler(store))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/publish", strings.NewReader(`{"announcement_markdown":"`+string([]byte{0xff})+`"}`))
+	router.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Equal(t, "old", store.Published)
+}

@@ -82,6 +82,7 @@ func runControlPlaneCommand(args []string) error {
 func runAuthLogin(args []string) error {
 	flags := flag.NewFlagSet("auth login", flag.ContinueOnError)
 	host := flags.String("host", "", "Auth/control-plane origin (HTTPS; localhost HTTP is allowed)")
+	apiHost := flags.String("api-host", "", "LWC BFF product API origin (HTTPS; localhost HTTP is allowed)")
 	noBrowser := flags.Bool("no-browser", false, "print the pairing URL without opening a browser")
 	clientName := flags.String("client-name", "lwc-sync CLI", "name shown in account settings")
 	if err := flags.Parse(args); err != nil {
@@ -91,8 +92,14 @@ func runAuthLogin(args []string) error {
 	if err != nil {
 		return err
 	}
+	if _, err := os.Stat(store.configPath()); errors.Is(err, os.ErrNotExist) && strings.TrimSpace(*apiHost) == "" && strings.TrimSpace(os.Getenv("LWC_SYNC_API_HOST")) == "" {
+		return errors.New("new CLI configuration requires both --host and --api-host (or LWC_SYNC_AUTH_HOST and LWC_SYNC_API_HOST)")
+	}
 	origin, err := selectAuthHost(store, *host)
 	if err != nil {
+		return err
+	}
+	if _, err := selectAPIHost(store, *apiHost); err != nil {
 		return err
 	}
 	client, err := newCLIAPIClient(origin, nil)
@@ -310,11 +317,12 @@ func runAuthLogout(args []string) error {
 func runProjects(args []string) error {
 	flags := flag.NewFlagSet("projects", flag.ContinueOnError)
 	host := flags.String("host", "", "Auth/control-plane origin")
+	apiHost := flags.String("api-host", "", "LWC BFF product API origin")
 	jsonOutput := flags.Bool("json", false, "print machine-readable JSON")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	return withStoredCredentials(*host, func(client *cliAPIClient, _ *cliLocalCredentials) error {
+	return withStoredCredentialsForAPI(*host, *apiHost, func(client *cliAPIClient, _ *cliLocalCredentials) error {
 		projects := make([]cliProject, 0)
 		next := ""
 		for {
@@ -358,6 +366,7 @@ type cliProject struct {
 func runBind(args []string) error {
 	flags := flag.NewFlagSet("bind", flag.ContinueOnError)
 	host := flags.String("host", "", "Auth/control-plane origin")
+	apiHost := flags.String("api-host", "", "LWC BFF product API origin")
 	vault := flags.String("vault", "", "path to the local wiki vault")
 	projectID := flags.String("project-id", "", "Cloud Project ID to authorize")
 	if err := flags.Parse(args); err != nil {
@@ -378,7 +387,7 @@ func runBind(args []string) error {
 	if err != nil {
 		return err
 	}
-	return withStoredCredentials(origin, func(client *cliAPIClient, _ *cliLocalCredentials) error {
+	return withStoredCredentialsForAPI(origin, *apiHost, func(client *cliAPIClient, _ *cliLocalCredentials) error {
 		var created struct {
 			ID string `json:"binding_id"`
 		}
@@ -400,11 +409,12 @@ func runBind(args []string) error {
 func runBindingList(args []string) error {
 	flags := flag.NewFlagSet("binding list", flag.ContinueOnError)
 	host := flags.String("host", "", "Auth/control-plane origin")
+	apiHost := flags.String("api-host", "", "LWC BFF product API origin")
 	jsonOutput := flags.Bool("json", false, "print machine-readable JSON")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	return withStoredCredentials(*host, func(client *cliAPIClient, _ *cliLocalCredentials) error {
+	return withStoredCredentialsForAPI(*host, *apiHost, func(client *cliAPIClient, _ *cliLocalCredentials) error {
 		var result struct {
 			Bindings []authSyncBinding `json:"bindings"`
 		}
@@ -429,6 +439,7 @@ func runBindingList(args []string) error {
 func runBindingRecover(args []string) error {
 	flags := flag.NewFlagSet("binding recover", flag.ContinueOnError)
 	host := flags.String("host", "", "Auth/control-plane origin")
+	apiHost := flags.String("api-host", "", "LWC BFF product API origin")
 	vault := flags.String("vault", "", "path to the local wiki vault")
 	projectID := flags.String("project-id", "", "Cloud Project ID")
 	bindingID := flags.String("binding-id", "", "active binding ID shown by binding list")
@@ -454,7 +465,7 @@ func runBindingRecover(args []string) error {
 		return err
 	}
 	var currentBinding authSyncBinding
-	err = withStoredCredentials(requestedHost, func(client *cliAPIClient, _ *cliLocalCredentials) error {
+	err = withStoredCredentialsForAPI(requestedHost, *apiHost, func(client *cliAPIClient, _ *cliLocalCredentials) error {
 		var current struct {
 			Bindings []authSyncBinding `json:"bindings"`
 		}
@@ -527,6 +538,7 @@ type authSyncBinding struct {
 func runBindingReauthorize(args []string) error {
 	flags := flag.NewFlagSet("binding reauthorize", flag.ContinueOnError)
 	host := flags.String("host", "", "Auth/control-plane origin")
+	apiHost := flags.String("api-host", "", "LWC BFF product API origin")
 	vault := flags.String("vault", "", "path to the local wiki vault")
 	projectID := flags.String("project-id", "", "Cloud Project ID to reauthorize")
 	if err := flags.Parse(args); err != nil {
@@ -555,7 +567,7 @@ func runBindingReauthorize(args []string) error {
 			return errors.New("vault binding belongs to a different auth/control-plane host")
 		}
 	}
-	return withStoredCredentials(binding.Host, func(client *cliAPIClient, _ *cliLocalCredentials) error {
+	return withStoredCredentialsForAPI(binding.Host, *apiHost, func(client *cliAPIClient, _ *cliLocalCredentials) error {
 		var currentBindings struct {
 			Bindings []authSyncBinding `json:"bindings"`
 		}
@@ -600,6 +612,7 @@ func runBindingReauthorize(args []string) error {
 func runBindingRevoke(args []string) error {
 	flags := flag.NewFlagSet("binding revoke", flag.ContinueOnError)
 	host := flags.String("host", "", "Auth/control-plane origin")
+	apiHost := flags.String("api-host", "", "LWC BFF product API origin")
 	projectID := flags.String("project-id", "", "Cloud Project ID")
 	bindingID := flags.String("binding-id", "", "binding ID to revoke")
 	if err := flags.Parse(args); err != nil {
@@ -608,7 +621,7 @@ func runBindingRevoke(args []string) error {
 	if !validVaultID(*projectID) || !validVaultID(*bindingID) {
 		return errors.New("usage: lwc-sync binding revoke --project-id ID --binding-id ID")
 	}
-	return withStoredCredentials(*host, func(client *cliAPIClient, _ *cliLocalCredentials) error {
+	return withStoredCredentialsForAPI(*host, *apiHost, func(client *cliAPIClient, _ *cliLocalCredentials) error {
 		route := "/api/v1/auth/cli/bindings/" + url.PathEscape(*projectID) + "/" + url.PathEscape(*bindingID) + "/revoke"
 		if err := client.request(context.Background(), http.MethodPost, route, nil, nil); err != nil {
 			return err
@@ -664,8 +677,51 @@ func selectAuthHost(store *localAuthStore, requested string) (string, error) {
 	return selected, nil
 }
 
+func selectAPIHost(store *localAuthStore, requested string) (string, error) {
+	requested = strings.TrimSpace(requested)
+	if requested == "" {
+		requested = strings.TrimSpace(os.Getenv("LWC_SYNC_API_HOST"))
+	}
+	if requested != "" {
+		var err error
+		requested, err = normalizeAuthOrigin(requested)
+		if err != nil {
+			return "", errors.New("api host must be a trusted HTTPS origin (or local HTTP origin)")
+		}
+	}
+	var selected string
+	err := store.withLock(func() error {
+		config, err := store.loadConfig()
+		if err != nil {
+			return errors.New("configure --host before setting --api-host")
+		}
+		selected = config.APIHost
+		if requested == "" || requested == selected {
+			return nil
+		}
+		config.APIHost = requested
+		if err := store.saveConfig(config); err != nil {
+			return errors.New("could not safely save the BFF API origin")
+		}
+		selected = requested
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return selected, nil
+}
+
 func withStoredCredentials(requestedHost string, fn func(*cliAPIClient, *cliLocalCredentials) error) error {
+	return withStoredCredentialsForAPI(requestedHost, "", fn)
+}
+
+func withStoredCredentialsForAPI(requestedHost, requestedAPIHost string, fn func(*cliAPIClient, *cliLocalCredentials) error) error {
 	store, err := defaultLocalAuthStore()
+	if err != nil {
+		return err
+	}
+	productOrigin, err := selectAPIHost(store, requestedAPIHost)
 	if err != nil {
 		return err
 	}
@@ -694,6 +750,7 @@ func withStoredCredentials(requestedHost string, fn func(*cliAPIClient, *cliLoca
 	if err != nil {
 		return err
 	}
+	client.productOrigin = productOrigin
 	client.withRefreshLock = store.withRefreshLock
 	client.loadCurrent = func(previous cliLocalCredentials) (cliLocalCredentials, error) {
 		var current cliLocalCredentials

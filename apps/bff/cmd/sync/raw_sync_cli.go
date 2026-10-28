@@ -91,13 +91,14 @@ type rawPushResult struct {
 func runRawInit(args []string) error {
 	flags := flag.NewFlagSet("init", flag.ContinueOnError)
 	host := flags.String("host", "", "Auth/control-plane origin")
+	apiHost := flags.String("api-host", "", "LWC BFF product API origin")
 	vault := flags.String("vault", "", "path to the local wiki vault")
 	projectID := flags.String("project-id", "", "Cloud Project ID to authorize")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if strings.TrimSpace(*vault) == "" || !validVaultID(*projectID) {
-		return errors.New("usage: lwc-sync init --vault PATH --host AUTH_ORIGIN --project-id ID")
+		return errors.New("usage: lwc-sync init --vault PATH --host AUTH_ORIGIN [--api-host BFF_ORIGIN] --project-id ID")
 	}
 	store, err := defaultLocalAuthStore()
 	if err != nil {
@@ -111,7 +112,7 @@ func runRawInit(args []string) error {
 	if err != nil {
 		return err
 	}
-	return withStoredCredentials(origin, func(client *cliAPIClient, _ *cliLocalCredentials) error {
+	return withStoredCredentialsForAPI(origin, *apiHost, func(client *cliAPIClient, _ *cliLocalCredentials) error {
 		var current struct {
 			Bindings []authSyncBinding `json:"bindings"`
 		}
@@ -169,12 +170,13 @@ func runRawInit(args []string) error {
 func runRawPush(args []string) error {
 	flags := flag.NewFlagSet("push", flag.ContinueOnError)
 	vault := flags.String("vault", "", "path to the local wiki vault")
+	apiHost := flags.String("api-host", "", "LWC BFF product API origin")
 	pushAndSync := flags.Bool("sync", false, "pull remote-only raw files after every local push succeeds")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if strings.TrimSpace(*vault) == "" {
-		return errors.New("usage: lwc-sync push --vault PATH [--sync]")
+		return errors.New("usage: lwc-sync push --vault PATH [--api-host BFF_ORIGIN] [--sync]")
 	}
 	binding, err := loadVaultBinding(*vault)
 	if err != nil {
@@ -184,7 +186,7 @@ func runRawPush(args []string) error {
 		return errors.New("this vault has no active sync binding; run `lwc-sync init` or `lwc-sync binding reauthorize`")
 	}
 	observer := newRawSyncObservation()
-	commandErr := withStoredCredentials(binding.Host, func(authClient *cliAPIClient, _ *cliLocalCredentials) error {
+	commandErr := withStoredCredentialsForAPI(binding.Host, *apiHost, func(authClient *cliAPIClient, _ *cliLocalCredentials) error {
 		authClient.observer = observer
 		local, err := observer.scanLocalRawFiles(context.Background(), *vault)
 		if err != nil {
@@ -196,7 +198,15 @@ func runRawPush(args []string) error {
 			observer.recordError(err)
 			return err
 		}
-		dataClient, err := newSyncDataAPIClient(locator.Origin, authClient, binding)
+		dataOrigin := locator.Origin
+		if authClient.productOrigin != "" {
+			located, normalizeErr := normalizeAuthOrigin(locator.Origin)
+			if normalizeErr != nil || located != authClient.productOrigin {
+				return errors.New("BFF sync-service locator does not match configured api_host")
+			}
+			dataOrigin = authClient.productOrigin
+		}
+		dataClient, err := newSyncDataAPIClient(dataOrigin, authClient, binding)
 		if err != nil {
 			return err
 		}

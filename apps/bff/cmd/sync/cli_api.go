@@ -22,6 +22,7 @@ var errCLIReauthenticationRequired = errors.New("CLI login is no longer valid; r
 
 type cliAPIClient struct {
 	origin             string
+	productOrigin      string
 	httpClient         *http.Client
 	credentials        *cliLocalCredentials
 	observer           *rawSyncObservation
@@ -93,10 +94,14 @@ func (c *cliAPIClient) request(ctx context.Context, method, route string, input,
 	if c == nil {
 		return errors.New("Auth service client is unavailable")
 	}
-	if _, err := apiRouteURL(c.origin, route); err != nil {
+	targetOrigin := c.origin
+	if c.productOrigin != "" && isCLIProductRoute(route) {
+		targetOrigin = c.productOrigin
+	}
+	if _, err := apiRouteURL(targetOrigin, route); err != nil {
 		return errors.New("invalid Auth service API path")
 	}
-	response, err := c.do(ctx, method, route, input, c.credentials != nil && c.credentials.AccessToken != "")
+	response, err := c.doAt(ctx, targetOrigin, method, route, input, c.credentials != nil && c.credentials.AccessToken != "")
 	if err != nil {
 		return err
 	}
@@ -107,7 +112,7 @@ func (c *cliAPIClient) request(ctx context.Context, method, route string, input,
 			}
 			return err
 		}
-		response, err = c.do(ctx, method, route, input, true)
+		response, err = c.doAt(ctx, targetOrigin, method, route, input, true)
 		if err != nil {
 			return err
 		}
@@ -127,6 +132,12 @@ func (c *cliAPIClient) request(ctx context.Context, method, route string, input,
 		}
 	}
 	return nil
+}
+
+func isCLIProductRoute(route string) bool {
+	path := strings.SplitN(route, "?", 2)[0]
+	return path == "/api/v1/auth/cli/projects" || path == "/api/v1/auth/cli/sync-service" ||
+		path == "/api/v1/auth/cli/bindings" || strings.HasPrefix(path, "/api/v1/auth/cli/bindings/")
 }
 
 func (c *cliAPIClient) refresh(ctx context.Context) error {
@@ -226,7 +237,11 @@ type cliAPIResponse struct {
 }
 
 func (c *cliAPIClient) do(ctx context.Context, method, route string, input interface{}, authenticated bool) (cliAPIResponse, error) {
-	requestURL, err := apiRouteURL(c.origin, route)
+	return c.doAt(ctx, c.origin, method, route, input, authenticated)
+}
+
+func (c *cliAPIClient) doAt(ctx context.Context, origin, method, route string, input interface{}, authenticated bool) (cliAPIResponse, error) {
+	requestURL, err := apiRouteURL(origin, route)
 	if err != nil {
 		return cliAPIResponse{}, errors.New("invalid Auth service API path")
 	}
