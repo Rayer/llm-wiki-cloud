@@ -41,8 +41,8 @@ auth_build_submit() {
     auth_record_build_failure build-submit 1 "temporary diagnostics file unavailable"
     return 1
   }
-  if response=$(timeout --signal=TERM --kill-after=5s 600s gcloud builds submit "$ROOT/apps/bff" --project "$project" --region=global --config "$ROOT/apps/bff/cloudbuild-auth.yaml" \
-    --substitutions="_IMAGE=$image,_APP_VERSION=$(cd "$BFF_DIR" && go run ./cmd/versioncheck VERSION),_GIT_SHA=$SOURCE_SHA,_GIT_BRANCH=$SOURCE_REF,_GIT_TAG=" --async --format=json --quiet 2>"$stderr_file"); then
+  if response=$(timeout --signal=TERM --kill-after=5s 600s gcloud builds submit "$ROOT/gateauth" --project "$project" --region=global --config "$ROOT/gateauth/cloudbuild.yaml" \
+    --substitutions="_IMAGE=$image,_APP_VERSION=$(tr -d '[:space:]' < "$ROOT/gateauth/VERSION"),_GIT_SHA=$SOURCE_SHA,_GIT_BRANCH=$SOURCE_REF,_GIT_TAG=" --async --format=json --quiet 2>"$stderr_file"); then
     rm -f "$stderr_file"
     printf '%s\n' "$response"
   else

@@ -32,7 +32,45 @@ def common_source():
     return (ROOT / "deploy/components/common.sh").read_text()
 
 
-class CDContractTests(unittest.TestCase):
+class LegacyMonorepoCDTestMixin:
+    """Give existing CD fixtures an explicit source mode unless a test overrides it."""
+
+    def setUp(self):
+        previous = os.environ.get("GAT4_RELEASE_SOURCE_MODE")
+        os.environ["GAT4_RELEASE_SOURCE_MODE"] = "legacy_monorepo"
+
+        def restore_source_mode():
+            if previous is None:
+                os.environ.pop("GAT4_RELEASE_SOURCE_MODE", None)
+            else:
+                os.environ["GAT4_RELEASE_SOURCE_MODE"] = previous
+
+        self.addCleanup(restore_source_mode)
+
+
+class CDContractTests(LegacyMonorepoCDTestMixin, unittest.TestCase):
+    def test_production_dev_consumption_requires_explicit_source_mode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            env = {
+                **os.environ,
+                "ROOT": str(ROOT),
+                "GH_TOKEN": "fixture",
+                "GITHUB_REPOSITORY": "Rayer/llm-wiki-cloud",
+                "ARTIFACT_DIR": str(Path(directory) / "artifacts"),
+                "SOURCE_SHA": "a" * 40,
+            }
+            env.pop("GAT4_RELEASE_SOURCE_MODE", None)
+            result = subprocess.run(
+                ["bash", "deploy/cd.sh", "consume-dev-images"],
+                cwd=ROOT,
+                env=env,
+                text=True,
+                capture_output=True,
+            )
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("GAT4_RELEASE_SOURCE_MODE must explicitly select", result.stderr)
+            self.assertFalse(Path(env["ARTIFACT_DIR"]).exists())
+
     def test_validate_inputs_accepts_only_fixed_deployment_config_pairs(self):
         source = ROOT / "deploy/components/common.sh"
         cases = [
@@ -371,9 +409,11 @@ class CDContractTests(unittest.TestCase):
                 "gcp": {"artifact_registry": registry},
             }}))
             receipt = {
+                "schema": "lwc-306-dev-image-receipt-v1",
                 "source": {"sha": source_sha, "ref": "develop",
                            "workflow_path": ".github/workflows/deploy-dev.yml", "event": "workflow_dispatch"},
-                "config": {"environment": "development", "path": "deploy/environments/development.yaml"},
+                "config": {"environment": "development", "path": "deploy/environments/development.yaml",
+                           "fingerprint": "sha256:" + "d" * 64},
                 "components": ["bff", "exportjob"],
                 "images": {"bff": f"{registry}/llm-wiki-bff@sha256:{'d' * 64}", "exportjob": image},
             }
@@ -1072,6 +1112,7 @@ class CDContractTests(unittest.TestCase):
                 "ARTIFACT_DIR": str(root / "artifacts"),
                 "GH_TOKEN": "fixture",
                 "GITHUB_REPOSITORY": "Rayer/llm-wiki-cloud",
+                "GAT4_RELEASE_SOURCE_MODE": "legacy_monorepo",
                 "ENVIRONMENT": "production",
                 "SOURCE_SHA": source_sha,
             }
@@ -1146,6 +1187,7 @@ class CDContractTests(unittest.TestCase):
                 env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}",
                        "PLAN_PATH": str(plan), "ARTIFACT_DIR": str(root / "artifacts"),
                        "GH_TOKEN": "fixture", "GITHUB_REPOSITORY": "Rayer/llm-wiki-cloud",
+                       "GAT4_RELEASE_SOURCE_MODE": "legacy_monorepo",
                        "ENVIRONMENT": "production", "SOURCE_SHA": source_sha}
                 result = subprocess.run(["bash", "deploy/cd.sh", "consume-dev-images"],
                                         cwd=ROOT, env=env, text=True, capture_output=True)
@@ -1156,6 +1198,67 @@ class CDContractTests(unittest.TestCase):
                 else:
                     self.assertNotEqual(result.returncode, 0)
                     self.assertIn("DEV receipt provenance does not match the selected production bundle", result.stderr)
+
+    def test_production_independent_receipt_requires_exact_auth_source_tuple(self):
+        source_sha = "b" * 40
+        registry = "us-central1-docker.pkg.dev/fixture-project/cloud-run-images"
+        wrapper = json.loads((ROOT / "deploy/engine/tests/fixtures/dev-receipt-v2-independent.json").read_text())
+        receipt_path_value = wrapper["receipt"]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            receipt_path = root / "receipt.json"
+            receipt_path.write_text(json.dumps(receipt_path_value))
+            fake = textwrap.dedent(f"""
+                #!/usr/bin/env python3
+                import json, sys
+                from pathlib import Path
+                args = sys.argv[1:]
+                endpoint = args[-1] if args else ""
+                if args[:2] == ["run", "download"]:
+                    target = Path(args[args.index("--dir") + 1])
+                    target.mkdir(parents=True, exist_ok=True)
+                    (target / "dev-receipt.json").write_bytes(Path({str(receipt_path)!r}).read_bytes())
+                elif "/actions/workflows/deploy-dev.yml/runs" in endpoint:
+                    print(json.dumps({{"workflow_runs": [{{"id": 1003, "run_attempt": 1, "path": ".github/workflows/deploy-dev.yml", "event": "workflow_dispatch", "head_branch": "develop", "head_sha": {source_sha!r}, "status": "completed", "conclusion": "success"}}]}}))
+                elif "/actions/runs/1003/artifacts" in endpoint:
+                    print(json.dumps({{"artifacts": [{{"id": 202, "name": "cd-images-{source_sha}", "expired": False, "size_in_bytes": 1, "digest": "sha256:{'f' * 64}", "workflow_run": {{"id": 1003}}}}]}}))
+                else:
+                    raise SystemExit(2)
+            """).lstrip()
+            gh = bin_dir / "gh"
+            gh.write_text(fake)
+            gh.chmod(0o755)
+            plan = root / "plan.json"
+            plan.write_text(json.dumps({"normalized": {
+                "selected_components": ["auth"],
+                "gcp": {"artifact_registry": registry},
+                "evidence": {"config_fingerprint": "sha256:" + "d" * 64},
+            }}))
+            env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                   "PLAN_PATH": str(plan), "ARTIFACT_DIR": str(root / "artifacts"),
+                   "GH_TOKEN": "fixture", "GITHUB_REPOSITORY": "Rayer/llm-wiki-cloud",
+                   "GITHUB_REPOSITORY_ID": "101", "GAT4_RELEASE_SOURCE_MODE": "independent",
+                   "GAT4_AUTH_SOURCE_REPOSITORY_ID": "github:202",
+                   "GAT4_AUTH_SOURCE_REVISION": "c" * 40,
+                   "GAT4_AUTH_SOURCE_TREE_SHA256": "sha256:" + "e" * 64,
+                   "GAT4_AUTH_SOURCE_RUN_ID": "1002", "GAT4_AUTH_SOURCE_RUN_ATTEMPT": "1",
+                   "GAT4_AUTH_SOURCE_ARTIFACT_ID": "synthetic-fixture-artifact",
+                   "GAT4_AUTH_SOURCE_ARTIFACT_DIGEST": "sha256:" + "c" * 64,
+                   "ENVIRONMENT": "production", "SOURCE_SHA": source_sha}
+            result = subprocess.run(["bash", "deploy/cd.sh", "consume-dev-images"],
+                                    cwd=ROOT, env=env, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("GAT4_RECEIPT_VALIDATION=PASS mode=independent", result.stdout)
+            self.assertEqual(json.loads((root / "artifacts/dev-images/dev-artifact.json").read_text())["id"], 202)
+
+            env["GAT4_AUTH_SOURCE_TREE_SHA256"] = "sha256:" + "9" * 64
+            (root / "artifacts/dev-images/dev-artifact.json").unlink()
+            rejected = subprocess.run(["bash", "deploy/cd.sh", "consume-dev-images"],
+                                      cwd=ROOT, env=env, text=True, capture_output=True)
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertFalse((root / "artifacts/dev-images/dev-artifact.json").exists())
 
     def test_auth_and_bff_mutation_and_rollback_converge_explicit_traffic(self):
         registry = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images"
@@ -2288,7 +2391,7 @@ class CDContractTests(unittest.TestCase):
                 self.assertEqual(result.returncode == 0, valid, result.stdout + result.stderr)
 
 
-class ArchitectureAuthorityTests(unittest.TestCase):
+class ArchitectureAuthorityTests(LegacyMonorepoCDTestMixin, unittest.TestCase):
     COMPONENTS = ("auth", "bff", "worker", "exportjob", "frontend")
 
 

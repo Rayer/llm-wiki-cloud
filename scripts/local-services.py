@@ -99,7 +99,7 @@ def write_record(path: Path, value: dict) -> None:
 def service_command(name: str, root: Path, env: dict[str, str]) -> tuple[list[str], Path, dict[str, str]]:
     bff = root / "apps" / "bff"
     if name == "auth":
-        return ["go", "run", "./cmd/auth"], bff, env
+        return ["go", "run", "./cmd/auth"], root / "gateauth", env
     if name == "bff":
         return ["go", "run", "./cmd/bff"], bff, env
     if name == "frontend":

@@ -1,0 +1,35 @@
+{
+  "_fixture": {
+    "status": "NOT PUBLISHED",
+    "purpose": "Synthetic schema-2 dual-source Dev receipt shape from frozen r3."
+  },
+  "receipt": {
+    "schema": "lwc-306-dev-image-receipt-v2",
+    "source": {
+      "lwc": {
+        "repository_id": "github:101",
+        "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "run_id": 1003,
+        "run_attempt": 1
+      },
+      "auth": {
+        "repository_id": "github:202",
+        "revision": "cccccccccccccccccccccccccccccccccccccccc",
+        "tree_sha256": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "run_id": 1002,
+        "run_attempt": 1,
+        "artifact_id": "synthetic-fixture-artifact",
+        "artifact_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      }
+    },
+    "config": {
+      "environment": "development",
+      "path": "deploy/environments/development.yaml",
+      "fingerprint": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    },
+    "components": ["auth"],
+    "images": {
+      "auth": "us-central1-docker.pkg.dev/fixture-project/cloud-run-images/llm-wiki-auth@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    }
+  }
+}

@@ -2106,6 +2106,12 @@ class SourceApplicability(unittest.TestCase):
             identity=engine.source_identity(c,sha)
             paths=[p for p,_ in identity['files']]
             self.assertFalse(any(p.startswith('deploy/') or '/cmd/deploy_config/' in p for p in paths))
+            if c=='auth':
+                self.assertIn('gateauth/cmd/auth/main.go',paths)
+                self.assertIn('gateauth/go.mod',paths)
+                self.assertFalse(any(p.startswith('apps/bff/') for p in paths))
+            else:
+                self.assertFalse(any(p.startswith('gateauth/') for p in paths))
             if c=='bff':self.assertTrue(any('/prompts/' in p for p in paths))
             if c=='worker':self.assertIn('apps/bff/cmd/olw_worker/synto_execution.py',paths)
             if c=='exportjob':self.assertNotIn('apps/bff/cmd/auth/main.go',paths)

@@ -300,9 +300,17 @@ image_for() {
   image=$(tr -d '[:space:]' < "$file"); validate_image_value "$component" "$image"
   if [[ "$ENVIRONMENT" == production ]]; then
     [[ -s "$ARTIFACT_DIR/dev-images/dev-receipt.json" ]] || die "DEV provenance receipt is missing"
-    jq -e --arg component "$component" --arg sha "$SOURCE_SHA" --arg image "$image" \
-      '.source.sha == $sha and .source.ref == "develop" and .source.workflow_path == ".github/workflows/deploy-dev.yml" and .source.event == "workflow_dispatch" and .config.environment == "development" and .config.path == "deploy/environments/development.yaml" and (.components | index($component) != null) and .images[$component] == $image' \
-      "$ARTIFACT_DIR/dev-images/dev-receipt.json" >/dev/null || die "DEV image provenance receipt does not match $component"
+    case "${GAT4_RELEASE_SOURCE_MODE:-}" in
+      legacy_monorepo)
+        jq -e --arg component "$component" --arg sha "$SOURCE_SHA" --arg image "$image" \
+          '.schema == "lwc-306-dev-image-receipt-v1" and .source.sha == $sha and .source.ref == "develop" and .source.workflow_path == ".github/workflows/deploy-dev.yml" and .source.event == "workflow_dispatch" and .config.environment == "development" and .config.path == "deploy/environments/development.yaml" and (.components | index($component) != null) and .images[$component] == $image' \
+          "$ARTIFACT_DIR/dev-images/dev-receipt.json" >/dev/null || die "DEV image provenance receipt does not match $component" ;;
+      independent)
+        jq -e --arg component "$component" --arg sha "$SOURCE_SHA" --arg image "$image" \
+          '.schema == "lwc-306-dev-image-receipt-v2" and .source.lwc.sha == $sha and .config.environment == "development" and .config.path == "deploy/environments/development.yaml" and ((.components | index($component) != null) or $component == "auth") and .images[$component] == $image' \
+          "$ARTIFACT_DIR/dev-images/dev-receipt.json" >/dev/null || die "DEV image provenance receipt does not match $component" ;;
+      *) die "release source mode must be explicit before using DEV images" ;;
+    esac
   fi
   printf '%s\n' "$image"
 }

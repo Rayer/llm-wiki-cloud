@@ -212,6 +212,7 @@ func TestCIWorkflowKeepsCanonicalBranchesAndVersionGate(t *testing.T) {
 	for _, marker := range []string{
 		"on:\n  push:\n    branches: [main, develop]", "pull_request:",
 		"go run ./cmd/versioncheck VERSION", "python3 ../../scripts/test_cd_contract.py",
+		"Build and test the isolated GateAuth source module", "../../scripts/gat4-local/build-auth.sh",
 		"go vet ./...", "go test ./... -v -count=1 -race",
 	} {
 		if !strings.Contains(source, marker) {
@@ -247,7 +248,7 @@ func TestCloudRunJobIAMValidatorRejectsAmbiguousPoliciesWithoutLeakingMembers(t 
 }
 
 func TestCloudBuildAndAuthDockerfilesKeepImmutableIdentityInputs(t *testing.T) {
-	for _, name := range []string{"apps/bff/cloudbuild-bff.yaml", "apps/bff/cloudbuild-auth.yaml"} {
+	for _, name := range []string{"apps/bff/cloudbuild-bff.yaml", "gateauth/cloudbuild.yaml"} {
 		source := readCDFile(t, name)
 		for _, marker := range []string{"APP_VERSION=${_APP_VERSION}", "GIT_SHA=${_GIT_SHA}", "GIT_BRANCH=${_GIT_BRANCH}", "GIT_TAG=${_GIT_TAG}", "${_IMAGE}"} {
 			if !strings.Contains(source, marker) {
@@ -271,9 +272,12 @@ func TestDockerfilesPreserveBuildIdentityContracts(t *testing.T) {
 	if strings.Contains(contents, "git rev-parse") || strings.Contains(contents, ".git/") {
 		t.Fatal("Dockerfile must not derive identity from a Git context")
 	}
-	auth := readCDFile(t, "apps/bff/Dockerfile.auth")
-	if !strings.Contains(auth, "./cmd/auth") || !strings.Contains(auth, "internal/buildinfo.ImageTag=${GIT_SHA}") {
-		t.Fatal("Auth Dockerfile must preserve its distinct immutable build identity")
+	auth := readCDFile(t, "gateauth/Dockerfile")
+	if !strings.Contains(auth, "./cmd/auth") || !strings.Contains(auth, "github.com/rayer/gateauth/internal/buildinfo.ImageTag=${GIT_SHA}") {
+		t.Fatal("GateAuth Dockerfile must build the durable Auth module with its immutable identity")
+	}
+	if strings.Contains(auth, "github.com/rayer/llm-wiki-bff/") || strings.Contains(auth, "apps/bff") {
+		t.Fatal("GateAuth Dockerfile must not depend on the LWC server module")
 	}
 }
 

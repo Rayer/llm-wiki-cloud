@@ -1,13 +1,14 @@
 {
   "auth": {
-    "revision": 1,
+    "revision": 2,
+    "module_path": "github.com/rayer/gateauth",
+    "source_root": "gateauth",
     "package": "./cmd/auth",
     "image": "llm-wiki-auth",
     "inputs": [
-      "apps/bff/Dockerfile.auth",
-      "apps/bff/cloudbuild-auth.yaml",
-      "apps/bff/VERSION",
-      "apps/bff/cmd/versioncheck"
+      "gateauth/Dockerfile",
+      "gateauth/cloudbuild.yaml",
+      "gateauth/VERSION"
     ]
   },
   "bff": {

@@ -68,9 +68,16 @@ def source_identity(c, sha):
     roots = list(profile['inputs'])
     package_dirs = []
     if c != 'frontend':
-        roots += ['apps/bff/go.mod', 'apps/bff/go.sum', 'apps/bff/.dockerignore', 'apps/bff/.gcloudignore', 'apps/bff/.gitignore']
+        module_root = ROOT / profile.get('source_root', 'apps/bff')
+        module_rel = Path(profile.get('source_root', 'apps/bff'))
+        if module_rel == Path('gateauth'):
+            roots += ['gateauth/go.mod', 'gateauth/go.sum', 'gateauth/.dockerignore', 'gateauth/.gcloudignore', 'gateauth/.gitignore']
+        else:
+            roots += ['apps/bff/go.mod', 'apps/bff/go.sum', 'apps/bff/.dockerignore', 'apps/bff/.gcloudignore', 'apps/bff/.gitignore']
+        go_env = os.environ.copy()
+        go_env.update({'GOWORK': 'off', 'GOFLAGS': '-mod=readonly', 'GOTOOLCHAIN': 'local'})
         dirs = run(['go', 'list', '-deps', '-f', '{{if and (not .Standard) .Module}}{{if .Module.Main}}{{.Dir}}{{range .EmbedFiles}}{{println}}{{$.Dir}}/{{.}}{{end}}{{end}}{{end}}',
-                    profile['package']], cwd=ROOT / 'apps/bff', timeout=180).splitlines()
+                    profile['package']], cwd=module_root, env=go_env, timeout=180).splitlines()
         for d in dirs:
             if d.strip():
                 rel = Path(d).relative_to(ROOT).as_posix()

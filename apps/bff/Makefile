@@ -11,6 +11,7 @@ PKL_BIN ?= $(shell if command -v pkl >/dev/null 2>&1 && pkl --version 2>/dev/nul
 export PKL_BIN
 export PATH := $(dir $(PKL_BIN)):$(PATH)
 LOCAL_ENV := ../../scripts/local-cloud-env.sh
+LOCAL_ENV_ABS := $(abspath $(LOCAL_ENV))
 LOCAL_SERVICES := ../../scripts/local-services.py
 LOCAL_DEMO_CONFIG_PATH ?= $(abspath $(CAC_OUTPUT_DIR)/local/local_demo.json)
 LOCAL_DEMO_CONFIG_ENV := LOCAL_DEMO_CONFIG_PATH="$(LOCAL_DEMO_CONFIG_PATH)"
@@ -148,7 +149,7 @@ bff-local: local-config local-synto-runtime local-worker-build local-fixture
 	LOCAL_CLOUD_PIPELINE_CONFIG_DIR="$(abspath $(CAC_OUTPUT_DIR)/local)" $(LOCAL_DEMO_CONFIG_ENV) BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)" PORT="$(BFF_PORT)" $(LOCAL_ENV) -- go run ./cmd/bff
 
 auth-local: local-config local-fixture
-	$(LOCAL_DEMO_CONFIG_ENV) BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)" PORT="$(AUTH_PORT)" $(LOCAL_ENV) -- go run ./cmd/auth
+	cd ../../gateauth && $(LOCAL_DEMO_CONFIG_ENV) BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)" PORT="$(AUTH_PORT)" $(LOCAL_ENV_ABS) -- go run ./cmd/auth
 
 frontend-local: local-config
 	BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)" $(LOCAL_ENV) -- sh -c 'cd "$(FRONTEND_DIR)" && NODE_ENV=development npm run dev -- --hostname localhost --port "$$FRONTEND_PORT"'

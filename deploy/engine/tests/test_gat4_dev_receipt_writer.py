@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -17,6 +18,8 @@ spec = importlib.util.spec_from_file_location("gat4_artifact", HELPER_PATH)
 artifact = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
 spec.loader.exec_module(artifact)
+sys.path.insert(0, str(ROOT / "deploy/engine"))
+import receipt_contract
 
 
 def read_fixture(name: str) -> dict:
@@ -257,6 +260,21 @@ class DevReceiptWriterTests(unittest.TestCase):
         completed, receipt, _ = self.run_writer(mode="independent", metadata=legacy_schema)
         self.assertNotEqual(completed.returncode, 0)
         self.assertIsNone(receipt)
+
+    def test_actual_common_writer_outputs_pass_canonical_receipt_reader(self):
+        completed, legacy, legacy_auth = self.run_writer(mode="legacy-explicit")
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertTrue(receipt_contract.validate_receipt_pair(
+            legacy_auth, legacy, "legacy_monorepo",
+            expected_auth_config_inputs=legacy_auth["auth_config_inputs"]))
+
+        completed, independent, independent_auth = self.run_writer(mode="independent")
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertTrue(receipt_contract.validate_receipt_pair(
+            independent_auth, independent, "independent",
+            expected_lwc_source=independent["source"]["lwc"],
+            expected_auth_source=independent["source"]["auth"],
+            expected_components=["auth"]))
 
     def test_explicit_legacy_mode_rejects_independent_metadata(self):
         completed, receipt, _ = self.run_writer(
