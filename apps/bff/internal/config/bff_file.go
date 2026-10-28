@@ -902,7 +902,7 @@ func configFromBFFFile(file BFFFile, port string) Config {
 		AllowedHosts: file.AllowedHosts, PipelineDailyLimit: file.PipelineDailyLimit,
 		PipelineCooldownSeconds: file.PipelineCooldownSeconds, PipelineMinNewRaw: file.PipelineMinNewRaw,
 		PipelineDemoUserIDs: file.PipelineDemoUserIDs, RegistrationEnabled: file.RegistrationEnabled,
-		AuthServiceURL: file.AuthServiceURL, AuthSessionEnvironment: file.AuthSessionEnvironment,
+		AuthServiceURL: file.AuthServiceURL, AuthEnvironment: file.Environment, AuthSessionEnvironment: file.AuthSessionEnvironment,
 		MCPResourceOrigin:      file.MCPResourceOrigin,
 		MCP:                    file.MCP,
 		BFFAuthConsumer:        file.AuthConsumer,
