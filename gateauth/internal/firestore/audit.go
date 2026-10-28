@@ -163,6 +163,19 @@ func firestoreRequestCollections(request any) ([]string, []string) {
 }
 
 func collectFirestoreString(field protoreflect.Name, value string, collections, forbidden map[string]struct{}) {
+	if field == "collection_id" || field == "collectionId" {
+		classifyAuditCollection(value, collections, forbidden)
+		return
+	}
+	// Firestore requests can contain arbitrary document values and query
+	// literals. Only parse fields whose RPC schema defines them as resource
+	// paths; in particular, Value.string_value and Value.reference_value are
+	// intentionally excluded even when they resemble document resource names.
+	switch field {
+	case "name", "parent", "documents", "delete":
+	default:
+		return
+	}
 	if strings.Contains(value, "/documents/") {
 		resource := value[strings.Index(value, "/documents/")+len("/documents/"):]
 		segments := strings.Split(resource, "/")
@@ -171,9 +184,6 @@ func collectFirestoreString(field protoreflect.Name, value string, collections, 
 				classifyAuditCollection(segments[index], collections, forbidden)
 			}
 		}
-	}
-	if field == "collection_id" || field == "collectionId" {
-		classifyAuditCollection(value, collections, forbidden)
 	}
 }
 

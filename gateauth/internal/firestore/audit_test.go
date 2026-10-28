@@ -25,6 +25,30 @@ func TestFirestoreRequestAuditFindsOnlyPostDocumentsCollections(t *testing.T) {
 	}
 }
 
+func TestFirestoreRequestAuditDoesNotPersistQueryOrReferenceValues(t *testing.T) {
+	values := []*firestorepb.Value{
+		{ValueType: &firestorepb.Value_StringValue{StringValue: "https://example.test/documents/private_literal_value/doc"}},
+		{ValueType: &firestorepb.Value_ReferenceValue{ReferenceValue: "projects/demo/databases/(default)/documents/projects/private"}},
+	}
+	for _, value := range values {
+		request := &firestorepb.RunQueryRequest{
+			Parent: "projects/demo/databases/(default)/documents",
+			QueryType: &firestorepb.RunQueryRequest_StructuredQuery{StructuredQuery: &firestorepb.StructuredQuery{
+				From: []*firestorepb.StructuredQuery_CollectionSelector{{CollectionId: "users"}},
+				Where: &firestorepb.StructuredQuery_Filter{FilterType: &firestorepb.StructuredQuery_Filter_FieldFilter{
+					FieldFilter: &firestorepb.StructuredQuery_FieldFilter{
+						Field: &firestorepb.StructuredQuery_FieldReference{FieldPath: "profile"}, Value: value,
+					},
+				}},
+			}},
+		}
+		line := formatFirestoreAudit("/google.firestore.v1.Firestore/RunQuery", request)
+		if !strings.Contains(line, "collections=users forbidden=") || strings.Contains(line, "private_literal_value") || strings.Contains(line, "forbidden=projects") {
+			t.Fatalf("query literal or reference value leaked into audit: %s", line)
+		}
+	}
+}
+
 func TestLocalFirestoreAuditRequiresNumericLoopbackAndWritesCollectionOnly(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "firestore-audit.log")
 	t.Setenv("FIRESTORE_EMULATOR_HOST", "127.0.0.1:62371")
