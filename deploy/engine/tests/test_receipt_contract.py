@@ -34,7 +34,7 @@ class ReceiptContractTests(unittest.TestCase):
         auth = fixture("auth-receipt-v2-legacy.json")
         dev = fixture("dev-receipt-v1-legacy.json")
         self.assertTrue(receipt_contract.validate_receipt_pair(auth, dev, "legacy_monorepo"))
-        with self.assertRaisesRegex(receipt_contract.ReceiptError, "Auth component receipt"):
+        with self.assertRaisesRegex(receipt_contract.ReceiptError, "DEV receipt v2"):
             receipt_contract.validate_receipt_pair(auth, dev, "independent")
 
     def test_independent_v3_v2_receipts_pair_two_immutable_sources(self):

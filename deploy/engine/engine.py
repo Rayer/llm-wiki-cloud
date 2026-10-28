@@ -16,7 +16,8 @@ import urllib.parse
 from support import (ROOT, Breakpoint, digest, read, release_source_mode, require, run,
                      structured_cause, write)
 from providers import Providers, CLOUD_BUILD_LOCATION
-from receipt_contract import validate_dev_receipt
+from receipt_contract import (ReceiptError, validate_auth_component_receipt,
+                              validate_dev_receipt, validate_receipt_pair)
 
 ORDER = ('exportjob', 'auth', 'bff', 'worker', 'frontend')
 PROFILES = read(ROOT / 'deploy/engine/profiles.json')
@@ -320,8 +321,68 @@ class Engine:
         require(r['component'] == c and r['identity'] == self.plan['identities'][c], 'artifact-source-incompatible')
         if c == 'frontend':
             require(r['target_config'] == digest(self.plan['normalized']['frontend']), 'artifact-config-incompatible')
+        if c == 'auth' and release_source_mode(self.plan) == 'independent':
+            source = self.plan.get('auth_source')
+            require(isinstance(source, dict), 'independent-auth-source-required')
+            try:
+                expected_source = {
+                    'repository_id': source['repository_id'],
+                    'revision': source['revision'],
+                    'tree_sha256': source['tree_sha256'],
+                    'artifact_id': source['artifact_id'],
+                    'build_run_id': source['run_id'],
+                    'build_run_attempt': source['run_attempt'],
+                }
+                validate_auth_component_receipt(
+                    r, 'independent',
+                    self.plan.get('source') if self.plan['normalized']['environment'] == 'development' else None,
+                    self.auth_input_snapshot() if self.plan['normalized']['environment'] == 'development' else None,
+                    expected_source)
+            except (ReceiptError, KeyError, TypeError) as exc:
+                raise Breakpoint('artifact-auth-receipt-incompatible', 'failed', False,
+                                 'inspect-retained-artifact', cause=str(exc)) from None
         self.provider.usable(c, r['artifact'])
         return r
+
+    def validate_dev_receipt_pair(self):
+        if (release_source_mode(self.plan) != 'independent' or
+                self.plan['normalized']['environment'] != 'development'):
+            return
+        components = [c for c in self.plan['selected']
+                      if c in ('auth', 'bff', 'worker', 'exportjob')]
+        if not components:
+            return
+        auth_path = self.directory / 'receipts/auth.json'
+        dev_path = self.directory / 'images/dev-receipt.json'
+        metadata_path = self.directory / 'dev-source-metadata.json'
+        require(auth_path.is_file() and dev_path.is_file() and metadata_path.is_file(),
+                'artifact-auth-dev-pair-missing')
+        auth = read(auth_path)
+        dev = read(dev_path)
+        metadata = read(metadata_path)
+        source = self.plan.get('auth_source')
+        require(isinstance(auth, dict) and isinstance(dev, dict) and isinstance(metadata, dict) and
+                isinstance(metadata.get('lwc'), dict) and isinstance(metadata.get('auth'), dict),
+                'artifact-auth-dev-pair-incompatible')
+        require(isinstance(source, dict), 'independent-auth-source-required')
+        expected_auth = metadata.get('auth', {})
+        require(metadata.get('lwc', {}).get('sha') == self.plan.get('source') and
+                expected_auth.get('repository_id') == source.get('repository_id') and
+                expected_auth.get('revision') == source.get('revision') and
+                expected_auth.get('tree_sha256') == source.get('tree_sha256') and
+                expected_auth.get('artifact_id') == source.get('artifact_id') and
+                expected_auth.get('run_id') == source.get('run_id') and
+                expected_auth.get('run_attempt') == source.get('run_attempt'),
+                'artifact-auth-dev-source-mismatch')
+        try:
+            validate_receipt_pair(
+                auth, dev, 'independent',
+                expected_auth_config_inputs=self.auth_input_snapshot(),
+                expected_lwc_source=metadata['lwc'], expected_auth_source=expected_auth,
+                expected_components=components)
+        except (ReceiptError, KeyError, TypeError) as exc:
+            raise Breakpoint('artifact-auth-dev-pair-incompatible', 'failed', False,
+                             'inspect-retained-artifact', cause=str(exc)) from None
 
     def barrier(self):
         artifacts = {}
@@ -332,6 +393,7 @@ class Engine:
                         receipt.get('auth_materialization_schema') == 1,
                         'artifact-auth-input-snapshot-mismatch')
             artifacts[c] = receipt['artifact']
+        self.validate_dev_receipt_pair()
         return artifacts
 
     def auth_input_snapshot(self):
@@ -604,6 +666,8 @@ class Engine:
         old = Path(reuse).resolve() if reuse else None
         self.resume_or_validate_reuse(old)
         provenance = Engine(dev) if dev else None
+        if provenance:
+            provenance.validate_dev_receipt_pair()
         for c in self.plan['selected']:
             self.component = c
             dest = self.directory / 'receipts' / (c+'.json')
@@ -710,7 +774,6 @@ class Engine:
             auth_receipt['auth_materialization_schema'] = 1
             self.provider.usable('auth', auth_receipt['artifact'])
             write(self.directory / 'receipts/auth.json', auth_receipt)
-        self.barrier()
         if (self.plan['normalized']['environment'] == 'development' and
                 source_mode == 'independent' and
                 isinstance(self.plan.get('auth_source'), dict)):
@@ -778,6 +841,7 @@ class Engine:
                     'run_attempt': int(os.environ['GITHUB_RUN_ATTEMPT'])},
                     expected_components=[c for c in self.plan['selected']
                                          if c in ('auth', 'bff', 'worker', 'exportjob')])
+        self.barrier()
         self.state['status'] = 'ready'
         self.save()
 

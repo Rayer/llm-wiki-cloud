@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import io
 import importlib.util
 import json
@@ -210,6 +211,7 @@ else:
 
             auth_receipt = read(directory / "receipts/auth.json")
             dev_receipt = read(directory / "images/dev-receipt.json")
+            run.provider.usable = lambda _component, _artifact: None
             self.assertEqual(auth_receipt["schema"], 3)
             self.assertEqual(auth_receipt["build_sha"], lwc_sha)
             self.assertEqual(auth_receipt["auth_source"], {
@@ -220,6 +222,37 @@ else:
                 "build_run_id": auth_source["run_id"],
                 "build_run_attempt": auth_source["run_attempt"],
             })
+            self.assertEqual(run.barrier()["auth"], auth_receipt["artifact"])
+            auth_path = directory / "receipts/auth.json"
+            dev_path = directory / "images/dev-receipt.json"
+            auth_original = read(auth_path)
+            dev_original = read(dev_path)
+            malformed_schema = copy.deepcopy(auth_original)
+            malformed_schema["schema"] = 2
+            malformed_schema.pop("auth_source")
+            write(auth_path, malformed_schema)
+            with self.assertRaises(engine.Breakpoint) as schema_failure:
+                run.barrier()
+            self.assertEqual(schema_failure.exception.reason, "artifact-auth-receipt-incompatible")
+            malformed_revision = copy.deepcopy(auth_original)
+            malformed_revision["auth_source"]["revision"] = "f" * 40
+            write(auth_path, malformed_revision)
+            with self.assertRaises(engine.Breakpoint) as revision_failure:
+                run.barrier()
+            self.assertEqual(revision_failure.exception.reason, "artifact-auth-receipt-incompatible")
+            write(auth_path, auth_original)
+            dev_path.unlink()
+            with self.assertRaises(engine.Breakpoint) as missing_pair:
+                run.barrier()
+            self.assertEqual(missing_pair.exception.reason, "artifact-auth-dev-pair-missing")
+            malformed_dev = copy.deepcopy(dev_original)
+            malformed_dev["source"]["auth"]["revision"] = "f" * 40
+            write(dev_path, malformed_dev)
+            with self.assertRaises(engine.Breakpoint) as mixed_pair:
+                run.barrier()
+            self.assertEqual(mixed_pair.exception.reason, "artifact-auth-dev-pair-incompatible")
+            write(dev_path, dev_original)
+            self.assertEqual(run.barrier()["auth"], auth_original["artifact"])
             self.assertEqual(dev_receipt["schema"], "lwc-306-dev-image-receipt-v2")
             self.assertNotEqual(dev_receipt["source"]["lwc"]["sha"],
                                 dev_receipt["source"]["auth"]["revision"])
@@ -245,7 +278,10 @@ else:
             self.assertTrue(all("auth-source" in call["auth_source_root"]
                                 for call in calls if call["auth_source_root"]))
 
-            newer_lwc_sha = lwc_sha
+            newer_lwc_sha = subprocess.check_output(
+                ["git", "rev-parse", "HEAD^"], cwd=ROOT, text=True
+            ).strip()
+            self.assertNotEqual(newer_lwc_sha, lwc_sha)
             bff_release = root / "bff-release"
             bff_plan = self.admit_plan(bff_release, name="bff", source_sha=newer_lwc_sha,
                                        components=["bff"], reuse=directory)
@@ -286,6 +322,10 @@ else:
                 expected_auth_source=bff_dev_receipt["source"]["auth"],
                 expected_components=["bff"],
             )
+            self.assertEqual(bff_auth_receipt["auth_source"]["revision"],
+                             auth_receipt["auth_source"]["revision"])
+            self.assertNotEqual(bff_dev_receipt["source"]["lwc"]["sha"],
+                                dev_receipt["source"]["lwc"]["sha"])
 
     def test_admission_fails_closed_for_missing_or_mixed_auth_tuple(self):
         source = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()

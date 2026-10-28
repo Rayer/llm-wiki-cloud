@@ -162,12 +162,16 @@ def validate_dev_receipt(dev, mode, expected_lwc_source, expected_auth_source=No
     return True
 
 
-def validate_receipt_pair(auth, dev, mode, expected_auth_config_inputs=None,
-                          expected_lwc_source=None, expected_auth_source=None,
-                          expected_components=None):
+def validate_auth_component_receipt(auth, mode, expected_lwc_sha=None,
+                                    expected_auth_config_inputs=None,
+                                    expected_auth_source=None):
     auth = _object(auth, "Auth component receipt")
-    dev = _object(dev, "DEV receipt")
-    schema = 2 if mode in ("legacy", "legacy_monorepo") else 3
+    if mode in ("legacy", "legacy_monorepo"):
+        schema = 2
+    elif mode == "independent":
+        schema = 3
+    else:
+        raise ReceiptError(f"unknown receipt mode {mode!r}")
     expected_keys = {
         "schema", "component", "identity", "build_sha", "artifact", "target_config",
         "build", "auth_config_inputs", "auth_materialization_schema",
@@ -183,16 +187,8 @@ def validate_receipt_pair(auth, dev, mode, expected_auth_config_inputs=None,
     if (build.get("identity_verified") is not True or build.get("status") != "SUCCESS" or
             not isinstance(build.get("build_id"), str) or not build["build_id"]):
         raise ReceiptError("Auth build identity is not verified")
-    if expected_lwc_source is None:
-        source = dev.get("source", {})
-        expected_lwc_source = source.get("lwc", {}) if mode == "independent" else {
-            "sha": source.get("sha"), "run_id": source.get("run_id"),
-            "run_attempt": source.get("run_attempt"),
-        }
-    validate_dev_receipt(dev, mode, expected_lwc_source, expected_auth_source,
-                         expected_components)
     image = _object(auth.get("artifact"), "Auth artifact").get("image")
-    auth_digest = image_digest(image)
+    image_hash = image_digest(image)
     inputs = _object(auth.get("auth_config_inputs"), "Auth config input snapshot")
     if (type(auth.get("auth_materialization_schema")) is not int or
             auth.get("auth_materialization_schema") != 1 or
@@ -202,25 +198,11 @@ def validate_receipt_pair(auth, dev, mode, expected_auth_config_inputs=None,
     if expected_auth_config_inputs is not None and inputs != expected_auth_config_inputs:
         raise ReceiptError("Auth config input snapshot differs from the expected snapshot")
 
-    if mode in ("legacy", "legacy_monorepo"):
-        if auth.get("schema") != 2 or auth.get("component") != "auth":
-            raise ReceiptError("legacy_monorepo_source accepts only Auth receipt schema 2")
-        if not COMMIT_RE.fullmatch(str(auth.get("build_sha", ""))) or auth.get("build_sha") != dev["source"]["sha"]:
-            raise ReceiptError("legacy Auth build_sha does not match the LWC source SHA")
+    if schema == 2:
         if inputs.get("source_sha") != auth["build_sha"]:
             raise ReceiptError("legacy Auth config inputs do not match the LWC source")
-        if dev["images"].get("auth") != image or auth_digest != image_digest(dev["images"].get("auth")):
-            raise ReceiptError("legacy Auth receipt image does not match the DEV image")
-        return True
+        return image, image_hash, inputs
 
-    if mode != "independent":
-        raise ReceiptError(f"unknown receipt mode {mode!r}")
-    if auth.get("schema") != 3 or auth.get("component") != "auth":
-        raise ReceiptError("independent mode accepts only Auth receipt schema 3")
-    if not COMMIT_RE.fullmatch(str(auth.get("build_sha", ""))) or auth.get("build_sha") != dev["source"]["lwc"]["sha"]:
-        raise ReceiptError("Auth receipt build_sha does not match the LWC release SHA")
-    if inputs.get("source_sha") != dev["source"]["lwc"]["sha"]:
-        raise ReceiptError("Auth config inputs do not match the LWC release SHA")
     source = _object(auth.get("auth_source"), "Auth component source")
     if set(source) != {"repository_id", "revision", "tree_sha256", "artifact_id", "build_run_id", "build_run_attempt"}:
         raise ReceiptError("Auth component source has unknown or missing fields")
@@ -232,6 +214,54 @@ def validate_receipt_pair(auth, dev, mode, expected_auth_config_inputs=None,
             not _positive_int(source.get("build_run_id")) or
             not _positive_int(source.get("build_run_attempt"))):
         raise ReceiptError("Auth component source identity is invalid")
+    if inputs.get("source_sha") != auth["build_sha"]:
+        raise ReceiptError("Auth config inputs do not match the LWC release SHA")
+    if expected_lwc_sha is not None and (
+            auth["build_sha"] != expected_lwc_sha or inputs.get("source_sha") != expected_lwc_sha):
+        raise ReceiptError("Auth receipt build/config source does not match the LWC release SHA")
+    if expected_auth_source is not None and source != expected_auth_source:
+        raise ReceiptError("Auth component source does not match the immutable input tuple")
+    return image, image_hash, inputs
+
+
+def validate_receipt_pair(auth, dev, mode, expected_auth_config_inputs=None,
+                          expected_lwc_source=None, expected_auth_source=None,
+                          expected_components=None):
+    dev = _object(dev, "DEV receipt")
+    if expected_lwc_source is None:
+        source = dev.get("source", {})
+        expected_lwc_source = source.get("lwc", {}) if mode == "independent" else {
+            "sha": source.get("sha"), "run_id": source.get("run_id"),
+            "run_attempt": source.get("run_attempt"),
+        }
+    validate_dev_receipt(dev, mode, expected_lwc_source, expected_auth_source,
+                         expected_components)
+    expected_component_source = None
+    if expected_auth_source is not None and mode == "independent":
+        expected_component_source = {
+            "repository_id": expected_auth_source["repository_id"],
+            "revision": expected_auth_source["revision"],
+            "tree_sha256": expected_auth_source["tree_sha256"],
+            "artifact_id": expected_auth_source["artifact_id"],
+            "build_run_id": expected_auth_source["run_id"],
+            "build_run_attempt": expected_auth_source["run_attempt"],
+        }
+    image, auth_digest, inputs = validate_auth_component_receipt(
+        auth, mode, expected_lwc_source.get("sha"), expected_auth_config_inputs,
+        expected_component_source)
+
+    if mode in ("legacy", "legacy_monorepo"):
+        if auth["build_sha"] != dev["source"]["sha"]:
+            raise ReceiptError("legacy Auth build_sha does not match the LWC source SHA")
+        if dev["images"].get("auth") != image or auth_digest != image_digest(dev["images"].get("auth")):
+            raise ReceiptError("legacy Auth receipt image does not match the DEV image")
+        return True
+
+    if auth["build_sha"] != dev["source"]["lwc"]["sha"]:
+        raise ReceiptError("Auth receipt build_sha does not match the LWC release SHA")
+    if inputs.get("source_sha") != dev["source"]["lwc"]["sha"]:
+        raise ReceiptError("Auth config inputs do not match the LWC release SHA")
+    source = auth["auth_source"]
     auth_dev = dev["source"]["auth"]
     comparisons = (
         ("repository_id", "repository_id"), ("revision", "revision"),
