@@ -174,7 +174,8 @@ def release_source_mode(plan):
         return mode
     # Plans predating the source-mode field can only be legacy: an independent
     # Auth plan must carry its immutable auth_source tuple and explicit mode.
-    if plan.get('schema') in (2, 3) and not plan.get('auth_source'):
+    if ('release_source_mode' not in plan and plan.get('schema') in (2, 3) and
+            not plan.get('auth_source')):
         return 'legacy_monorepo'
     return None
 

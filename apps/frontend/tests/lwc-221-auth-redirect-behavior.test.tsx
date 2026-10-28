@@ -8,6 +8,7 @@ import {
   AUTH_FORCE_HOME_REDIRECT_KEY,
   DEMO_SESSION_STORAGE_KEY,
   clearForceHomeRedirect,
+  readStoredAccessToken,
   setForceHomeRedirect,
   writeStoredAccessToken,
   writeStoredAuthUser,
@@ -44,14 +45,25 @@ type Deferred<T> = {
 type QueuedResponse = FetchResponse | Promise<FetchResponse>;
 type RouteQueue = {
   login: QueuedResponse[];
+  register: QueuedResponse[];
+  onboarding: QueuedResponse[];
   refresh: QueuedResponse[];
   logout: QueuedResponse[];
   projects: QueuedResponse[];
   publicConfig: QueuedResponse[];
 };
 
+type RequestLog = {
+  route: keyof RouteQueue;
+  authorization: string | null;
+  savedToken: string | null;
+  body: string | null;
+};
+
 const queue: RouteQueue = {
   login: [],
+  register: [],
+  onboarding: [],
   refresh: [],
   logout: [],
   projects: [],
@@ -69,6 +81,8 @@ function routeFrom(input: Parameters<typeof fetch>[0]) {
   const path = new URL(url).pathname;
 
   if (path.endsWith('/api/v1/auth/login')) return 'login';
+  if (path.endsWith('/api/v1/auth/register')) return 'register';
+  if (path.endsWith('/api/v1/onboarding/default-project')) return 'onboarding';
   if (path.endsWith('/api/v1/auth/refresh')) return 'refresh';
   if (path.endsWith('/api/v1/auth/logout')) return 'logout';
   if (path.endsWith('/api/v1/public/config')) return 'publicConfig';
@@ -86,6 +100,14 @@ function defaultResponse(route: keyof RouteQueue): FetchResponse {
       status: 401,
       body: { error: 'mocked login failure' },
     };
+  }
+
+  if (route === 'register') {
+    return { status: 201, body: { token: 'registration-token', user_id: 'registered-user', email: 'registered@example.test' } };
+  }
+
+  if (route === 'onboarding') {
+    return { status: 200, body: { schema_version: 1, status: 'ready', default_project_id: 'default' } };
   }
 
   if (route === 'publicConfig') {
@@ -122,6 +144,8 @@ function deferred<T>(): Deferred<T> {
 
 function clearQueues() {
   queue.login = [];
+  queue.register = [];
+  queue.onboarding = [];
   queue.refresh = [];
   queue.logout = [];
   queue.projects = [];
@@ -144,6 +168,7 @@ function WorkspaceProbe() {
 
 let container: HTMLDivElement | null = null;
 let root: ReturnType<typeof createRoot> | null = null;
+let requestLog: RequestLog[] = [];
 
 async function renderProviders({ withLoginModal = false }: { withLoginModal?: boolean } = {}) {
   container = document.createElement('div');
@@ -257,18 +282,72 @@ beforeEach(() => {
   clearPublicConfigCache();
   clearForceHomeRedirect(window.localStorage);
   window.localStorage.clear();
+  requestLog = [];
   vi.spyOn(window, 'confirm').mockReturnValue(true);
 
-  global.fetch = vi.fn(async (input) => {
+  global.fetch = vi.fn(async (input, init) => {
     const route = routeFrom(input);
     if (!route) {
       throw new Error(`Unhandled fetch route: ${input}`);
     }
+    requestLog.push({
+      route,
+      authorization: new Headers(init?.headers).get('Authorization'),
+      savedToken: readStoredAccessToken(window.localStorage),
+      body: typeof init?.body === 'string' ? init.body : null,
+    });
     return queueResponse(route);
   });
 });
 
 describe('LWC-221 auth redirect behavior', () => {
+  it('keeps a committed registration session and retries workspace bootstrap without registering again', async () => {
+    setQueue('refresh', [{ status: 401, body: { error: 'missing' } }]);
+    setQueue('register', [{
+      status: 201,
+      body: {
+        token: 'registration-token',
+        user_id: 'registered-user',
+        email: 'registered@example.test',
+        default_project_id: 'default',
+      },
+    }]);
+    setQueue('onboarding', [
+      { status: 503, body: { error: 'temporary bootstrap outage' } },
+      { status: 200, body: { schema_version: 1, status: 'ready', default_project_id: 'default' } },
+    ]);
+    setQueue('projects', [{
+      status: 200,
+      body: [{ id: 'default', name: 'Default Project' }],
+    }]);
+
+    await renderProviders();
+    await waitForHydrated();
+    await act(async () => {
+      await workspaceRef.current!.register('registered@example.test', 'password');
+    });
+    await waitUntil(() => workspaceRef.current?.productSetupPending === true);
+
+    expect(readStoredAccessToken(window.localStorage)).toBe('registration-token');
+    expect(workspaceRef.current?.projects).toEqual([]);
+    expect(requestLog.filter((request) => request.route === 'register')).toHaveLength(1);
+    expect(requestLog.filter((request) => request.route === 'projects')).toHaveLength(0);
+    const failedBootstrap = requestLog.find((request) => request.route === 'onboarding');
+    expect(failedBootstrap?.authorization).toBe('Bearer registration-token');
+    expect(failedBootstrap?.savedToken).toBe('registration-token');
+    expect(failedBootstrap?.body).toBe('{"schema_version":1}');
+
+    await act(async () => {
+      await workspaceRef.current!.refreshProjects();
+    });
+    await waitUntil(() => workspaceRef.current?.currentProject?.id === 'default');
+
+    expect(requestLog.filter((request) => request.route === 'register')).toHaveLength(1);
+    expect(requestLog.filter((request) => request.route === 'onboarding')).toHaveLength(2);
+    expect(requestLog.filter((request) => request.route === 'projects')).toHaveLength(1);
+    expect(workspaceRef.current?.productSetupPending).toBe(false);
+  });
+
   it('preserves normal login for the reserved demo email across hydration', async () => {
     const user = { id: 'credential-demo-user', email: 'demo@llm-wiki.dev' };
     setQueue('refresh', [{ status: 401, body: { error: 'missing' } }]);
@@ -939,12 +1018,11 @@ describe('LWC-221 auth redirect behavior', () => {
       { status: 401, body: { error: 'expired-again' } },
     ]);
     setQueue('projects', [
-      { status: 200, body: [] },
-      { status: 200, body: [] },
+      { status: 200, body: [{ id: 'default', name: 'Default Project' }] },
       { status: 401, body: { error: 'expired' } },
-      { status: 200, body: [] },
+      { status: 200, body: [{ id: 'default', name: 'Default Project' }] },
       { status: 401, body: { error: 'expired-again' } },
-      { status: 200, body: [] },
+      { status: 200, body: [{ id: 'default', name: 'Default Project' }] },
     ]);
     setQueue('login', [
       { status: 200, body: loginBody('post-expiry-token') },

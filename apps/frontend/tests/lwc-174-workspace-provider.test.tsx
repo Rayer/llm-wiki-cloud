@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { StrictMode, useState } from 'react';
 
 const mocks = vi.hoisted(() => ({
+  bootstrapDefaultProject: vi.fn(),
   getProjects: vi.fn(),
   createProject: vi.fn(),
   renameProject: vi.fn(),
@@ -25,6 +26,7 @@ vi.mock('@/lib/projects', async () => {
   const actual = await vi.importActual<typeof import('@/lib/projects')>('@/lib/projects');
   return {
     ...actual,
+    bootstrapDefaultProject: mocks.bootstrapDefaultProject,
     getProjects: mocks.getProjects,
     createProject: mocks.createProject,
     renameProject: mocks.renameProject,
@@ -75,6 +77,7 @@ import {
 function ProjectStateProbe() {
   const {
     projects, currentProject, projectsLoading, projectsError,
+    productSetupPending,
     addProject, renameProject, refreshProjects, profileOnboarding, openNewProject,
     markProfileOnboardingPresented, selectProject,
   } = useWorkspace();
@@ -90,6 +93,7 @@ function ProjectStateProbe() {
       <p data-testid="result">{result}</p>
       <p data-testid="projects-loading">{String(projectsLoading)}</p>
       <p data-testid="projects-error">{projectsError}</p>
+      <p data-testid="product-setup-pending">{String(productSetupPending)}</p>
       <p data-testid="profile-onboarding-project">{profileOnboarding?.projectId ?? ''}</p>
       <button type="button" onClick={async () => {
         try {
@@ -181,12 +185,34 @@ beforeEach(() => {
     { id: 'project-a', name: 'Project Alpha' },
     { id: 'project-b', name: 'Project Beta' },
   ]);
+  mocks.bootstrapDefaultProject.mockReset().mockResolvedValue('default');
   mocks.renameProject.mockResolvedValue('Rename from API');
   mocks.createProject.mockResolvedValue({ id: 'created', name: 'Created' });
   mocks.getStatus.mockResolvedValue(apiStatus());
   localStorage.setItem('llm-wiki-last-project', 'project-a');
   localStorage.setItem('locale', 'en');
   mocks.push.mockReset();
+});
+
+it('keeps Project loading behind bootstrap and retries the same setup without a new identity action', async () => {
+  mocks.bootstrapDefaultProject
+    .mockRejectedValueOnce(new Error('temporary bootstrap outage'))
+    .mockResolvedValueOnce('default');
+  render(
+    <WorkspaceProvider>
+      <ProjectStateProbe />
+    </WorkspaceProvider>,
+  );
+
+  await waitFor(() => expect(screen.getByTestId('product-setup-pending').textContent).toBe('true'));
+  expect(mocks.getProjects).not.toHaveBeenCalled();
+  expect(screen.getByTestId('projects-error').textContent).toContain('temporary bootstrap outage');
+
+  fireEvent.click(screen.getByRole('button', { name: 'refresh projects' }));
+  await waitFor(() => expect(screen.getByTestId('current-project-id').textContent).toBe('project-a'));
+  expect(mocks.bootstrapDefaultProject).toHaveBeenCalledTimes(2);
+  expect(mocks.getProjects).toHaveBeenCalledOnce();
+  expect(screen.getByTestId('product-setup-pending').textContent).toBe('false');
 });
 
 afterEach(() => {

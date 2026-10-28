@@ -1,6 +1,8 @@
 'use client';
 
 import { apiFetch, safeWikiRouteSegment } from './api.ts';
+import { getRuntimeConfig } from './runtime-config.ts';
+import { recordRequestResponse } from './request-ids.ts';
 import {
   normalizeProject,
   normalizeProjects,
@@ -38,6 +40,46 @@ export async function getProjects(): Promise<Project[]> {
     throw new Error(apiError(payload, `Unable to load projects (${response.status})`));
   }
   return normalizeProjects(payload);
+}
+
+export async function bootstrapDefaultProject(accessToken: string): Promise<string> {
+  if (!accessToken.trim()) throw new Error('Authentication required.');
+
+  const response = recordRequestResponse(await fetch(
+    `${getRuntimeConfig().api_url}/api/v1/onboarding/default-project`,
+    {
+      method: 'POST',
+      credentials: 'omit',
+      cache: 'no-store',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ schema_version: 1 }),
+    },
+  ));
+  const payload: unknown = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(apiError(payload, `Workspace setup failed (${response.status})`));
+  }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw new Error('Workspace setup response is invalid.');
+  }
+  const record = payload as Record<string, unknown>;
+  const keys = Object.keys(record).sort();
+  if (
+    keys.length !== 3
+    || keys[0] !== 'default_project_id'
+    || keys[1] !== 'schema_version'
+    || keys[2] !== 'status'
+    || record.schema_version !== 1
+    || record.status !== 'ready'
+    || typeof record.default_project_id !== 'string'
+    || !safeWikiRouteSegment(record.default_project_id)
+  ) {
+    throw new Error('Workspace setup response is invalid.');
+  }
+  return record.default_project_id;
 }
 
 export async function createProject(name: string): Promise<Project> {

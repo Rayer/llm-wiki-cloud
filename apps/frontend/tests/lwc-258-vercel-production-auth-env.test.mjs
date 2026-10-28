@@ -83,7 +83,7 @@ test('production workflow invokes the shared engine with fixed authority and DEV
   const workflow = parseYaml(await readFile(workflowPath, 'utf8'));
   const job = workflow.jobs.release;
   assert.equal(workflow.on.push, undefined);
-  assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), ['components', 'release_tag', 'artifact_id', 'dev_artifact_id', 'frontend_config_artifact_id', 'operation', 'pipeline_run_timeout_seconds']);
+  assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), ['components', 'release_tag', 'artifact_id', 'dev_artifact_id', 'frontend_config_artifact_id', 'operation', 'pipeline_run_timeout_seconds', 'release_source_mode']);
   assert.deepEqual(workflow.on.workflow_dispatch.inputs.operation.options, ['release', 'config-only', 'frontend-config-only', 'frontend-config-generate']);
   assert.equal(workflow.on.workflow_dispatch.inputs.release_tag.required, false);
   assert.equal(job.if, "github.ref == 'refs/heads/main' && inputs.operation != 'frontend-config-generate'");
@@ -97,6 +97,7 @@ test('production workflow invokes the shared engine with fixed authority and DEV
     frontend_config_artifact_id: '${{ inputs.frontend_config_artifact_id }}',
     operation: '${{ inputs.operation }}',
     pipeline_run_timeout_seconds: '${{ inputs.pipeline_run_timeout_seconds }}',
+    release_source_mode: '${{ inputs.release_source_mode }}',
   });
 });
 

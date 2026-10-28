@@ -23,6 +23,7 @@ import {
 import { getStatus } from '@/lib/api';
 import { clearCompletedQueryResults } from '@/lib/query-result-history';
 import {
+  bootstrapDefaultProject,
   createProject,
   renameProject as renameProjectRequest,
   getProjects,
@@ -137,6 +138,7 @@ type WorkspaceContextValue = {
   currentProject: Project | null;
   projectsLoading: boolean;
   projectsError: string;
+  productSetupPending: boolean;
   isDemoSession: boolean;
   loginOpen: boolean;
   newProjectOpen: boolean;
@@ -177,12 +179,15 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [currentProject, setCurrentProject] = useState<Project | null>(null);
   const [projectsLoading, setProjectsLoading] = useState(false);
   const [projectsError, setProjectsError] = useState('');
+  const [productSetupPending, setProductSetupPending] = useState(false);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [profileOnboarding, setProfileOnboarding] = useState<ProfileOnboardingIntent | null>(null);
   const [navCounts, setNavCounts] = useState<NavCounts>(emptyNavCounts);
   const requestIdentityRef = useRef({ projectId: currentProject?.id ?? null, token, sessionEpoch });
   const projectStateActiveRef = useRef(false);
   const projectListGenerationRef = useRef(0);
+  const setupReadyOwnerRef = useRef<string | null>(null);
+  const bootstrapFlightsRef = useRef(new Map<string, Promise<string>>());
   const renameGenerationByProjectRef = useRef(new Map<string, number>());
   const profileOnboardingOwnerRef = useRef<string | null>(null);
   const queryResultScopeRef = useRef({
@@ -264,33 +269,66 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   }, [token, currentProject, sessionEpoch]);
 
   const loadProjects = useCallback(async () => {
-    const startedGeneration = ++projectListGenerationRef.current;
-    const operationEpoch = sessionEpoch;
     const operationToken = token;
+    if (!operationToken) return;
+    const startedGeneration = ++projectListGenerationRef.current;
+    const operationOwnerId = user?.id ?? operationToken;
     const ownsState = () => (
       projectStateActiveRef.current
       && projectListGenerationRef.current === startedGeneration
-      && sessionEpoch === operationEpoch
-      && token === operationToken
+      && requestIdentityRef.current.token === operationToken
     );
     setProjectsLoading(true);
     setProjectsError('');
     try {
-      const nextProjects = await getProjects();
+      if (setupReadyOwnerRef.current !== operationOwnerId) {
+        setProductSetupPending(true);
+        let bootstrap = bootstrapFlightsRef.current.get(operationToken);
+        if (!bootstrap) {
+          bootstrap = bootstrapDefaultProject(operationToken);
+          bootstrapFlightsRef.current.set(operationToken, bootstrap);
+        }
+        try {
+          await bootstrap;
+        } finally {
+          if (bootstrapFlightsRef.current.get(operationToken) === bootstrap) {
+            bootstrapFlightsRef.current.delete(operationToken);
+          }
+        }
+        if (!ownsState()) return;
+        setupReadyOwnerRef.current = operationOwnerId;
+        setProductSetupPending(false);
+      }
+
+      let nextProjects = await getProjects();
       if (!ownsState()) return;
+      if (nextProjects.length === 0) {
+        setProductSetupPending(true);
+        await bootstrapDefaultProject(operationToken);
+        if (!ownsState()) return;
+        setupReadyOwnerRef.current = operationOwnerId;
+        nextProjects = await getProjects();
+        if (!ownsState()) return;
+      }
+      if (nextProjects.length === 0) {
+        throw new Error('Workspace setup is pending; try again.');
+      }
       const selected = selectDefaultProject(nextProjects, readLastProjectId());
       setProjects(nextProjects);
       setCurrentProject(selected);
       writeLastProjectId(selected?.id ?? null);
+      setProductSetupPending(false);
     } catch (error) {
       if (!ownsState()) return;
+      setupReadyOwnerRef.current = null;
       setProjects([]);
       setCurrentProject(null);
+      setProductSetupPending(true);
       setProjectsError(error instanceof Error ? error.message : 'Unable to load projects.');
     } finally {
       if (ownsState()) setProjectsLoading(false);
     }
-  }, [sessionEpoch, token]);
+  }, [token, user?.id]);
 
   const signIn = useCallback(async (email: string, password: string) => {
     await login(email, password);
@@ -316,6 +354,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setCurrentProject(null);
     setProjectsLoading(false);
     setProjectsError('');
+    setProductSetupPending(false);
+    setupReadyOwnerRef.current = null;
+    bootstrapFlightsRef.current.clear();
     setNewProjectOpen(false);
     setProfileOnboarding(null);
     setNavCounts(emptyNavCounts);
@@ -443,8 +484,11 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setProjects([]);
     setCurrentProject(null);
     setProjectsError('');
+    setupReadyOwnerRef.current = null;
+    bootstrapFlightsRef.current.clear();
+    setProductSetupPending(false);
     setNavCounts(emptyNavCounts);
-  }, [hydrated, loadProjects, sessionEpoch, token]);
+  }, [hydrated, loadProjects, token]);
 
   // Load / reload sidebar counts when auth or project changes (LWC-129).
   useEffect(() => {
@@ -485,6 +529,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     currentProject,
     projectsLoading,
     projectsError,
+    productSetupPending,
     isDemoSession,
     loginOpen: hydrated && !token,
     newProjectOpen,
@@ -517,6 +562,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     markProfileOnboardingPresented,
     projects,
     projectsError,
+    productSetupPending,
     refreshNavCounts,
     register,
     signIn,

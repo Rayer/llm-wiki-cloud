@@ -1119,6 +1119,74 @@ func TestGoogleSecretManagerSDKAccessPath(t *testing.T) {
 	clear(value)
 }
 
+func TestGAT4SyntheticAuthDescriptorProducer(t *testing.T) {
+	var requests []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.Method+" "+r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/projects/llm-wiki-cloud/secrets/jwt-secret-dev/versions":
+			_, _ = w.Write([]byte(`{"versions":[{"name":"projects/llm-wiki-cloud/secrets/jwt-secret-dev/versions/42","state":"ENABLED"}]}`))
+		case "/v1/projects/llm-wiki-cloud/secrets/google-oauth-client-dev/versions/1":
+			_, _ = w.Write([]byte(`{"name":"projects/llm-wiki-cloud/secrets/google-oauth-client-dev/versions/1","state":"ENABLED"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	service, err := secretmanager.NewService(context.Background(), option.WithEndpoint(server.URL+"/"),
+		option.WithHTTPClient(server.Client()), option.WithoutAuthentication())
+	if err != nil {
+		t.Fatal(err)
+	}
+	repoRoot, err := filepath.Abs(filepath.Join("..", "..", "..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LWC_REPOSITORY_ROOT", repoRoot)
+	t.Setenv("PKL_CACHE_DIR", "")
+	sourceSHA := strings.TrimSpace(os.Getenv("GAT4_TEST_SOURCE_SHA"))
+	if sourceSHA == "" {
+		sourceSHA = strings.Repeat("c", 40)
+	}
+	output := t.TempDir()
+	if err := runPrepareTargetModeAtSource(context.Background(), "auth", "dev", output, true, sourceSHA,
+		func(context.Context) (secretReader, error) {
+			return googleSecretReader{service: service}, nil
+		}); err != nil {
+		t.Fatalf("prepare synthetic Auth descriptor: %v", err)
+	}
+	descriptorPath := filepath.Join(output, "auth-inputs.json")
+	descriptor, err := os.ReadFile(descriptorPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot runtimeconfig.AuthInputSnapshot
+	if err := json.Unmarshal(descriptor, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtimeconfig.ValidateAuthInputSnapshot(snapshot); err != nil {
+		t.Fatalf("produced Auth descriptor is invalid: %v", err)
+	}
+	if snapshot.SourceSHA != sourceSHA || snapshot.JWTSecretVersion != "projects/llm-wiki-cloud/secrets/jwt-secret-dev/versions/42" ||
+		snapshot.Google.ClientSecretVersion != "projects/llm-wiki-cloud/secrets/google-oauth-client-dev/versions/1" {
+		t.Fatalf("synthetic metadata was not pinned into the actual Auth descriptor: source=%q jwt=%q google=%q",
+			snapshot.SourceSHA, snapshot.JWTSecretVersion, snapshot.Google.ClientSecretVersion)
+	}
+	if len(requests) != 2 || requests[0] != "GET /v1/projects/llm-wiki-cloud/secrets/jwt-secret-dev/versions" ||
+		requests[1] != "GET /v1/projects/llm-wiki-cloud/secrets/google-oauth-client-dev/versions/1" {
+		t.Fatalf("unexpected loopback metadata requests: %v", requests)
+	}
+	if destination := strings.TrimSpace(os.Getenv("GAT4_TEST_AUTH_DESCRIPTOR_OUTPUT")); destination != "" {
+		if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(destination, descriptor, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestGoogleSecretManagerSDKResolvesCanonicalNumericProjectName(t *testing.T) {
 	const requested = "projects/test-project/secrets/test-secret/versions/11"
 	const canonical = "projects/580854833715/secrets/test-secret/versions/11"

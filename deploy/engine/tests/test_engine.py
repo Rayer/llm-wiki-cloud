@@ -67,6 +67,50 @@ class Acceptance(unittest.TestCase):
         self.assertEqual(self.bff_descriptors['dev'], inputs)
         self.assertNotIn('jwt_secret_reference', inputs)
 
+    def test_saved_release_source_mode_rejects_explicit_invalid_values_and_keeps_legacy_absence(self):
+        for invalid in ('', None, 'unexpected'):
+            with self.subTest(invalid=invalid):
+                engine_instance = self.make(('auth',), name='invalid-source-mode-' + str(invalid))
+                plan = read(engine_instance.directory / 'plan.json')
+                plan['release_source_mode'] = invalid
+                plan['id'] = engine.plan_id(plan)
+                write(engine_instance.directory / 'plan.json', plan)
+
+                restored = engine.Engine(engine_instance.directory)
+                with self.assertRaises(Breakpoint) as caught:
+                    restored.provider._build_source_environment('auth')
+                self.assertEqual(caught.exception.reason, 'release-source-mode-required')
+                with self.assertRaises(Breakpoint) as caught:
+                    restored.prepare()
+                self.assertEqual(caught.exception.reason, 'release-source-mode-invalid')
+
+        engine_instance = self.make(('auth',), name='missing-independent-auth-source')
+        plan = read(engine_instance.directory / 'plan.json')
+        plan['release_source_mode'] = 'independent'
+        plan['id'] = engine.plan_id(plan)
+        write(engine_instance.directory / 'plan.json', plan)
+        restored = engine.Engine(engine_instance.directory)
+        with self.assertRaises(Breakpoint) as caught:
+            restored.prepare()
+        self.assertEqual(caught.exception.reason, 'independent-auth-source-required')
+
+        for schema in (2, 3):
+            with self.subTest(schema=schema):
+                engine_instance = self.make(('auth',), name='legacy-source-mode-schema-' + str(schema))
+                plan = read(engine_instance.directory / 'plan.json')
+                plan.pop('release_source_mode')
+                plan['schema'] = schema
+                if schema == 2:
+                    plan['engine'] = 'e' * 40
+                    plan['engine_content'] = 'f' * 64
+                plan['id'] = engine.plan_id(plan)
+                write(engine_instance.directory / 'plan.json', plan)
+
+                restored = engine.Engine(engine_instance.directory)
+                self.assertEqual(providers.release_source_mode(restored.plan), 'legacy_monorepo')
+                self.assertEqual(restored.provider._build_source_environment('auth')[:2],
+                                 (restored.plan['source'], restored.plan['branch']))
+
     def setUp(self):
         self.real_node = shutil.which('node')
         self.vercel_chunk = os.environ.get('LWC_TEST_VERCEL_CHUNK')

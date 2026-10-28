@@ -125,6 +125,9 @@ beforeEach(() => {
     const projectId = new Headers(init?.headers).get('X-Project-ID');
     requests.push({ method, path: url.pathname + url.search, projectId });
 
+    if (url.pathname === '/api/v1/onboarding/default-project' && method === 'POST') {
+      return jsonResponse({ schema_version: 1, status: 'ready', default_project_id: 'default' });
+    }
     if (url.pathname === '/api/v1/projects') {
       return jsonResponse([{ id: 'project-a', name: 'Project A' }]);
     }

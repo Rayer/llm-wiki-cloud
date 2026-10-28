@@ -31,6 +31,64 @@ tree_digest = artifact.tree_digest
 
 
 class IndependentProducerTests(unittest.TestCase):
+    def synthetic_auth_inputs(self, root: Path, source_sha: str) -> Path:
+        descriptor = root / "synthetic-auth-inputs.json"
+        env = dict(os.environ)
+        for key in tuple(env):
+            if key.startswith(("GOOGLE_", "GCLOUD_", "CLOUDSDK_", "GCP_")):
+                env.pop(key)
+        env.update({
+            "GOOGLE_APPLICATION_CREDENTIALS": "/dev/null",
+            "GCE_METADATA_HOST": "127.0.0.1:1",
+            "GAT4_TEST_SOURCE_SHA": source_sha,
+            "GAT4_TEST_AUTH_DESCRIPTOR_OUTPUT": str(descriptor),
+            "GOWORK": "off",
+            "GOFLAGS": "-mod=readonly",
+            "GOTOOLCHAIN": "local",
+        })
+        subprocess.run(
+            ["go", "test", "./cmd/pipeline_config", "-run",
+             "^TestGAT4SyntheticAuthDescriptorProducer$", "-count=1"],
+            cwd=ROOT / "apps/bff", env=env, check=True, capture_output=True, text=True,
+            timeout=180,
+        )
+        if not descriptor.is_file():
+            raise AssertionError("synthetic SDK did not produce an Auth input descriptor")
+        return descriptor
+
+    def admit_with_synthetic_descriptor(self, args, fixture_root: Path):
+        descriptor = self.synthetic_auth_inputs(fixture_root, args.source)
+        real_run = engine.run
+        intercepted = []
+
+        def run_with_synthetic_auth_descriptor(command, *run_args, **run_kwargs):
+            parts = [str(part) for part in command]
+            if (parts[:4] == ["go", "run", "./cmd/pipeline_config", "prepare"] and
+                    "--descriptor" in parts and "--target" in parts and
+                    parts[parts.index("--target") + 1] == "auth"):
+                output = Path(parts[parts.index("--output") + 1])
+                output.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(descriptor, output / "auth-inputs.json")
+                intercepted.append(output)
+                return ""
+            return real_run(command, *run_args, **run_kwargs)
+
+        env = dict(os.environ)
+        for key in tuple(env):
+            if key.startswith(("GOOGLE_", "GCLOUD_", "CLOUDSDK_", "GCP_")):
+                env.pop(key)
+        env.update({
+            "GOOGLE_APPLICATION_CREDENTIALS": "/dev/null",
+            "GCE_METADATA_HOST": "127.0.0.1:1",
+            "GITHUB_REPOSITORY_ID": "101",
+        })
+        with patch.dict(os.environ, env, clear=True), patch.object(
+                engine, "run", side_effect=run_with_synthetic_auth_descriptor):
+            plan = engine.admit(args)
+        if len(intercepted) != 1:
+            raise AssertionError(f"expected one injected Auth descriptor, got {len(intercepted)}")
+        return plan
+
     def make_auth_source(self, root: Path) -> tuple[Path, dict]:
         checkout = root / "auth-checkout"
         shutil.copytree(ROOT / "gateauth", checkout)
@@ -84,8 +142,7 @@ class IndependentProducerTests(unittest.TestCase):
             "auth_run_id": str(auth_source["run_id"]) if auth_source else None,
             "auth_run_attempt": str(auth_source["run_attempt"]) if auth_source else None,
         })()
-        with patch.dict(os.environ, {"GITHUB_REPOSITORY_ID": "101"}, clear=False):
-            plan = engine.admit(args)
+        plan = self.admit_with_synthetic_descriptor(args, directory.parent)
         directory.mkdir(parents=True, exist_ok=True)
         write(directory / "plan.json", plan)
         return plan
@@ -237,8 +294,10 @@ else:
             "tag": "gat4-local-source-negative", "components": "auth", "dev_reference": None,
             "reuse": None, "dev": None, "release_source_mode": "independent",
         }
-        with self.assertRaises(engine.Breakpoint) as missing:
-            engine.admit(type("Args", (), base)())
+        with tempfile.TemporaryDirectory(prefix="gat4-independent-admission-negative-") as raw:
+            fixture_root = Path(raw)
+            with self.assertRaises(engine.Breakpoint) as missing:
+                self.admit_with_synthetic_descriptor(type("Args", (), base)(), fixture_root)
         self.assertEqual(missing.exception.reason, "independent-auth-source-required")
         mixed = {
             **base,
@@ -249,8 +308,10 @@ else:
             "auth_run_id": "9002",
             "auth_run_attempt": "1",
         }
-        with self.assertRaises(engine.Breakpoint) as wrong_source:
-            engine.admit(type("Args", (), mixed)())
+        with tempfile.TemporaryDirectory(prefix="gat4-independent-admission-mixed-") as raw:
+            fixture_root = Path(raw)
+            with self.assertRaises(engine.Breakpoint) as wrong_source:
+                self.admit_with_synthetic_descriptor(type("Args", (), mixed)(), fixture_root)
         self.assertEqual(wrong_source.exception.reason, "independent-auth-source-invalid")
 
 
