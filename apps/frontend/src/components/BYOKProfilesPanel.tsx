@@ -8,7 +8,7 @@ const openAIEndpoint = 'https://api.openai.com/v1';
 const xaiEndpoint = 'https://api.x.ai/v1';
 const anthropicEndpoint = 'https://api.anthropic.com';
 
-export function BYOKProfilesPanel({ onProfileCreated }: { onProfileCreated?: (profile: LLMProfile) => void }) {
+export function BYOKProfilesPanel({ active = true, onProfileCreated }: { active?: boolean; onProfileCreated?: (profile: LLMProfile) => void }) {
   const { t } = useT();
   const [profiles, setProfiles] = useState<LLMProfile[]>([]);
   const [loading, setLoading] = useState(true);
@@ -24,6 +24,14 @@ export function BYOKProfilesPanel({ onProfileCreated }: { onProfileCreated?: (pr
   const [model, setModel] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [clearAPIKey, setClearAPIKey] = useState(false);
+
+  useEffect(() => {
+    if (!active) {
+      // Keep editable provider details across tabs, but discard the hidden key draft.
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- clear the secret input as soon as its tab is left
+      setApiKey('');
+    }
+  }, [active]);
 
   const load = useCallback(async () => {
     try {

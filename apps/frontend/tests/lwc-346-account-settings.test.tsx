@@ -16,6 +16,9 @@ const mocks = vi.hoisted(() => ({
   readPasswordSelfServiceStatus: vi.fn(),
   changeAccountPassword: vi.fn(),
   listLLMProfiles: vi.fn(),
+  getProjectLLMBinding: vi.fn(),
+  saveProjectLLMBinding: vi.fn(),
+  projects: [] as Array<{ id: string; name: string }>,
   locale: 'en' as 'en' | 'zh-TW',
   accessToken: 'web-access-token',
   userID: 'owner-1',
@@ -27,10 +30,15 @@ const mocks = vi.hoisted(() => ({
 vi.mock('@/lib/auth', () => ({
   useAuth: () => ({ accessToken: mocks.accessToken, refreshAccessToken: mocks.refreshAccessToken, sessionEpoch: mocks.sessionEpoch, user: { id: mocks.userID, email: 'owner@example.test' }, isDemoSession: mocks.isDemoSession }),
 }));
-vi.mock('@/components/WorkspaceProvider', () => ({ useWorkspace: () => ({ currentProject: null }) }));
+vi.mock('@/components/WorkspaceProvider', () => ({ useWorkspace: () => ({ currentProject: null, projects: mocks.projects }) }));
 vi.mock('@/lib/api', async () => {
   const actual = await vi.importActual<typeof import('@/lib/api')>('@/lib/api');
-  return { ...actual, listLLMProfiles: mocks.listLLMProfiles };
+  return {
+    ...actual,
+    listLLMProfiles: mocks.listLLMProfiles,
+    getProjectLLMBinding: mocks.getProjectLLMBinding,
+    saveProjectLLMBinding: mocks.saveProjectLLMBinding,
+  };
 });
 vi.mock('@/lib/i18n', async () => {
   const actual = await vi.importActual<typeof import('@/lib/i18n')>('@/lib/i18n');
@@ -72,6 +80,7 @@ const binding = { binding_id: 'binding-1', host: 'https://auth.example.test', wi
 const getParagraph = (text: string) => screen.getByText((_content, element) => element?.tagName === 'P' && element.textContent === text);
 
 beforeEach(() => {
+  localStorage.setItem('locale', 'en');
   mocks.locale = 'en';
   mocks.userID = 'owner-1';
   mocks.accessToken = 'web-access-token';
@@ -86,6 +95,9 @@ beforeEach(() => {
   mocks.readPasswordSelfServiceStatus.mockReset().mockResolvedValue({ allowed: true, configured: true });
   mocks.changeAccountPassword.mockReset().mockResolvedValue(undefined);
   mocks.listLLMProfiles.mockReset().mockResolvedValue([]);
+  mocks.getProjectLLMBinding.mockReset().mockResolvedValue({ source: 'shared', revision: 1 });
+  mocks.saveProjectLLMBinding.mockReset().mockResolvedValue({ source: 'shared', revision: 2 });
+  mocks.projects = [];
   mocks.refreshAccessToken.mockReset().mockResolvedValue('fresh-web-token');
   vi.stubGlobal('confirm', vi.fn(() => true));
 });
@@ -104,6 +116,99 @@ describe('LWC-346 account self-service', () => {
     expect(await screen.findByRole('dialog', { name: 'Account settings' })).not.toBeNull();
     expect(screen.queryByRole('heading', { name: 'My BYOK profiles' })).toBeNull();
     expect(mocks.listLLMProfiles).not.toHaveBeenCalled();
+  });
+
+  it('isolates the three settings tabs and preserves provider and assignment drafts while clearing secrets', async () => {
+    mocks.projects = [{ id: 'project-1', name: 'Travel notes' }];
+    render(<AccountSettingsModal onClose={vi.fn()} />);
+
+    const accountTab = screen.getByRole('tab', { name: 'Account & security' });
+    const providerTab = screen.getByRole('tab', { name: 'LLM Provider' });
+    const connectionsTab = screen.getByRole('tab', { name: 'Connections & sync' });
+    const accountPanel = document.getElementById('account-settings-panel-account') as HTMLDivElement;
+    const providerPanel = document.getElementById('account-settings-panel-provider') as HTMLDivElement;
+    const connectionsPanel = document.getElementById('account-settings-panel-connections') as HTMLDivElement;
+    expect(accountTab.getAttribute('aria-selected')).toBe('true');
+    expect(document.activeElement).toBe(accountTab);
+    expect(accountPanel.hidden).toBe(false);
+    expect(providerPanel.hidden).toBe(true);
+    expect(connectionsPanel.hidden).toBe(true);
+    expect(screen.queryByRole('heading', { name: 'CLI sessions' })).toBeNull();
+
+    fireEvent.click(providerTab);
+    expect(providerPanel.hidden).toBe(false);
+    expect(accountPanel.hidden).toBe(true);
+    expect(await screen.findByText('Project: Travel notes')).not.toBeNull();
+    const source = await screen.findByRole('combobox', { name: 'Service source' }) as HTMLSelectElement;
+    fireEvent.change(source, { target: { value: 'personal' } });
+    const providerName = screen.getByRole('textbox', { name: 'Provider name' }) as HTMLInputElement;
+    const apiKey = screen.getByLabelText(/API key/) as HTMLInputElement;
+    fireEvent.change(providerName, { target: { value: 'Unsaved provider' } });
+    fireEvent.change(apiKey, { target: { value: 'unsaved-secret' } });
+
+    fireEvent.click(accountTab);
+    const currentPassword = await screen.findByLabelText('Current password') as HTMLInputElement;
+    fireEvent.change(currentPassword, { target: { value: 'temporary-password' } });
+    fireEvent.click(providerTab);
+    expect(providerName.value).toBe('Unsaved provider');
+    await waitFor(() => expect(apiKey.value).toBe(''));
+    expect(currentPassword.value).toBe('');
+    expect(source.value).toBe('personal');
+    expect(mocks.saveProjectLLMBinding).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel changes' }));
+    expect(source.value).toBe('shared');
+    expect(mocks.saveProjectLLMBinding).not.toHaveBeenCalled();
+
+    fireEvent.click(connectionsTab);
+    expect(connectionsPanel.hidden).toBe(false);
+    expect(screen.getByRole('heading', { name: 'CLI sessions' })).not.toBeNull();
+    expect(screen.getByRole('heading', { name: 'Sync bindings' })).not.toBeNull();
+  });
+
+  it('supports keyboard tab navigation, opens directly on LLM Provider, and restores focus when closed', async () => {
+    const trigger = document.createElement('button');
+    document.body.appendChild(trigger);
+    trigger.focus();
+    const onClose = vi.fn();
+    const view = render(<AccountSettingsModal onClose={onClose} focusBYOK />);
+
+    const providerTab = screen.getByRole('tab', { name: 'LLM Provider' });
+    const connectionsTab = screen.getByRole('tab', { name: 'Connections & sync' });
+    const accountTab = screen.getByRole('tab', { name: 'Account & security' });
+    expect(providerTab.getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByRole('heading', { name: 'LLM Provider' })).not.toBeNull();
+    providerTab.focus();
+    fireEvent.keyDown(providerTab, { key: 'ArrowRight' });
+    expect(connectionsTab.getAttribute('aria-selected')).toBe('true');
+    expect(document.activeElement).toBe(connectionsTab);
+    fireEvent.keyDown(connectionsTab, { key: 'ArrowLeft' });
+    await waitFor(() => expect(document.activeElement).toBe(providerTab));
+    expect(providerTab.getAttribute('aria-selected')).toBe('true');
+    fireEvent.keyDown(providerTab, { key: 'ArrowLeft' });
+    expect(accountTab.getAttribute('aria-selected')).toBe('true');
+    expect(document.activeElement).toBe(accountTab);
+    fireEvent.keyDown(accountTab, { key: 'End' });
+    expect(connectionsTab.getAttribute('aria-selected')).toBe('true');
+    fireEvent.keyDown(connectionsTab, { key: 'Home' });
+    expect(accountTab.getAttribute('aria-selected')).toBe('true');
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(onClose).toHaveBeenCalledOnce();
+
+    view.unmount();
+    expect(document.activeElement).toBe(trigger);
+    trigger.remove();
+  });
+
+  it('uses the frozen Chinese account and provider labels', async () => {
+    mocks.locale = 'zh-TW';
+    render(<AccountSettingsModal onClose={vi.fn()} />);
+
+    expect(screen.getByRole('tab', { name: '帳號與安全' })).not.toBeNull();
+    expect(screen.getByRole('tab', { name: 'LLM Provider' })).not.toBeNull();
+    expect(screen.getByRole('tab', { name: '連線與同步' })).not.toBeNull();
+    fireEvent.click(screen.getByRole('tab', { name: 'LLM Provider' }));
+    expect(await screen.findByRole('heading', { name: 'LLM Provider' })).not.toBeNull();
   });
 
   it('lets a signed-in OAuth user optionally set an email password without an unknown old password', async () => {
@@ -325,6 +430,7 @@ describe('LWC-346 account self-service', () => {
 
   it('lets a Web user revoke an active CLI session', async () => {
     render(<AccountSettingsModal onClose={vi.fn()} />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Connections & sync' }));
     const revoke = await screen.findByRole('button', { name: 'Revoke session' });
     fireEvent.click(revoke);
     await waitFor(() => expect(mocks.revokeCLISession).toHaveBeenCalledWith(
@@ -336,6 +442,7 @@ describe('LWC-346 account self-service', () => {
 
   it('lets a Web user revoke and explicitly replace a Project binding', async () => {
     render(<AccountSettingsModal onClose={vi.fn()} />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Connections & sync' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Revoke binding' }));
     await waitFor(() => expect(mocks.revokeSyncBinding).toHaveBeenCalledWith(
       { accessToken: 'web-access-token', refreshAccessToken: mocks.refreshAccessToken },
@@ -373,6 +480,7 @@ describe('LWC-346 account self-service', () => {
       { ...binding, project_id: 'project-future', status: 'future-state' },
     ]);
     render(<AccountSettingsModal onClose={vi.fn()} />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Connections & sync' }));
 
     expect(await screen.findByText((_content, element) => element?.tagName === 'P' && element.textContent === 'lwc-sync CLI · Active')).not.toBeNull();
     expect(getParagraph('lwc-sync CLI · Revoked')).not.toBeNull();
@@ -398,6 +506,7 @@ describe('LWC-346 account self-service', () => {
     mocks.listCLISessions.mockResolvedValueOnce([session]);
     mocks.revokeCLISession.mockRejectedValueOnce(new Error('backend detail stays raw'));
     render(<AccountSettingsModal onClose={vi.fn()} />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Connections & sync' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Revoke session' }));
     expect(await screen.findByText('backend detail stays raw')).not.toBeNull();
   });
