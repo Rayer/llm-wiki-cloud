@@ -121,6 +121,7 @@ describe('LWC-346 account self-service', () => {
   it('isolates the three settings tabs and preserves provider and assignment drafts while clearing secrets', async () => {
     mocks.projects = [{ id: 'project-1', name: 'Travel notes' }];
     render(<AccountSettingsModal onClose={vi.fn()} />);
+    expect(screen.getByText('Manage your account, providers, and connections.')).not.toBeNull();
 
     const accountTab = screen.getByRole('tab', { name: 'Account & security' });
     const providerTab = screen.getByRole('tab', { name: 'LLM Provider' });
@@ -204,6 +205,7 @@ describe('LWC-346 account self-service', () => {
     mocks.locale = 'zh-TW';
     render(<AccountSettingsModal onClose={vi.fn()} />);
 
+    expect(screen.getByText('管理你的帳號、服務商與連線。')).not.toBeNull();
     expect(screen.getByRole('tab', { name: '帳號與安全' })).not.toBeNull();
     expect(screen.getByRole('tab', { name: 'LLM Provider' })).not.toBeNull();
     expect(screen.getByRole('tab', { name: '連線與同步' })).not.toBeNull();

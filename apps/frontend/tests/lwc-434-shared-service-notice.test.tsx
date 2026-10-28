@@ -37,7 +37,8 @@ describe('LWC-434 shared service onboarding notice', () => {
 
     expect(screen.queryByRole('heading', { name: '目前使用的是平台共用服務。' })).toBeNull();
     binding.resolve({ source: 'shared' });
-    fireEvent.click(await screen.findByRole('button', { name: '開啟自訂LLM提供者' }));
+    expect(await screen.findByText('平台共用服務可能有額度或使用限制。你可以前往個人設定 → LLM Provider 新增自己的 API 金鑰，再讓這個 Project 選用該服務商。')).not.toBeNull();
+    fireEvent.click(await screen.findByRole('button', { name: '開啟 LLM Provider' }));
 
     expect(openSettings).toHaveBeenCalledOnce();
     expect((openSettings.mock.calls[0][0] as CustomEvent<{ focusBYOK: boolean }>).detail.focusBYOK).toBe(true);
