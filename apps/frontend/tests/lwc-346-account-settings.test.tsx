@@ -175,13 +175,23 @@ describe('LWC-346 account self-service', () => {
 
     const providerTab = screen.getByRole('tab', { name: 'LLM Provider' });
     const connectionsTab = screen.getByRole('tab', { name: 'Connections & sync' });
+    const accountTab = screen.getByRole('tab', { name: 'Account & security' });
     expect(providerTab.getAttribute('aria-selected')).toBe('true');
     expect(screen.getByRole('heading', { name: 'LLM Provider' })).not.toBeNull();
+    providerTab.focus();
     fireEvent.keyDown(providerTab, { key: 'ArrowRight' });
     expect(connectionsTab.getAttribute('aria-selected')).toBe('true');
     expect(document.activeElement).toBe(connectionsTab);
+    fireEvent.keyDown(connectionsTab, { key: 'ArrowLeft' });
+    await waitFor(() => expect(document.activeElement).toBe(providerTab));
+    expect(providerTab.getAttribute('aria-selected')).toBe('true');
+    fireEvent.keyDown(providerTab, { key: 'ArrowLeft' });
+    expect(accountTab.getAttribute('aria-selected')).toBe('true');
+    expect(document.activeElement).toBe(accountTab);
+    fireEvent.keyDown(accountTab, { key: 'End' });
+    expect(connectionsTab.getAttribute('aria-selected')).toBe('true');
     fireEvent.keyDown(connectionsTab, { key: 'Home' });
-    expect(screen.getByRole('tab', { name: 'Account & security' }).getAttribute('aria-selected')).toBe('true');
+    expect(accountTab.getAttribute('aria-selected')).toBe('true');
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(onClose).toHaveBeenCalledOnce();
 

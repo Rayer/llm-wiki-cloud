@@ -242,11 +242,11 @@ function AccountSettingsModalContent({
   }, []);
 
   useEffect(() => {
-    if (!focusBYOK || activeSettingsTab !== 'provider') return;
+    if (!focusBYOK) return;
     const target = document.getElementById('byok-profiles-heading');
     target?.scrollIntoView?.({ block: 'start' });
     target?.focus();
-  }, [activeSettingsTab, focusBYOK]);
+  }, [focusBYOK]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {

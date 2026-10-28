@@ -111,6 +111,7 @@ describe('LWC-382 CLI and Sync local fallback copy', () => {
         vi.stubGlobal('fetch', fetchMock);
 
         render(<AccountSettingsModal onClose={vi.fn()} />);
+        fireEvent.click(await screen.findByRole('tab', { name: translate(locale, 'AccountSettings.connectionsTab') }));
         fireEvent.click(await screen.findByRole('button', { name: translate(locale, action.buttonKey) }));
         expect((await screen.findByRole('alert')).textContent).toBe(expected);
 
