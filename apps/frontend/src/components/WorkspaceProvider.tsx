@@ -503,13 +503,13 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     if (token) {
       if (!shouldLoad) return;
       restartProjectLoadRef.current = false;
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronize project state after auth hydration/token changes
       void loadProjects();
       return;
     }
 
     restartProjectLoadRef.current = false;
     projectListGenerationRef.current += 1;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- clear project state immediately after auth loss invalidates pending loads
     setProjectsLoading(false);
     setProjects([]);
     setCurrentProject(null);
