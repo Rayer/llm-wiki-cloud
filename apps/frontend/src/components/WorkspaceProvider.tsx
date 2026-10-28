@@ -186,6 +186,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const requestIdentityRef = useRef({ projectId: currentProject?.id ?? null, token, sessionEpoch });
   const projectStateActiveRef = useRef(false);
   const projectListGenerationRef = useRef(0);
+  const activeProjectLoadRef = useRef<{ token: string; sessionEpoch: number; generation: number } | null>(null);
+  const restartProjectLoadRef = useRef(false);
+  const autoLoadIdentityRef = useRef<{ token: string | null; ownerId: string | null; sessionEpoch: number } | null>(null);
   const setupReadyOwnerRef = useRef<string | null>(null);
   const bootstrapFlightsRef = useRef(new Map<string, Promise<string>>());
   const renameGenerationByProjectRef = useRef(new Map<string, number>());
@@ -205,6 +208,11 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     return () => {
       projectStateActiveRef.current = false;
       projectListGenerationRef.current += 1;
+      const activeLoad = activeProjectLoadRef.current;
+      if (activeLoad?.token === token && activeLoad.sessionEpoch === sessionEpoch) {
+        restartProjectLoadRef.current = true;
+        activeProjectLoadRef.current = null;
+      }
       renameGenerations.clear();
     };
   }, [sessionEpoch, token]);
@@ -271,12 +279,19 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const loadProjects = useCallback(async () => {
     const operationToken = token;
     if (!operationToken) return;
+    const operationSessionEpoch = sessionEpoch;
     const startedGeneration = ++projectListGenerationRef.current;
+    activeProjectLoadRef.current = {
+      token: operationToken,
+      sessionEpoch: operationSessionEpoch,
+      generation: startedGeneration,
+    };
     const operationOwnerId = user?.id ?? operationToken;
     const ownsState = () => (
       projectStateActiveRef.current
       && projectListGenerationRef.current === startedGeneration
       && requestIdentityRef.current.token === operationToken
+      && requestIdentityRef.current.sessionEpoch === operationSessionEpoch
     );
     setProjectsLoading(true);
     setProjectsError('');
@@ -327,8 +342,11 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       setProjectsError(error instanceof Error ? error.message : 'Unable to load projects.');
     } finally {
       if (ownsState()) setProjectsLoading(false);
+      if (activeProjectLoadRef.current?.generation === startedGeneration) {
+        activeProjectLoadRef.current = null;
+      }
     }
-  }, [token, user?.id]);
+  }, [sessionEpoch, token, user?.id]);
 
   const signIn = useCallback(async (email: string, password: string) => {
     await login(email, password);
@@ -473,12 +491,24 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!hydrated) return;
+    const ownerId = token ? user?.id ?? null : null;
+    const previous = autoLoadIdentityRef.current;
+    const shouldLoad = (
+      previous === null
+      || previous.token !== token
+      || previous.ownerId !== ownerId
+      || restartProjectLoadRef.current
+    );
+    autoLoadIdentityRef.current = { token, ownerId, sessionEpoch };
     if (token) {
+      if (!shouldLoad) return;
+      restartProjectLoadRef.current = false;
       // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronize project state after auth hydration/token changes
       void loadProjects();
       return;
     }
 
+    restartProjectLoadRef.current = false;
     projectListGenerationRef.current += 1;
     setProjectsLoading(false);
     setProjects([]);
@@ -488,7 +518,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     bootstrapFlightsRef.current.clear();
     setProductSetupPending(false);
     setNavCounts(emptyNavCounts);
-  }, [hydrated, loadProjects, token]);
+  }, [hydrated, loadProjects, sessionEpoch, token, user?.id]);
 
   // Load / reload sidebar counts when auth or project changes (LWC-129).
   useEffect(() => {

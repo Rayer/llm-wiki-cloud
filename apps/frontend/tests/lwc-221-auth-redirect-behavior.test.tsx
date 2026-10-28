@@ -528,7 +528,6 @@ describe('LWC-221 auth redirect behavior', () => {
     const oldProjects = deferred<FetchResponse>();
     writeStoredAccessToken(window.localStorage, 'old-token');
     writeStoredAuthUser(window.localStorage, TEST_USER);
-    setQueue('refresh', [{ status: 200, body: hydrateBody('old-token') }]);
     setQueue('projects', [oldProjects.promise, {
       status: 200,
       body: [],
@@ -554,7 +553,6 @@ describe('LWC-221 auth redirect behavior', () => {
     const oldProjects = deferred<FetchResponse>();
     writeStoredAccessToken(window.localStorage, 'old-token');
     writeStoredAuthUser(window.localStorage, TEST_USER);
-    setQueue('refresh', [{ status: 200, body: hydrateBody('old-token') }]);
     setQueue('projects', [oldProjects.promise, {
       status: 200,
       body: [],
@@ -1156,4 +1154,32 @@ describe('LWC-221 auth redirect behavior', () => {
     expect(getForceHomeRedirect()).toBe('1');
     expect(navigation.replace).toHaveBeenCalledTimes(0);
   });
+});
+
+it('recovers project loading after a same-token soft refresh advances the session epoch', async () => {
+  const refresh = deferred<FetchResponse>();
+  const bootstrap = deferred<FetchResponse>();
+  writeStoredAccessToken(window.localStorage, 'parent-same-token');
+  writeStoredAuthUser(window.localStorage, TEST_USER);
+  setQueue('refresh', [refresh.promise]);
+  setQueue('onboarding', [bootstrap.promise]);
+  setQueue('projects', [{ status: 200, body: [{ id: 'default', name: 'Default Project' }] }]);
+
+  await renderProviders();
+  await waitUntil(() => requestLog.some((request) => request.route === 'onboarding'));
+  expect(workspaceRef.current?.projectsLoading).toBe(true);
+
+  await resolveDeferred(refresh, {
+    status: 200,
+    body: hydrateBody('parent-same-token'),
+  });
+  await resolveDeferred(bootstrap, {
+    status: 200,
+    body: { schema_version: 1, status: 'ready', default_project_id: 'default' },
+  });
+
+  await waitFor(() => {
+    expect(workspaceRef.current?.projectsLoading).toBe(false);
+    expect(workspaceRef.current?.currentProject?.id).toBe('default');
+  }, { timeout: 1000 });
 });
