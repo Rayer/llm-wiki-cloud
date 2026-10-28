@@ -120,6 +120,38 @@ class IndependentProducerTests(unittest.TestCase):
         }
         return source_root, source
 
+    def make_lwc_successor(self, root: Path, parent_sha: str) -> tuple[str, dict[str, str]]:
+        object_directory = root / "lwc-test-objects"
+        object_directory.mkdir()
+        common_dir = Path(subprocess.check_output(
+            ["git", "rev-parse", "--git-common-dir"], cwd=ROOT, text=True
+        ).strip())
+        if not common_dir.is_absolute():
+            common_dir = ROOT / common_dir
+        git_env = {
+            "GIT_OBJECT_DIRECTORY": str(object_directory),
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES": str((common_dir / "objects").resolve()),
+            "GIT_AUTHOR_NAME": "GAT4 Test",
+            "GIT_AUTHOR_EMAIL": "gat4-test@example.invalid",
+            "GIT_COMMITTER_NAME": "GAT4 Test",
+            "GIT_COMMITTER_EMAIL": "gat4-test@example.invalid",
+        }
+        env = dict(os.environ, **git_env)
+        tree_sha = subprocess.check_output(
+            ["git", "rev-parse", f"{parent_sha}^{{tree}}"], cwd=ROOT, env=env, text=True
+        ).strip()
+        successor_sha = subprocess.check_output(
+            ["git", "commit-tree", tree_sha, "-p", parent_sha], cwd=ROOT, env=env,
+            input="same-tree LWC successor for source identity tests\n", text=True,
+        ).strip()
+        self.assertEqual(subprocess.check_output(
+            ["git", "rev-parse", f"{successor_sha}^{{tree}}"], cwd=ROOT, env=env, text=True
+        ).strip(), tree_sha)
+        self.assertEqual(subprocess.check_output(
+            ["git", "rev-parse", f"{successor_sha}^"], cwd=ROOT, env=env, text=True
+        ).strip(), parent_sha)
+        return successor_sha, git_env
+
     def admit_plan(self, directory: Path, *, name: str, source_sha: str,
                    components: list[str], auth_source: dict | None = None,
                    reuse: Path | None = None):
@@ -278,9 +310,10 @@ else:
             self.assertTrue(all("auth-source" in call["auth_source_root"]
                                 for call in calls if call["auth_source_root"]))
 
-            newer_lwc_sha = subprocess.check_output(
-                ["git", "rev-parse", "HEAD^"], cwd=ROOT, text=True
-            ).strip()
+            newer_lwc_sha, test_git_env = self.make_lwc_successor(root, lwc_sha)
+            object_env_patch = patch.dict(os.environ, test_git_env, clear=False)
+            object_env_patch.start()
+            self.addCleanup(object_env_patch.stop)
             self.assertNotEqual(newer_lwc_sha, lwc_sha)
             selected_auth_release = root / "selected-auth-release"
             selected_auth_plan = self.admit_plan(
