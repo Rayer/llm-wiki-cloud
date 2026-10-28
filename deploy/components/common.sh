@@ -315,11 +315,47 @@ validate_image_value() {
 }
 
 record_dev_receipt() {
-  local selected components='[]' images='{}' component image fingerprint run_id run_attempt
+  local selected components='[]' images='{}' component image auth_image fingerprint run_id run_attempt mode="${GAT4_DEV_RECEIPT_MODE:-}" metadata_file="${GAT4_DEV_RECEIPT_SOURCE_METADATA_FILE:-}" metadata_set=0
+  [[ ${GAT4_DEV_RECEIPT_SOURCE_METADATA_FILE+x} ]] && metadata_set=1
+  case "$mode" in
+    "") ;;
+    independent) [[ "$metadata_set" == 1 && -n "$metadata_file" ]] || die "independent DEV receipt source metadata file is required" ;;
+    legacy_monorepo) [[ "$metadata_set" == 0 ]] || die "legacy_monorepo DEV receipt mode cannot use independent source metadata" ;;
+    *) die "DEV receipt mode is invalid" ;;
+  esac
+  if [[ "$metadata_set" == 1 ]]; then
+    [[ -n "$metadata_file" ]] || die "DEV receipt source metadata file is empty"
+    [[ "$mode" != legacy_monorepo ]] || die "legacy_monorepo DEV receipt mode cannot use independent source metadata"
+    mode=independent
+  else
+    [[ "$mode" != independent ]] || die "independent DEV receipt source metadata file is required"
+    mode=legacy_monorepo
+  fi
+  need SOURCE_SHA
   selected=$(plan_json '.selected_components'); fingerprint=$(plan_json '.evidence.config_fingerprint')
   need GITHUB_RUN_ID; need GITHUB_RUN_ATTEMPT
   run_id="$GITHUB_RUN_ID"; run_attempt="$GITHUB_RUN_ATTEMPT"
   [[ "$run_id" =~ ^[0-9]+$ && "$run_id" -gt 0 && "$run_attempt" =~ ^[0-9]+$ && "$run_attempt" -gt 0 ]] || die "DEV workflow run identity is invalid"
+  if [[ "$mode" == independent ]]; then
+    [[ -f "$metadata_file" && -s "$metadata_file" ]] || die "independent DEV receipt source metadata file is missing or empty"
+    strict_json < "$metadata_file" || die "independent DEV receipt source metadata is malformed"
+    jq -e --arg sha "$SOURCE_SHA" --argjson run_id "$run_id" --argjson run_attempt "$run_attempt" '
+      def repo_id: type == "string" and test("^(github|gitlab):([0-9]+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$");
+      def positive_int: type == "number" and floor == . and . > 0;
+      type == "object" and (keys == ["auth", "lwc"]) and
+      (.lwc | type == "object" and (keys == ["repository_id", "run_attempt", "run_id", "sha"]) and
+        (.repository_id | repo_id) and (.sha | type == "string" and test("^[0-9a-f]{40}$") and . == $sha) and
+        (.run_id | positive_int and . == $run_id) and (.run_attempt | positive_int and . == $run_attempt)) and
+      (.auth | type == "object" and (keys == ["artifact_digest", "artifact_id", "repository_id", "revision", "run_attempt", "run_id", "tree_sha256"]) and
+        (.repository_id | repo_id) and (.revision | type == "string" and test("^[0-9a-f]{40}$") and . != $sha) and
+        (.tree_sha256 | type == "string" and test("^sha256:[0-9a-f]{64}$")) and
+        (.run_id | positive_int) and (.run_attempt | positive_int) and
+        (.artifact_id | type == "string" and length > 0 and . != "local-snapshot" and . != "local_snapshot") and
+        (.artifact_digest | type == "string" and test("^sha256:[0-9a-f]{64}$"))) and
+      .lwc.repository_id != .auth.repository_id
+    ' "$metadata_file" >/dev/null || die "independent DEV receipt source metadata is invalid or mixed"
+    [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || die "DEV source SHA is invalid"
+  fi
   while IFS= read -r component; do
     case "$component" in auth|bff|worker|exportjob)
       image=$(tr -d '[:space:]' < "$ARTIFACT_DIR/images/$component-image-$SOURCE_SHA.txt"); validate_image_value "$component" "$image"
@@ -327,8 +363,18 @@ record_dev_receipt() {
       components=$(jq --arg component "$component" '. + [$component]' <<<"$components") ;;
     esac
   done < <(jq -r '.[]' <<<"$selected")
-  jq -n --arg sha "$SOURCE_SHA" --arg fingerprint "$fingerprint" --argjson run_id "$run_id" --argjson run_attempt "$run_attempt" --argjson components "$components" --argjson images "$images" \
-    '{schema:"lwc-306-dev-image-receipt-v1",source:{sha:$sha,ref:"develop",workflow_path:".github/workflows/deploy-dev.yml",event:"workflow_dispatch",run_id:$run_id,run_attempt:$run_attempt},config:{environment:"development",path:"deploy/environments/development.yaml",fingerprint:$fingerprint},components:$components,images:$images}' > "$ARTIFACT_DIR/images/dev-receipt.json"
+  if [[ "$mode" == independent ]]; then
+    auth_image="$(plan_json '.gcp.artifact_registry')/$(component_image_name auth)@$(jq -er '.auth.artifact_digest' "$metadata_file")"
+    validate_image_value auth "$auth_image"
+    image=$(jq -r '.auth // empty' <<<"$images")
+    [[ -z "$image" || "$image" == "$auth_image" ]] || die "independent Auth artifact digest does not match its immutable image"
+    images=$(jq --arg image "$auth_image" '. + {auth:$image}' <<<"$images")
+    jq -n --slurpfile source "$metadata_file" --arg fingerprint "$fingerprint" --argjson components "$components" --argjson images "$images" \
+      '{schema:"lwc-306-dev-image-receipt-v2",source:$source[0],config:{environment:"development",path:"deploy/environments/development.yaml",fingerprint:$fingerprint},components:$components,images:$images}' > "$ARTIFACT_DIR/images/dev-receipt.json"
+  else
+    jq -n --arg sha "$SOURCE_SHA" --arg fingerprint "$fingerprint" --argjson run_id "$run_id" --argjson run_attempt "$run_attempt" --argjson components "$components" --argjson images "$images" \
+      '{schema:"lwc-306-dev-image-receipt-v1",source:{sha:$sha,ref:"develop",workflow_path:".github/workflows/deploy-dev.yml",event:"workflow_dispatch",run_id:$run_id,run_attempt:$run_attempt},config:{environment:"development",path:"deploy/environments/development.yaml",fingerprint:$fingerprint},components:$components,images:$images}' > "$ARTIFACT_DIR/images/dev-receipt.json"
+  fi
 }
 
 redact_evidence() {
