@@ -2394,6 +2394,27 @@ class CDContractTests(LegacyMonorepoCDTestMixin, unittest.TestCase):
 class ArchitectureAuthorityTests(LegacyMonorepoCDTestMixin, unittest.TestCase):
     COMPONENTS = ("auth", "bff", "worker", "exportjob", "frontend")
 
+    def test_gateauth_build_contract_is_outside_the_bff_module(self):
+        gateauth = ROOT / "gateauth"
+        dockerfile = (gateauth / "Dockerfile").read_text()
+        cloudbuild = (gateauth / "cloudbuild.yaml").read_text()
+        gateauth_module = (gateauth / "go.mod").read_text()
+        bff_module = (ROOT / "apps/bff/go.mod").read_text()
+        ci_workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+
+        self.assertIn("module github.com/rayer/gateauth", gateauth_module)
+        self.assertIn("./cmd/auth", dockerfile)
+        self.assertIn("github.com/rayer/gateauth/internal/buildinfo.ImageTag=${GIT_SHA}", dockerfile)
+        self.assertNotIn("github.com/rayer/llm-wiki-bff/", dockerfile)
+        self.assertNotIn("apps/bff", dockerfile)
+        for marker in ("APP_VERSION=${_APP_VERSION}", "GIT_SHA=${_GIT_SHA}",
+                       "GIT_BRANCH=${_GIT_BRANCH}", "GIT_TAG=${_GIT_TAG}", "${_IMAGE}"):
+            self.assertIn(marker, cloudbuild)
+        self.assertNotIn("github.com/rayer/gateauth", bff_module)
+        self.assertIn("../../scripts/gat4-local/build-auth.sh", ci_workflow)
+        self.assertFalse((ROOT / "apps/bff/Dockerfile.auth").exists())
+        self.assertFalse((ROOT / "apps/bff/cloudbuild-auth.yaml").exists())
+
 
     def test_component_actions_are_invocable_without_backend_receipts(self):
         for component in self.COMPONENTS:

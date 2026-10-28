@@ -247,8 +247,8 @@ func TestCloudRunJobIAMValidatorRejectsAmbiguousPoliciesWithoutLeakingMembers(t 
 	}
 }
 
-func TestCloudBuildAndAuthDockerfilesKeepImmutableIdentityInputs(t *testing.T) {
-	for _, name := range []string{"apps/bff/cloudbuild-bff.yaml", "gateauth/cloudbuild.yaml"} {
+func TestBFFCloudBuildKeepsImmutableIdentityInputs(t *testing.T) {
+	for _, name := range []string{"apps/bff/cloudbuild-bff.yaml"} {
 		source := readCDFile(t, name)
 		for _, marker := range []string{"APP_VERSION=${_APP_VERSION}", "GIT_SHA=${_GIT_SHA}", "GIT_BRANCH=${_GIT_BRANCH}", "GIT_TAG=${_GIT_TAG}", "${_IMAGE}"} {
 			if !strings.Contains(source, marker) {
@@ -271,13 +271,6 @@ func TestDockerfilesPreserveBuildIdentityContracts(t *testing.T) {
 	}
 	if strings.Contains(contents, "git rev-parse") || strings.Contains(contents, ".git/") {
 		t.Fatal("Dockerfile must not derive identity from a Git context")
-	}
-	auth := readCDFile(t, "gateauth/Dockerfile")
-	if !strings.Contains(auth, "./cmd/auth") || !strings.Contains(auth, "github.com/rayer/gateauth/internal/buildinfo.ImageTag=${GIT_SHA}") {
-		t.Fatal("GateAuth Dockerfile must build the durable Auth module with its immutable identity")
-	}
-	if strings.Contains(auth, "github.com/rayer/llm-wiki-bff/") || strings.Contains(auth, "apps/bff") {
-		t.Fatal("GateAuth Dockerfile must not depend on the LWC server module")
 	}
 }
 
