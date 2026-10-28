@@ -16,6 +16,11 @@ from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[3]
+GITHUB_RUNTIME_CREDENTIAL_KEYS = (
+    "GH_TOKEN", "GITHUB_TOKEN", "ACTIONS_RUNTIME_TOKEN", "ACTIONS_RUNTIME_URL",
+    "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL",
+)
+GITHUB_TEST_ENV = {"GITHUB_ACTIONS": "false", **{key: "" for key in GITHUB_RUNTIME_CREDENTIAL_KEYS}}
 sys.path.insert(0, str(ROOT / "deploy/engine"))
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "deploy/components"))
@@ -32,12 +37,41 @@ tree_digest = artifact.tree_digest
 
 
 class IndependentProducerTests(unittest.TestCase):
+    def isolate_github_runtime(self, env: dict[str, str]) -> dict[str, str]:
+        env.update(GITHUB_TEST_ENV)
+        return env
+
+    def clear_github_runtime(self, env: dict[str, str]) -> dict[str, str]:
+        for key in tuple(env):
+            if key.startswith(("GITHUB_", "ACTIONS_")) or key == "GH_TOKEN":
+                env.pop(key)
+        return self.isolate_github_runtime(env)
+
+    def install_artifact_transport_trap(self, binary: Path, root: Path) -> Path:
+        real_node = shutil.which("node")
+        if not real_node:
+            raise AssertionError("node runtime is required to trap Actions artifact transport")
+        trap_log = root / "artifact-transport-trap.log"
+        trap = binary / "node"
+        trap.write_text(
+            "#!/bin/sh\n"
+            "case \"${1:-}\" in */deploy/engine/artifacts.cjs)\n"
+            "  printf 'blocked artifact transport\\n' >> \"$GAT4_ARTIFACT_TRANSPORT_TRAP_LOG\"\n"
+            "  exit 97\n"
+            "  ;;\n"
+            f"  *) exec {real_node!r} \"$@\" ;;\n"
+            "esac\n"
+        )
+        trap.chmod(0o755)
+        return trap_log
+
     def synthetic_auth_inputs(self, root: Path, source_sha: str) -> Path:
         descriptor = root / "synthetic-auth-inputs.json"
         env = dict(os.environ)
         for key in tuple(env):
             if key.startswith(("GOOGLE_", "GCLOUD_", "CLOUDSDK_", "GCP_")):
                 env.pop(key)
+        self.clear_github_runtime(env)
         env.update({
             "GOOGLE_APPLICATION_CREDENTIALS": "/dev/null",
             "GCE_METADATA_HOST": "127.0.0.1:1",
@@ -78,6 +112,7 @@ class IndependentProducerTests(unittest.TestCase):
         for key in tuple(env):
             if key.startswith(("GOOGLE_", "GCLOUD_", "CLOUDSDK_", "GCP_")):
                 env.pop(key)
+        self.clear_github_runtime(env)
         env.update({
             "GOOGLE_APPLICATION_CREDENTIALS": "/dev/null",
             "GCE_METADATA_HOST": "127.0.0.1:1",
@@ -221,11 +256,13 @@ else:
                                    components=["auth"], auth_source=auth_source)
             normalized = plan["normalized"]
             binary, provider_log = self.fake_gcloud(root)
+            artifact_trap_log = self.install_artifact_transport_trap(binary, root)
             metadata_path = directory / "dev-source-metadata.json"
             env = {
                 "PATH": str(binary) + os.pathsep + os.environ["PATH"],
                 "TMPDIR": os.environ.get("TMPDIR", "/tmp"),
                 "GAT4_PROVIDER_TRAP_LOG": str(provider_log),
+                "GAT4_ARTIFACT_TRANSPORT_TRAP_LOG": str(artifact_trap_log),
                 "AUTH_SOURCE_ROOT": str(source_root),
                 "GITHUB_REPOSITORY_ID": "101",
                 "GITHUB_RUN_ID": "1003",
@@ -235,8 +272,8 @@ else:
                 "GAT4_DEV_RECEIPT_SOURCE_METADATA_FILE": str(metadata_path),
                 "FAKE_GCP_PROJECT": normalized["gcp"]["project_id"],
             }
+            env.update(GITHUB_TEST_ENV)
             with patch.dict(os.environ, env, clear=False):
-                os.environ.pop("GITHUB_ACTIONS", None)
                 run = engine.Engine(directory)
                 run.provider.gcp_project_number = lambda: "580854833715"
                 run.prepare()
@@ -333,6 +370,8 @@ else:
                 "PATH": str(binary) + os.pathsep + os.environ["PATH"],
                 "TMPDIR": os.environ.get("TMPDIR", "/tmp"),
                 "GAT4_PROVIDER_TRAP_LOG": str(provider_log),
+                "GAT4_ARTIFACT_TRANSPORT_TRAP_LOG": str(artifact_trap_log),
+                **GITHUB_TEST_ENV,
                 "GITHUB_REPOSITORY_ID": "101",
                 "GITHUB_RUN_ID": "1005",
                 "GITHUB_RUN_ATTEMPT": "1",
@@ -385,6 +424,9 @@ else:
             bff_engine.prepare_container = prepare_bff_without_auth
             bff_engine.provider.usable = lambda _component, _artifact: None
             with patch.dict(os.environ, {
+                "PATH": str(binary) + os.pathsep + os.environ["PATH"],
+                "GAT4_ARTIFACT_TRANSPORT_TRAP_LOG": str(artifact_trap_log),
+                **GITHUB_TEST_ENV,
                 "GITHUB_REPOSITORY_ID": "101",
                 "GITHUB_RUN_ID": "1004",
                 "GITHUB_RUN_ATTEMPT": "1",
@@ -410,6 +452,8 @@ else:
                              auth_receipt["auth_source"]["revision"])
             self.assertNotEqual(bff_dev_receipt["source"]["lwc"]["sha"],
                                 dev_receipt["source"]["lwc"]["sha"])
+            self.assertFalse(artifact_trap_log.exists(),
+                             "synthetic source reuse attempted Actions artifact transport")
 
     def test_admission_fails_closed_for_missing_or_mixed_auth_tuple(self):
         source = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
