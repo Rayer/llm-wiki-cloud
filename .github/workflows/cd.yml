@@ -12,7 +12,7 @@ on:
       release_source_mode:
         required: true
         type: string
-        description: Explicit receipt compatibility mode; legacy_monorepo is only for retained legacy receipts
+        description: Explicit receipt mode; legacy_monorepo supports retained receipts and the current same-repository GAT-4 DEV stage; this does not change Production policy
       auth_repository_id:
         required: false
         type: number

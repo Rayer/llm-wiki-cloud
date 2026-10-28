@@ -41,7 +41,7 @@ on:
         type: string
         default: ''
       release_source_mode:
-        description: Explicit image receipt mode; legacy_monorepo is restricted to retained legacy receipts
+        description: DEV receipt mode; legacy_monorepo builds versioned gateauth/ from this LWC source for the current GAT-4 DEV stage or reuses a retained legacy receipt
         required: true
         type: choice
         options: [independent, legacy_monorepo]
