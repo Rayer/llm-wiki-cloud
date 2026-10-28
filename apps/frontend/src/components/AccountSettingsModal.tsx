@@ -1,6 +1,6 @@
 'use client';
 
-import { type FormEvent, type MutableRefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type MutableRefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useAuth } from '@/lib/auth';
 import { beginGoogleLink, GoogleAuthError, readGoogleIdentitySummary } from '@/lib/google-auth';
 import { changeAccountPassword, PasswordSelfServiceError, readPasswordSelfServiceStatus, type PasswordSelfServiceAuthContext, type PasswordSelfServiceStatus } from '@/lib/account-password';
@@ -21,6 +21,12 @@ import {
 } from '@/lib/cli-auth';
 
 type AuthSessionSnapshot = { userID: string | null; accessToken: string | null; sessionEpoch: number };
+const accountSettingsTabs = [
+  { id: 'account', label: 'AccountSettings.accountTab' },
+  { id: 'provider', label: 'AccountSettings.providerTab' },
+  { id: 'connections', label: 'AccountSettings.connectionsTab' },
+] as const;
+type AccountSettingsTab = typeof accountSettingsTabs[number]['id'];
 
 export function AccountSettingsModal({ onClose, focusBYOK = false, onProfileCreated }: {
   onClose: () => void;
@@ -73,6 +79,10 @@ function AccountSettingsModalContent({
   const { t } = useLocale();
   const { projects = [] } = useWorkspace();
   const userID = user.id;
+  const [activeSettingsTab, setActiveSettingsTab] = useState<AccountSettingsTab>(() => focusBYOK ? 'provider' : 'account');
+  const settingsTabRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const returnFocusRef = useRef<HTMLElement | null>(null);
+  const initialSettingsTabRef = useRef<AccountSettingsTab>(focusBYOK ? 'provider' : 'account');
   const [linkOpen, setLinkOpen] = useState(false);
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -102,6 +112,27 @@ function AccountSettingsModalContent({
     setNewPassword('');
     setConfirmPassword('');
   }, []);
+  const selectSettingsTab = (tab: AccountSettingsTab) => {
+    if (tab === activeSettingsTab) return;
+    if (activeSettingsTab === 'account') {
+      clearPasswordSecrets();
+      setLinkOpen(false);
+      setError('');
+      setPasswordError('');
+    }
+    setActiveSettingsTab(tab);
+  };
+  const handleSettingsTabKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>, index: number) => {
+    const nextIndex = event.key === 'ArrowRight' ? (index + 1) % accountSettingsTabs.length
+      : event.key === 'ArrowLeft' ? (index + accountSettingsTabs.length - 1) % accountSettingsTabs.length
+        : event.key === 'Home' ? 0
+          : event.key === 'End' ? accountSettingsTabs.length - 1
+            : -1;
+    if (nextIndex < 0) return;
+    event.preventDefault();
+    selectSettingsTab(accountSettingsTabs[nextIndex].id);
+    settingsTabRefs.current[nextIndex]?.focus();
+  };
   // Bind refresh retries to the account and session that issued each request.
   const createPasswordAuthContext = useCallback((): PasswordSelfServiceAuthContext => {
     let currentAccessToken = accessToken ?? '';
@@ -202,16 +233,44 @@ function AccountSettingsModalContent({
     if (linkOpen) passwordRef.current?.focus();
   }, [linkOpen]);
 
+  useLayoutEffect(() => {
+    const activeElement = document.activeElement;
+    returnFocusRef.current = activeElement instanceof HTMLElement ? activeElement : null;
+    const initialTabIndex = accountSettingsTabs.findIndex((tab) => tab.id === initialSettingsTabRef.current);
+    settingsTabRefs.current[initialTabIndex]?.focus();
+    return () => returnFocusRef.current?.focus();
+  }, []);
+
   useEffect(() => {
-    if (!focusBYOK) return;
+    if (!focusBYOK || activeSettingsTab !== 'provider') return;
     const target = document.getElementById('byok-profiles-heading');
-    target?.scrollIntoView({ block: 'start' });
+    target?.scrollIntoView?.({ block: 'start' });
     target?.focus();
-  }, [focusBYOK]);
+  }, [activeSettingsTab, focusBYOK]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !loading && !passwordPending) closeSettings();
+      if (event.key === 'Escape' && !loading && !passwordPending) {
+        closeSettings();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const dialog = settingsDialogRef.current;
+      if (!dialog) return;
+      const focusable = Array.from(dialog.querySelectorAll<HTMLElement>(
+        'a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])',
+      )).filter((element) => !element.closest('[hidden]'));
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (!first || !last) {
+        event.preventDefault();
+      } else if (event.shiftKey && (document.activeElement === first || !dialog.contains(document.activeElement))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
@@ -352,88 +411,113 @@ function AccountSettingsModalContent({
           <button type="button" onClick={closeSettings} className="min-h-11 min-w-11 rounded-md p-2 text-zinc-400 hover:bg-white/10 hover:text-white" aria-label={t('AccountSettings.close')}>×</button>
         </div>
 
-        <dl className="mt-6 space-y-4 text-sm">
-          <div className="rounded-lg border border-white/10 bg-black/20 p-4">
-            <dt className="text-zinc-400">{t('AccountSettings.primaryEmail')}</dt>
-            <dd className="mt-1 break-all font-medium text-white">{primaryEmail}</dd>
-            <p className="mt-2 text-xs leading-5 text-zinc-500">{t('AccountSettings.primaryHint')}</p>
-          </div>
-          <div className="rounded-lg border border-white/10 bg-black/20 p-4">
-            <dt className="text-zinc-400">{t('AccountSettings.googleEmail')}</dt>
-            <dd className="mt-1 break-all text-zinc-300">{linkedGoogleEmail ?? t('AccountSettings.googleNotLinked')}</dd>
-            <p className="mt-2 text-xs leading-5 text-zinc-500">{t('AccountSettings.googleHint')}</p>
-          </div>
-        </dl>
+        <div role="tablist" aria-label={t('AccountSettings.tabs')} className="mt-6 flex flex-wrap gap-2 rounded-xl border border-white/10 bg-black/20 p-1.5">
+          {accountSettingsTabs.map((tab, index) => (
+            <button
+              key={tab.id}
+              ref={(element) => { settingsTabRefs.current[index] = element; }}
+              id={`account-settings-tab-${tab.id}`}
+              type="button"
+              role="tab"
+              aria-selected={activeSettingsTab === tab.id}
+              aria-controls={`account-settings-panel-${tab.id}`}
+              tabIndex={activeSettingsTab === tab.id ? 0 : -1}
+              onClick={() => selectSettingsTab(tab.id)}
+              onKeyDown={(event) => handleSettingsTabKeyDown(event, index)}
+              className={`min-h-11 min-w-0 flex-1 basis-32 rounded-lg px-3 py-2 text-sm font-medium transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 ${activeSettingsTab === tab.id ? 'bg-emerald-300 text-zinc-950' : 'text-zinc-300 hover:bg-white/5 hover:text-white'}`}
+            >
+              {t(tab.label)}
+            </button>
+          ))}
+        </div>
 
-        {!isDemoSession ? <BYOKProfilesPanel onProfileCreated={onProfileCreated} /> : null}
+        <div id="account-settings-panel-account" role="tabpanel" aria-labelledby="account-settings-tab-account" hidden={activeSettingsTab !== 'account'} tabIndex={0}>
+          <dl className="mt-6 space-y-4 text-sm">
+            <div className="rounded-lg border border-white/10 bg-black/20 p-4">
+              <dt className="text-zinc-400">{t('AccountSettings.primaryEmail')}</dt>
+              <dd className="mt-1 break-all font-medium text-white">{primaryEmail}</dd>
+              <p className="mt-2 text-xs leading-5 text-zinc-500">{t('AccountSettings.primaryHint')}</p>
+            </div>
+            <div className="rounded-lg border border-white/10 bg-black/20 p-4">
+              <dt className="text-zinc-400">{t('AccountSettings.googleEmail')}</dt>
+              <dd className="mt-1 break-all text-zinc-300">{linkedGoogleEmail ?? t('AccountSettings.googleNotLinked')}</dd>
+              <p className="mt-2 text-xs leading-5 text-zinc-500">{t('AccountSettings.googleHint')}</p>
+            </div>
+          </dl>
 
-        <section className="mt-6 border-t border-white/10 pt-6" aria-labelledby="account-project-llm-title">
-          <h3 id="account-project-llm-title" className="text-lg font-semibold text-white">{t('LLMSource.accountAssignments')}</h3>
-          <p className="mt-1 text-sm leading-6 text-zinc-400">{t('LLMSource.accountAssignmentsHint')}</p>
-          {projects.length ? projects.map((project) => (
-            <ProjectLLMSourcePanel key={project.id} projectId={project.id} ownerId={user.id} sessionEpoch={sessionEpoch} compact allowPersonalProfiles={!isDemoSession} />
-          )) : <p className="mt-3 text-sm text-zinc-400">{t('LLMSource.noProjects')}</p>}
-        </section>
-
-        <section className="mt-6 border-t border-white/10 pt-6" aria-labelledby="account-password-title">
-          <h3 id="account-password-title" className="text-lg font-semibold text-white">{t('AccountSettings.passwordTitle')}</h3>
-          {passwordStatusError?.userID === user.id ? <p role="alert" className="mt-2 text-sm text-red-300">{passwordStatusError.message}</p> : null}
-          {passwordStatusError?.userID !== user.id && (!passwordStatus || passwordStatus.userID !== user.id) ? (
-            <p role="status" className="mt-2 text-sm text-zinc-400">{t('AccountSettings.passwordLoading')}</p>
-          ) : null}
-          {passwordStatus?.userID === user.id && !passwordStatus.value.allowed ? (
-            <p className="mt-2 text-sm leading-6 text-zinc-400">{t('AccountSettings.passwordDemoDisabled')}</p>
-          ) : null}
-          {passwordStatus?.userID === user.id && passwordStatus.value.allowed ? (
-            <form onSubmit={handlePasswordUpdate} className="mt-3 space-y-4 rounded-lg border border-white/10 bg-black/20 p-4">
-              <p className="text-sm leading-6 text-zinc-400">
-                {passwordStatus.value.configured ? t('AccountSettings.passwordChangeHint') : t('AccountSettings.passwordSetupHint')}
-              </p>
-              {passwordStatus.value.configured ? (
+          <section className="mt-6 border-t border-white/10 pt-6" aria-labelledby="account-password-title">
+            <h3 id="account-password-title" className="text-lg font-semibold text-white">{t('AccountSettings.passwordTitle')}</h3>
+            {passwordStatusError?.userID === user.id ? <p role="alert" className="mt-2 text-sm text-red-300">{passwordStatusError.message}</p> : null}
+            {passwordStatusError?.userID !== user.id && (!passwordStatus || passwordStatus.userID !== user.id) ? (
+              <p role="status" className="mt-2 text-sm text-zinc-400">{t('AccountSettings.passwordLoading')}</p>
+            ) : null}
+            {passwordStatus?.userID === user.id && !passwordStatus.value.allowed ? (
+              <p className="mt-2 text-sm leading-6 text-zinc-400">{t('AccountSettings.passwordDemoDisabled')}</p>
+            ) : null}
+            {passwordStatus?.userID === user.id && passwordStatus.value.allowed ? (
+              <form onSubmit={handlePasswordUpdate} className="mt-3 space-y-4 rounded-lg border border-white/10 bg-black/20 p-4">
+                <p className="text-sm leading-6 text-zinc-400">
+                  {passwordStatus.value.configured ? t('AccountSettings.passwordChangeHint') : t('AccountSettings.passwordSetupHint')}
+                </p>
+                {passwordStatus.value.configured ? (
+                  <label className="block text-sm font-medium text-zinc-300">
+                    {t('AccountSettings.currentPassword')}
+                    <input type="password" autoComplete="current-password" aria-required="true" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} className="mt-2 w-full rounded-lg border border-white/10 bg-black/30 px-4 py-3 text-white outline-none focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400" />
+                  </label>
+                ) : null}
                 <label className="block text-sm font-medium text-zinc-300">
-                  {t('AccountSettings.currentPassword')}
-                  <input type="password" autoComplete="current-password" aria-required="true" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} className="mt-2 w-full rounded-lg border border-white/10 bg-black/30 px-4 py-3 text-white outline-none focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400" />
+                  {t('AccountSettings.newPassword')}
+                  <input type="password" autoComplete="new-password" minLength={8} required value={newPassword} onChange={(event) => setNewPassword(event.target.value)} className="mt-2 w-full rounded-lg border border-white/10 bg-black/30 px-4 py-3 text-white outline-none focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400" />
                 </label>
-              ) : null}
+                <label className="block text-sm font-medium text-zinc-300">
+                  {t('AccountSettings.confirmNewPassword')}
+                  <input type="password" autoComplete="new-password" minLength={8} required value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} className="mt-2 w-full rounded-lg border border-white/10 bg-black/30 px-4 py-3 text-white outline-none focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400" />
+                </label>
+                {passwordError ? <p role="alert" className="text-sm text-red-300">{passwordError}</p> : null}
+                {passwordNotice ? <p role="status" className="text-sm text-emerald-200">{passwordNotice}</p> : null}
+                <p className="text-xs leading-5 text-zinc-500">{t('AccountSettings.forgotPasswordHint')}</p>
+                <div className="flex justify-end">
+                  <button type="submit" disabled={passwordPending || newPassword.length < 8 || !confirmPassword} className="min-h-11 rounded-lg bg-emerald-300 px-4 py-2.5 text-sm font-semibold text-black hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-60">
+                    {passwordPending ? t('AccountSettings.passwordSaving') : passwordStatus.value.configured ? t('AccountSettings.changePassword') : t('AccountSettings.setPassword')}
+                  </button>
+                </div>
+              </form>
+            ) : null}
+          </section>
+
+          {!linkOpen ? (
+            <button type="button" onClick={() => setLinkOpen(true)} className="mt-6 min-h-11 w-full rounded-lg bg-emerald-300 px-4 py-3 font-semibold text-black hover:bg-emerald-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300">
+              {t('AccountSettings.linkGoogle')}
+            </button>
+          ) : (
+            <form onSubmit={handleLink} className="mt-6 space-y-4 rounded-lg border border-emerald-300/20 bg-emerald-300/5 p-4">
+              <p className="text-sm leading-6 text-zinc-300">{t('AccountSettings.reauthHint')}</p>
               <label className="block text-sm font-medium text-zinc-300">
-                {t('AccountSettings.newPassword')}
-                <input type="password" autoComplete="new-password" minLength={8} required value={newPassword} onChange={(event) => setNewPassword(event.target.value)} className="mt-2 w-full rounded-lg border border-white/10 bg-black/30 px-4 py-3 text-white outline-none focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400" />
+                {t('AccountSettings.currentPassword')}
+                <input ref={passwordRef} type="password" autoComplete="current-password" required value={password} onChange={(event) => setPassword(event.target.value)} className="mt-2 w-full rounded-lg border border-white/10 bg-black/30 px-4 py-3 text-white outline-none focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400" />
               </label>
-              <label className="block text-sm font-medium text-zinc-300">
-                {t('AccountSettings.confirmNewPassword')}
-                <input type="password" autoComplete="new-password" minLength={8} required value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} className="mt-2 w-full rounded-lg border border-white/10 bg-black/30 px-4 py-3 text-white outline-none focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400" />
-              </label>
-              {passwordError ? <p role="alert" className="text-sm text-red-300">{passwordError}</p> : null}
-              {passwordNotice ? <p role="status" className="text-sm text-emerald-200">{passwordNotice}</p> : null}
-              <p className="text-xs leading-5 text-zinc-500">{t('AccountSettings.forgotPasswordHint')}</p>
-              <div className="flex justify-end">
-                <button type="submit" disabled={passwordPending || newPassword.length < 8 || !confirmPassword} className="min-h-11 rounded-lg bg-emerald-300 px-4 py-2.5 text-sm font-semibold text-black hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-60">
-                  {passwordPending ? t('AccountSettings.passwordSaving') : passwordStatus.value.configured ? t('AccountSettings.changePassword') : t('AccountSettings.setPassword')}
-                </button>
+              {error ? <p role="alert" className="text-sm text-red-300">{error}</p> : null}
+              <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
+                <button type="button" disabled={loading} onClick={() => { setLinkOpen(false); setPassword(''); setError(''); }} className="min-h-11 rounded-lg border border-white/10 px-4 py-2.5 text-sm text-zinc-300 hover:bg-white/10 disabled:opacity-60">{t('AccountSettings.cancel')}</button>
+                <button type="submit" disabled={loading || !password || !accessToken} className="min-h-11 rounded-lg bg-emerald-300 px-4 py-2.5 text-sm font-semibold text-black hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-60">{loading ? t('AccountSettings.openingGoogle') : t('AccountSettings.continue')}</button>
               </div>
             </form>
-          ) : null}
-        </section>
+          )}
+        </div>
 
-        {!linkOpen ? (
-          <button type="button" onClick={() => setLinkOpen(true)} className="mt-6 min-h-11 w-full rounded-lg bg-emerald-300 px-4 py-3 font-semibold text-black hover:bg-emerald-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300">
-            {t('AccountSettings.linkGoogle')}
-          </button>
-        ) : (
-          <form onSubmit={handleLink} className="mt-6 space-y-4 rounded-lg border border-emerald-300/20 bg-emerald-300/5 p-4">
-            <p className="text-sm leading-6 text-zinc-300">{t('AccountSettings.reauthHint')}</p>
-            <label className="block text-sm font-medium text-zinc-300">
-              {t('AccountSettings.currentPassword')}
-              <input ref={passwordRef} type="password" autoComplete="current-password" required value={password} onChange={(event) => setPassword(event.target.value)} className="mt-2 w-full rounded-lg border border-white/10 bg-black/30 px-4 py-3 text-white outline-none focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400" />
-            </label>
-            {error ? <p role="alert" className="text-sm text-red-300">{error}</p> : null}
-            <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
-              <button type="button" disabled={loading} onClick={() => { setLinkOpen(false); setPassword(''); setError(''); }} className="min-h-11 rounded-lg border border-white/10 px-4 py-2.5 text-sm text-zinc-300 hover:bg-white/10 disabled:opacity-60">{t('AccountSettings.cancel')}</button>
-              <button type="submit" disabled={loading || !password || !accessToken} className="min-h-11 rounded-lg bg-emerald-300 px-4 py-2.5 text-sm font-semibold text-black hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-60">{loading ? t('AccountSettings.openingGoogle') : t('AccountSettings.continue')}</button>
-            </div>
-          </form>
-        )}
+        <div id="account-settings-panel-provider" role="tabpanel" aria-labelledby="account-settings-tab-provider" hidden={activeSettingsTab !== 'provider'} tabIndex={0}>
+          {!isDemoSession ? <BYOKProfilesPanel active={activeSettingsTab === 'provider'} onProfileCreated={onProfileCreated} /> : null}
 
+          <section className="mt-6 border-t border-white/10 pt-6" aria-labelledby="account-project-llm-title">
+            <h3 id="account-project-llm-title" className="text-lg font-semibold text-white">{t('LLMSource.accountAssignments')}</h3>
+            <p className="mt-1 text-sm leading-6 text-zinc-400">{t('LLMSource.accountAssignmentsHint')}</p>
+            {projects.length ? projects.map((project) => (
+              <ProjectLLMSourcePanel key={project.id} projectId={project.id} projectName={project.name} ownerId={user.id} sessionEpoch={sessionEpoch} compact allowPersonalProfiles={!isDemoSession} />
+            )) : <p className="mt-3 text-sm text-zinc-400">{t('LLMSource.noProjects')}</p>}
+          </section>
+        </div>
+
+        <div id="account-settings-panel-connections" role="tabpanel" aria-labelledby="account-settings-tab-connections" hidden={activeSettingsTab !== 'connections'} tabIndex={0}>
         <section className="mt-8 border-t border-white/10 pt-6" aria-labelledby="cli-sessions-title">
           <h3 id="cli-sessions-title" className="text-lg font-semibold text-white">{t('AccountSettings.cliSessions')}</h3>
           <p className="mt-1 text-sm text-zinc-400">{t('AccountSettings.cliSessionsHint')}</p>
@@ -502,6 +586,7 @@ function AccountSettingsModalContent({
 
         {controlNotice ? <p role="status" className="mt-5 rounded-lg border border-emerald-300/20 bg-emerald-300/5 p-3 text-sm text-emerald-100">{controlNotice}</p> : null}
         {controlError ? <p role="alert" className="mt-5 rounded-lg border border-red-300/20 bg-red-300/5 p-3 text-sm text-red-100">{controlError}</p> : null}
+        </div>
       </div>
     </div>
   );

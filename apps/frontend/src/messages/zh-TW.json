@@ -47,6 +47,10 @@
     "title": "帳號設定",
     "close": "關閉帳號設定",
     "subtitle": "管理你的 LWC 登入方式。",
+    "tabs": "個人設定區段",
+    "accountTab": "帳號與安全",
+    "providerTab": "LLM Provider",
+    "connectionsTab": "連線與同步",
     "primaryEmail": "主要 LWC Email",
     "primaryHint": "密碼登入只接受這個 Email。",
     "googleEmail": "Google 顯示 Email",
@@ -130,7 +134,7 @@
     "confirmRevokeProjectKey": "要撤銷 Project API 金鑰「{name}」嗎？"
   },
   "BYOK": {
-    "title": "自訂LLM提供者",
+    "title": "LLM Provider",
     "hint": "新增個人模型服務商。API 金鑰只寫入、不讀出，並以加密形式儲存；你可以在此替換密鑰。",
     "loading": "正在載入你的 Profile…",
     "retry": "重試",
@@ -166,7 +170,8 @@
     "create": "新增服務商"
   },
   "LLMSource": {
-    "title": "此專案使用的AI服務",
+    "title": "LLM Provider",
+    "projectName": "Project：{name}",
     "source": "服務來源",
     "shared": "平台共用服務",
     "personal": "自訂LLM提供者",
@@ -471,15 +476,15 @@
   "Profile": {
     "pageTitle": "專案設定",
     "settingsTabs": "專案設定區段",
-    "knowledgeTab": "知識庫設定",
-    "aiServiceTab": "AI 服務",
+    "knowledgeTab": "知識庫產出設定",
+    "aiServiceTab": "LLM Provider",
     "queryEffectDelay": "查詢相關設定會在背景更新；更新完成前仍使用目前設定。請先確認預覽；伺服器讀回新的生效 Profile 後，才會將它標示為目前有效。首次編譯指引需另行確認，確認指引不會自動啟用 Profile。",
     "requirementsExample": "例如生活規劃專案：先在問題中說明必要區域，再比較停車或親子友善等偏好。",
     "requirementsPriorities": "請說明主要目標與次要偏好：最重視什麼，以及哪些內容可以作為補充。",
     "renameProject": "重新命名專案",
     "title": "整理與搜尋偏好",
     "settings": "專案設定",
-    "intro": "用自己的文字告訴系統，整理資訊時希望保留哪些細節。你可以查看伺服器實際解讀，以及目前真正生效的 Profile 狀態。",
+    "intro": "調整知識庫的內容方向與編寫方式，於後續產生或重新編譯時套用。",
     "loading": "正在載入 Profile…",
     "signInRequired": "登入後才能查看這個專案的 Profile。",
     "selectProject": "請選擇要查看 Profile 的專案。",

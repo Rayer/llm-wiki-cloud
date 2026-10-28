@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 
 const mocks = vi.hoisted(() => ({
   confirmNavigation: vi.fn(),
@@ -107,22 +107,34 @@ describe('LWC-406 optional Profile onboarding', () => {
   it('keeps the Project source draft alive while switching settings tabs', async () => {
     render(<ProjectProfilePanel projectId="project-new" />);
     await screen.findByRole('heading', { name: 'Organization and search preferences (optional)' });
+    expect(await screen.findByText('Adjust the content direction and writing style of your knowledge base. Changes apply to future generations and recompilations.')).toBeDefined();
 
-    fireEvent.keyDown(screen.getByRole('tab', { name: 'Knowledge settings' }), { key: 'ArrowRight' });
-    expect(screen.getByRole('tab', { name: 'AI service' }).getAttribute('aria-selected')).toBe('true');
+    fireEvent.keyDown(screen.getByRole('tab', { name: 'Knowledge generation settings' }), { key: 'ArrowRight' });
+    expect(screen.getByRole('tab', { name: 'LLM Provider' }).getAttribute('aria-selected')).toBe('true');
     const source = await screen.findByRole('combobox', { name: 'Service source' }) as HTMLSelectElement;
     fireEvent.change(source, { target: { value: 'personal' } });
     const provider = await screen.findByRole('combobox', { name: 'Custom LLM provider' }) as HTMLSelectElement;
     fireEvent.change(provider, { target: { value: 'provider-1' } });
 
     expect(screen.queryByRole('heading', { name: 'Organization and search preferences' })).toBeNull();
-    fireEvent.click(screen.getByRole('tab', { name: 'Knowledge settings' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Knowledge generation settings' }));
     expect(await screen.findByRole('heading', { name: 'Organization and search preferences' })).toBeDefined();
-    fireEvent.click(screen.getByRole('tab', { name: 'AI service' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'LLM Provider' }));
 
     expect((screen.getByRole('combobox', { name: 'Service source' }) as HTMLSelectElement).value).toBe('personal');
     expect((screen.getByRole('combobox', { name: 'Custom LLM provider' }) as HTMLSelectElement).value).toBe('provider-1');
     expect(mocks.saveProjectLLMBinding).not.toHaveBeenCalled();
+  });
+
+  it('localizes the Project settings tabs and knowledge-generation timing in Traditional Chinese', async () => {
+    localStorage.setItem('locale', 'zh-TW');
+    render(<ProjectProfilePanel projectId="project-new" />);
+
+    expect(await screen.findByRole('tab', { name: '知識庫產出設定' })).not.toBeNull();
+    expect(screen.getByRole('tab', { name: 'LLM Provider' }).getAttribute('aria-selected')).toBe('false');
+    expect(await screen.findByText('調整知識庫的內容方向與編寫方式，於後續產生或重新編譯時套用。')).not.toBeNull();
+    fireEvent.click(screen.getByRole('tab', { name: 'LLM Provider' }));
+    expect(screen.getByRole('tab', { name: 'LLM Provider' }).getAttribute('aria-selected')).toBe('true');
   });
 
   it.each([
@@ -131,7 +143,7 @@ describe('LWC-406 optional Profile onboarding', () => {
   ] as const)('returns from the %s to the original AI service tab with a selected unsaved profile', async (_name, entry) => {
     render(<ProjectProfilePanel projectId="project-new" />);
     await screen.findByRole('heading', { name: 'Organization and search preferences (optional)' });
-    fireEvent.click(screen.getByRole('tab', { name: 'AI service' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'LLM Provider' }));
     const serviceSource = await screen.findByRole('combobox', { name: 'Service source' });
     if (entry === 'add') {
       fireEvent.change(serviceSource, { target: { value: 'personal' } });
@@ -139,14 +151,16 @@ describe('LWC-406 optional Profile onboarding', () => {
 
     const providerButtons = await screen.findAllByRole('button', { name: 'Open custom LLM providers' });
     fireEvent.click(providerButtons[entry === 'notice' ? 0 : 1]);
-    expect(await screen.findByRole('heading', { name: 'Custom LLM providers' })).toBeDefined();
+    const accountSettingsDialog = await screen.findByRole('dialog', { name: 'Account settings' });
+    expect(within(accountSettingsDialog).getByRole('heading', { name: 'LLM Provider' })).toBeDefined();
+    expect(within(accountSettingsDialog).getByRole('tab', { name: 'LLM Provider' }).getAttribute('aria-selected')).toBe('true');
     fireEvent.change(screen.getByRole('combobox', { name: 'Provider' }), { target: { value: 'custom' } });
     fireEvent.change(screen.getByRole('textbox', { name: 'Provider name' }), { target: { value: 'New custom provider' } });
     fireEvent.change(screen.getByRole('textbox', { name: /Model Enter the model name/ }), { target: { value: 'fixture-model' } });
     fireEvent.click(screen.getByRole('button', { name: 'Add provider' }));
 
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Account settings' })).toBeNull());
-    expect(screen.getByRole('tab', { name: 'AI service' }).getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByRole('tab', { name: 'LLM Provider' }).getAttribute('aria-selected')).toBe('true');
     await waitFor(() => expect((screen.getByRole('combobox', { name: 'Service source' }) as HTMLSelectElement).value).toBe('personal'));
     await waitFor(() => expect((screen.getByRole('combobox', { name: 'Custom LLM provider' }) as HTMLSelectElement).value).toBe('created-profile'));
     expect(mocks.createLLMProfile).toHaveBeenCalledWith(expect.objectContaining({ name: 'New custom provider', model: 'fixture-model', provider: 'custom' }));

@@ -47,6 +47,10 @@
     "title": "Account settings",
     "close": "Close account settings",
     "subtitle": "Manage your LWC sign-in methods.",
+    "tabs": "Personal settings sections",
+    "accountTab": "Account & security",
+    "providerTab": "LLM Provider",
+    "connectionsTab": "Connections & sync",
     "primaryEmail": "Primary LWC email",
     "primaryHint": "This is the only email accepted by password sign-in.",
     "googleEmail": "Google display email",
@@ -130,7 +134,7 @@
     "confirmRevokeProjectKey": "Revoke Project API key “{name}”?"
   },
   "BYOK": {
-    "title": "Custom LLM providers",
+    "title": "LLM Provider",
     "hint": "Add private model providers. API keys are write-only, encrypted at rest, and never shown again; you can replace them here.",
     "loading": "Loading your profiles…",
     "retry": "Retry",
@@ -166,7 +170,8 @@
     "create": "Add provider"
   },
   "LLMSource": {
-    "title": "AI service for this Project",
+    "title": "LLM Provider",
+    "projectName": "Project: {name}",
     "source": "Service source",
     "shared": "Platform shared service",
     "personal": "Custom LLM provider",
@@ -471,15 +476,15 @@
   "Profile": {
     "pageTitle": "Project settings",
     "settingsTabs": "Project settings sections",
-    "knowledgeTab": "Knowledge settings",
-    "aiServiceTab": "AI service",
+    "knowledgeTab": "Knowledge generation settings",
+    "aiServiceTab": "LLM Provider",
     "queryEffectDelay": "Query-related settings update in the background; current settings remain in use until the update completes. Confirm the preview first. Server readback must show a new active Profile before it is described as effective. First-compile guidance requires separate confirmation and does not automatically activate the Profile.",
     "requirementsExample": "For example, in a Lifestyle project, state the needed area in the question first, then compare parking or child suitability as preferences.",
     "requirementsPriorities": "Describe your primary goal and secondary preferences: what matters most, and what can provide supporting context.",
     "renameProject": "Rename project",
     "title": "Organization and search preferences",
     "settings": "Project settings",
-    "intro": "Tell the system what details to preserve when organizing your information. Review its actual interpretation and active Profile before relying on the change.",
+    "intro": "Adjust the content direction and writing style of your knowledge base. Changes apply to future generations and recompilations.",
     "loading": "Loading Profile…",
     "signInRequired": "Sign in to view this Project Profile.",
     "selectProject": "Select a Project to view its Profile.",
