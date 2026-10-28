@@ -72,7 +72,11 @@ func run() error {
 	endpoint := flag.String("endpoint", "http://localhost:62382/mcp/projects/default", "local project MCP resource endpoint")
 	tokenFile := flag.String("token-file", "", "mode-0600 file containing the synthetic OAuth access token")
 	expectRevoked := flag.Bool("expect-revoked", false, "expect the MCP client to reject this revoked access token")
+	expectProjectDenied := flag.Bool("expect-project-denied", false, "expect BFF to deny this Project after its ACL is removed")
 	flag.Parse()
+	if *expectRevoked && *expectProjectDenied {
+		return errors.New("choose one expected denial mode")
+	}
 	if strings.TrimSpace(*tokenFile) == "" {
 		return errors.New("--token-file is required")
 	}
@@ -102,6 +106,16 @@ func run() error {
 			return fmt.Errorf("revoked token was not rejected with HTTP 401 or 403")
 		}
 		fmt.Printf("case=mcp_revoked_access_token result=%d_rejected\n", status)
+		return nil
+	}
+	if *expectProjectDenied {
+		observer := &bearerRoundTripper{base: http.DefaultTransport, token: token}
+		_, err := connect(ctx, *endpoint, observer)
+		status := observer.observedStatus(http.StatusForbidden)
+		if err == nil || status != http.StatusForbidden {
+			return fmt.Errorf("Project ACL loss was not rejected with HTTP 403")
+		}
+		fmt.Printf("case=mcp_project_acl_denied result=%d_denied\n", status)
 		return nil
 	}
 

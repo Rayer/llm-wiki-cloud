@@ -113,6 +113,58 @@ def json_request(method, url, expected, case, body=None, bearer=None, form=False
     return status, headers, data
 
 
+def firestore_project_document_url(origin, project, database, scope, owner, project_id):
+    emulator = local_origin(origin)
+    document_id = owner + "_" + project_id
+    collection_path = ("local_scopes/" + urllib.parse.quote(scope, safe="") + "/projects/"
+                       if scope else "projects/")
+    return (emulator + "/v1/projects/" + urllib.parse.quote(project, safe="")
+            + "/databases/" + urllib.parse.quote(database, safe="()") + "/documents/"
+            + collection_path + urllib.parse.quote(document_id, safe=""))
+
+
+def restore_project_acl(document_url, fields):
+    status, _, _ = request("PATCH", document_url, {"fields": fields})
+    if status != 200:
+        raise RuntimeError("Firestore emulator could not restore the synthetic Project document")
+    status, _, raw = request("GET", document_url)
+    if status != 200:
+        raise RuntimeError("Firestore emulator did not read back the restored Project document")
+    try:
+        restored = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("restored Project document is not valid Firestore JSON") from exc
+    if not isinstance(restored, dict) or restored.get("fields") != fields:
+        raise RuntimeError("restored Project document fields changed")
+
+
+def remove_project_acl(origin, project, database, scope, owner, project_id):
+    document_url = firestore_project_document_url(origin, project, database, scope, owner, project_id)
+    status, _, raw = request("GET", document_url)
+    if status != 200:
+        raise RuntimeError("Firestore emulator could not read the synthetic Project document")
+    try:
+        document = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("synthetic Project document is not valid Firestore JSON") from exc
+    fields = document.get("fields") if isinstance(document, dict) else None
+    if (not isinstance(fields, dict)
+            or fields.get("user_id", {}).get("stringValue") != owner
+            or fields.get("project_id", {}).get("stringValue") != project_id):
+        raise RuntimeError("Firestore document is not the expected synthetic owner/Project ACL")
+    try:
+        status, _, _ = request("DELETE", document_url)
+        if status not in (200, 204):
+            raise RuntimeError("Firestore emulator refused to remove the synthetic Project ACL")
+        status, _, _ = request("GET", document_url)
+        if status != 404:
+            raise RuntimeError("Firestore emulator did not confirm Project ACL removal")
+    except BaseException:
+        restore_project_acl(document_url, fields)
+        raise
+    return document_url, fields
+
+
 def save_secret(path, value):
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -192,8 +244,10 @@ def run(args):
 
     status, _, demo = json_request("POST", auth_origin + "/api/v1/auth/demo", {200}, "demo_login", {})
     web_token = demo.get("access_token", "")
-    if not web_token:
-        raise RuntimeError("demo_login: no access token")
+    demo_user = demo.get("user")
+    subject = demo_user.get("id", "") if isinstance(demo_user, dict) else ""
+    if not web_token or not subject:
+        raise RuntimeError("demo_login: missing synthetic identity")
     save_secret(args.web_token_output, web_token)
     cases["local_demo_login"] = status
 
@@ -351,8 +405,40 @@ def run(args):
     # Revoking the original grant must invalidate the continuation token family too.
     grant_id = min(matching, key=lambda grant: grant["created_at"])["id"]
     revoke_url = auth_origin + f"/api/v1/auth/mcp/oauth/grants/{urllib.parse.quote(grant_id, safe='')}"
-    status, _, _ = json_request("DELETE", revoke_url, {204}, "revoke_project_grant", bearer=web_token)
-    cases["oauth_grant_revocation"] = status
+    firestore_document_url_value, project_fields = remove_project_acl(
+        args.firestore_emulator_origin, args.firestore_project_id, args.firestore_database_id,
+        args.firestore_local_scope, subject, project_id)
+    cases["same_project_acl_removed"] = 404
+    try:
+        acl_result = subprocess.run(client_cmd + ["--expect-project-denied"], cwd=args.client_cwd,
+            capture_output=True, text=True, timeout=90, check=False)
+        acl_line = next((line for line in acl_result.stdout.splitlines()
+                         if line.startswith("case=mcp_project_acl_denied result=")), "")
+        if acl_result.returncode != 0 or acl_line != "case=mcp_project_acl_denied result=403_denied":
+            raise RuntimeError("same-Project MCP access was not denied after ACL removal")
+        print(acl_line)
+        cases["same_project_mcp_acl_loss_denied"] = 403
+
+        status, _, acl_denied_grants = json_request(
+            "GET", bff_origin + "/api/v1/mcp/oauth/grants?" + urllib.parse.urlencode({"project_id": project_id}),
+            {403}, "grant_list_acl_loss_denied", bearer=web_token)
+        if acl_denied_grants.get("error") != "project access denied":
+            raise RuntimeError("BFF grant listing did not deny the missing Project ACL")
+        cases["same_project_bff_grant_list_acl_loss_denied"] = status
+
+        status, _, _ = json_request("DELETE", revoke_url, {204}, "owner_revoke_while_project_acl_missing", bearer=web_token)
+        cases["auth_owner_grant_delete_while_project_acl_missing"] = status
+    finally:
+        restore_project_acl(firestore_document_url_value, project_fields)
+    cases["same_project_acl_restored_exact_fields"] = True
+
+    status, _, restored_grants = json_request(
+        "GET", bff_origin + "/api/v1/mcp/oauth/grants?" + urllib.parse.urlencode({"project_id": project_id}),
+        {200}, "grant_list_after_acl_restore", bearer=web_token)
+    if not isinstance(restored_grants.get("grants"), list):
+        raise RuntimeError("BFF grant listing did not recover after restoring the Project ACL")
+    cases["same_project_bff_grant_list_after_acl_restore"] = status
+    cases["oauth_grant_revocation"] = 204
 
     status, _, invalid_refresh = json_request("POST", auth_origin + "/api/v1/auth/mcp/oauth/token", {400}, "refresh_after_revoke", {
         "grant_type": "refresh_token", "client_id": client_id, "refresh_token": refresh_token, "resource": resource,
@@ -397,6 +483,10 @@ def main():
     parser.add_argument("--auth-origin", default="http://localhost:62383")
     parser.add_argument("--bff-origin", default="http://localhost:62382")
     parser.add_argument("--project-id", default="default")
+    parser.add_argument("--firestore-emulator-origin", default="http://127.0.0.1:62371")
+    parser.add_argument("--firestore-project-id", default="llm-wiki-cloud")
+    parser.add_argument("--firestore-database-id", default="llm-wiki-cloud-local")
+    parser.add_argument("--firestore-local-scope", default="gat4-e2e-62371")
     parser.add_argument("--web-token-output", required=True)
     parser.add_argument("--mcp-token-output", required=True)
     parser.add_argument("--refresh-token-output", required=True)
