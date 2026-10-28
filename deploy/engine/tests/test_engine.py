@@ -252,6 +252,7 @@ class Acceptance(unittest.TestCase):
         p={'schema':3,'id':name,'source':source_sha,'branch':'main' if production else 'develop','tag':tag,'selected':list(selected),
            'normalized':n,'identities':{c:{'profile':'profile','inputs':'input','files':[]} for c in selected},
            'dev_reference':'explicit-123' if production else None,
+           'release_source_mode':'legacy_monorepo',
            'executor_sha':'e'*40}
         p['id']=engine.digest(engine.release_identity(p))
         write(directory/'plan.json',p)
@@ -294,6 +295,7 @@ class Acceptance(unittest.TestCase):
             'INPUT_OPERATION': 'runtime', 'INPUT_FORCE': 'true' if force else 'false',
             'GITHUB_ACTIONS': 'true', 'GITHUB_RUN_ID': '424242',
             'GITHUB_RUN_ATTEMPT': '1', 'GITHUB_REPOSITORY': 'test/repo',
+            'GAT4_RELEASE_SOURCE_MODE': 'legacy_monorepo',
             'LWC_TEST_LATEST_RECORD': str(latest_path),
         })
         if latest is None:

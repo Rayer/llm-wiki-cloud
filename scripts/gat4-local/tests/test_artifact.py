@@ -66,6 +66,10 @@ class ArtifactTests(unittest.TestCase):
         self.assertEqual(manifest["artifact"]["digest_kind"], "oci_image_manifest")
         self.assertNotEqual(manifest["artifact"]["digest"], manifest["artifact"]["archive_sha256"])
 
+    def test_gateauth_source_schema_matches_lwc_protocol_mirror(self):
+        source_schema = ROOT / "gateauth/contracts/gateauth-artifact/v1/schema.json"
+        self.assertEqual(source_schema.read_bytes(), artifact.SCHEMA_PATH.read_bytes())
+
     def test_manifest_schema_rejects_unknown_fields(self):
         def run():
             with self.assertRaisesRegex(artifact.ContractError, "unknown keys"):

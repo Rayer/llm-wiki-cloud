@@ -33,16 +33,42 @@ auth_freeze() {
   freeze_store auth "$(jq -n --arg image "$image" '{image:$image}')"
 }
 
+auth_source_preflight() {
+  local mode tree_digest
+  mode="${GAT4_RELEASE_SOURCE_MODE:-$(jq -er '.release_source_mode' "$PLAN_PATH")}" \
+    || die "Auth release source mode is missing"
+  if [[ "$mode" == independent ]]; then
+    AUTH_BUILD_ROOT="${AUTH_SOURCE_ROOT:-}"
+    AUTH_BUILD_REVISION="${AUTH_SOURCE_REVISION:-}"
+    AUTH_BUILD_BRANCH=''
+    [[ -n "$AUTH_BUILD_ROOT" && -d "$AUTH_BUILD_ROOT" ]] || die "independent Auth source checkout is missing"
+    [[ "$AUTH_BUILD_REVISION" =~ ^[0-9a-f]{40}$ && "$SOURCE_SHA" == "$AUTH_BUILD_REVISION" ]] || die "independent Auth source revision is invalid"
+    [[ "${AUTH_SOURCE_TREE_SHA256:-}" =~ ^sha256:[0-9a-f]{64}$ ]] || die "independent Auth source tree digest is invalid"
+    tree_digest=$(python3 "$ROOT/scripts/gat4-local/artifact.py" tree-digest --root "$AUTH_BUILD_ROOT") || die "independent Auth source tree could not be read"
+    [[ "$tree_digest" == "$AUTH_SOURCE_TREE_SHA256" ]] || die "independent Auth source tree digest does not match"
+    [[ -f "$AUTH_BUILD_ROOT/Dockerfile" && -f "$AUTH_BUILD_ROOT/cloudbuild.yaml" && -f "$AUTH_BUILD_ROOT/VERSION" && -f "$AUTH_BUILD_ROOT/go.mod" ]] || die "independent Auth source build context is incomplete"
+    grep -Fxq 'module github.com/rayer/gateauth' "$AUTH_BUILD_ROOT/go.mod" || die "independent Auth source module path is invalid"
+  elif [[ "$mode" == legacy_monorepo ]]; then
+    AUTH_BUILD_ROOT="$ROOT/gateauth"
+    AUTH_BUILD_REVISION="$SOURCE_SHA"
+    AUTH_BUILD_BRANCH="$SOURCE_REF"
+    [[ -d "$AUTH_BUILD_ROOT" ]] || die "legacy Auth source checkout is missing"
+  else
+    die "Auth release source mode is missing or invalid"
+  fi
+}
+
 auth_build_submit() {
   local image project response detail exit_code stderr_file
+  auth_source_preflight
   project=$(plan_json '.gcp.project_id')
-  image="$(plan_json '.gcp.artifact_registry')/llm-wiki-auth:$SOURCE_SHA"
+  image="$(plan_json '.gcp.artifact_registry')/llm-wiki-auth:$AUTH_BUILD_REVISION"
   stderr_file=$(mktemp "${TMPDIR:-/tmp}/lwc-auth-submit.XXXXXX") || {
     auth_record_build_failure build-submit 1 "temporary diagnostics file unavailable"
     return 1
   }
-  if response=$(timeout --signal=TERM --kill-after=5s 600s gcloud builds submit "$ROOT/gateauth" --project "$project" --region=global --config "$ROOT/gateauth/cloudbuild.yaml" \
-    --substitutions="_IMAGE=$image,_APP_VERSION=$(tr -d '[:space:]' < "$ROOT/gateauth/VERSION"),_GIT_SHA=$SOURCE_SHA,_GIT_BRANCH=$SOURCE_REF,_GIT_TAG=" --async --format=json --quiet 2>"$stderr_file"); then
+  if response=$(timeout --signal=TERM --kill-after=5s 600s gcloud builds submit "$AUTH_BUILD_ROOT" --project "$project" --region=global --config "$AUTH_BUILD_ROOT/cloudbuild.yaml" \
+    --substitutions="_IMAGE=$image,_APP_VERSION=$(tr -d '[:space:]' < "$AUTH_BUILD_ROOT/VERSION"),_GIT_SHA=$AUTH_BUILD_REVISION,_GIT_BRANCH=$AUTH_BUILD_BRANCH,_GIT_TAG=" --async --format=json --quiet 2>"$stderr_file"); then
     rm -f "$stderr_file"
     printf '%s\n' "$response"
   else
@@ -56,7 +82,8 @@ auth_build_submit() {
 
 auth_resolve_build_image() {
   local image digest detail exit_code stderr_file
-  image="$(plan_json '.gcp.artifact_registry')/llm-wiki-auth:$SOURCE_SHA"
+  auth_source_preflight
+  image="$(plan_json '.gcp.artifact_registry')/llm-wiki-auth:$AUTH_BUILD_REVISION"
   stderr_file=$(mktemp "${TMPDIR:-/tmp}/lwc-auth-digest.XXXXXX") || {
     auth_record_build_failure tag-digest-resolve 1 "temporary diagnostics file unavailable"
     return 1

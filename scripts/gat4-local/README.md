@@ -1,6 +1,6 @@
 # GateAuth local artifact helper
 
-build-auth.sh stages only gateauth/ in a temporary directory, runs its Go tests, builds a native binary and a static Linux amd64 binary, then writes a standards-conformant OCI image layout archive. The schema.json file is the sole authority for the local artifact JSON shape; artifact.py checks it and verifies source, config, binary, OCI manifest, layer and archive digests.
+build-auth.sh stages only gateauth/ in a temporary directory, runs its Go tests, builds a native binary and a static Linux amd64 binary, then writes a standards-conformant OCI image layout archive. GateAuth keeps the versioned artifact schema under its contract tree; the LWC consumer mirrors that protocol at apps/bff/deploy/contracts/gateauth-artifact-v1.schema.json. artifact.py validates against the LWC protocol copy and the clean-checkout test packages only that schema alongside GateAuth source, never the LWC server tree.
 
 Outputs go to $TMPDIR/gat4-local/out/: auth, auth-linux-amd64, go-test.txt, gateauth-image.oci.tar, and gateauth-artifact-v1.json. The OCI archive contains the static binary and the host CA bundle; it expects a runtime config to be mounted at /config/auth.json. The config digest records the exact bytes of the checked-in synthetic local fixture and contains no live credential.
 

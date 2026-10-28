@@ -16,7 +16,7 @@ from pathlib import Path, PurePosixPath
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SCHEMA_PATH = REPO_ROOT / "gateauth/contracts/gateauth-artifact/v1/schema.json"
+SCHEMA_PATH = REPO_ROOT / "apps/bff/deploy/contracts/gateauth-artifact-v1.schema.json"
 CONFIG_RELATIVE = Path("contracts/gateauth-artifact/v1/local-auth-config.test.json")
 MANIFEST_NAME = "gateauth-artifact-v1.json"
 ARCHIVE_NAME = "gateauth-image.oci.tar"

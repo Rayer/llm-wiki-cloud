@@ -13,8 +13,10 @@ import sys
 import tempfile
 import urllib.parse
 
-from support import ROOT, Breakpoint, digest, read, require, run, structured_cause, write
+from support import (ROOT, Breakpoint, digest, read, release_source_mode, require, run,
+                     structured_cause, write)
 from providers import Providers, CLOUD_BUILD_LOCATION
+from receipt_contract import validate_dev_receipt
 
 ORDER = ('exportjob', 'auth', 'bff', 'worker', 'frontend')
 PROFILES = read(ROOT / 'deploy/engine/profiles.json')
@@ -29,7 +31,19 @@ RESOLVED_TARGET_STATUSES = frozenset({
     'success', 'rolled_back', 'failed_rolled_back', 'ready', 'prepared',
 })
 def release_identity(plan):
-    return {key: plan[key] for key in RELEASE_IDENTITY_FIELDS}
+    identity = {key: plan[key] for key in RELEASE_IDENTITY_FIELDS}
+    if 'release_source_mode' in plan:
+        identity['release_source_mode'] = plan['release_source_mode']
+    if 'auth_source' in plan:
+        identity['auth_source'] = plan['auth_source']
+    return identity
+
+
+def compatible_release_identity(plan):
+    identity = release_identity(plan)
+    if 'release_source_mode' not in identity and release_source_mode(plan) == 'legacy_monorepo':
+        identity['release_source_mode'] = 'legacy_monorepo'
+    return identity
 
 
 def plan_id(plan):
@@ -61,9 +75,11 @@ def selection(raw):
     return [c for c in ORDER if c in values]
 
 
-def source_identity(c, sha):
+def source_identity(c, sha, auth_source=None):
     """Hash build inputs, not release SHA or engine scripts. Go resolves package dependencies."""
     profile = PROFILES[c]
+    if c == 'auth' and auth_source is not None:
+        return 'sha256:' + digest({'profile': profile, 'auth_source': auth_source})
     tracked = run(['git', 'ls-tree', '-r', '--name-only', sha]).splitlines()
     roots = list(profile['inputs'])
     package_dirs = []
@@ -101,8 +117,33 @@ def source_identity(c, sha):
     return {'profile': digest(profile), 'inputs': digest(rows), 'files': rows}
 
 
+def auth_source_from_receipt(path):
+    path = Path(path)
+    if not path.is_file():
+        return None
+    try:
+        receipt = read(path)
+    except (OSError, Breakpoint, ValueError, TypeError):
+        return None
+    source = receipt.get('auth_source') if isinstance(receipt, dict) else None
+    if (receipt.get('component') != 'auth' or receipt.get('schema') != 3 or
+            not isinstance(source, dict)):
+        return None
+    return {
+        'repository_id': source.get('repository_id'),
+        'revision': source.get('revision'),
+        'tree_sha256': source.get('tree_sha256'),
+        'artifact_id': source.get('artifact_id'),
+        'run_id': source.get('build_run_id'),
+        'run_attempt': source.get('build_run_attempt'),
+    }
+
+
 def admit(args):
     selected = selection(args.components)
+    release_source_mode = getattr(args, 'release_source_mode', None)
+    require(release_source_mode in ('independent', 'legacy_monorepo'),
+            'release-source-mode-required')
     require(re.fullmatch(r'[0-9a-f]{40}', args.source), 'invalid-source')
     executor_sha = getattr(args, 'executor_sha', None) or run(['git', 'rev-parse', 'HEAD'])
     require(re.fullmatch(r'[0-9a-f]{40}', executor_sha), 'invalid-executor-sha')
@@ -117,20 +158,23 @@ def admit(args):
                       '--config', str(ROOT / cfg), '--components', ','.join(selected)]
     normalize_env = os.environ.copy()
     normalize_env['LWC_REPOSITORY_ROOT'] = str(ROOT)
-    if 'bff' in selected or 'auth' in selected:
+    if 'bff' in selected or 'auth' in selected or (
+            release_source_mode == 'independent' and
+            any(c in selected for c in ('worker', 'exportjob'))):
         ssot = 'deploy/cac/ssot.pkl'
         require(run(['git', 'hash-object', ssot]) == run(['git', 'rev-parse', args.source+':'+ssot]),
                 'dirty-runtime-ssot')
         target = {'development': 'dev', 'production': 'prod'}[args.environment]
         with tempfile.TemporaryDirectory(prefix='lwc-runtime-inputs-') as projection_dir:
             projection_root = Path(projection_dir)
-            if 'auth' in selected:
+            if 'auth' in selected or release_source_mode == 'independent':
                 auth_dir = projection_root / 'auth'
                 auth_dir.mkdir()
                 run(['go', 'run', './cmd/pipeline_config', 'prepare', '--target', 'auth', '--descriptor',
                      '--environment', target, '--source-sha', args.source, '--output', str(auth_dir)],
                     cwd=ROOT / 'apps/bff', env=normalize_env, timeout=180)
-                normalize_args.extend(['--auth-inputs', str(auth_dir / 'auth-inputs.json')])
+                if 'auth' in selected:
+                    normalize_args.extend(['--auth-inputs', str(auth_dir / 'auth-inputs.json')])
             if 'bff' in selected:
                 bff_dir = projection_root / 'bff'
                 bff_dir.mkdir()
@@ -139,12 +183,71 @@ def admit(args):
                     cwd=ROOT / 'apps/bff', env=normalize_env, timeout=180)
                 normalize_args.extend(['--bff-inputs', str(bff_dir / 'bff-inputs.json')])
             normalized = json.loads(run(normalize_args, cwd=ROOT / 'apps/bff', env=normalize_env, timeout=180))
+            if release_source_mode == 'independent' and 'auth' not in selected:
+                auth_normalize_args = [
+                    'go', 'run', './cmd/deploy_config', '--environment', args.environment,
+                    '--config', str(ROOT / cfg), '--components', 'auth',
+                    '--auth-inputs', str(auth_dir / 'auth-inputs.json'),
+                ]
+                auth_normalized = json.loads(run(
+                    auth_normalize_args, cwd=ROOT / 'apps/bff', env=normalize_env, timeout=180))
+                normalized['auth'] = auth_normalized['auth']
     else:
         normalized = json.loads(run(normalize_args, cwd=ROOT / 'apps/bff', env=normalize_env, timeout=180))
-    identities = {c: source_identity(c, args.source) for c in selected}
+    raw_auth_source = {
+        'repository_id': getattr(args, 'auth_repository_id', None),
+        'revision': getattr(args, 'auth_revision', None),
+        'tree_sha256': getattr(args, 'auth_tree_sha256', None),
+        'artifact_id': getattr(args, 'auth_artifact_id', None),
+        'run_id': getattr(args, 'auth_run_id', None),
+        'run_attempt': getattr(args, 'auth_run_attempt', None),
+    }
+    provided_auth_source = any(value not in (None, '') for value in raw_auth_source.values())
+    auth_source = None
+    if release_source_mode == 'legacy_monorepo':
+        require(not provided_auth_source, 'legacy-release-cannot-use-independent-auth-source')
+    elif provided_auth_source:
+        require(all(value not in (None, '') for value in raw_auth_source.values()),
+                'independent-auth-source-required')
+        repo_id = str(raw_auth_source['repository_id'])
+        revision = str(raw_auth_source['revision'])
+        tree_sha256 = str(raw_auth_source['tree_sha256'])
+        artifact_id = str(raw_auth_source['artifact_id'])
+        run_id = str(raw_auth_source['run_id'])
+        run_attempt = str(raw_auth_source['run_attempt'])
+        require(re.fullmatch(r'[1-9][0-9]*', repo_id) is not None and
+                repo_id != os.environ.get('GITHUB_REPOSITORY_ID') and
+                re.fullmatch(r'[0-9a-f]{40}', revision) is not None and revision != args.source and
+                re.fullmatch(r'sha256:[0-9a-f]{64}', tree_sha256) is not None and
+                re.fullmatch(r'[1-9][0-9]*', artifact_id) is not None and
+                re.fullmatch(r'[1-9][0-9]*', run_id) is not None and
+                re.fullmatch(r'[1-9][0-9]*', run_attempt) is not None,
+                'independent-auth-source-invalid')
+        auth_source = {'repository_id': 'github:' + repo_id, 'revision': revision,
+                       'tree_sha256': tree_sha256, 'artifact_id': artifact_id,
+                       'run_id': int(run_id), 'run_attempt': int(run_attempt)}
+    elif (release_source_mode == 'independent' and 'auth' in selected and
+          args.environment == 'production' and args.dev):
+        auth_source = auth_source_from_receipt(Path(args.dev) / 'receipts/auth.json')
+        require(auth_source is not None, 'independent-auth-source-required')
+    elif (release_source_mode == 'independent' and 'auth' not in selected and
+          args.environment == 'development' and args.reuse):
+        auth_source = auth_source_from_receipt(Path(args.reuse) / 'receipts/auth.json')
+        require(auth_source is not None, 'independent-auth-source-required')
+    if (release_source_mode == 'independent' and 'auth' in selected and
+            args.environment == 'development'):
+        require(auth_source is not None, 'independent-auth-source-required')
+    if release_source_mode == 'independent' and 'auth' in selected and args.environment == 'production':
+        require(auth_source is not None, 'independent-auth-source-required')
+    identities = {c: source_identity(c, args.source,
+                                     auth_source if c == 'auth' else None)
+                  for c in selected}
     body = {'schema': 3, 'source': args.source, 'branch': branch, 'tag': args.tag,
             'executor_sha': executor_sha, 'normalized': normalized, 'identities': identities,
-            'dev_reference': args.dev_reference, 'selected': selected}
+            'dev_reference': args.dev_reference, 'selected': selected,
+            'release_source_mode': release_source_mode}
+    if auth_source is not None:
+        body['auth_source'] = auth_source
     body['id'] = digest(release_identity(body))
     return body
 
@@ -438,7 +541,7 @@ class Engine:
                 raise Breakpoint('stage1-checkpoint-invalid', 'failed', False,
                                  'inspect-retained-artifact', stage='prepare')
 
-        if release_identity(retained_plan) == release_identity(self.plan):
+        if compatible_release_identity(retained_plan) == compatible_release_identity(self.plan):
             if retained_state.get('status') not in ('prepared', 'ready'):
                 raise Breakpoint('stage1-checkpoint-runtime-started', 'failed', False,
                                  'inspect-latest-checkpoint', stage='prepare')
@@ -496,6 +599,8 @@ class Engine:
 
     def prepare(self, reuse=None, dev=None):
         require(not self.state['components'], 'prepare-after-runtime-forbidden')
+        source_mode = release_source_mode(self.plan)
+        require(source_mode in ('independent', 'legacy_monorepo'), 'release-source-mode-invalid')
         old = Path(reuse).resolve() if reuse else None
         self.resume_or_validate_reuse(old)
         provenance = Engine(dev) if dev else None
@@ -545,6 +650,10 @@ class Engine:
                         shutil.copy2(source / 'frontend.tgz', self.directory / 'frontend.tgz')
             if receipt is None:
                 require(not (self.plan['normalized']['environment'] == 'production' and c != 'frontend'), 'dev-source-config-incompatible')
+                if (c == 'auth' and
+                        source_mode == 'independent'):
+                    require(isinstance(self.plan.get('auth_source'), dict),
+                            'independent-auth-source-required')
                 artifact = (self.prepare_container(c) if c in ('auth', 'bff')
                             else self.provider.prepare(c))
                 receipt = {'schema': 2, 'component': c, 'identity': self.plan['identities'][c],
@@ -552,6 +661,18 @@ class Engine:
                            'target_config': digest(self.plan['normalized']['frontend']) if c == 'frontend' else None}
                 if c in ('auth', 'bff'):
                     receipt['build'] = self.safe_build_record(self.state['builds'][c])
+                if (c == 'auth' and source_mode == 'independent' and
+                        isinstance(self.plan.get('auth_source'), dict)):
+                    source = self.plan['auth_source']
+                    receipt['schema'] = 3
+                    receipt['auth_source'] = {
+                        'repository_id': source['repository_id'],
+                        'revision': source['revision'],
+                        'tree_sha256': source['tree_sha256'],
+                        'artifact_id': source['artifact_id'],
+                        'build_run_id': source['run_id'],
+                        'build_run_attempt': source['run_attempt'],
+                    }
             elif c == 'worker':
                 receipt = copy.deepcopy(receipt)
                 receipt['artifact']['pipeline_config'] = self.provider.prepare_pipeline_config()
@@ -563,7 +684,100 @@ class Engine:
             write(self.directory / 'receipts/retained' / (digest(receipt)+'.json'), receipt)
             write(dest, receipt)
             self.save()
+        if (self.plan['normalized']['environment'] == 'development' and
+                'auth' not in self.plan['selected'] and
+                source_mode == 'independent' and
+                isinstance(self.plan.get('auth_source'), dict)):
+            source_directory = provenance.directory if provenance else old
+            auth_receipt_path = source_directory / 'receipts/auth.json' if source_directory else None
+            require(auth_receipt_path is not None and auth_receipt_path.is_file(),
+                    'auth-source-artifact-unavailable')
+            auth_receipt = read(auth_receipt_path)
+            expected_identity = source_identity('auth', self.plan['source'], self.plan['auth_source'])
+            require(auth_receipt.get('component') == 'auth' and auth_receipt.get('schema') == 3 and
+                    auth_receipt.get('identity') == expected_identity and
+                    auth_receipt.get('auth_source') == {
+                        'repository_id': self.plan['auth_source']['repository_id'],
+                        'revision': self.plan['auth_source']['revision'],
+                        'tree_sha256': self.plan['auth_source']['tree_sha256'],
+                        'artifact_id': self.plan['auth_source']['artifact_id'],
+                        'build_run_id': self.plan['auth_source']['run_id'],
+                        'build_run_attempt': self.plan['auth_source']['run_attempt'],
+                    }, 'auth-source-artifact-incompatible')
+            auth_receipt = copy.deepcopy(auth_receipt)
+            auth_receipt['build_sha'] = self.plan['source']
+            auth_receipt['auth_config_inputs'] = self.auth_input_snapshot()
+            auth_receipt['auth_materialization_schema'] = 1
+            self.provider.usable('auth', auth_receipt['artifact'])
+            write(self.directory / 'receipts/auth.json', auth_receipt)
         self.barrier()
+        if (self.plan['normalized']['environment'] == 'development' and
+                source_mode == 'independent' and
+                isinstance(self.plan.get('auth_source'), dict)):
+            auth_receipt_path = self.directory / 'receipts/auth.json'
+            if auth_receipt_path.exists():
+                auth_receipt = read(auth_receipt_path)
+                image = auth_receipt.get('artifact', {}).get('image')
+                match = re.search(r'@sha256:([0-9a-f]{64})$', image) if isinstance(image, str) else None
+                repository_id = os.environ.get('GITHUB_REPOSITORY_ID', '')
+                run_id = os.environ.get('GITHUB_RUN_ID', '')
+                run_attempt = os.environ.get('GITHUB_RUN_ATTEMPT', '')
+                source = self.plan['auth_source']
+                require(re.fullmatch(r'[1-9][0-9]*', repository_id) is not None and
+                        re.fullmatch(r'[1-9][0-9]*', run_id) is not None and
+                        re.fullmatch(r'[1-9][0-9]*', run_attempt) is not None and match is not None,
+                        'independent-dev-source-identity-invalid')
+                metadata = {
+                    'lwc': {'repository_id': 'github:' + repository_id, 'sha': self.plan['source'],
+                            'run_id': int(run_id), 'run_attempt': int(run_attempt)},
+                    'auth': {'repository_id': source['repository_id'],
+                             'revision': source['revision'], 'tree_sha256': source['tree_sha256'],
+                             'run_id': source['run_id'], 'run_attempt': source['run_attempt'],
+                             'artifact_id': source['artifact_id'],
+                             'artifact_digest': 'sha256:' + match.group(1)},
+                }
+                write(self.directory / 'dev-source-metadata.json', metadata)
+        has_dev_backend = any(c in self.plan['selected'] for c in ('auth', 'bff', 'worker', 'exportjob'))
+        if (self.plan['normalized']['environment'] == 'development' and has_dev_backend and
+                source_mode == 'independent'):
+            require(os.environ.get('GAT4_DEV_RECEIPT_MODE') == 'independent' and
+                    os.environ.get('GITHUB_RUN_ID') and os.environ.get('GITHUB_RUN_ATTEMPT'),
+                    'independent-dev-receipt-producer-identity-required')
+        if (self.plan['normalized']['environment'] == 'development' and
+                source_mode in ('independent', 'legacy_monorepo') and
+                has_dev_backend and
+                os.environ.get('GAT4_DEV_RECEIPT_MODE') == source_mode and
+                os.environ.get('GITHUB_RUN_ID') and os.environ.get('GITHUB_RUN_ATTEMPT')):
+            image_dir = self.directory / 'images'
+            image_dir.mkdir(exist_ok=True)
+            for component in ('auth', 'bff', 'worker', 'exportjob'):
+                if component not in self.plan['selected'] and component != 'auth':
+                    continue
+                component_receipt_path = self.directory / 'receipts' / (component + '.json')
+                if not component_receipt_path.is_file():
+                    continue
+                component_receipt = read(component_receipt_path)
+                image = component_receipt.get('artifact', {}).get('image')
+                require(isinstance(image, str), 'artifact-image-missing')
+                (image_dir / f'{component}-image-{self.plan["source"]}.txt').write_text(
+                    image + '\n', encoding='utf-8')
+            env = dict(os.environ, ROOT=str(ROOT), PLAN_PATH=str(self.directory / 'plan.json'),
+                       ARTIFACT_DIR=str(self.directory), SOURCE_SHA=self.plan['source'],
+                       ENVIRONMENT='development')
+            run(['bash', '-c', 'source "$ROOT/deploy/components/common.sh"; record_dev_receipt'],
+                cwd=ROOT, env=env, timeout=120)
+            dev_receipt = read(image_dir / 'dev-receipt.json')
+            if source_mode == 'independent':
+                metadata = read(self.directory / 'dev-source-metadata.json')
+                validate_dev_receipt(dev_receipt, 'independent', metadata['lwc'], metadata['auth'],
+                                     [c for c in self.plan['selected']
+                                      if c in ('auth', 'bff', 'worker', 'exportjob')])
+            else:
+                validate_dev_receipt(dev_receipt, 'legacy_monorepo', {
+                    'sha': self.plan['source'], 'run_id': int(os.environ['GITHUB_RUN_ID']),
+                    'run_attempt': int(os.environ['GITHUB_RUN_ATTEMPT'])},
+                    expected_components=[c for c in self.plan['selected']
+                                         if c in ('auth', 'bff', 'worker', 'exportjob')])
         self.state['status'] = 'ready'
         self.save()
 
@@ -822,6 +1036,13 @@ def main():
     parser.add_argument('--dev')
     parser.add_argument('--dev-reference')
     parser.add_argument('--executor-sha')
+    parser.add_argument('--release-source-mode', choices=('independent', 'legacy_monorepo'))
+    parser.add_argument('--auth-repository-id')
+    parser.add_argument('--auth-revision')
+    parser.add_argument('--auth-tree-sha256')
+    parser.add_argument('--auth-artifact-id')
+    parser.add_argument('--auth-run-id')
+    parser.add_argument('--auth-run-attempt')
     parser.add_argument('--force', action='store_true')
     args = parser.parse_args()
     directory = Path(args.directory).resolve()

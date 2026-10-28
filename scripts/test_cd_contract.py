@@ -350,6 +350,7 @@ class CDContractTests(LegacyMonorepoCDTestMixin, unittest.TestCase):
                 "ARTIFACT_DIR": str(artifact_dir),
                 "GITHUB_RUN_ID": "123",
                 "GITHUB_RUN_ATTEMPT": "2",
+                "GAT4_DEV_RECEIPT_MODE": "legacy_monorepo",
             }
             partial = subprocess.run(
                 ["bash", str(ROOT / "deploy/cd.sh"), "record-dev-receipt"],

@@ -17,10 +17,13 @@ mkdir -p "$clean_repo"
 cp -R "$repo_root/gateauth" "$clean_repo/gateauth"
 mkdir -p "$clean_repo/scripts"
 cp -R "$repo_root/scripts/gat4-local" "$clean_repo/scripts/gat4-local"
+mkdir -p "$clean_repo/apps/bff/deploy/contracts"
+cp "$repo_root/apps/bff/deploy/contracts/gateauth-artifact-v1.schema.json" \
+  "$clean_repo/apps/bff/deploy/contracts/gateauth-artifact-v1.schema.json"
 git -C "$clean_repo" init -q
 git -C "$clean_repo" config user.name "GAT-4 local fixture"
 git -C "$clean_repo" config user.email "gat4-local@example.test"
-git -C "$clean_repo" add gateauth scripts/gat4-local
+git -C "$clean_repo" add gateauth scripts/gat4-local apps/bff/deploy/contracts
 git -C "$clean_repo" commit -qm "isolated GateAuth local build fixture"
 clean_tmp="$work/tmp"
 mkdir -p "$clean_tmp"

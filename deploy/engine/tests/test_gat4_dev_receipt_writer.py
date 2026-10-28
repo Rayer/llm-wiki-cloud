@@ -124,7 +124,7 @@ class DevReceiptWriterTests(unittest.TestCase):
                 env["GAT4_DEV_RECEIPT_SOURCE_METADATA_FILE"] = str(metadata_path)
             if mode == "independent":
                 env["GAT4_DEV_RECEIPT_MODE"] = "independent"
-            elif mode == "legacy-explicit":
+            elif mode in ("legacy", "legacy-explicit"):
                 env["GAT4_DEV_RECEIPT_MODE"] = "legacy_monorepo"
             if selector is not None:
                 env["GAT4_DEV_RECEIPT_MODE"] = selector
@@ -181,11 +181,11 @@ class DevReceiptWriterTests(unittest.TestCase):
         self.assertEqual(receipt["images"]["auth"], auth["artifact"]["image"])
         self.assertTrue(artifact.validate_receipt_pair(auth, receipt, "independent"))
 
-    def test_metadata_alone_selects_independent_mode(self):
+    def test_metadata_does_not_select_independent_mode_implicitly(self):
         completed, receipt, auth = self.run_writer(mode="independent-auto")
-        self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertEqual(receipt["schema"], "lwc-306-dev-image-receipt-v2")
-        self.assertTrue(artifact.validate_receipt_pair(auth, receipt, "independent"))
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("source mode must be explicit", completed.stderr)
+        self.assertIsNone(receipt)
 
     def test_independent_pairs_auth_image_without_requiring_auth_selected(self):
         completed, receipt, auth = self.run_writer(mode="independent", selected_components=["bff"])

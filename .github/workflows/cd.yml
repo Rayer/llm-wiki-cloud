@@ -9,6 +9,40 @@ on:
         required: true
         type: string
         description: Deployment source SHA; a DEV Stage 1 resume supplies the retained plan source while executor_sha remains the current reviewed checkout
+      release_source_mode:
+        required: true
+        type: string
+        description: Explicit receipt compatibility mode; legacy_monorepo is only for retained legacy receipts
+      auth_repository_id:
+        required: false
+        type: number
+        default: 0
+        description: Immutable GitHub repository ID for the independent GateAuth source
+      auth_revision:
+        required: false
+        type: string
+        default: ''
+        description: Full GateAuth source commit SHA
+      auth_tree_sha256:
+        required: false
+        type: string
+        default: ''
+        description: SHA-256 of the clean GateAuth source tree
+      auth_artifact_id:
+        required: false
+        type: number
+        default: 0
+        description: Source artifact ID from the successful GateAuth workflow run
+      auth_run_id:
+        required: false
+        type: number
+        default: 0
+        description: Successful GateAuth workflow run ID which produced the source artifact
+      auth_run_attempt:
+        required: false
+        type: number
+        default: 0
+        description: Successful GateAuth workflow run attempt
       executor_sha:
         required: true
         type: string
@@ -59,6 +93,9 @@ jobs:
       TARGET: ${{ inputs.environment }}
       SOURCE: ${{ inputs.source_sha }}
       EXECUTOR_SHA: ${{ inputs.executor_sha }}
+      GAT4_RELEASE_SOURCE_MODE: ${{ inputs.release_source_mode }}
+      GAT4_DEV_RECEIPT_MODE: ${{ inputs.release_source_mode }}
+      GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
       COMPONENTS: ${{ inputs.components }}
       RELEASE_TAG: ${{ inputs.release_tag }}
       REUSE_ID: ${{ inputs.artifact_id }}
@@ -75,6 +112,68 @@ jobs:
           persist-credentials: false
       - name: Validate executor checkout
         run: test "$(git rev-parse HEAD)" = "$EXECUTOR_SHA"
+      - name: Resolve immutable GateAuth source identity
+        id: gateauth-source
+        if: inputs.operation == 'release' && inputs.environment == 'development' && inputs.release_source_mode == 'independent' && contains(format(',{0},', inputs.components), ',auth,')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AUTH_REPOSITORY_ID: ${{ inputs.auth_repository_id }}
+          AUTH_REVISION: ${{ inputs.auth_revision }}
+          AUTH_TREE_SHA256: ${{ inputs.auth_tree_sha256 }}
+          AUTH_ARTIFACT_ID: ${{ inputs.auth_artifact_id }}
+          AUTH_RUN_ID: ${{ inputs.auth_run_id }}
+          AUTH_RUN_ATTEMPT: ${{ inputs.auth_run_attempt }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$AUTH_REPOSITORY_ID" =~ ^[1-9][0-9]*$ && "$AUTH_ARTIFACT_ID" =~ ^[1-9][0-9]*$ &&
+             "$AUTH_RUN_ID" =~ ^[1-9][0-9]*$ && "$AUTH_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ &&
+             "$AUTH_REVISION" =~ ^[0-9a-f]{40}$ && "$AUTH_TREE_SHA256" =~ ^sha256:[0-9a-f]{64}$ &&
+             "$AUTH_REPOSITORY_ID" != "$GITHUB_REPOSITORY_ID" ]] || {
+            echo "Independent Auth source inputs are incomplete or malformed." >&2
+            exit 1
+          }
+          repository_json="$(gh api "/repositories/$AUTH_REPOSITORY_ID")"
+          repository_name="$(jq -er --argjson id "$AUTH_REPOSITORY_ID" 'select(.id == $id) | .full_name' <<<"$repository_json")"
+          run_json="$(gh api "repos/$repository_name/actions/runs/$AUTH_RUN_ID")"
+          jq -e --argjson repo_id "$AUTH_REPOSITORY_ID" --argjson run_id "$AUTH_RUN_ID" \
+            --argjson attempt "$AUTH_RUN_ATTEMPT" --arg revision "$AUTH_REVISION" \
+            '.repository.id == $repo_id and .id == $run_id and .run_attempt == $attempt and
+             .head_sha == $revision and .status == "completed" and .conclusion == "success"' \
+            <<<"$run_json" >/dev/null || { echo "Auth source run identity does not match the pinned tuple." >&2; exit 1; }
+          artifact_json="$(gh api "repos/$repository_name/actions/artifacts/$AUTH_ARTIFACT_ID")"
+          jq -e --argjson run_id "$AUTH_RUN_ID" '.expired == false and .workflow_run.id == $run_id' \
+            <<<"$artifact_json" >/dev/null || { echo "Auth source artifact does not belong to the pinned successful run." >&2; exit 1; }
+          echo "repository_name=$repository_name" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        if: inputs.operation == 'release' && inputs.environment == 'development' && inputs.release_source_mode == 'independent' && contains(format(',{0},', inputs.components), ',auth,')
+        with:
+          repository: ${{ steps.gateauth-source.outputs.repository_name }}
+          ref: ${{ inputs.auth_revision }}
+          path: auth-source-checkout
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Verify and stage exact GateAuth source tree
+        if: inputs.operation == 'release' && inputs.environment == 'development' && inputs.release_source_mode == 'independent' && contains(format(',{0},', inputs.components), ',auth,')
+        env:
+          AUTH_REVISION: ${{ inputs.auth_revision }}
+          AUTH_TREE_SHA256: ${{ inputs.auth_tree_sha256 }}
+        run: |
+          set -Eeuo pipefail
+          checkout="$GITHUB_WORKSPACE/auth-source-checkout"
+          source_root="$RUNNER_TEMP/gateauth-source"
+          test "$(git -C "$checkout" rev-parse HEAD)" = "$AUTH_REVISION"
+          test -z "$(git -C "$checkout" status --porcelain)"
+          rm -rf "$source_root"
+          mkdir -p "$source_root"
+          git -C "$checkout" archive "$AUTH_REVISION" | tar -x -C "$source_root"
+          actual_tree="$(python3 scripts/gat4-local/artifact.py tree-digest --root "$source_root")"
+          test "$actual_tree" = "$AUTH_TREE_SHA256"
+          grep -Fxq 'module github.com/rayer/gateauth' "$source_root/go.mod"
+          rm -rf "$checkout"
+          printf 'AUTH_SOURCE_ROOT=%s\n' "$source_root" >> "$GITHUB_ENV"
+      - name: Select independent DEV receipt producer
+        if: inputs.environment == 'development' && inputs.release_source_mode == 'independent'
+        run: echo "GAT4_DEV_RECEIPT_SOURCE_METADATA_FILE=$RUNNER_TEMP/release/dev-source-metadata.json" >> "$GITHUB_ENV"
       - name: Validate retained Stage 1 source input
         if: inputs.operation == 'release' && inputs.environment == 'development' && inputs.source_sha != github.sha
         env:
@@ -123,6 +222,12 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
           VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
+          AUTH_REPOSITORY_ID: ${{ inputs.auth_repository_id }}
+          AUTH_REVISION: ${{ inputs.auth_revision }}
+          AUTH_TREE_SHA256: ${{ inputs.auth_tree_sha256 }}
+          AUTH_ARTIFACT_ID: ${{ inputs.auth_artifact_id }}
+          AUTH_RUN_ID: ${{ inputs.auth_run_id }}
+          AUTH_RUN_ATTEMPT: ${{ inputs.auth_run_attempt }}
         with:
           operation: prepare
       - name: Publish ready stage barrier
@@ -134,7 +239,6 @@ jobs:
           path: ${{ runner.temp }}/release
           retention-days: 90
           if-no-files-found: error
-
       - name: Validate explicit recovery inputs
         if: inputs.operation != 'release'
         run: |

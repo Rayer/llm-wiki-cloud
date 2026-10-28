@@ -23,6 +23,13 @@ def fixture(name):
 
 
 class ReceiptContractTests(unittest.TestCase):
+    def test_lwc_keeps_versioned_auth_artifact_protocol_schema(self):
+        schema_path = ROOT / "apps/bff/deploy/contracts/gateauth-artifact-v1.schema.json"
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        self.assertEqual(schema["title"], "lwc-gateauth-artifact-v1")
+        self.assertEqual(schema["properties"]["source"]["properties"]["kind"]["const"],
+                         "local_snapshot")
+
     def test_frozen_legacy_receipts_remain_compatible_only_in_legacy_mode(self):
         auth = fixture("auth-receipt-v2-legacy.json")
         dev = fixture("dev-receipt-v1-legacy.json")

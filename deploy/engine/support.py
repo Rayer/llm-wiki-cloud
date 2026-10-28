@@ -168,6 +168,17 @@ def require(ok, reason):
         raise Breakpoint(reason)
 
 
+def release_source_mode(plan):
+    mode = plan.get('release_source_mode')
+    if mode in ('independent', 'legacy_monorepo'):
+        return mode
+    # Plans predating the source-mode field can only be legacy: an independent
+    # Auth plan must carry its immutable auth_source tuple and explicit mode.
+    if plan.get('schema') in (2, 3) and not plan.get('auth_source'):
+        return 'legacy_monorepo'
+    return None
+
+
 def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 

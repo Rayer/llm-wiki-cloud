@@ -40,6 +40,36 @@ on:
         description: Verified existing Worker Job timeout in seconds; required for Pipeline config generation
         type: string
         default: ''
+      release_source_mode:
+        description: Explicit image receipt mode; legacy_monorepo is restricted to retained legacy receipts
+        required: true
+        type: choice
+        options: [independent, legacy_monorepo]
+        default: independent
+      auth_repository_id:
+        description: Immutable GateAuth GitHub repository ID, required when an independent Auth build is selected
+        type: number
+        default: 0
+      auth_revision:
+        description: Full GateAuth commit SHA from the successful source workflow
+        type: string
+        default: ''
+      auth_tree_sha256:
+        description: SHA-256 digest of the clean GateAuth source tree
+        type: string
+        default: ''
+      auth_artifact_id:
+        description: Source artifact ID from the successful GateAuth workflow run
+        type: number
+        default: 0
+      auth_run_id:
+        description: Successful GateAuth workflow run ID
+        type: number
+        default: 0
+      auth_run_attempt:
+        description: Successful GateAuth workflow run attempt
+        type: number
+        default: 0
 permissions:
   contents: write
   actions: read
@@ -55,6 +85,13 @@ jobs:
       executor_sha: ${{ github.sha }}
       components: ${{ inputs.components }}
       release_tag: ${{ inputs.release_tag }}
+      release_source_mode: ${{ inputs.release_source_mode }}
+      auth_repository_id: ${{ inputs.auth_repository_id }}
+      auth_revision: ${{ inputs.auth_revision }}
+      auth_tree_sha256: ${{ inputs.auth_tree_sha256 }}
+      auth_artifact_id: ${{ inputs.auth_artifact_id }}
+      auth_run_id: ${{ inputs.auth_run_id }}
+      auth_run_attempt: ${{ inputs.auth_run_attempt }}
       artifact_id: ${{ inputs.artifact_id }}
       dev_artifact_id: ${{ inputs.dev_artifact_id }}
       frontend_config_artifact_id: ${{ inputs.frontend_config_artifact_id }}

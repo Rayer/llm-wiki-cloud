@@ -326,7 +326,7 @@ record_dev_receipt() {
   local selected components='[]' images='{}' component image auth_image fingerprint run_id run_attempt mode="${GAT4_DEV_RECEIPT_MODE:-}" metadata_file="${GAT4_DEV_RECEIPT_SOURCE_METADATA_FILE:-}" metadata_set=0
   [[ ${GAT4_DEV_RECEIPT_SOURCE_METADATA_FILE+x} ]] && metadata_set=1
   case "$mode" in
-    "") ;;
+    "") die "DEV receipt source mode must be explicit" ;;
     independent) [[ "$metadata_set" == 1 && -n "$metadata_file" ]] || die "independent DEV receipt source metadata file is required" ;;
     legacy_monorepo) [[ "$metadata_set" == 0 ]] || die "legacy_monorepo DEV receipt mode cannot use independent source metadata" ;;
     *) die "DEV receipt mode is invalid" ;;
