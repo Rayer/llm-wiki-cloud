@@ -1,0 +1,5 @@
+{
+  "Replace": {
+    "/Users/rayer/orca/workspaces/llm-wiki-cloud/GAT-4-cli-local-qa/gateauth/internal/auth/gat4_bootstrap_overlay_test.go": "/Users/rayer/orca/workspaces/llm-wiki-cloud/GAT-4-cli-local-qa/scripts/gat4-local/e2e/bootstrap_recovery/google_overlay_test.go"
+  }
+}

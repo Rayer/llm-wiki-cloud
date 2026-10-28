@@ -1,0 +1,636 @@
+{
+  "auth_audit_negative_controls": {
+    "blank_log_evidence_accepted": false,
+    "blank_log_mode": "0o600",
+    "blank_log_rejection_reason": "no_rpc_records",
+    "both_controls_rejected": true,
+    "header_only_log_evidence_accepted": false,
+    "header_only_log_mode": "0o600",
+    "header_only_log_rejection_reason": "no_rpc_records"
+  },
+  "auth_firestore_audits": [
+    {
+      "evidence_accepted": true,
+      "forbidden_collections": [],
+      "forbidden_field_coverage_complete": true,
+      "identity_collection_rpc_count": 13,
+      "mode": "0o600",
+      "path": "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/gat4-bootstrap-recovery-tmp/gat4-bootstrap-recovery-dd79pyne/auth-first-firestore-audit.log",
+      "rejection_reason": null,
+      "rpc_count": 20,
+      "rpc_lines_with_forbidden_field": 20
+    },
+    {
+      "evidence_accepted": true,
+      "forbidden_collections": [],
+      "forbidden_field_coverage_complete": true,
+      "identity_collection_rpc_count": 74,
+      "mode": "0o600",
+      "path": "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/gat4-bootstrap-recovery-tmp/gat4-bootstrap-recovery-dd79pyne/auth-restarted-firestore-audit.log",
+      "rejection_reason": null,
+      "rpc_count": 115,
+      "rpc_lines_with_forbidden_field": 115
+    },
+    {
+      "evidence_accepted": true,
+      "forbidden_collections": [],
+      "forbidden_field_coverage_complete": true,
+      "identity_collection_rpc_count": 21,
+      "mode": "0o600",
+      "path": "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/gat4-bootstrap-recovery-tmp/gat4-bootstrap-recovery-dd79pyne/google-test-firestore-audit.log",
+      "rejection_reason": null,
+      "rpc_count": 58,
+      "rpc_lines_with_forbidden_field": 58
+    }
+  ],
+  "checks": {
+    "concurrent_bootstrap": {
+      "concurrent_calls": 6,
+      "listed_once": true,
+      "metadata_count": 1,
+      "project_id": "default",
+      "registry_count": 1,
+      "repeat_status": 200,
+      "successful_statuses": [
+        200,
+        200,
+        200,
+        200,
+        200,
+        200
+      ],
+      "user_id": "0194ab3922503f5348385a47"
+    },
+    "demo_identity_bootstrap": {
+      "bootstrap_status": 200,
+      "default_project_id": "default",
+      "listed_default_project_once": true,
+      "metadata_count": 1,
+      "non_admin": true,
+      "project_list_status": 200,
+      "refresh_cookie_present": true,
+      "registry_count": 1,
+      "role": "member",
+      "startup_identity_only_before_bootstrap": true,
+      "user_id": "gat4-bootstrap-demo"
+    },
+    "existing_project_preservation": {
+      "fixture_condition": "synthetic binding/profile sentinels added only after the real first bootstrap created both documents",
+      "legacy_metadata_unchanged": true,
+      "registry_fields_preserved": [
+        "user_id",
+        "project_id",
+        "name",
+        "status",
+        "created_at",
+        "sync_binding",
+        "profile"
+      ],
+      "registry_values_unchanged": true,
+      "repeat_status": 200
+    },
+    "google_jit_and_existing_login": {
+      "existing_login": {
+        "bff_bootstrap_status": 200,
+        "bff_project_list_status": 200,
+        "bff_project_listed_once": true,
+        "default_project_id": "default",
+        "identity_only_before_bff": true,
+        "jit_provisioned": false,
+        "user_id": "gat4-google-user-358888e4ec2ecf5d"
+      },
+      "new_jit": {
+        "bff_bootstrap_status": 200,
+        "bff_project_list_status": 200,
+        "bff_project_listed_once": true,
+        "default_project_id": "default",
+        "identity_only_before_bff": true,
+        "jit_provisioned": true,
+        "user_id": "31783515c00e59c98ba21223"
+      },
+      "provider_seam": "existing repository fake Google provider, production callback and identity repository, real Firestore emulator; no external Google OIDC/browser flow"
+    },
+    "mismatch_rejected_without_writes": {
+      "bootstrap_status": 409,
+      "conflicting_metadata_unchanged": true,
+      "error": "setup_conflict",
+      "fixture_type": "synthetic target metadata owner mismatch",
+      "project_id": "default",
+      "registry_write_count_delta": 0,
+      "user_id": "6897e8a1f956b15dd83ea8ad"
+    },
+    "password_identity_commit_failure_reentry_retry": {
+      "auth_identity_pointer": "default",
+      "email_domain": "example.test",
+      "failure_class": "owned Auth HTTP process outage between Auth identity commit and BFF bootstrap; not a Firestore outage",
+      "first_bootstrap_http_status": 503,
+      "identity_only_before_bootstrap": true,
+      "listed_default_project": {
+        "created_at": "2026-10-28T20:41:44Z",
+        "id": "default",
+        "name": "My First Wiki"
+      },
+      "login_refresh_cookie_present": true,
+      "login_user_id": "10873bd0cd412b69d9adf642",
+      "metadata": {
+        "created_at": "2026-10-28T20:41:44.644081Z",
+        "name": "My First Wiki"
+      },
+      "metadata_document_id": "default",
+      "pair_counts": {
+        "legacy_metadata": 1,
+        "registry": 1
+      },
+      "prebootstrap_login_refresh_cookie_present": true,
+      "prebootstrap_login_user_id": "10873bd0cd412b69d9adf642",
+      "prebootstrap_project_ids": [],
+      "prebootstrap_project_list_status": 200,
+      "product_documents_absent_after_first_failure": true,
+      "registered_user_id": "10873bd0cd412b69d9adf642",
+      "registration_default_project_id": "default",
+      "registry": {
+        "created_at": "2026-10-28T20:41:44.644081Z",
+        "name": "My First Wiki",
+        "project_id": "default",
+        "status": "ready",
+        "user_id": "10873bd0cd412b69d9adf642"
+      },
+      "registry_document_id": "10873bd0cd412b69d9adf642_default",
+      "retry_http_status": 200,
+      "unmodified_web_caller_would_see_empty_list": true
+    }
+  },
+  "cleanup": {
+    "all_owned_child_processes_exited": true,
+    "all_owned_listeners_closed": true,
+    "process_records": [
+      {
+        "exit_code": -15,
+        "listener_closed": true,
+        "name": "auth-first",
+        "pid": 20946
+      },
+      {
+        "exit_code": -15,
+        "listener_closed": true,
+        "name": "auth-restarted",
+        "pid": 21059
+      },
+      {
+        "exit_code": 0,
+        "listener_closed": true,
+        "name": "bff",
+        "pid": 21032
+      },
+      {
+        "exit_code": 0,
+        "listener_closed": true,
+        "name": "storage",
+        "pid": 20905
+      },
+      {
+        "exit_code": -15,
+        "listener_closed": true,
+        "name": "firestore",
+        "pid": 20814
+      }
+    ]
+  },
+  "commands": [
+    {
+      "argv": [
+        "go",
+        "build",
+        "-trimpath",
+        "-o",
+        "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/gat4-bootstrap-recovery-tmp/gat4-bootstrap-recovery-dd79pyne/bin/gateauth",
+        "./cmd/auth"
+      ],
+      "cwd": "gateauth",
+      "exit_code": 0,
+      "label": "build GateAuth cmd/auth"
+    },
+    {
+      "argv": [
+        "go",
+        "build",
+        "-trimpath",
+        "-o",
+        "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/gat4-bootstrap-recovery-tmp/gat4-bootstrap-recovery-dd79pyne/bin/bff",
+        "./cmd/bff"
+      ],
+      "cwd": "apps/bff",
+      "exit_code": 0,
+      "label": "build BFF cmd/bff"
+    },
+    {
+      "argv": [
+        "go",
+        "build",
+        "-trimpath",
+        "-o",
+        "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/gat4-bootstrap-recovery-tmp/gat4-bootstrap-recovery-dd79pyne/bin/olw_worker",
+        "./cmd/olw_worker"
+      ],
+      "cwd": "apps/bff",
+      "exit_code": 0,
+      "label": "build local BFF pipeline worker"
+    },
+    {
+      "argv": [
+        "go",
+        "install",
+        "github.com/fsouza/fake-gcs-server@v1.52.1"
+      ],
+      "cwd": ".",
+      "exit_code": 0,
+      "label": "install pinned in-memory GCS emulator"
+    },
+    {
+      "argv": [
+        "go",
+        "run",
+        "./cmd/pipeline_config",
+        "prepare",
+        "--target",
+        "bff",
+        "--environment",
+        "local",
+        "--output",
+        "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/gat4-bootstrap-recovery-tmp/gat4-bootstrap-recovery-dd79pyne/config"
+      ],
+      "cwd": "apps/bff",
+      "exit_code": 0,
+      "label": "CaC prepare target=bff environment=local"
+    },
+    {
+      "argv": [
+        "go",
+        "run",
+        "./cmd/pipeline_config",
+        "prepare",
+        "--target",
+        "auth",
+        "--environment",
+        "local",
+        "--output",
+        "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/gat4-bootstrap-recovery-tmp/gat4-bootstrap-recovery-dd79pyne/config"
+      ],
+      "cwd": "apps/bff",
+      "exit_code": 0,
+      "label": "CaC prepare target=auth environment=local"
+    },
+    {
+      "argv": [
+        "go",
+        "test",
+        "-overlay=/Users/rayer/orca/workspaces/llm-wiki-cloud/GAT-4-cli-local-qa/scripts/gat4-local/e2e/bootstrap_recovery/google-overlay.json",
+        "./internal/auth",
+        "-run",
+        "^TestGAT4BootstrapGoogleBusinessFlow$",
+        "-count=1",
+        "-v"
+      ],
+      "cwd": "gateauth",
+      "exit_code": 0,
+      "label": "Google JIT/new + existing identity business flow with overlay and actual BFF"
+    }
+  ],
+  "config": {
+    "auth_config_mode": "0o600",
+    "auth_listen_port_from_materialized_config": null,
+    "auth_observed_listen_line": "Auth service listening on 127.0.0.1:64988",
+    "auth_origin": "http://localhost:64988",
+    "auth_port_input": 64988,
+    "auth_runtime_listen_PORT_env": 64988,
+    "bff_config_mode": "0o600",
+    "bff_origin": "http://localhost:64989",
+    "firestore_origin": "http://127.0.0.1:64986",
+    "jwt_key_mode": "0o600",
+    "producer": "apps/bff/cmd/pipeline_config prepare --target {bff,auth} --environment local",
+    "scope": "gat4-bootstrap-4d18a625721821ff9db7",
+    "storage_origin": "http://127.0.0.1:64987"
+  },
+  "exit_counts": {
+    "commands_failed": 0,
+    "commands_passed": 7,
+    "commands_total": 7,
+    "expected_http_non2xx_controls": [
+      {
+        "label": "password_first_bootstrap_auth_outage",
+        "status": 503
+      },
+      {
+        "label": "mismatch_target_rejected",
+        "status": 409
+      }
+    ],
+    "http_non_2xx": 2,
+    "recorded_http_events": 22,
+    "unexpected_http_non2xx": []
+  },
+  "finished_at": "2026-10-28T20:41:51.052147+00:00",
+  "fixtures": [
+    {
+      "bucket_seeded": true,
+      "created_status": 200,
+      "type": "synthetic_in_memory_object_storage"
+    },
+    {
+      "path": "local_scopes/{scope}/system/settings",
+      "type": "seeded_registration_policy",
+      "values": {
+        "email_registration_enabled": true,
+        "google_registration_enabled": true,
+        "registration_enabled": true
+      }
+    },
+    {
+      "creation": "Auth process startup ensureDemoAccountAtStartup",
+      "role": "member",
+      "type": "synthetic_demo_identity",
+      "user_id": "gat4-bootstrap-demo"
+    },
+    {
+      "path": "local_scopes/gat4-bootstrap-4d18a625721821ff9db7/system/settings",
+      "purpose": "allow synthetic password and Google identity registration",
+      "seeded": true,
+      "type": "registration_policy"
+    },
+    {
+      "product_documents_before_bootstrap": true,
+      "seeded_via": "production IdentityRepository.ProvisionExternalUser test seam before real callback",
+      "type": "existing_google_auth_identity",
+      "user_id": "gat4-google-user-358888e4ec2ecf5d"
+    },
+    {
+      "creation": "real callback JIT branch with existing local fake provider and emulator",
+      "product_documents_before_bootstrap": true,
+      "type": "new_google_jit_identity",
+      "user_id": "31783515c00e59c98ba21223"
+    }
+  ],
+  "frontend_source_review": {
+    "auth_apply_session_persists_auth_response": true,
+    "bootstrap_endpoint_called_by_reviewed_frontend_callers": false,
+    "demo_session_test_covers_auth_state_not_bootstrap": true,
+    "demo_unit_test_covers_auth_storage_not_bootstrap": true,
+    "google_completion_hydrates_then_routes": true,
+    "google_unit_test_covers_cookie_hydration_not_bootstrap": true,
+    "jit_event_only_opens_project_rename": true,
+    "password_register_login_demo_use_auth_apply": true,
+    "pending_or_retry_state_found": false,
+    "recovery_call_gap": true,
+    "review_kind": "source-only; not a browser run",
+    "reviewed_test_files": {
+      "demo_auth": {
+        "path": "apps/frontend/tests/lwc-366-demo-auth.test.tsx",
+        "sha256": "a0e7cda99c27f4deac7850302d15a9acfa873891a5a50be634b5e11ea3b67438"
+      },
+      "demo_session": {
+        "path": "apps/frontend/tests/lwc-135-demo-session.test.mjs",
+        "sha256": "7e7d8b3cea4677429b95d50a561bbb672edf32fe98e5ecf9768409ffbcdb56f8"
+      },
+      "google_hydration": {
+        "path": "apps/frontend/tests/lwc-317-google-hydration.test.tsx",
+        "sha256": "ca022190a668baffbf35499aeb918d2b776bfd0318853da5418770c8ad307fd6"
+      }
+    },
+    "reviewed_unit_tests_exercised_by_this_harness": false,
+    "source_files": {
+      "auth_context": {
+        "path": "apps/frontend/src/lib/auth.tsx",
+        "sha256": "327d255c2d917a394a226170ba8359ea82cf3f8924a5bbbff4e7d0a7b61222f6"
+      },
+      "google_completion": {
+        "path": "apps/frontend/src/components/GoogleCompletionClient.tsx",
+        "sha256": "085efad2118aedc9b0c87f23086337cf7b5972ce6156c94686a5a2fe625d5a2a"
+      },
+      "shell": {
+        "path": "apps/frontend/src/components/Shell.tsx",
+        "sha256": "4537b935fc6b7fa75da9c1641f6b9579e62b677b42696d79f9c9eb3ac3f1c5ee"
+      },
+      "workspace_provider": {
+        "path": "apps/frontend/src/components/WorkspaceProvider.tsx",
+        "sha256": "1de7a67f1e0d7a485d98a569e7220706c7effe9e972a0232faa326bed3198d3c"
+      }
+    },
+    "workspace_reentry_only_loads_projects": true
+  },
+  "harness": {
+    "google_overlay_sha256": "c871b6640bc6441a5c0ae89da661aaebeae27c4a56acb3c8ca92a81479d270c6",
+    "overlay_map_sha256": "d08eaf92e76480e6589de07cdcc5ea8c41682ceb4240c48abbc18a41b882e060",
+    "runner_sha256": "b72082656bb4e2fc4d3fb0f5c58d2f152c40f119d0feb04dc955f15d9366ae13"
+  },
+  "harness_exit_code": 0,
+  "http": [
+    {
+      "default_project_id": "default",
+      "label": "password_register",
+      "status": 201,
+      "user_id": "10873bd0cd412b69d9adf642"
+    },
+    {
+      "label": "password_login_before_first_bootstrap",
+      "refresh_cookie_present": true,
+      "status": 200,
+      "user_id": "10873bd0cd412b69d9adf642"
+    },
+    {
+      "label": "password_project_list_before_bootstrap",
+      "status": 200
+    },
+    {
+      "error_code": "account access unavailable",
+      "label": "password_first_bootstrap_auth_outage",
+      "status": 503
+    },
+    {
+      "label": "password_login_after_auth_restart",
+      "refresh_cookie_present": true,
+      "status": 200,
+      "user_id": "10873bd0cd412b69d9adf642"
+    },
+    {
+      "default_project_id": "default",
+      "label": "password_bootstrap_retry_after_login",
+      "status": 200
+    },
+    {
+      "label": "password_login_for_idempotence",
+      "refresh_cookie_present": true,
+      "status": 200,
+      "user_id": "10873bd0cd412b69d9adf642"
+    },
+    {
+      "default_project_id": "default",
+      "label": "password_existing_project_idempotent_repeat",
+      "status": 200
+    },
+    {
+      "default_project_id": "default",
+      "label": "concurrent_password_register",
+      "status": 201,
+      "user_id": "0194ab3922503f5348385a47"
+    },
+    {
+      "label": "concurrent_password_login",
+      "refresh_cookie_present": true,
+      "status": 200,
+      "user_id": "0194ab3922503f5348385a47"
+    },
+    {
+      "default_project_id": "default",
+      "label": "concurrent_bootstrap_4",
+      "status": 200
+    },
+    {
+      "default_project_id": "default",
+      "label": "concurrent_bootstrap_2",
+      "status": 200
+    },
+    {
+      "default_project_id": "default",
+      "label": "concurrent_bootstrap_0",
+      "status": 200
+    },
+    {
+      "default_project_id": "default",
+      "label": "concurrent_bootstrap_1",
+      "status": 200
+    },
+    {
+      "default_project_id": "default",
+      "label": "concurrent_bootstrap_5",
+      "status": 200
+    },
+    {
+      "default_project_id": "default",
+      "label": "concurrent_bootstrap_3",
+      "status": 200
+    },
+    {
+      "default_project_id": "default",
+      "label": "concurrent_followup_bootstrap",
+      "status": 200
+    },
+    {
+      "default_project_id": "default",
+      "label": "conflict_password_register",
+      "status": 201,
+      "user_id": "6897e8a1f956b15dd83ea8ad"
+    },
+    {
+      "label": "conflict_password_login",
+      "refresh_cookie_present": true,
+      "status": 200,
+      "user_id": "6897e8a1f956b15dd83ea8ad"
+    },
+    {
+      "error_code": "setup_conflict",
+      "label": "mismatch_target_rejected",
+      "status": 409
+    },
+    {
+      "label": "demo_login",
+      "refresh_cookie_present": true,
+      "status": 200,
+      "user_id": "gat4-bootstrap-demo"
+    },
+    {
+      "default_project_id": "default",
+      "label": "demo_default_project_bootstrap",
+      "status": 200
+    }
+  ],
+  "not_run": [
+    "External Google OIDC credentials/provider/browser login; Google coverage uses the repository's existing local fake-provider test seam and real emulator persistence.",
+    "Browser automation and frontend unit tests; callers and tests are source-inspected only.",
+    "Cloud services, live accounts, IAM, deployment, publication, production readback, and provider/LLM calls.",
+    "GAT-4 acceptance outside identity/bootstrap parts of acceptance 1 and acceptance 5."
+  ],
+  "processes": [
+    {
+      "exit_code": -15,
+      "listener_closed": true,
+      "name": "auth-first",
+      "pid": 20946
+    },
+    {
+      "exit_code": -15,
+      "listener_closed": true,
+      "name": "auth-restarted",
+      "pid": 21059
+    },
+    {
+      "exit_code": 0,
+      "listener_closed": true,
+      "name": "bff",
+      "pid": 21032
+    },
+    {
+      "exit_code": 0,
+      "listener_closed": true,
+      "name": "storage",
+      "pid": 20905
+    },
+    {
+      "exit_code": -15,
+      "listener_closed": true,
+      "name": "firestore",
+      "pid": 20814
+    }
+  ],
+  "qualification": {
+    "auth_audit": "PASS: real RPC positives and zero forbidden Project/binding collections; blank/header-only controls rejected",
+    "concurrent_repeated_bootstrap": "PASS: six simultaneous HTTP requests plus repeat leave one registry and one legacy metadata document",
+    "demo": "PASS: actual Auth startup/demo login fixed non-admin identity bootstraps same default Project",
+    "frontend": "NOT RUN in browser; source review found no frontend bootstrap endpoint caller, so pending/re-entry UX is not qualified",
+    "google": "PASS: existing local Google callback business seam with real emulator identity persistence and actual BFF bootstrap for JIT and existing identity",
+    "identity_commit_only_before_bootstrap": true,
+    "mismatch": "PASS: actual BFF returns 409 setup_conflict with zero registry write and unchanged conflicting metadata",
+    "password_failure_login_retry": "PASS: owned Auth HTTP outage; same user/default Project recovered by real login and BFF bootstrap",
+    "preservation": "PASS: product-created docs retain name, created_at, status, profile, sync_binding, and metadata through repeat",
+    "qualification_complete": false,
+    "scope": "identity/bootstrap portion of acceptance 1 and acceptance 5 only"
+  },
+  "report_path": "/Users/rayer/orca/workspaces/llm-wiki-cloud/GAT-4-cli-local-qa/scripts/gat4-local/e2e/bootstrap_recovery/report.json",
+  "schema": "gat4-bootstrap-recovery-v1",
+  "scratch_path": "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/gat4-bootstrap-recovery-tmp/gat4-bootstrap-recovery-dd79pyne",
+  "source": {
+    "bff_authconsumer_blob": "54dd32f3d65077084ccf67291703c83ca2bc6485",
+    "bff_onboarding_blob": "62d6787202cafb94a3021947cc15cc40e95a30cf",
+    "bff_tree": "6ea0452a8b40cd571746912ef2140b713a6109d9",
+    "gateauth_tree": "1130034f986b700d08f933044e85afec64185476",
+    "gateauth_tree_matches_prior_cli_base": true,
+    "gcs_emulator": "fake-gcs-server v1.52.1, in-memory backend; explicit loopback storage origin",
+    "go_version": "go version go1.26.5 darwin/arm64",
+    "google_test_blob": "189c03db8e5e0bfff2555f7102d0d8ef14a7af21",
+    "main_go_component_trees": {
+      "apps/bff/cmd/bff": "f5da7fa70442d33e582959117bb9c0f39334b54c",
+      "apps/bff/go.mod": "fca8cbc04630234cb26270ad72a8092494070395",
+      "apps/bff/go.sum": "4e2230de1c45f43c2fb8c2bc1fc9e5bf8b793b8c",
+      "apps/bff/internal": "22fa29918cd9c641f2e297b26608d0752f85c4e6",
+      "gateauth/cmd/auth": "8f567dfd6c4e851c9506316b3f3f980bac7e4d2e",
+      "gateauth/go.mod": "5a0fccd1fe60a4ead2c94a9c4bec98378aad49a2",
+      "gateauth/go.sum": "4e2230de1c45f43c2fb8c2bc1fc9e5bf8b793b8c",
+      "gateauth/internal": "c1514a3b76c865a5591a0de871a3dfc807d764f6"
+    },
+    "main_source_reference": "701b1257075fb13bb468f68860206f3b1de5b4e5",
+    "tested_go_business_tree": "1130034f986b700d08f933044e85afec64185476",
+    "tested_go_component_trees": {
+      "apps/bff/cmd/bff": "f5da7fa70442d33e582959117bb9c0f39334b54c",
+      "apps/bff/go.mod": "fca8cbc04630234cb26270ad72a8092494070395",
+      "apps/bff/go.sum": "4e2230de1c45f43c2fb8c2bc1fc9e5bf8b793b8c",
+      "apps/bff/internal": "22fa29918cd9c641f2e297b26608d0752f85c4e6",
+      "gateauth/cmd/auth": "8f567dfd6c4e851c9506316b3f3f980bac7e4d2e",
+      "gateauth/go.mod": "5a0fccd1fe60a4ead2c94a9c4bec98378aad49a2",
+      "gateauth/go.sum": "4e2230de1c45f43c2fb8c2bc1fc9e5bf8b793b8c",
+      "gateauth/internal": "c1514a3b76c865a5591a0de871a3dfc807d764f6"
+    },
+    "tested_go_source_matches_main_reference": true,
+    "tested_lwc_commit": "a945375776a29c192ed1042161915f676540b08d"
+  },
+  "started_at": "2026-10-28T20:41:05.006280+00:00",
+  "terminal_log": "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/gat4-bootstrap-recovery-tmp/gat4-bootstrap-recovery-dd79pyne/logs/terminal.log"
+}
