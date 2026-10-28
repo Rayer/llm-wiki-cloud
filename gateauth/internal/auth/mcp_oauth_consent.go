@@ -89,6 +89,9 @@ func (s *MCPOAuthService) LookupConsentTransaction(ctx context.Context, subject 
 			if request.UserID != subject || request.AuthVersion != authVersion || request.DecisionFingerprint == "" || request.DecisionResultCipher == "" {
 				return ErrMCPOAuthDenied
 			}
+			if !s.now().Before(request.ExpiresAt) {
+				return ErrMCPOAuthExpired
+			}
 			result, err := s.decryptConsentResult(txHash, request.DecisionResultCipher)
 			if err != nil {
 				return ErrMCPOAuthUnavailable
@@ -227,6 +230,9 @@ func (s *MCPOAuthService) DecideConsentTrusted(ctx context.Context, request MCPO
 		if transaction.Status == "approved" || transaction.Status == "denied" {
 			if transaction.UserID != request.Subject || transaction.AuthVersion != request.AuthVersion {
 				return ErrMCPOAuthDenied
+			}
+			if !now.Before(transaction.ExpiresAt) {
+				return ErrMCPOAuthExpired
 			}
 			if transaction.DecisionFingerprint != fingerprint || transaction.DecisionResultCipher == "" {
 				return ErrMCPOAuthConflict

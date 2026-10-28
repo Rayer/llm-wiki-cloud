@@ -29,6 +29,7 @@ var (
 	ErrInactiveAccount   = errors.New("account is inactive or missing")
 	ErrForbidden         = errors.New("Auth consumer denied the requested action")
 	ErrConflict          = errors.New("Auth consumer rejected a conflicting operation")
+	ErrExpired           = errors.New("Auth consumer transaction expired")
 	ErrInvalidRequest    = errors.New("Auth consumer rejected the request")
 	ErrNotFound          = errors.New("Auth management operation was not found")
 	ErrUnavailable       = errors.New("Auth consumer is unavailable")
@@ -105,14 +106,15 @@ type MCPConsentDecisionResult struct {
 }
 
 type MCPGrant struct {
-	ID         string    `json:"id"`
-	ClientName string    `json:"client_name"`
-	ProjectID  string    `json:"project_id"`
-	Resource   string    `json:"resource"`
-	Scope      string    `json:"scope"`
-	Status     string    `json:"status"`
-	CreatedAt  time.Time `json:"created_at"`
-	ExpiresAt  time.Time `json:"expires_at"`
+	ID         string     `json:"id"`
+	ClientName string     `json:"client_name"`
+	ProjectID  string     `json:"project_id"`
+	Resource   string     `json:"resource"`
+	Scope      string     `json:"scope"`
+	Status     string     `json:"status"`
+	CreatedAt  time.Time  `json:"created_at"`
+	ExpiresAt  time.Time  `json:"expires_at"`
+	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
 }
 
 type ManagementUser struct {
@@ -637,6 +639,9 @@ func (c *Client) request(ctx context.Context, method, path, userCredential strin
 	}
 	if response.StatusCode == http.StatusNotFound {
 		return ErrNotFound
+	}
+	if response.StatusCode == http.StatusGone {
+		return ErrExpired
 	}
 	if response.StatusCode != http.StatusOK {
 		return ErrUnavailable

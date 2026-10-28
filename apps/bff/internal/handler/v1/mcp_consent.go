@@ -222,6 +222,8 @@ func writeMCPConsentConsumerError(c *gin.Context, err error) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "transaction_not_found"})
 	case errors.Is(err, authconsumer.ErrConflict):
 		c.JSON(http.StatusConflict, gin.H{"error": "decision_conflict"})
+	case errors.Is(err, authconsumer.ErrExpired):
+		c.JSON(http.StatusGone, gin.H{"error": "transaction_expired"})
 	case errors.Is(err, authconsumer.ErrInvalidRequest):
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request"})
 	default:

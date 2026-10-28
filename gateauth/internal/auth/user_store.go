@@ -2,13 +2,11 @@ package auth
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	scopedfirestore "github.com/rayer/gateauth/internal/firestore"
 	"time"
 
 	"cloud.google.com/go/firestore"
-	"google.golang.org/api/iterator"
+	scopedfirestore "github.com/rayer/gateauth/internal/firestore"
 )
 
 // UserRecord is a user document stored in Firestore.
@@ -24,24 +22,6 @@ type UserRecord struct {
 	EmailVerified      bool      `firestore:"email_verified"`
 	ProjectCount       int       `firestore:"project_count"`
 	DefaultProject     string    `firestore:"default_project"`
-}
-
-// CountProjects returns the number of projects a user has in Firestore.
-func CountProjects(ctx context.Context, fs *firestore.Client, userID string) (int, error) {
-	iter := scopedfirestore.Collection(fs, "users").Doc(userID).Collection("projects").Documents(ctx)
-	defer iter.Stop()
-	count := 0
-	for {
-		_, err := iter.Next()
-		if err != nil {
-			if errors.Is(err, iterator.Done) {
-				break
-			}
-			return count, err
-		}
-		count++
-	}
-	return count, nil
 }
 
 // GetUser fetches a user record from Firestore by ID.

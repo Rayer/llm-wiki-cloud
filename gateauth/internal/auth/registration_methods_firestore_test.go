@@ -67,10 +67,11 @@ func testGoogleRegistrationCallback(t *testing.T, gate *methodRegistrationGate, 
 		if identity == nil || reservation == nil || responseCookie(rec, "__Host-lwc_refresh") == nil {
 			t.Fatal("allowed signup missing identity/reservation/session")
 		}
-		project, err := client.Collection("users").Doc(identity.UserID).Collection("projects").Doc(defaultProjectID).Get(context.Background())
-		if err != nil || !project.Exists() {
-			t.Fatalf("missing default project: %v", err)
+		user, err := client.Collection("users").Doc(identity.UserID).Get(context.Background())
+		if err != nil || user.Data()["default_project"] != defaultProjectID {
+			t.Fatalf("default_project_id compatibility pointer missing: data=%v err=%v", user.Data(), err)
 		}
+		assertDefaultProjectAbsent(t, client, identity.UserID)
 		// A bound subject keeps signing in even when configuration is unavailable.
 		gate.err = errors.New("settings unavailable after signup")
 		state, browser, code = unique+"-return-state", unique+"-return-browser", unique+"-return-code"

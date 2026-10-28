@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -110,26 +109,6 @@ func TestCLISessionVerifierErrorClassification(t *testing.T) {
 	}
 }
 
-func TestSyncServiceLocatorReturnsConfiguredOriginWithoutCaching(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	service := &CLIAuthService{}
-	service.SetSyncServiceURL("https://bff.example.test")
-	router := gin.New()
-	router.GET("/api/v1/auth/cli/sync-service", service.SyncServiceLocatorHandler())
-	recorder := httptest.NewRecorder()
-	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/auth/cli/sync-service", nil))
-	if recorder.Code != http.StatusOK || recorder.Header().Get("Cache-Control") != "no-store" || !strings.Contains(recorder.Body.String(), `"origin":"https://bff.example.test"`) {
-		t.Fatalf("locator response status=%d cache=%q body=%s", recorder.Code, recorder.Header().Get("Cache-Control"), recorder.Body.String())
-	}
-
-	service.SetSyncServiceURL("")
-	missing := httptest.NewRecorder()
-	router.ServeHTTP(missing, httptest.NewRequest(http.MethodGet, "/api/v1/auth/cli/sync-service", nil))
-	if missing.Code != http.StatusServiceUnavailable {
-		t.Fatalf("unconfigured locator status=%d, want unavailable", missing.Code)
-	}
-}
-
 func TestCLIRetryTokenDerivationIsDeterministicAndDomainSeparated(t *testing.T) {
 	first, err := deriveCLIRetryToken("test-secret", "session-1", "nonce-1", 1)
 	if err != nil {
@@ -163,54 +142,23 @@ func TestCLIRetryTokenDerivationIsDeterministicAndDomainSeparated(t *testing.T) 
 	}
 }
 
-func TestCLIControlPlaneOriginRequiresHTTPSExceptLoopback(t *testing.T) {
-	for _, tc := range []struct {
-		origin string
-		valid  bool
-	}{
-		{origin: "https://auth.example.test", valid: true},
-		{origin: "http://localhost:8080", valid: true},
-		{origin: "http://127.0.0.1:8080", valid: true},
-		{origin: "http://auth.example.test", valid: false},
-		{origin: "ftp://auth.example.test", valid: false},
-	} {
-		t.Run(tc.origin, func(t *testing.T) {
-			normalized := normalizeBindingHost(tc.origin)
-			if tc.valid && normalized == "" {
-				t.Fatalf("valid control-plane origin %q was rejected", tc.origin)
-			}
-			if !tc.valid && normalized != "" {
-				t.Fatalf("unsafe control-plane origin %q normalized to %q", tc.origin, normalized)
-			}
-		})
-	}
-}
-
-func TestCLIAccessChecksProjectOwnerAfterSession(t *testing.T) {
+func TestCLIAuthDoesNotMakeProductDecisionsFromProjectHeaders(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	token, err := GenerateCLIAccessToken("user-1", "member", "cli-session-1", "test-secret", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	lookup := func(context.Context, string) (*UserRecord, error) { return &UserRecord{Role: "member"}, nil }
-	var checkedProject string
 	verify := func(context.Context, string, string, int64) error { return nil }
-	authorize := func(_ context.Context, userID, projectID string) error {
-		if userID != "user-1" {
-			t.Fatalf("project authorizer user = %q", userID)
-		}
-		checkedProject = projectID
-		return ErrProjectPermissionDenied
-	}
 	router := gin.New()
-	router.GET("/protected", JWTAuthWithAccountLookupAndSessionVerifier(config.Config{JWTSecret: "test-secret"}, lookup, verify, authorize), func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	router.GET("/protected", JWTAuthWithAccountLookupAndSessionVerifier(config.Config{JWTSecret: "test-secret"}, lookup, verify), func(c *gin.Context) { c.Status(http.StatusNoContent) })
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/protected", nil)
 	request.Header.Set("Authorization", "Bearer "+token)
-	request.Header.Set("X-Project-ID", "project-1")
+	request.Header.Set("X-Project-ID", "../../project-1")
 	router.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusForbidden || checkedProject != "project-1" {
-		t.Fatalf("status=%d checked_project=%q, want forbidden project-1", recorder.Code, checkedProject)
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("Auth interpreted a product selector header: status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 

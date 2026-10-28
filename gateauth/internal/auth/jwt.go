@@ -67,26 +67,22 @@ var refreshTokenStore = struct {
 // JWTAuth returns a Gin middleware that validates a JWT from the Authorization header.
 // Config-driven: uses cfg.JWTSecret for HS256 verification.
 func JWTAuth(cfg config.Config) gin.HandlerFunc {
-	return jwtAuth(cfg, nil, false, nil, nil, http.StatusUnauthorized)
+	return jwtAuth(cfg, nil, false, nil, http.StatusUnauthorized)
 }
 
 // JWTAuthWithAccountLookup validates current account access on every request.
 func JWTAuthWithAccountLookup(cfg config.Config, lookup AccountLookup) gin.HandlerFunc {
-	return jwtAuth(cfg, lookup, true, nil, nil, http.StatusUnauthorized)
+	return jwtAuth(cfg, lookup, true, nil, http.StatusUnauthorized)
 }
 
 // JWTAuthWithAccountLookupAndSessionVerifier preserves Web token handling and
-// requires a durable session check for CLI access tokens. Optional project
-// authorization applies only to CLI requests carrying X-Project-ID.
-func JWTAuthWithAccountLookupAndSessionVerifier(cfg config.Config, lookup AccountLookup, verifySession CLIAccessSessionVerifier, authorizeProject ...ProjectOwnerAuthorizer) gin.HandlerFunc {
-	var projectAuthorizer ProjectOwnerAuthorizer
-	if len(authorizeProject) > 0 {
-		projectAuthorizer = authorizeProject[0]
-	}
-	return jwtAuth(cfg, lookup, true, verifySession, projectAuthorizer, http.StatusUnauthorized)
+// requires a durable session check for CLI access tokens. Product authorization
+// belongs to the consumer that owns the product data.
+func JWTAuthWithAccountLookupAndSessionVerifier(cfg config.Config, lookup AccountLookup, verifySession CLIAccessSessionVerifier) gin.HandlerFunc {
+	return jwtAuth(cfg, lookup, true, verifySession, http.StatusUnauthorized)
 }
 
-func jwtAuth(cfg config.Config, lookup AccountLookup, enforce bool, verifySession CLIAccessSessionVerifier, authorizeProject ProjectOwnerAuthorizer, webLookupUnavailableStatus int) gin.HandlerFunc {
+func jwtAuth(cfg config.Config, lookup AccountLookup, enforce bool, verifySession CLIAccessSessionVerifier, webLookupUnavailableStatus int) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		phaseCtx, authorizeSpan := observability.StartDataPhase(c.Request.Context(), "authorize")
 		c.Request = c.Request.WithContext(phaseCtx)
@@ -174,27 +170,6 @@ func jwtAuth(cfg config.Config, lookup AccountLookup, enforce bool, verifySessio
 				c.AbortWithStatusJSON(status, gin.H{"error": message})
 				return
 			}
-			projectID := strings.TrimSpace(c.GetHeader("X-Project-ID"))
-			if projectID != "" && !ValidPathSegment(projectID) {
-				c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "invalid X-Project-ID header"})
-				return
-			}
-			if projectID != "" {
-				if authorizeProject == nil {
-					c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "project access authority unavailable"})
-					return
-				}
-				if err := authorizeProject(c.Request.Context(), claims.Sub, projectID); err != nil {
-					status := http.StatusServiceUnavailable
-					message := "project access authority unavailable"
-					if errors.Is(err, ErrProjectPermissionDenied) {
-						status = http.StatusForbidden
-						message = "project access denied"
-					}
-					c.AbortWithStatusJSON(status, gin.H{"error": message})
-					return
-				}
-			}
 		}
 		c.Set("userID", claims.Sub)
 		c.Set("userRole", claims.Role)
@@ -244,14 +219,6 @@ func AdminOnly() gin.HandlerFunc {
 		}
 		c.Next()
 	}
-}
-
-// ValidPathSegment reports whether value can be safely used as one path segment.
-func ValidPathSegment(value string) bool {
-	return value != "" &&
-		value != "." &&
-		value != ".." &&
-		!strings.ContainsAny(value, `/\`+"\x00")
 }
 
 // GenerateToken creates a self-signed HS256 JWT for development/testing.

@@ -133,9 +133,6 @@ func TestLWCConsumerVerifierBindsOpaqueMCPCredentialToProjectResource(t *testing
 	if _, err := fs.Collection("users").Doc(userID).Set(ctx, UserRecord{Email: userID + "@example.test", Status: AccountActive, AuthVersion: 3}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := fs.Collection("projects").Doc(userID+"_"+projectID).Set(ctx, map[string]any{"user_id": userID, "project_id": projectID, "name": "MCP fixture"}); err != nil {
-		t.Fatal(err)
-	}
 	databaseEnvironment := "consumer-mcp-" + suffix
 	const resourceOrigin = "https://bff.example.test"
 	service := NewMCPOAuthServiceWithPolicy(fs, databaseEnvironment, "dev", "https://auth.example.test", resourceOrigin,
@@ -157,10 +154,12 @@ func TestLWCConsumerVerifierBindsOpaqueMCPCredentialToProjectResource(t *testing
 		t.Fatal(err)
 	}
 	transactionID := consent.Query().Get("transaction_id")
-	if _, err := service.ConsentDetails(ctx, userID, 3, transactionID); err != nil {
-		t.Fatal(err)
+	lookup, err := service.LookupConsentTransaction(ctx, userID, 3, transactionID)
+	if err != nil || lookup.ProjectID != projectID || lookup.ResourceKind != "project-template" {
+		t.Fatalf("trusted consent lookup=%+v err=%v", lookup, err)
 	}
-	decision, err := service.DecideConsent(ctx, userID, 3, transactionID, true)
+	decision, err := service.DecideConsentTrusted(ctx, MCPOAuthTrustedDecision{SchemaVersion: 1,
+		TransactionID: transactionID, Subject: userID, AuthVersion: 3, Decision: "allow", ApprovedScopes: lookup.RequestedScopes})
 	if err != nil {
 		t.Fatal(err)
 	}

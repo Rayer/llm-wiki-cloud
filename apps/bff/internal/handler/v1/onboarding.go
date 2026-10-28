@@ -183,6 +183,9 @@ func ensureDefaultProject(ctx context.Context, fs *firestore.Client, owner, proj
 				match = document
 				continue
 			}
+			if strings.TrimPrefix(document.Ref.ID, owner+"_") != projectID {
+				continue
+			}
 			if !canRecoverProjectFromOwnerSuffix(document.Ref.ID, owner, projectID) || !validDefaultProjectRecord(data) {
 				return errDefaultProjectSetupConflict
 			}

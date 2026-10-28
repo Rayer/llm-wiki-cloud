@@ -66,27 +66,7 @@ type MCPOAuthService struct {
 	wireEnvironment string
 	resources       []config.AuthOAuthResource
 	lookup          AccountLookup
-	authorize       ProjectOwnerAuthorizer
 	now             func() time.Time
-}
-
-type MCPGrantAuthority struct {
-	fs             *firestore.Client
-	environment    string
-	resourceOrigin string
-	lookup         AccountLookup
-	authorize      ProjectOwnerAuthorizer
-	now            func() time.Time
-}
-
-type MCPOAuthIdentity struct {
-	UserID       string
-	ProjectID    string
-	GrantID      string
-	ClientID     string
-	Resource     string
-	Scope        string
-	Capabilities []string
 }
 
 type MCPOAuthVerifiedCredential struct {
@@ -242,8 +222,7 @@ func NewMCPOAuthService(fs *firestore.Client, environment, issuer, resourceOrigi
 		fs: fs, environment: strings.TrimSpace(environment), issuer: trimOrigin(issuer),
 		resourceOrigin: trimOrigin(resourceOrigin), frontendOrigin: trimOrigin(frontendOrigin),
 		jwtSecret: jwtSecret, resources: config.LegacyAuthOAuthResources(resourceOrigin), lookup: FirestoreAccountLookup(fs),
-		authorize: FirestoreProjectOwnerAuthorizer(fs),
-		now:       func() time.Time { return time.Now().UTC() },
+		now: func() time.Time { return time.Now().UTC() },
 	}
 }
 
@@ -256,23 +235,9 @@ func NewMCPOAuthServiceWithPolicy(fs *firestore.Client, databaseEnvironment, wir
 	return service
 }
 
-func NewMCPGrantAuthority(fs *firestore.Client, environment, resourceOrigin string) *MCPGrantAuthority {
-	return &MCPGrantAuthority{
-		fs: fs, environment: strings.TrimSpace(environment), resourceOrigin: trimOrigin(resourceOrigin),
-		lookup: FirestoreAccountLookup(fs), authorize: FirestoreProjectOwnerAuthorizer(fs),
-		now: func() time.Time { return time.Now().UTC() },
-	}
-}
-
 func (s *MCPOAuthService) SetClock(now func() time.Time) {
 	if s != nil && now != nil {
 		s.now = now
-	}
-}
-
-func (a *MCPGrantAuthority) SetClock(now func() time.Time) {
-	if a != nil && now != nil {
-		a.now = now
 	}
 }
 
@@ -295,13 +260,6 @@ func (s *MCPOAuthService) collection(name string) *firestore.CollectionRef {
 		return nil
 	}
 	return mcpOAuthCollection(s.fs, s.environment, name)
-}
-
-func (a *MCPGrantAuthority) collection(name string) *firestore.CollectionRef {
-	if a == nil || a.fs == nil {
-		return nil
-	}
-	return mcpOAuthCollection(a.fs, a.environment, name)
 }
 
 func mcpOAuthCollection(fs *firestore.Client, environment, name string) *firestore.CollectionRef {
@@ -1514,82 +1472,6 @@ func (s *MCPOAuthService) RevokeGrant(ctx context.Context, userID string, authVe
 	return nil
 }
 
-func (a *MCPGrantAuthority) AuthenticateAccessToken(ctx context.Context, token, projectID, resource string) (MCPOAuthIdentity, error) {
-	if a == nil || a.fs == nil || a.environment == "" || !ValidPathSegment(projectID) ||
-		!validMCPOpaque(token, mcpOAuthAccessPrefix) {
-		return MCPOAuthIdentity{}, ErrMCPOAuthInvalid
-	}
-	tokenHash := mcpOAuthHash(token)
-	snapshot, err := a.collection("access").Doc(tokenHash).Get(ctx)
-	if err != nil {
-		if status.Code(err) == codes.NotFound {
-			return MCPOAuthIdentity{}, ErrMCPOAuthInvalid
-		}
-		return MCPOAuthIdentity{}, ErrMCPOAuthUnavailable
-	}
-	var access mcpOAuthAccessRecord
-	if mcpOAuthDecode(snapshot.Data(), &access) != nil || access.SchemaVersion != mcpOAuthRecordSchema ||
-		access.Environment != a.environment || access.TokenHash != tokenHash {
-		return MCPOAuthIdentity{}, ErrMCPOAuthUnavailable
-	}
-	if !a.now().Before(access.ExpiresAt) {
-		return MCPOAuthIdentity{}, ErrMCPOAuthExpired
-	}
-	grantSnapshot, err := a.collection("grants").Doc(access.GrantID).Get(ctx)
-	if err != nil {
-		if status.Code(err) == codes.NotFound {
-			return MCPOAuthIdentity{}, ErrMCPOAuthInvalid
-		}
-		return MCPOAuthIdentity{}, ErrMCPOAuthUnavailable
-	}
-	var grant mcpOAuthGrantRecord
-	if mcpOAuthDecode(grantSnapshot.Data(), &grant) != nil ||
-		grant.SchemaVersion != mcpOAuthRecordSchema || grant.Environment != a.environment ||
-		grant.GrantID != access.GrantID {
-		return MCPOAuthIdentity{}, ErrMCPOAuthUnavailable
-	}
-	if grant.OriginGrantID != "" {
-		originSnapshot, err := a.collection("grants").Doc(grant.OriginGrantID).Get(ctx)
-		if err != nil {
-			if status.Code(err) == codes.NotFound {
-				return MCPOAuthIdentity{}, ErrMCPOAuthDenied
-			}
-			return MCPOAuthIdentity{}, ErrMCPOAuthUnavailable
-		}
-		var origin mcpOAuthGrantRecord
-		if mcpOAuthDecode(originSnapshot.Data(), &origin) != nil || origin.SchemaVersion != mcpOAuthRecordSchema ||
-			origin.Environment != a.environment || origin.GrantID != grant.OriginGrantID || origin.OriginGrantID != "" ||
-			origin.Status != "active" || !a.now().Before(origin.ExpiresAt) || origin.UserID != grant.UserID ||
-			origin.AuthVersion != grant.AuthVersion || origin.ClientID != grant.ClientID || origin.Resource != grant.Resource ||
-			origin.ProjectID != grant.ProjectID || !mcpOAuthScopeCovers(origin.Scope, grant.Scope) || grant.ExpiresAt.After(origin.ExpiresAt) {
-			return MCPOAuthIdentity{}, ErrMCPOAuthDenied
-		}
-	}
-	capabilities, supportedScope := canonicalMCPOAuthCapabilities(grant.Scope)
-	if grant.Status != "active" || !a.now().Before(grant.ExpiresAt) ||
-		grant.ProjectID != projectID || !supportedScope ||
-		grant.Resource != resource || resource != a.resourceOrigin+"/mcp/projects/"+projectID {
-		return MCPOAuthIdentity{}, ErrMCPOAuthDenied
-	}
-	user, err := a.lookup(ctx, grant.UserID)
-	if err != nil {
-		return MCPOAuthIdentity{}, ErrMCPOAuthUnavailable
-	}
-	if user == nil || !user.AllowsVersion(grant.AuthVersion) {
-		return MCPOAuthIdentity{}, ErrMCPOAuthDenied
-	}
-	if err := a.authorize(ctx, grant.UserID, grant.ProjectID); err != nil {
-		if errors.Is(err, ErrProjectPermissionDenied) {
-			return MCPOAuthIdentity{}, ErrMCPOAuthDenied
-		}
-		return MCPOAuthIdentity{}, ErrMCPOAuthUnavailable
-	}
-	return MCPOAuthIdentity{
-		UserID: grant.UserID, ProjectID: grant.ProjectID, GrantID: grant.GrantID,
-		ClientID: grant.ClientID, Resource: grant.Resource, Scope: grant.Scope, Capabilities: capabilities,
-	}, nil
-}
-
 // VerifyAccessToken checks the Auth-owned token, grant, client, and account
 // records. Resource/scope suitability is returned to the consumer so Brief
 // can enforce its own tenant and operation policy against verified facts.
@@ -1663,72 +1545,6 @@ func (s *MCPOAuthService) VerifyAccessToken(ctx context.Context, token string) (
 	}, nil
 }
 
-func (s *MCPOAuthService) requireProjectOwner(ctx context.Context, userID, projectID string) error {
-	if s == nil || s.fs == nil || s.authorize == nil || !ValidPathSegment(userID) || !ValidPathSegment(projectID) {
-		return ErrMCPOAuthUnavailable
-	}
-	err := s.authorize(ctx, userID, projectID)
-	if err == nil {
-		return nil
-	}
-	if errors.Is(err, ErrProjectPermissionDenied) {
-		return ErrMCPOAuthDenied
-	}
-	return ErrMCPOAuthUnavailable
-}
-
-func getOwnedProject(ctx context.Context, fs *firestore.Client, userID, projectID string) (ProjectSummary, error) {
-	if fs == nil || !ValidPathSegment(userID) || !ValidPathSegment(projectID) {
-		return ProjectSummary{}, ErrMCPOAuthUnavailable
-	}
-	collection := scopedfirestore.Collection(fs, "projects")
-	doc, err := collection.Doc(projectDocumentID(userID, projectID)).Get(ctx)
-	if err == nil {
-		if project, ok := projectFromFirestoreDocument(userID, doc.Ref.ID, doc.Data()); ok && project.ID == projectID {
-			return project, nil
-		}
-		return ProjectSummary{}, ErrMCPOAuthDenied
-	}
-	if status.Code(err) != codes.NotFound {
-		return ProjectSummary{}, ErrMCPOAuthUnavailable
-	}
-	iter := collection.Documents(ctx)
-	defer iter.Stop()
-	var found *ProjectSummary
-	for {
-		document, err := iter.Next()
-		if errors.Is(err, iterator.Done) {
-			break
-		}
-		if err != nil {
-			return ProjectSummary{}, ErrMCPOAuthUnavailable
-		}
-		project, ok := projectFromFirestoreDocument(userID, document.Ref.ID, document.Data())
-		if ok && project.ID == projectID {
-			if found != nil {
-				return ProjectSummary{}, ErrMCPOAuthDenied
-			}
-			found = &project
-		}
-	}
-	if found == nil {
-		return ProjectSummary{}, ErrMCPOAuthDenied
-	}
-	return *found, nil
-}
-
-func readMCPAccountAndProjectInTransaction(ctx context.Context, tx *firestore.Transaction, fs *firestore.Client, userID, projectID string) (UserRecord, ProjectSummary, error) {
-	user, err := readMCPAccountInTransaction(ctx, tx, fs, userID)
-	if err != nil {
-		return UserRecord{}, ProjectSummary{}, err
-	}
-	project, err := readMCPProjectInTransaction(ctx, tx, fs, userID, projectID)
-	if err != nil {
-		return UserRecord{}, ProjectSummary{}, err
-	}
-	return user, project, nil
-}
-
 func readMCPAccountInTransaction(ctx context.Context, tx *firestore.Transaction, fs *firestore.Client, userID string) (UserRecord, error) {
 	if !ValidPathSegment(userID) {
 		return UserRecord{}, ErrAccountInactive
@@ -1743,42 +1559,6 @@ func readMCPAccountInTransaction(ctx context.Context, tx *firestore.Transaction,
 		return UserRecord{}, ErrAccountInactive
 	}
 	return user, nil
-}
-
-func readMCPProjectInTransaction(ctx context.Context, tx *firestore.Transaction, fs *firestore.Client, userID, projectID string) (ProjectSummary, error) {
-	if !ValidPathSegment(userID) || !ValidPathSegment(projectID) {
-		return ProjectSummary{}, ErrMCPOAuthDenied
-	}
-	collection := scopedfirestore.Collection(fs, "projects")
-	doc, err := tx.Get(collection.Doc(projectDocumentID(userID, projectID)))
-	if err == nil {
-		project, ok := projectFromFirestoreDocument(userID, doc.Ref.ID, doc.Data())
-		if !ok || project.ID != projectID {
-			return ProjectSummary{}, ErrMCPOAuthDenied
-		}
-		return project, nil
-	}
-	if status.Code(err) != codes.NotFound {
-		return ProjectSummary{}, ErrMCPOAuthUnavailable
-	}
-	docs, err := tx.Documents(collection).GetAll()
-	if err != nil {
-		return ProjectSummary{}, ErrMCPOAuthUnavailable
-	}
-	var found *ProjectSummary
-	for _, candidate := range docs {
-		project, ok := projectFromFirestoreDocument(userID, candidate.Ref.ID, candidate.Data())
-		if ok && project.ID == projectID {
-			if found != nil {
-				return ProjectSummary{}, ErrMCPOAuthDenied
-			}
-			found = &project
-		}
-	}
-	if found == nil {
-		return ProjectSummary{}, ErrMCPOAuthDenied
-	}
-	return *found, nil
 }
 
 func (s *MCPOAuthService) encryptRefreshRetry(result mcpOAuthRefreshResult) (string, error) {

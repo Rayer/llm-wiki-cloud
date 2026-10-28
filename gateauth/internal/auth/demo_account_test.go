@@ -51,13 +51,7 @@ func TestEnsureDemoAccountCreatesMissingAndPreservesExistingData(t *testing.T) {
 	if _, err := bcrypt.Cost([]byte(user.PasswordHash)); err != nil {
 		t.Fatalf("new Demo password was not stored as a bcrypt hash: %v", err)
 	}
-	projectSnapshot, err := projectRef.Get(ctx)
-	if err != nil || projectSnapshot.Data()["name"] != "My First Wiki" {
-		t.Fatalf("default project=%v error=%v", projectSnapshot, err)
-	}
-	if count, err := CountProjects(ctx, client, userID); err != nil || count != 1 {
-		t.Fatalf("default project count=%d error=%v, want exactly one", count, err)
-	}
+	assertDefaultProjectAbsent(t, client, userID)
 	reservation, err := reservationRef.Get(ctx)
 	if err != nil || !reservation.Exists() {
 		t.Fatalf("email reservation exists=%v error=%v", reservation != nil && reservation.Exists(), err)
@@ -132,9 +126,7 @@ func TestEnsureDemoAccountConcurrentStartupCreatesOneIdentity(t *testing.T) {
 	email := fmt.Sprintf("concurrent-lwc372-%d@example.test", time.Now().UnixNano())
 	users := scopedfirestore.Collection(client, "users")
 	reservationRef := scopedfirestore.Collection(client, EmailReservationsCollection).Doc(emailReservationDocumentID(CanonicalizeEmail(email)))
-	projectRef := users.Doc(userID).Collection("projects").Doc(defaultProjectID)
 	defer func() {
-		_, _ = projectRef.Delete(ctx)
 		_, _ = users.Doc(userID).Delete(ctx)
 		_, _ = reservationRef.Delete(ctx)
 		_ = scopedfirestore.RegisterLocalScope(client, "")
@@ -173,4 +165,5 @@ func TestEnsureDemoAccountConcurrentStartupCreatesOneIdentity(t *testing.T) {
 	if createdCount != 1 {
 		t.Fatalf("concurrent creation count=%d, want exactly one", createdCount)
 	}
+	assertDefaultProjectAbsent(t, client, userID)
 }

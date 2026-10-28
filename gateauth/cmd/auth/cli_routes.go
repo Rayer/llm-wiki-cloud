@@ -32,7 +32,7 @@ func registerUnavailableCLIRoutes(routes *gin.RouterGroup, cfg config.Config) {
 
 func registerCLIAuthRoutes(routes *gin.RouterGroup, cfg config.Config, fs *firestore.Client, sessions *auth.RefreshSessionAuthority) {
 	accountLookup := auth.FirestoreAccountLookup(fs)
-	service := auth.NewCLIAuthService(fs, sessions, cfg.JWTSecret, cfg.AuthServiceURL)
+	service := auth.NewCLIAuthService(fs, sessions, cfg.JWTSecret, cliVerificationOrigin(cfg))
 
 	public := routes.Group("/cli")
 	public.Use(auth.RequestBodyLimit())
@@ -52,6 +52,13 @@ func registerCLIAuthRoutes(routes *gin.RouterGroup, cfg config.Config, fs *fires
 	protected.Use(auth.RequestBodyLimit(), auth.JWTAuthWithAccountLookupAndSessionVerifier(cfg, accountLookup, sessions.VerifyCLIAccessSession))
 	protected.GET("/status", auth.CLIOnly(), service.StatusHandler())
 	registerLegacyCLIProductProxy(routes, cfg.SyncServiceURL)
+}
+
+func cliVerificationOrigin(cfg config.Config) string {
+	if len(cfg.AllowedOrigins) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(cfg.AllowedOrigins[0])
 }
 
 // Auth retains these old path locators only as a stateless, same-environment

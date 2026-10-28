@@ -8,16 +8,15 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	scopedfirestore "github.com/rayer/gateauth/internal/firestore"
 	"net"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 
 	"cloud.google.com/go/firestore"
 	"github.com/gin-gonic/gin"
+	scopedfirestore "github.com/rayer/gateauth/internal/firestore"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -33,8 +32,6 @@ const (
 	cliPairingLifetime              = 10 * time.Minute
 	cliPairingPollIntervalSeconds   = 3
 	cliPairingMaxPollSecretFailures = 5
-	cliProjectDefaultPageSize       = 50
-	cliProjectMaxPageSize           = 100
 )
 
 var (
@@ -96,8 +93,6 @@ type cliPairingAuditEvent struct {
 type CLIAuthService struct {
 	fs                 *firestore.Client
 	sessions           *RefreshSessionAuthority
-	bindings           *SyncBindingAuthority
-	syncServiceURL     string
 	jwtSecret          string
 	verificationOrigin string
 	now                func() time.Time
@@ -109,28 +104,6 @@ func NewCLIAuthService(fs *firestore.Client, sessions *RefreshSessionAuthority, 
 
 func (s *CLIAuthService) ready() bool {
 	return s != nil && s.fs != nil && s.sessions != nil && s.sessions.ready() && s.jwtSecret != ""
-}
-
-// SetSyncBindingAuthority installs the project-scoped binding authority.
-func (s *CLIAuthService) SetSyncBindingAuthority(authority *SyncBindingAuthority) {
-	s.bindings = authority
-}
-
-// SetSyncServiceURL installs the trusted, server-configured BFF origin returned
-// to CLI clients after they authenticate with this Auth service.
-func (s *CLIAuthService) SetSyncServiceURL(origin string) {
-	s.syncServiceURL = strings.TrimSpace(origin)
-}
-
-func (s *CLIAuthService) SyncServiceLocatorHandler() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		if s == nil || strings.TrimSpace(s.syncServiceURL) == "" {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "sync service locator unavailable"})
-			return
-		}
-		c.Header("Cache-Control", "no-store")
-		c.JSON(http.StatusOK, gin.H{"origin": s.syncServiceURL})
-	}
 }
 
 func (s *CLIAuthService) pairingRef(pairingID string) *firestore.DocumentRef {
@@ -634,121 +607,5 @@ func (s *CLIAuthService) LogoutHandler() gin.HandlerFunc {
 func (s *CLIAuthService) StatusHandler() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"user_id": c.GetString("userID"), "session_id": c.GetString("sessionID"), "role": c.GetString("userRole")})
-	}
-}
-
-func (s *CLIAuthService) ListProjectsHandler() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		pageSize := cliProjectDefaultPageSize
-		if raw := strings.TrimSpace(c.Query("page_size")); raw != "" {
-			value, err := strconv.Atoi(raw)
-			if err != nil || value < 1 || value > cliProjectMaxPageSize {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid page_size"})
-				return
-			}
-			pageSize = value
-		}
-		projects, next, err := ListOwnedProjectsPage(c.Request.Context(), s.fs, c.GetString("userID"), pageSize, c.Query("page_token"))
-		if err != nil {
-			if errors.Is(err, ErrProjectPageTokenInvalid) {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid page_token"})
-				return
-			}
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "projects unavailable"})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"projects": projects, "next_page_token": next})
-	}
-}
-
-func (s *CLIAuthService) ListBindingsHandler() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		if s.bindings == nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "sync bindings unavailable"})
-			return
-		}
-		items, err := s.bindings.ListBindings(c.Request.Context(), c.GetString("userID"))
-		if err != nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "sync bindings unavailable"})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"bindings": items})
-	}
-}
-
-func (s *CLIAuthService) CreateBindingHandler() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		var request struct {
-			ProjectID string `json:"project_id"`
-			WikiID    string `json:"wiki_id"`
-			Host      string `json:"host"`
-		}
-		if err := c.ShouldBindJSON(&request); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid sync binding request"})
-			return
-		}
-		if s.bindings == nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "sync bindings unavailable"})
-			return
-		}
-		binding, err := s.bindings.CreateBinding(c.Request.Context(), c.GetString("userID"), request.ProjectID, request.WikiID, request.Host)
-		if err != nil {
-			writeSyncBindingError(c, err)
-			return
-		}
-		c.JSON(http.StatusCreated, binding)
-	}
-}
-
-func (s *CLIAuthService) ReauthorizeBindingHandler() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		var request struct {
-			BindingID string `json:"binding_id"`
-			WikiID    string `json:"wiki_id"`
-			Host      string `json:"host"`
-		}
-		if err := c.ShouldBindJSON(&request); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid sync binding request"})
-			return
-		}
-		if s.bindings == nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "sync bindings unavailable"})
-			return
-		}
-		binding, err := s.bindings.ReauthorizeBinding(c.Request.Context(), c.GetString("userID"), c.Param("projectID"), request.BindingID, request.WikiID, request.Host)
-		if err != nil {
-			writeSyncBindingError(c, err)
-			return
-		}
-		c.JSON(http.StatusOK, binding)
-	}
-}
-
-func (s *CLIAuthService) RevokeBindingHandler() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		if s.bindings == nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "sync bindings unavailable"})
-			return
-		}
-		if err := s.bindings.RevokeBinding(c.Request.Context(), c.GetString("userID"), c.Param("projectID"), c.Param("bindingID"), "user_revoked"); err != nil {
-			writeSyncBindingError(c, err)
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"ok": true})
-	}
-}
-
-func writeSyncBindingError(c *gin.Context, err error) {
-	switch {
-	case errors.Is(err, ErrProjectPermissionDenied), errors.Is(err, ErrSyncBindingUnauthorized):
-		c.JSON(http.StatusForbidden, gin.H{"error": "project access denied"})
-	case errors.Is(err, ErrSyncBindingInvalid):
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid sync binding"})
-	case errors.Is(err, ErrSyncBindingAlreadyBound), errors.Is(err, ErrSyncBindingReauthorizationRequired):
-		c.JSON(http.StatusConflict, gin.H{"error": "project already has a sync binding; explicitly reauthorize it"})
-	case errors.Is(err, ErrSyncBindingNotFound):
-		c.JSON(http.StatusNotFound, gin.H{"error": "sync binding not found"})
-	default:
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "sync binding authority unavailable"})
 	}
 }

@@ -20,6 +20,8 @@ import (
 	"github.com/gin-gonic/gin"
 	scopedfirestore "github.com/rayer/gateauth/internal/firestore"
 	"google.golang.org/api/option"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func TestEnsureLocalPasswordFixtureCreatesOnlyMissingScopedAccount(t *testing.T) {
@@ -40,7 +42,6 @@ func TestEnsureLocalPasswordFixtureCreatesOnlyMissingScopedAccount(t *testing.T)
 	users := scopedfirestore.Collection(client, "users")
 	reservations := scopedfirestore.Collection(client, EmailReservationsCollection)
 	t.Cleanup(func() {
-		_, _ = users.Doc(userID).Collection("projects").Doc(defaultProjectID).Delete(ctx)
 		_, _ = users.Doc(userID).Delete(ctx)
 		_, _ = reservations.Doc(emailReservationDocumentID(CanonicalizeEmail(email))).Delete(ctx)
 	})
@@ -52,10 +53,7 @@ func TestEnsureLocalPasswordFixtureCreatesOnlyMissingScopedAccount(t *testing.T)
 	if err != nil || user.Role != "admin" || user.PasswordHash == "" || user.DefaultProject != defaultProjectID {
 		t.Fatalf("new local fixture user=%+v, error=%v", user, err)
 	}
-	project, err := users.Doc(userID).Collection("projects").Doc(defaultProjectID).Get(ctx)
-	if err != nil || !project.Exists() {
-		t.Fatalf("scoped default project exists=%v, error=%v", project != nil && project.Exists(), err)
-	}
+	assertDefaultProjectAbsent(t, client, userID)
 	reservation, err := reservations.Doc(emailReservationDocumentID(CanonicalizeEmail(email))).Get(ctx)
 	if err != nil || !reservation.Exists() {
 		t.Fatalf("scoped email reservation exists=%v, error=%v", reservation != nil && reservation.Exists(), err)
@@ -117,10 +115,11 @@ func TestRegistrationHandlerWithFirestoreCommitsIdentityBoundary(t *testing.T) {
 	if err != nil || user == nil || !user.Exists() {
 		t.Fatalf("user exists=%v, error=%v", user != nil && user.Exists(), err)
 	}
-	project, err := client.Collection("users").Doc(response.UserID).Collection("projects").Doc(defaultProjectID).Get(context.Background())
-	if err != nil || project == nil || !project.Exists() {
-		t.Fatalf("project exists=%v, error=%v", project != nil && project.Exists(), err)
+	var record UserRecord
+	if err := user.DataTo(&record); err != nil || record.DefaultProject != defaultProjectID {
+		t.Fatalf("identity did not retain default_project_id: %+v error=%v", record, err)
 	}
+	assertDefaultProjectAbsent(t, client, response.UserID)
 }
 
 func TestIdentityRepositoryProvisionExternalUserCreatesPasswordlessBoundary(t *testing.T) {
@@ -157,10 +156,10 @@ func TestIdentityRepositoryProvisionExternalUserCreatesPasswordlessBoundary(t *t
 	if err != nil || identity == nil || identity.UserID != input.UserID {
 		t.Fatalf("external identity = %#v, error = %v", identity, err)
 	}
-	project, err := client.Collection("users").Doc(input.UserID).Collection("projects").Doc(defaultProjectID).Get(ctx)
-	if err != nil || !project.Exists() {
-		t.Fatalf("external default project exists=%v, error=%v", project.Exists(), err)
+	if user.DefaultProject != defaultProjectID {
+		t.Fatalf("external identity default_project_id=%q", user.DefaultProject)
 	}
+	assertDefaultProjectAbsent(t, client, input.UserID)
 	if _, _, err := repo.GetPasswordUserByEmail(ctx, input.CanonicalEmail); !errors.Is(err, errPasswordLoginUnavailable) {
 		t.Fatalf("password lookup for external user error = %v, want unavailable", err)
 	}
@@ -281,8 +280,8 @@ func TestIdentityRepositoryExternalProvisioningRetryAndRollbackAreAtomic(t *test
 	if err := repo.ProvisionExternalUser(ctx, input); err != nil {
 		t.Fatalf("exact external retry: %v", err)
 	}
-	if got := countExistingExternalBoundary(ctx, client, input); got != 4 {
-		t.Fatalf("external boundary records after retry = %d, want 4", got)
+	if got := countExistingExternalBoundary(ctx, client, input); got != 3 {
+		t.Fatalf("Auth identity records after retry = %d, want user, email reservation, and external identity only", got)
 	}
 	if _, err := client.Collection("users").Doc(input.UserID).Update(ctx, []firestore.Update{{Path: "email_verified", Value: false}}); err != nil {
 		t.Fatalf("invalidate persisted email verification: %v", err)
@@ -417,14 +416,11 @@ func TestIdentityRepositoryProvisioningIsIdempotentAndRollbackIsWriteFree(t *tes
 	if got := countExistingUsers(ctx, client, []PasswordUserProvisioning{input}); got != 1 {
 		t.Fatalf("user documents after retry = %d, want one", got)
 	}
-	project, err := client.Collection("users").Doc(input.UserID).Collection("projects").Doc(defaultProjectID).Get(ctx)
-	if err != nil || project == nil || !project.Exists() {
-		t.Fatalf("default project exists=%v, error=%v", project != nil && project.Exists(), err)
-	}
+	assertDefaultProjectAbsent(t, client, input.UserID)
 
 	rollbackEmail := "rollback@example.test"
 	cleanupIdentityFixtures(t, client, "rollback-user-315", "", rollbackEmail)
-	err = repo.RunTransaction(ctx, func(tx *IdentityTransaction) error {
+	err := repo.RunTransaction(ctx, func(tx *IdentityTransaction) error {
 		if err := tx.ProvisionPasswordUser(PasswordUserProvisioning{
 			UserID:         "rollback-user-315",
 			DisplayEmail:   rollbackEmail,
@@ -570,7 +566,7 @@ func newIdentityEmulatorRepository(t *testing.T) (*IdentityRepository, *firestor
 	}
 	_ = probe.Close()
 	ctx := context.Background()
-	client, err := firestore.NewClient(ctx, "lwc-315-test", option.WithEndpoint(endpoint), option.WithoutAuthentication())
+	client, err := firestore.NewClient(ctx, fmt.Sprintf("lwc-315-test-%d", time.Now().UnixNano()), option.WithEndpoint(endpoint), option.WithoutAuthentication())
 	if err != nil {
 		t.Fatalf("create Firestore emulator client: %v", err)
 	}
@@ -584,7 +580,6 @@ func cleanupIdentityFixtures(t *testing.T, client *firestore.Client, userA, user
 		if userID == "" {
 			continue
 		}
-		_, _ = client.Collection("users").Doc(userID).Collection("projects").Doc(defaultProjectID).Delete(ctx)
 		_, _ = client.Collection("users").Doc(userID).Delete(ctx)
 	}
 	if email != "" {
@@ -605,7 +600,6 @@ func countExistingExternalBoundary(ctx context.Context, client *firestore.Client
 		client.Collection("users").Doc(input.UserID),
 		client.Collection(EmailReservationsCollection).Doc(emailReservationDocumentID(input.CanonicalEmail)),
 		client.Collection(ExternalIdentitiesCollection).Doc(externalIdentityDocumentID(input.Provider, input.Issuer, input.Subject)),
-		client.Collection("users").Doc(input.UserID).Collection("projects").Doc(defaultProjectID),
 	}
 	for _, ref := range refs {
 		if snapshot, err := ref.Get(ctx); err == nil && snapshot.Exists() {
@@ -613,6 +607,14 @@ func countExistingExternalBoundary(ctx context.Context, client *firestore.Client
 		}
 	}
 	return count
+}
+
+func assertDefaultProjectAbsent(t *testing.T, client *firestore.Client, userID string) {
+	t.Helper()
+	_, err := client.Collection("users").Doc(userID).Collection("projects").Doc(defaultProjectID).Get(context.Background())
+	if status.Code(err) != codes.NotFound {
+		t.Fatalf("Auth provisioned product-owned default Project for %q: err=%v", userID, err)
+	}
 }
 
 func countExistingUsers(ctx context.Context, client *firestore.Client, inputs []PasswordUserProvisioning) int {

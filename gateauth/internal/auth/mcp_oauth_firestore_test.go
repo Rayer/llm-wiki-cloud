@@ -106,7 +106,7 @@ func TestAuthOAuthPolicyKeepsProjectDefaultsAndRequiresExplicitFixedScope(t *tes
 	}
 }
 
-func TestMCPOAuthFirestoreFlowBindsProjectAndRotatesRefreshTokens(t *testing.T) {
+func TestMCPOAuthFirestoreFlowBindsOpaqueProjectAndRotatesRefreshTokens(t *testing.T) {
 	_, fs := newIdentityEmulatorRepository(t)
 	defer fs.Close()
 	ctx := context.Background()
@@ -114,22 +114,12 @@ func TestMCPOAuthFirestoreFlowBindsProjectAndRotatesRefreshTokens(t *testing.T) 
 	projectID := "mcp-oauth-project"
 	environment := fmt.Sprintf("mcp-oauth-env-%d", time.Now().UnixNano())
 	userRef := scopedfirestore.Collection(fs, "users").Doc(userID)
-	projectRef := scopedfirestore.Collection(fs, "projects").Doc(projectDocumentID(userID, projectID))
 	otherProjectID := projectID + "-other"
-	otherProjectRef := scopedfirestore.Collection(fs, "projects").Doc(projectDocumentID(userID, otherProjectID))
 	if _, err := userRef.Set(ctx, UserRecord{Email: "oauth@example.test", Status: AccountActive, AuthVersion: 0}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := projectRef.Set(ctx, map[string]any{"user_id": userID, "project_id": projectID, "name": "OAuth fixture project"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := otherProjectRef.Set(ctx, map[string]any{"user_id": userID, "project_id": otherProjectID, "name": "Other OAuth fixture project"}); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
 		_, _ = userRef.Delete(ctx)
-		_, _ = projectRef.Delete(ctx)
-		_, _ = otherProjectRef.Delete(ctx)
 		for _, name := range []string{"clients", "transactions", "codes", "grants", "access", "refresh"} {
 			iter := mcpOAuthCollection(fs, environment, name).Documents(ctx)
 			for {
@@ -147,6 +137,7 @@ func TestMCPOAuthFirestoreFlowBindsProjectAndRotatesRefreshTokens(t *testing.T) 
 	})
 
 	clock := time.Now().UTC()
+	transactionExpiresAt := clock.Add(mcpOAuthAuthTTL)
 	service := NewMCPOAuthServiceWithPolicy(fs, environment, "dev", "https://auth.example.test", "https://bff.example.test", "https://wiki.example.test", "fixture-jwt-secret", config.LegacyAuthOAuthResources("https://bff.example.test"))
 	service.SetClock(func() time.Time { return clock })
 	client, err := service.RegisterClient(ctx, "Hermes Agent", []string{"http://127.0.0.1:43123/callback"})
@@ -171,17 +162,57 @@ func TestMCPOAuthFirestoreFlowBindsProjectAndRotatesRefreshTokens(t *testing.T) 
 		t.Fatalf("consent destination = %q, err=%v", consentURL, err)
 	}
 	transactionID := parsedConsent.Query().Get("transaction_id")
-	details, err := service.ConsentDetails(ctx, userID, 0, transactionID)
-	if err != nil || details.ProjectName != "OAuth fixture project" || details.Scope != writeScope || details.CanContinue {
-		t.Fatalf("consent details = %+v, err=%v", details, err)
+	classification, err := service.PublicConsentClassification(ctx, userID, 0, transactionID)
+	if err != nil || classification.ResourceKind != "project-template" || classification.Resource != resource {
+		t.Fatalf("public Project consent classification = %+v, err=%v", classification, err)
 	}
-	firstContinuation, err := service.ContinueConsent(ctx, userID, 0, transactionID)
+	lookup, err := service.LookupConsentTransaction(ctx, userID, 0, transactionID)
+	if err != nil || lookup.ResourceKind != "project-template" || lookup.ProjectID != projectID || lookup.ClientName != "Hermes Agent" ||
+		strings.Join(lookup.RequestedScopes, " ") != writeScope || lookup.CanContinue {
+		t.Fatalf("trusted Project consent lookup = %+v, err=%v", lookup, err)
+	}
+	decideTrusted := func(transactionID, decision string) (MCPOAuthDecisionResult, error) {
+		trustedLookup, err := service.LookupConsentTransaction(ctx, userID, 0, transactionID)
+		if err != nil {
+			return MCPOAuthDecisionResult{}, err
+		}
+		approvedScopes := []string(nil)
+		if decision != "deny" {
+			approvedScopes = trustedLookup.RequestedScopes
+		}
+		return service.DecideConsentTrusted(ctx, MCPOAuthTrustedDecision{SchemaVersion: 1, TransactionID: transactionID,
+			Subject: userID, AuthVersion: 0, Decision: decision, ApprovedScopes: approvedScopes})
+	}
+	if _, err := service.ConsentDetails(ctx, userID, 0, transactionID); !errors.Is(err, ErrMCPOAuthDenied) {
+		t.Fatalf("public Auth endpoint exposed Project consent details: %v", err)
+	}
+	for _, publicDecision := range []string{"allow", "deny", "continue"} {
+		var publicErr error
+		switch publicDecision {
+		case "allow":
+			_, publicErr = service.DecideConsent(ctx, userID, 0, transactionID, true)
+		case "deny":
+			_, publicErr = service.DecideConsent(ctx, userID, 0, transactionID, false)
+		case "continue":
+			_, publicErr = service.ContinueConsent(ctx, userID, 0, transactionID)
+		}
+		if !errors.Is(publicErr, ErrMCPOAuthDenied) {
+			t.Fatalf("public Project %s decision error=%v, want product-decision denial", publicDecision, publicErr)
+		}
+	}
+	firstContinuation, err := decideTrusted(transactionID, "continue")
 	if err != nil || !firstContinuation.RequiresConsent || firstContinuation.RedirectURL != "" {
 		t.Fatalf("first consent continuation=%+v err=%v, want interaction with no redirect", firstContinuation, err)
 	}
-	decision, err := service.DecideConsent(ctx, userID, 0, transactionID, true)
+	decisionRequest := MCPOAuthTrustedDecision{SchemaVersion: 1, TransactionID: transactionID, Subject: userID, AuthVersion: 0,
+		Decision: "allow", ApprovedScopes: append([]string(nil), lookup.RequestedScopes...)}
+	decision, err := decideTrusted(transactionID, "allow")
 	if err != nil {
-		t.Fatalf("approve consent: %v", err)
+		t.Fatalf("trusted Project approval: %v", err)
+	}
+	replayedDecision, err := service.DecideConsentTrusted(ctx, decisionRequest)
+	if err != nil || replayedDecision != decision {
+		t.Fatalf("response-loss retry result=%+v first=%+v err=%v", replayedDecision, decision, err)
 	}
 	callback, err := url.Parse(decision.RedirectURL)
 	if err != nil || callback.Query().Get("state") != "fixture-state" || callback.Query().Get("code") == "" {
@@ -218,9 +249,9 @@ func TestMCPOAuthFirestoreFlowBindsProjectAndRotatesRefreshTokens(t *testing.T) 
 			t.Fatalf("parse repeat consent URL: %v", err)
 		}
 		transactionID := parsed.Query().Get("transaction_id")
-		details, err := service.ConsentDetails(ctx, userID, 0, transactionID)
+		details, err := service.LookupConsentTransaction(ctx, userID, 0, transactionID)
 		if err != nil {
-			t.Fatalf("read repeat consent details: %v", err)
+			t.Fatalf("read trusted repeat consent lookup: %v", err)
 		}
 		return transactionID, details.CanContinue
 	}
@@ -228,7 +259,7 @@ func TestMCPOAuthFirestoreFlowBindsProjectAndRotatesRefreshTokens(t *testing.T) 
 	if !repeatEligible {
 		t.Fatal("existing same-scope grant was not reported eligible")
 	}
-	repeatDecision, err := service.ContinueConsent(ctx, userID, 0, repeatTransaction)
+	repeatDecision, err := decideTrusted(repeatTransaction, "continue")
 	if err != nil || repeatDecision.RequiresConsent {
 		t.Fatalf("same-grant continuation=%+v err=%v", repeatDecision, err)
 	}
@@ -245,7 +276,7 @@ func TestMCPOAuthFirestoreFlowBindsProjectAndRotatesRefreshTokens(t *testing.T) 
 	if !subsetEligible {
 		t.Fatal("broader grant was not reported eligible for the requested subset")
 	}
-	subsetDecision, err := service.ContinueConsent(ctx, userID, 0, subsetTransaction)
+	subsetDecision, err := decideTrusted(subsetTransaction, "continue")
 	if err != nil || subsetDecision.RequiresConsent {
 		t.Fatalf("covered-scope continuation=%+v err=%v", subsetDecision, err)
 	}
@@ -270,7 +301,12 @@ func TestMCPOAuthFirestoreFlowBindsProjectAndRotatesRefreshTokens(t *testing.T) 
 	if narrowInitialEligible {
 		t.Fatal("client without an existing grant was reported eligible")
 	}
-	narrowInitialDecision, err := service.DecideConsent(ctx, userID, 0, narrowInitialTransaction, true)
+	narrowInitialLookup, err := service.LookupConsentTransaction(ctx, userID, 0, narrowInitialTransaction)
+	if err != nil {
+		t.Fatalf("trusted narrow client lookup: %v", err)
+	}
+	narrowInitialDecision, err := service.DecideConsentTrusted(ctx, MCPOAuthTrustedDecision{SchemaVersion: 1,
+		TransactionID: narrowInitialTransaction, Subject: userID, AuthVersion: 0, Decision: "allow", ApprovedScopes: narrowInitialLookup.RequestedScopes})
 	if err != nil {
 		t.Fatalf("approve narrow-client first consent: %v", err)
 	}
@@ -285,7 +321,7 @@ func TestMCPOAuthFirestoreFlowBindsProjectAndRotatesRefreshTokens(t *testing.T) 
 	if expandedEligible {
 		t.Fatal("query-only grant was reported eligible for added raw-write scope")
 	}
-	expandedDecision, err := service.ContinueConsent(ctx, userID, 0, expandedTransaction)
+	expandedDecision, err := decideTrusted(expandedTransaction, "continue")
 	if err != nil || !expandedDecision.RequiresConsent || expandedDecision.RedirectURL != "" {
 		t.Fatalf("added-scope continuation=%+v err=%v, want interaction with no code", expandedDecision, err)
 	}
@@ -295,7 +331,7 @@ func TestMCPOAuthFirestoreFlowBindsProjectAndRotatesRefreshTokens(t *testing.T) 
 	if foreignResourceEligible {
 		t.Fatal("grant for another Project resource was reported eligible")
 	}
-	foreignResourceDecision, err := service.ContinueConsent(ctx, userID, 0, foreignResourceTransaction)
+	foreignResourceDecision, err := decideTrusted(foreignResourceTransaction, "continue")
 	if err != nil || !foreignResourceDecision.RequiresConsent || foreignResourceDecision.RedirectURL != "" {
 		t.Fatalf("foreign-resource continuation=%+v err=%v", foreignResourceDecision, err)
 	}
@@ -308,24 +344,22 @@ func TestMCPOAuthFirestoreFlowBindsProjectAndRotatesRefreshTokens(t *testing.T) 
 	if foreignClientEligible {
 		t.Fatal("grant for another client was reported eligible")
 	}
-	foreignClientDecision, err := service.ContinueConsent(ctx, userID, 0, foreignClientTransaction)
+	foreignClientDecision, err := decideTrusted(foreignClientTransaction, "continue")
 	if err != nil || !foreignClientDecision.RequiresConsent || foreignClientDecision.RedirectURL != "" {
 		t.Fatalf("foreign-client continuation=%+v err=%v", foreignClientDecision, err)
 	}
 
-	authority := NewMCPGrantAuthority(fs, environment, "https://bff.example.test")
-	authority.SetClock(func() time.Time { return clock })
-	identity, err := authority.AuthenticateAccessToken(ctx, tokens.AccessToken, projectID, resource)
-	if err != nil || identity.UserID != userID || identity.ProjectID != projectID ||
-		identity.Scope != writeScope || strings.Join(identity.Capabilities, " ") != writeScope {
-		t.Fatalf("authenticate project access token: identity=%+v err=%v", identity, err)
+	credential, err := service.VerifyAccessToken(ctx, tokens.AccessToken)
+	if err != nil || credential.UserID != userID || credential.ProjectID != projectID || credential.Resource != resource ||
+		strings.Join(credential.Scopes, " ") != writeScope {
+		t.Fatalf("verify opaque Project grant: credential=%+v err=%v", credential, err)
 	}
-	if identity, err := authority.AuthenticateAccessToken(ctx, repeatTokens.AccessToken, projectID, resource); err != nil || identity.Scope != writeScope {
-		t.Fatalf("authenticate continuation child before source revocation: identity=%+v err=%v", identity, err)
+	if credential, err := service.VerifyAccessToken(ctx, repeatTokens.AccessToken); err != nil || strings.Join(credential.Scopes, " ") != writeScope {
+		t.Fatalf("verify continuation child before source revocation: credential=%+v err=%v", credential, err)
 	}
 	clock = clock.Add(mcpOAuthAccessTTL + time.Second)
-	if _, err := authority.AuthenticateAccessToken(ctx, tokens.AccessToken, projectID, resource); !errors.Is(err, ErrMCPOAuthExpired) {
-		t.Fatalf("expired project access token error = %v, want expired", err)
+	if _, err := service.VerifyAccessToken(ctx, tokens.AccessToken); !errors.Is(err, ErrMCPOAuthInvalid) {
+		t.Fatalf("expired Project access token error = %v, want invalid", err)
 	}
 
 	rotated, err := service.Refresh(ctx, client.ClientID, tokens.RefreshToken, resource)
@@ -340,7 +374,7 @@ func TestMCPOAuthFirestoreFlowBindsProjectAndRotatesRefreshTokens(t *testing.T) 
 	if !postRotationEligible {
 		t.Fatal("grant was not reusable after refresh rotation")
 	}
-	postRotationDecision, err := service.ContinueConsent(ctx, userID, 0, postRotationTransaction)
+	postRotationDecision, err := decideTrusted(postRotationTransaction, "continue")
 	if err != nil || postRotationDecision.RequiresConsent {
 		t.Fatalf("post-rotation continuation=%+v err=%v", postRotationDecision, err)
 	}
@@ -357,10 +391,10 @@ func TestMCPOAuthFirestoreFlowBindsProjectAndRotatesRefreshTokens(t *testing.T) 
 	if _, err := service.Refresh(ctx, client.ClientID, tokens.RefreshToken, resource); !errors.Is(err, ErrMCPOAuthReplay) {
 		t.Fatalf("out-of-window refresh replay error = %v, want replay", err)
 	}
-	if _, err := authority.AuthenticateAccessToken(ctx, rotated.AccessToken, projectID, resource); !errors.Is(err, ErrMCPOAuthDenied) {
+	if _, err := service.VerifyAccessToken(ctx, rotated.AccessToken); !errors.Is(err, ErrMCPOAuthInvalid) {
 		t.Fatalf("replayed refresh family remained usable: %v", err)
 	}
-	if _, err := authority.AuthenticateAccessToken(ctx, postRotationTokens.AccessToken, projectID, resource); !errors.Is(err, ErrMCPOAuthDenied) {
+	if _, err := service.VerifyAccessToken(ctx, postRotationTokens.AccessToken); !errors.Is(err, ErrMCPOAuthInvalid) {
 		t.Fatalf("continuation child survived source grant revocation: %v", err)
 	}
 	grants, err := service.ListGrants(ctx, userID, projectID)
@@ -381,6 +415,36 @@ func TestMCPOAuthFirestoreFlowBindsProjectAndRotatesRefreshTokens(t *testing.T) 
 	}
 	if !initialGrantRevoked {
 		t.Fatalf("refresh replay did not revoke the initial grant %s: %+v", initialGrantID, grants)
+	}
+	countRecords := func(name string) int {
+		t.Helper()
+		iter := mcpOAuthCollection(fs, environment, name).Documents(ctx)
+		defer iter.Stop()
+		count := 0
+		for {
+			_, err := iter.Next()
+			if errors.Is(err, iterator.Done) {
+				return count
+			}
+			if err != nil {
+				t.Fatalf("count %s records: %v", name, err)
+			}
+			count++
+		}
+	}
+	codesBeforeExpiryRetry, grantsBeforeExpiryRetry := countRecords("codes"), countRecords("grants")
+	clock = transactionExpiresAt.Add(time.Second)
+	if _, err := service.LookupConsentTransaction(ctx, userID, 0, transactionID); !errors.Is(err, ErrMCPOAuthExpired) {
+		t.Fatalf("completed lookup after transaction TTL=%v, want expired", err)
+	}
+	if _, err := service.DecideConsentTrusted(ctx, decisionRequest); !errors.Is(err, ErrMCPOAuthExpired) {
+		t.Fatalf("completed decision retry after transaction TTL=%v, want expired", err)
+	}
+	if got := countRecords("codes"); got != codesBeforeExpiryRetry {
+		t.Fatalf("expired decision retry created a code: before=%d after=%d", codesBeforeExpiryRetry, got)
+	}
+	if got := countRecords("grants"); got != grantsBeforeExpiryRetry {
+		t.Fatalf("expired decision retry changed grants: before=%d after=%d", grantsBeforeExpiryRetry, got)
 	}
 }
 
