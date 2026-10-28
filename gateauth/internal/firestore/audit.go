@@ -12,8 +12,8 @@ import (
 	"strings"
 	"sync"
 
-	"google.golang.org/api/option"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
@@ -22,7 +22,7 @@ import (
 // Firestore RPC method and collection names only; document IDs and values are
 // never written. The numeric loopback emulator requirement prevents this hook
 // from being used against cloud Firestore.
-func newLocalFirestoreAuditOption() (option.ClientOption, bool, error) {
+func newLocalFirestoreAuditConnection() (*grpc.ClientConn, bool, error) {
 	path := strings.TrimSpace(os.Getenv("GAT4_FIRESTORE_AUDIT_FILE"))
 	if path == "" {
 		return nil, false, nil
@@ -35,14 +35,29 @@ func newLocalFirestoreAuditOption() (option.ClientOption, bool, error) {
 	if err != nil || parsed.Host == "" || (parsed.Hostname() != "127.0.0.1" && parsed.Hostname() != "::1") {
 		return nil, false, errors.New("GAT4 Firestore audit requires a numeric loopback emulator")
 	}
-	interceptor, err := newFirestoreAuditInterceptor(path)
+	interceptors, err := newFirestoreAuditInterceptors(path)
 	if err != nil {
 		return nil, false, err
 	}
-	return option.WithGRPCDialOption(grpc.WithUnaryInterceptor(interceptor)), true, nil
+	conn, err := grpc.Dial(endpoint,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithUnaryInterceptor(interceptors.unary),
+		grpc.WithStreamInterceptor(interceptors.stream),
+	)
+	if err != nil {
+		return nil, false, fmt.Errorf("dial GAT4 Firestore emulator: %w", err)
+	}
+	return conn, true, nil
 }
 
-func newFirestoreAuditInterceptor(path string) (grpc.UnaryClientInterceptor, error) {
+type firestoreAuditInterceptors struct {
+	unary  grpc.UnaryClientInterceptor
+	stream grpc.StreamClientInterceptor
+	path   string
+	mu     sync.Mutex
+}
+
+func newFirestoreAuditInterceptors(path string) (*firestoreAuditInterceptors, error) {
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open GAT4 Firestore audit file: %w", err)
@@ -54,19 +69,42 @@ func newFirestoreAuditInterceptor(path string) (grpc.UnaryClientInterceptor, err
 	if err := file.Close(); err != nil {
 		return nil, fmt.Errorf("initialize GAT4 Firestore audit file: %w", err)
 	}
-	var mu sync.Mutex
-	return func(ctx context.Context, method string, request, response any, connection *grpc.ClientConn,
+	audit := &firestoreAuditInterceptors{path: path}
+	audit.unary = func(ctx context.Context, method string, request, response any, connection *grpc.ClientConn,
 		invoker grpc.UnaryInvoker, callOptions ...grpc.CallOption) error {
-		callErr := invoker(ctx, method, request, response, connection, callOptions...)
-		line := formatFirestoreAudit(method, request)
-		mu.Lock()
-		appendErr := appendFirestoreAudit(path, line)
-		mu.Unlock()
-		if appendErr != nil {
-			return errors.Join(callErr, appendErr)
+		if err := audit.record(method, request); err != nil {
+			return err
 		}
-		return callErr
-	}, nil
+		return invoker(ctx, method, request, response, connection, callOptions...)
+	}
+	audit.stream = func(ctx context.Context, description *grpc.StreamDesc, connection *grpc.ClientConn, method string,
+		streamer grpc.Streamer, callOptions ...grpc.CallOption) (grpc.ClientStream, error) {
+		stream, err := streamer(ctx, description, connection, method, callOptions...)
+		if err != nil {
+			return nil, err
+		}
+		return firestoreAuditClientStream{ClientStream: stream, method: method, audit: audit}, nil
+	}
+	return audit, nil
+}
+
+func (a *firestoreAuditInterceptors) record(method string, request any) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return appendFirestoreAudit(a.path, formatFirestoreAudit(method, request))
+}
+
+type firestoreAuditClientStream struct {
+	grpc.ClientStream
+	method string
+	audit  *firestoreAuditInterceptors
+}
+
+func (s firestoreAuditClientStream) SendMsg(message any) error {
+	if err := s.audit.record(s.method, message); err != nil {
+		return err
+	}
+	return s.ClientStream.SendMsg(message)
 }
 
 func appendFirestoreAudit(path, line string) error {

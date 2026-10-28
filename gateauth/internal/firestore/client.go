@@ -66,15 +66,26 @@ func NewClientWithDatabaseAndScope(project, databaseID, userID, projectID, rawSc
 
 var newFirestoreClient = func(ctx context.Context, project, databaseID string) (*firestore.Client, error) {
 	var options []option.ClientOption
-	if option, enabled, err := newLocalFirestoreAuditOption(); err != nil {
+	auditConn, enabled, err := newLocalFirestoreAuditConnection()
+	if err != nil {
 		return nil, err
-	} else if enabled {
-		options = append(options, option)
 	}
+	if enabled {
+		// Firestore's emulator shortcut supplies its own GRPCConn, which overrides
+		// WithGRPCDialOption. An explicit audited connection keeps all SDK traffic
+		// on the loopback emulator and through the audit interceptors.
+		options = append(options, option.WithoutAuthentication(), option.WithGRPCConn(auditConn))
+	}
+	var client *firestore.Client
 	if databaseID == "" {
-		return firestore.NewClient(ctx, project, options...)
+		client, err = firestore.NewClient(ctx, project, options...)
+	} else {
+		client, err = firestore.NewClientWithDatabase(ctx, project, databaseID, options...)
 	}
-	return firestore.NewClientWithDatabase(ctx, project, databaseID, options...)
+	if err != nil && auditConn != nil {
+		_ = auditConn.Close()
+	}
+	return client, err
 }
 
 // GetStatus returns the current pipeline lock status.

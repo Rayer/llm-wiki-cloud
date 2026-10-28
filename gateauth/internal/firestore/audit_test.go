@@ -29,8 +29,12 @@ func TestLocalFirestoreAuditRequiresNumericLoopbackAndWritesCollectionOnly(t *te
 	path := filepath.Join(t.TempDir(), "firestore-audit.log")
 	t.Setenv("FIRESTORE_EMULATOR_HOST", "127.0.0.1:62371")
 	t.Setenv("GAT4_FIRESTORE_AUDIT_FILE", path)
-	if _, enabled, err := newLocalFirestoreAuditOption(); err != nil || !enabled {
+	conn, enabled, err := newLocalFirestoreAuditConnection()
+	if err != nil || !enabled {
 		t.Fatalf("local loopback audit option enabled=%t err=%v", enabled, err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatalf("close audit connection: %v", err)
 	}
 	info, err := os.Stat(path)
 	if err != nil || info.Mode().Perm() != 0o600 {
@@ -38,11 +42,11 @@ func TestLocalFirestoreAuditRequiresNumericLoopbackAndWritesCollectionOnly(t *te
 	}
 
 	t.Setenv("FIRESTORE_EMULATOR_HOST", "firestore.googleapis.com:443")
-	if _, enabled, err := newLocalFirestoreAuditOption(); err == nil || enabled {
+	if _, enabled, err := newLocalFirestoreAuditConnection(); err == nil || enabled {
 		t.Fatalf("cloud Firestore audit target was accepted: enabled=%t err=%v", enabled, err)
 	}
 	t.Setenv("FIRESTORE_EMULATOR_HOST", "localhost:62371")
-	if _, enabled, err := newLocalFirestoreAuditOption(); err == nil || enabled {
+	if _, enabled, err := newLocalFirestoreAuditConnection(); err == nil || enabled {
 		t.Fatalf("hostname emulator target was accepted: enabled=%t err=%v", enabled, err)
 	}
 }
