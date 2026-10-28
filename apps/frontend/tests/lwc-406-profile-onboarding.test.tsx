@@ -149,7 +149,7 @@ describe('LWC-406 optional Profile onboarding', () => {
       fireEvent.change(serviceSource, { target: { value: 'personal' } });
     }
 
-    const providerButtons = await screen.findAllByRole('button', { name: 'Open custom LLM providers' });
+    const providerButtons = await screen.findAllByRole('button', { name: 'Open LLM Provider' });
     fireEvent.click(providerButtons[entry === 'notice' ? 0 : 1]);
     const accountSettingsDialog = await screen.findByRole('dialog', { name: 'Account settings' });
     expect(within(accountSettingsDialog).getByRole('heading', { name: 'LLM Provider' })).toBeDefined();
@@ -166,7 +166,7 @@ describe('LWC-406 optional Profile onboarding', () => {
     expect(mocks.createLLMProfile).toHaveBeenCalledWith(expect.objectContaining({ name: 'New custom provider', model: 'fixture-model', provider: 'custom' }));
     expect(mocks.saveProjectLLMBinding).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Save AI service settings' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save LLM Provider settings' }));
     await waitFor(() => expect(mocks.saveProjectLLMBinding).toHaveBeenCalledWith('project-new', {
       source: 'personal', profile_id: 'created-profile', revision: 1,
     }));

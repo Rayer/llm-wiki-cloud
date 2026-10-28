@@ -118,3 +118,25 @@ test('account settings copy covers both locales and keeps backend messages separ
   assert.match(modal, /: session\.status/);
   assert.match(modal, /: binding\.status/);
 });
+
+test('settings journey names the shared LLM Provider pane in both locales', async () => {
+  const [english, traditionalChinese] = await Promise.all([
+    readJson(new URL('../src/messages/en.json', import.meta.url)),
+    readJson(new URL('../src/messages/zh-TW.json', import.meta.url)),
+  ]);
+
+  assert.equal(english.AccountSettings.subtitle, 'Manage your account, providers, and connections.');
+  assert.equal(traditionalChinese.AccountSettings.subtitle, '管理你的帳號、服務商與連線。');
+  assert.equal(english.LLMSource.emptyProfiles, 'Add a provider in Personal settings → LLM Provider before selecting one here.');
+  assert.equal(traditionalChinese.LLMSource.emptyProfiles, '請先在個人設定 → LLM Provider 新增服務商，再回來選取。');
+  assert.equal(english.LLMSource.addProfile, 'Open LLM Provider');
+  assert.equal(traditionalChinese.LLMSource.addProfile, '開啟 LLM Provider');
+  assert.equal(english.LLMSource.personalSettingsCTA, 'Open LLM Provider');
+  assert.equal(traditionalChinese.LLMSource.personalSettingsCTA, '開啟 LLM Provider');
+  assert.equal(english.LLMSource.save, 'Save LLM Provider settings');
+  assert.equal(traditionalChinese.LLMSource.save, '儲存 LLM Provider 設定');
+  assert.match(english.LLMSource.sharedNoticeBody, /Personal settings → LLM Provider/);
+  assert.match(traditionalChinese.LLMSource.sharedNoticeBody, /個人設定 → LLM Provider/);
+  assert.equal(traditionalChinese.LLMSource.personal, '自訂LLM提供者');
+  assert.equal(traditionalChinese.LLMSource.chooseProfile, '選擇自訂LLM提供者');
+});
