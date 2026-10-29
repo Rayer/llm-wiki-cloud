@@ -168,14 +168,16 @@ func TestProfileClientUsesOpenAIChatCompletionsProtocol(t *testing.T) {
 			t.Fatal("OpenAI protocol sent Anthropic headers")
 		}
 		var payload struct {
-			Model    string        `json:"model"`
-			Messages []chatMessage `json:"messages"`
-			Max      int           `json:"max_tokens"`
+			Model               string        `json:"model"`
+			Messages            []chatMessage `json:"messages"`
+			Max                 int           `json:"max_tokens"`
+			MaxCompletionTokens *int          `json:"max_completion_tokens"`
+			Temperature         *float64      `json:"temperature"`
 		}
 		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
 			t.Fatal(err)
 		}
-		if payload.Model != "fixture-model" || payload.Max != 73 || len(payload.Messages) != 2 || payload.Messages[0] != (chatMessage{Role: "system", Content: "rules"}) || payload.Messages[1] != (chatMessage{Role: "user", Content: "question"}) {
+		if payload.Model != "fixture-model" || payload.Max != 73 || payload.MaxCompletionTokens != nil || payload.Temperature != nil || len(payload.Messages) != 2 || payload.Messages[0] != (chatMessage{Role: "system", Content: "rules"}) || payload.Messages[1] != (chatMessage{Role: "user", Content: "question"}) {
 			t.Fatalf("unexpected OpenAI payload: %+v", payload)
 		}
 		return profileResponse(http.StatusOK, `{"id":"req-1","model":"fixture-returned","choices":[{"message":{"role":"assistant","content":"answer"},"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":4,"prompt_tokens_details":{"cached_tokens":3},"completion_tokens_details":{"reasoning_tokens":2}}}`), nil
@@ -191,6 +193,61 @@ func TestProfileClientUsesOpenAIChatCompletionsProtocol(t *testing.T) {
 	}
 	if result.Text != "answer" || result.Metadata.ProfileID != "p1" || result.Metadata.ProfileRevision != 3 || result.Metadata.ReturnedModel != "fixture-returned" || result.Metadata.FinishReason != "stop" || result.Metadata.ProviderRequestID != "req-1" || result.Metadata.Usage.InputTokens == nil || *result.Metadata.Usage.InputTokens != 12 || result.Metadata.Usage.CachedInputTokens == nil || *result.Metadata.Usage.CachedInputTokens != 3 || result.Metadata.Usage.ReasoningTokens == nil || *result.Metadata.Usage.ReasoningTokens != 2 {
 		t.Fatalf("unexpected normalized result: %+v", result)
+	}
+}
+
+func TestProfileClientUsesProviderSpecificCompletionTokenLimit(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		provider    string
+		endpoint    string
+		wantField   string
+		absentField string
+	}{
+		{name: "official OpenAI", provider: "openai", endpoint: "https://api.openai.com/v1", wantField: "max_completion_tokens", absentField: "max_tokens"},
+		{name: "xAI", provider: "xai", endpoint: "https://api.x.ai/v1", wantField: "max_tokens", absentField: "max_completion_tokens"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			transport := profileRoundTripper(func(request *http.Request) (*http.Response, error) {
+				if request.URL.String() != test.endpoint+"/chat/completions" || request.Header.Get("Authorization") != "Bearer synthetic-key" {
+					t.Fatalf("unexpected request target/auth: %s %q", request.URL, request.Header.Get("Authorization"))
+				}
+				if request.Header.Get("x-api-key") != "" || request.Header.Get("anthropic-version") != "" {
+					t.Fatal("OpenAI-compatible provider sent Anthropic headers")
+				}
+				var payload map[string]json.RawMessage
+				if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+					t.Fatal(err)
+				}
+				var model string
+				var messages []chatMessage
+				var tokenLimit int
+				if json.Unmarshal(payload["model"], &model) != nil || model != "fixture-model" ||
+					json.Unmarshal(payload["messages"], &messages) != nil || len(messages) != 2 || messages[0] != (chatMessage{Role: "system", Content: "rules"}) || messages[1] != (chatMessage{Role: "user", Content: "question"}) {
+					t.Fatalf("unexpected model/messages in request: model=%q messages=%+v", model, messages)
+				}
+				if _, ok := payload[test.absentField]; ok {
+					t.Fatalf("request included sibling token field %q", test.absentField)
+				}
+				if _, ok := payload["temperature"]; ok {
+					t.Fatal("nil temperature was serialized")
+				}
+				if raw, ok := payload[test.wantField]; !ok || json.Unmarshal(raw, &tokenLimit) != nil || tokenLimit != 73 {
+					t.Fatalf("request %s = %s, want budget 73", test.wantField, raw)
+				}
+				return profileResponse(http.StatusOK, `{"id":"req-provider-token","model":"fixture-returned","choices":[{"message":{"role":"assistant","content":"answer"},"finish_reason":"stop"}]}`), nil
+			})
+			client, err := newProfileClient(ProfileConfig{ID: "p-token", Revision: 1, Provider: test.provider, Protocol: ProtocolOpenAIChatCompletions,
+				Endpoint: test.endpoint, Model: "fixture-model"}, "synthetic-key", ProfileClientOptions{MaxOutputTokens: 73}, false, transport)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.Close()
+			result, err := client.Complete(context.Background(), "rules", "question")
+			if err != nil || result.Text != "answer" {
+				t.Fatalf("Complete() = (%+v, %v), want answer", result, err)
+			}
+		})
 	}
 }
 
@@ -216,27 +273,29 @@ func TestProfileClientRecordsItsProviderAndModel(t *testing.T) {
 
 func TestProfileClientUsesAnthropicMessagesProtocol(t *testing.T) {
 	transport := profileRoundTripper(func(request *http.Request) (*http.Response, error) {
-		if request.URL.String() != "https://fixture.example/v1/messages" || request.Header.Get("x-api-key") != "synthetic-key" || request.Header.Get("anthropic-version") != "2023-06-01" {
+		if request.URL.String() != "https://api.anthropic.com/v1/messages" || request.Header.Get("x-api-key") != "synthetic-key" || request.Header.Get("anthropic-version") != "2023-06-01" {
 			t.Fatalf("unexpected Anthropic request: %s headers=%v", request.URL, request.Header)
 		}
 		if request.Header.Get("Authorization") != "" {
 			t.Fatal("Anthropic protocol sent Bearer authorization")
 		}
 		var payload struct {
-			Model     string        `json:"model"`
-			MaxTokens int           `json:"max_tokens"`
-			System    string        `json:"system"`
-			Messages  []chatMessage `json:"messages"`
+			Model               string        `json:"model"`
+			MaxTokens           int           `json:"max_tokens"`
+			MaxCompletionTokens *int          `json:"max_completion_tokens"`
+			System              string        `json:"system"`
+			Messages            []chatMessage `json:"messages"`
+			Temperature         *float64      `json:"temperature"`
 		}
 		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
 			t.Fatal(err)
 		}
-		if payload.Model != "claude-fixture" || payload.MaxTokens != 99 || payload.System != "system rules" || len(payload.Messages) != 1 || payload.Messages[0] != (chatMessage{Role: "user", Content: "question"}) {
+		if payload.Model != "claude-fixture" || payload.MaxTokens != 99 || payload.MaxCompletionTokens != nil || payload.System != "system rules" || payload.Temperature != nil || len(payload.Messages) != 1 || payload.Messages[0] != (chatMessage{Role: "user", Content: "question"}) {
 			t.Fatalf("unexpected Anthropic payload: %+v", payload)
 		}
 		return profileResponse(http.StatusOK, `{"id":"msg-1","model":"claude-returned","stop_reason":"end_turn","content":[{"type":"thinking","text":"hidden"},{"type":"text","text":"one "},{"type":"text","text":"two"}],"usage":{"input_tokens":21,"output_tokens":8,"cache_read_input_tokens":6,"cache_creation_input_tokens":2}}`), nil
 	})
-	client, err := newProfileClient(ProfileConfig{ID: "p2", Revision: 1, Provider: "custom", Protocol: ProtocolAnthropicMessages, Endpoint: "https://fixture.example", Model: "claude-fixture"}, "synthetic-key", ProfileClientOptions{MaxOutputTokens: 99}, false, transport)
+	client, err := newProfileClient(ProfileConfig{ID: "p2", Revision: 1, Provider: "anthropic", Protocol: ProtocolAnthropicMessages, Endpoint: "https://api.anthropic.com", Model: "claude-fixture"}, "synthetic-key", ProfileClientOptions{MaxOutputTokens: 99}, false, transport)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,6 +348,40 @@ func TestProfileClientRejectsSyntacticallyValidTruncatedStructuredOutput(t *test
 			}
 			if capture.outcome != string(ProviderOutputTruncated) {
 				t.Fatalf("call outcome = %q, want %q", capture.outcome, ProviderOutputTruncated)
+			}
+		})
+	}
+}
+
+func TestProfileClientKeepsOpenAIParameterAndModelErrorsSafe(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		status    int
+		body      string
+		forbidden []string
+	}{
+		{name: "unsupported token field", status: http.StatusBadRequest, body: `{"error":{"code":"unsupported_parameter","param":"max_tokens"}}`, forbidden: []string{"unsupported_parameter", "max_tokens"}},
+		{name: "model not found", status: http.StatusNotFound, body: `{"error":{"code":"model_not_found"}}`, forbidden: []string{"model_not_found"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			transport := profileRoundTripper(func(*http.Request) (*http.Response, error) {
+				return profileResponse(test.status, test.body), nil
+			})
+			client, err := newProfileClient(ProfileConfig{ID: "p-error", Revision: 1, Provider: "openai", Protocol: ProtocolOpenAIChatCompletions,
+				Endpoint: "https://api.openai.com/v1", Model: "fixture-model"}, "synthetic-key", ProfileClientOptions{}, false, transport)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.Close()
+			_, err = client.Complete(context.Background(), "rules", "question")
+			var callErr *ProfileCallError
+			if !errors.As(err, &callErr) || callErr.Kind != ProviderFailure || callErr.StatusCode != test.status || IsQuotaExhausted(err) {
+				t.Fatalf("Complete() error = %v, want safe provider failure for HTTP %d", err, test.status)
+			}
+			for _, detail := range append(test.forbidden, "synthetic-key", "rules", "question") {
+				if strings.Contains(err.Error(), detail) {
+					t.Fatalf("provider detail leaked from safe error: %v", err)
+				}
 			}
 		})
 	}
