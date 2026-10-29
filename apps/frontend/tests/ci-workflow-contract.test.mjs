@@ -59,7 +59,10 @@ test('r2 registered release and recovery workflows use explicit artifact inputs'
         auth_artifact_id: 'number', auth_run_id: 'number', auth_run_attempt: 'number',
       })) {
         assert.equal(parsed.on.workflow_dispatch.inputs[name].type, type);
-        assert.equal(parsed.jobs.release.with[name], `\${{ inputs.${name} }}`);
+        const forwarding = type === 'number'
+          ? `\${{ fromJSON(inputs.${name}) }}`
+          : `\${{ inputs.${name} }}`;
+        assert.equal(parsed.jobs.release.with[name], forwarding);
       }
     }
     if (file === 'deploy-dev.yml') assert.equal(parsed.jobs.release.with.operation, '${{ inputs.operation }}');

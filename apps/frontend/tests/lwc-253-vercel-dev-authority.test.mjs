@@ -424,12 +424,12 @@ test('DEV workflow invokes the shared engine and isolates the fixed diagnostic r
     force: '${{ inputs.force }}',
     pipeline_run_timeout_seconds: '${{ inputs.pipeline_run_timeout_seconds }}',
     release_source_mode: '${{ inputs.release_source_mode }}',
-    auth_repository_id: '${{ inputs.auth_repository_id }}',
+    auth_repository_id: '${{ fromJSON(inputs.auth_repository_id) }}',
     auth_revision: '${{ inputs.auth_revision }}',
     auth_tree_sha256: '${{ inputs.auth_tree_sha256 }}',
-    auth_artifact_id: '${{ inputs.auth_artifact_id }}',
-    auth_run_id: '${{ inputs.auth_run_id }}',
-    auth_run_attempt: '${{ inputs.auth_run_attempt }}',
+    auth_artifact_id: '${{ fromJSON(inputs.auth_artifact_id) }}',
+    auth_run_id: '${{ fromJSON(inputs.auth_run_id) }}',
+    auth_run_attempt: '${{ fromJSON(inputs.auth_run_attempt) }}',
   });
   const diagnostic = workflow.jobs['auth-image-diagnostic'];
   assert.ok(diagnostic.if.includes("inputs.operation == 'diagnose-auth-image'"));
