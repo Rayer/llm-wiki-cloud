@@ -249,11 +249,21 @@ func (c *ProfileClient) Complete(ctx context.Context, systemPrompt, userMessage 
 		endpoint = profileEndpoint(c.profile.Endpoint, ProtocolAnthropicMessages)
 	} else {
 		payload := struct {
-			Model       string        `json:"model"`
-			Messages    []chatMessage `json:"messages"`
-			MaxTokens   int           `json:"max_tokens"`
-			Temperature *float64      `json:"temperature,omitempty"`
-		}{c.profile.Model, []chatMessage{{Role: "system", Content: systemPrompt}, {Role: "user", Content: userMessage}}, c.maxOut, c.temp}
+			Model               string        `json:"model"`
+			Messages            []chatMessage `json:"messages"`
+			MaxTokens           int           `json:"max_tokens,omitempty"`
+			MaxCompletionTokens int           `json:"max_completion_tokens,omitempty"`
+			Temperature         *float64      `json:"temperature,omitempty"`
+		}{
+			Model:       c.profile.Model,
+			Messages:    []chatMessage{{Role: "system", Content: systemPrompt}, {Role: "user", Content: userMessage}},
+			Temperature: c.temp,
+		}
+		if c.profile.Provider == "openai" {
+			payload.MaxCompletionTokens = c.maxOut
+		} else {
+			payload.MaxTokens = c.maxOut
+		}
 		var err error
 		body, err = json.Marshal(payload)
 		if err != nil {
