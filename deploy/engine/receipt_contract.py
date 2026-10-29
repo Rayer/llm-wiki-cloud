@@ -92,7 +92,7 @@ def validate_dev_receipt(dev, mode, expected_lwc_source, expected_auth_source=No
     expected_lwc_source = _object(expected_lwc_source, "expected LWC source")
     _validate_config(dev.get("config"))
     components, images = _validate_components_and_images(dev, mode)
-    if expected_components is not None and components != expected_components:
+    if expected_components is not None and sorted(components) != sorted(expected_components):
         raise ReceiptError("DEV selected components do not match the release plan")
     if mode in ("legacy", "legacy_monorepo"):
         if dev.get("schema") != "lwc-306-dev-image-receipt-v1":

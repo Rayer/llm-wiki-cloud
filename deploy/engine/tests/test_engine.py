@@ -477,6 +477,22 @@ class Acceptance(unittest.TestCase):
         self.assertEqual(e.state['status'],'success')
         self.assertTrue(any('--update-secrets' in x for x in calls));self.assertEqual(len(self.calls('POST')),1)
 
+    def test_prepare_barrier_accepts_writer_inventory_order_for_all_backend_components(self):
+        normalized=copy.deepcopy(self.normalized)
+        normalized['selected_components']=['auth','bff','worker','exportjob']
+        e=self.make(('exportjob','auth','bff','worker'),name='receipt-inventory-order',normalized=normalized)
+        with patch.dict(os.environ,{'GAT4_DEV_RECEIPT_MODE':'legacy_monorepo',
+                                    'GITHUB_RUN_ID':'424242','GITHUB_RUN_ATTEMPT':'1'}):
+            e.prepare()
+            artifacts=e.barrier()
+        dev=read(e.directory/'images/dev-receipt.json')
+        self.assertEqual(e.state['status'],'ready')
+        self.assertEqual(e.plan['selected'],['exportjob','auth','bff','worker'])
+        self.assertEqual(dev['components'],['auth','bff','worker','exportjob'])
+        self.assertEqual(set(dev['images']),set(e.plan['selected']))
+        self.assertEqual(set(artifacts),set(e.plan['selected']))
+        self.assertFalse(self.calls('update'))
+
     def test_auth_bff_ready_artifact_deploy_updates_traffic_and_strict_readback(self):
         e=self.ready(self.make(('auth','bff'),name='auth-bff-ready-deploy'))
         ready_artifacts={c:e.receipt(c)['artifact'] for c in ('auth','bff')}

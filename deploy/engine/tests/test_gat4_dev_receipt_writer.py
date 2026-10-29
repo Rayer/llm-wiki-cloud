@@ -82,6 +82,8 @@ class DevReceiptWriterTests(unittest.TestCase):
             component_images = {
                 "auth": image,
                 "bff": f"{self.registry}/llm-wiki-bff@sha256:" + "f" * 64,
+                "worker": f"{self.registry}/olw-pipeline@sha256:" + "1" * 64,
+                "exportjob": f"{self.registry}/llm-wiki-bff-export-job@sha256:" + "2" * 64,
             }
             for component in selected_components:
                 (image_dir / f"{component}-image-{source_sha}.txt").write_text(component_images[component] + "\n")
@@ -275,6 +277,26 @@ class DevReceiptWriterTests(unittest.TestCase):
             expected_lwc_source=independent["source"]["lwc"],
             expected_auth_source=independent["source"]["auth"],
             expected_components=["auth"]))
+
+    def test_both_writers_preserve_selected_inventory_and_reader_matches_plan_order(self):
+        selected_order = ["auth", "bff", "worker", "exportjob"]
+        plan_order = ["exportjob", "auth", "bff", "worker"]
+        for mode in ("legacy-explicit", "independent"):
+            with self.subTest(mode=mode):
+                completed, dev, auth = self.run_writer(
+                    mode=mode, selected_components=selected_order)
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                self.assertEqual(dev["components"], selected_order)
+                self.assertEqual(set(dev["images"]), set(selected_order))
+                kwargs = {"expected_components": plan_order}
+                if mode == "independent":
+                    kwargs.update(expected_lwc_source=dev["source"]["lwc"],
+                                  expected_auth_source=dev["source"]["auth"])
+                else:
+                    kwargs["expected_auth_config_inputs"] = auth["auth_config_inputs"]
+                self.assertTrue(receipt_contract.validate_receipt_pair(
+                    auth, dev, "independent" if mode == "independent" else "legacy_monorepo",
+                    **kwargs))
 
     def test_explicit_legacy_mode_rejects_independent_metadata(self):
         completed, receipt, _ = self.run_writer(
