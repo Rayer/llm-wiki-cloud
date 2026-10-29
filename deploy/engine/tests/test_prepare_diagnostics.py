@@ -299,6 +299,7 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
                                'frontend': frontend},
                 'selected': ['auth', 'frontend'], 'identities': identities,
                 'dev_reference': None}
+        plan['release_source_mode'] = 'legacy_monorepo'
         plan['id'] = digest(engine.release_identity(plan))
         write(directory / 'plan.json', plan)
         auth_receipt = {'schema': 2, 'component': 'auth', 'identity': identities['auth'],
@@ -988,6 +989,7 @@ sys.stdout.write(os.environ['FAKE_PROJECT_RESPONSE'])
                     'PATH': str(fake_bin) + os.pathsep + os.environ.get('PATH', '/usr/bin:/bin'),
                     'HOME': str(work), 'TMPDIR': os.environ.get('TMPDIR', str(work)),
                     'RUNNER_TEMP': str(work), 'INPUT_OPERATION': 'prepare',
+                    'GAT4_RELEASE_SOURCE_MODE': 'legacy_monorepo',
                     'EXECUTOR_SHA': 'e' * 40,
                     'TARGET': 'development', 'SOURCE': 'c' * 40,
                     'COMPONENTS': 'auth,frontend', 'RELEASE_TAG': 'offline-diagnostic',
@@ -1086,6 +1088,7 @@ else:
                     'PATH': str(fake_bin) + os.pathsep + os.environ.get('PATH', '/usr/bin:/bin'),
                     'HOME': str(work), 'TMPDIR': os.environ.get('TMPDIR', str(work)),
                     'RUNNER_TEMP': str(work), 'INPUT_OPERATION': 'prepare',
+                    'GAT4_RELEASE_SOURCE_MODE': 'legacy_monorepo',
                     'EXECUTOR_SHA': 'e' * 40,
                     'TARGET': 'development', 'SOURCE': 'c' * 40,
                     'COMPONENTS': 'auth,frontend', 'RELEASE_TAG': 'offline-diagnostic',
@@ -1473,6 +1476,7 @@ public = {'environment': 'dev', 'bucket': 'llm-wiki-data-dev',
                 'PATH': str(fake_bin) + os.pathsep + os.environ.get('PATH', '/usr/bin:/bin'),
                 'HOME': str(work), 'TMPDIR': str(work), 'RUNNER_TEMP': str(work),
                 'INPUT_OPERATION': 'prepare', 'EXECUTOR_SHA': 'e' * 40,
+                'GAT4_RELEASE_SOURCE_MODE': 'legacy_monorepo',
                 'TARGET': 'development', 'SOURCE': 'c' * 40,
                 'COMPONENTS': 'worker', 'RELEASE_TAG': plan['tag'],
                 'LWC_PIPELINE_RUN_TIMEOUT_SECONDS': '321',

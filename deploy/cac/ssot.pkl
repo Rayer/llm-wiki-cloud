@@ -89,7 +89,7 @@ class BffMcpConfig {
 
 class BffAuthConsumerConfig {
   schema_version: Int
-  environment: "dev" | "prod"
+  environment: "local" | "dev" | "prod"
   auth_url: String
   issuer: String
   runtime_service_account: String
@@ -482,13 +482,27 @@ local prodBffAuthConsumer = new BffAuthConsumerConfig {
 }
 
 local localBff = new BffConfig {
-  schema_version = 2
+  schema_version = 3
   environment = "local"
   target = "bff"
   gcp_project = "llm-wiki-cloud"
   bucket = "llm-wiki-cloud-local"
   firestore_database_id = "llm-wiki-cloud-local"
   auth_service_url = "http://localhost:\(localBffAuthPort)"
+  auth_consumer = new BffAuthConsumerConfig {
+    schema_version = 1
+    environment = "local"
+    auth_url = "http://localhost:\(localBffAuthPort)"
+    issuer = "http://localhost:\(localBffAuthPort)"
+    runtime_service_account = "bff-local@localhost"
+    verifier_audience = "http://localhost:\(localBffAuthPort)"
+    resource = localBffResourceOrigin
+    verifier_path = "/api/v1/auth/consumers/lwc/verify-credential"
+    account_check_path = "/api/v1/auth/consumers/lwc/accounts/check"
+    catalog_path = "/api/v1/auth/consumers/lwc/management/catalog"
+    authority_modes = new Listing { "synthetic-local-fixture" }
+    timeout_seconds = 5
+  }
   mcp_resource_origin = localBffResourceOrigin
   pipeline_job_url = "https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/olw-pipeline:run"
   export_job_url = ""
@@ -507,7 +521,9 @@ local localBff = new BffConfig {
   auth_session_environment = "llm-wiki-cloud-local"
   auth_session_migration = "disabled"
   registration_enabled = null
-  jwt_secret_reference = localJwtSecretReference
+  // The local BFF is an Auth consumer; only GateAuth keeps the local signing
+  // key. Schema 2 remains available for explicit legacy compatibility files.
+  jwt_secret_reference = null
   deepseek_api_key_reference = localDeepSeekSecretReference
   typesafe_api_key_reference = localTypeSafeAPIKeyReference
   byok_credential_encryption_key_reference = localBYOKCredentialKeyReference

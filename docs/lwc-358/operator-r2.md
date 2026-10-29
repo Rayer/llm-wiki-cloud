@@ -12,6 +12,7 @@ Actions 表單輸入：
 - `dev_artifact_id`：Production 容器必填，成功 DEV release 的結果 artifact ID。容器保留原 build SHA；source-input identity 必須對得上 main 候選。Frontend 按 Production 設定建置。
 - `operation`：Deploy Development 預設 `release`；也可明確選 `deploy`、`rollback`、`reactivate`、`tag` 或 `readback`，使用 retained artifact 執行現有 runtime 操作。`diagnose-auth-image` 仍是獨立固定唯讀分支。Production wrapper 不提供 recovery operations 或 force。
 - `source_sha`：DEV 普通 `release` 留空時使用目前 workflow `github.sha`。跨 executor 續跑 Stage 1 時，選 `release` 並同時填原 plan 的 deployment source SHA 與 retained `artifact_id`；DEV recovery operations 也填原 plan source。Executor checkout 一律使用目前 reviewed `github.sha`。
+- `release_source_mode`：本次 GAT-4 DEV 階段選 `legacy_monorepo`。它以同一個 LWC source SHA/ref 從版本化的 `gateauth/` 建置 Auth，產生單來源 Auth schema-2 與 DEV receipt v1；不宣稱獨立 Auth repository/run/artifact identity，也不把 local snapshot 當遠端來源。`independent` 只用於已提供且驗證完整的獨立 Auth repository/source artifact tuple。此 bounded DEV staging disposition 不改變 Production policy。
 - `force`：選填布林值，預設 `false`。僅新 ready DEV attempt 的 `deploy` 可使用；細節見下方。
 
 Workflow 把目前 reviewed `github.sha` 當作 `executor_sha` 來 checkout engine；它與 plan 的 `source`（deployment source SHA）分開。Go `cmd/deploy_config` 產生 normalized config。Profile 透過 Go dependency package 與 embed file、Dockerfile、module files 及明確靜態 inputs 計算 identity；部署工具與無關 package 不使既有容器失效。Frontend identity 使用其 source tree 及目標 public config。Schema 3 plan ID 由穩定 release identity 計算，包含 source、target/config、tag、selected components、輸入 identity 與 DEV provenance，不含 executor SHA；選擇或 release identity 改變必須建立新 plan。

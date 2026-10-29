@@ -226,9 +226,9 @@ func TestProjectKeyManagementAndQueryRoutes(t *testing.T) {
 			t.Fatalf("project key on protected BFF route %s status=%d, want 401", path, got)
 		}
 	}
-	publicLogout := request(http.MethodPost, "/api/v1/auth/logout", created.Secret, "", "")
-	if publicLogout.Code != http.StatusOK {
-		t.Fatalf("public Auth logout was intercepted by project-key rejection: %d", publicLogout.Code)
+	authLogout := request(http.MethodPost, "/api/v1/auth/logout", created.Secret, "", "")
+	if authLogout.Code != http.StatusNotFound {
+		t.Fatalf("BFF unexpectedly owns the Auth logout route: status=%d body=%s", authLogout.Code, authLogout.Body.String())
 	}
 	if got := request(http.MethodGet, "/api/v1/query/config", created.Secret, "", "").Code; got == http.StatusUnauthorized {
 		t.Fatal("project key was intercepted on the public query config route")

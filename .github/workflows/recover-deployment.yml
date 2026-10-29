@@ -26,6 +26,11 @@ on:
         required: true
         type: choice
         options: [rollback, reactivate, deploy, tag, readback, diagnose-auth-image]
+      release_source_mode:
+        description: Explicit image receipt mode for retained artifacts
+        required: true
+        type: choice
+        options: [independent, legacy_monorepo]
 permissions:
   contents: write
   actions: read
@@ -45,6 +50,7 @@ jobs:
       executor_sha: ${{ github.sha }}
       components: ${{ inputs.components }}
       release_tag: ${{ inputs.release_tag }}
+      release_source_mode: ${{ inputs.release_source_mode }}
       operation: ${{ inputs.operation }}
       artifact_id: ${{ inputs.artifact_id }}
   auth-image-diagnostic:

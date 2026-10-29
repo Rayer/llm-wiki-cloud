@@ -19,7 +19,6 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/rayer/llm-wiki-bff/internal/auth"
 	runtimeconfig "github.com/rayer/llm-wiki-bff/internal/config"
 	handlerv1 "github.com/rayer/llm-wiki-bff/internal/handler/v1"
 	"github.com/rayer/llm-wiki-bff/internal/localfs"
@@ -117,7 +116,7 @@ func (r *fakeSecretReader) Access(_ context.Context, resource string) (string, [
 	return resolved, value, r.err
 }
 
-func TestRealPklBFFPrepareRendersSchema3WithoutCloudJWTAndRetainsLocalSchema2(t *testing.T) {
+func TestRealPklBFFPrepareRendersSchema3ConsumerForLocalAndCloud(t *testing.T) {
 	realPKL := strings.TrimSpace(os.Getenv("PKL_BIN"))
 	if realPKL == "" {
 		var err error
@@ -228,9 +227,6 @@ func TestRealPklBFFPrepareRendersSchema3WithoutCloudJWTAndRetainsLocalSchema2(t 
 				wantDeepSeekReference = "environment:LLM_API_KEY"
 			}
 			wantSchema := 3
-			if tc.environment == "local" {
-				wantSchema = 2
-			}
 			if generated.SchemaVersion != wantSchema || generated.Environment != tc.environment || generated.Target != "bff" ||
 				generated.PipelineCooldownSeconds != tc.cooldown || generated.TypeSafeAPIKey != tc.typesafe ||
 				generated.BYOKCredentialEncryptionKey != wantBYOKKey || generated.DeepSeekAPIKeyReference != wantDeepSeekReference ||
@@ -238,8 +234,11 @@ func TestRealPklBFFPrepareRendersSchema3WithoutCloudJWTAndRetainsLocalSchema2(t 
 				generated.MCP == nil || generated.MCP.DiscoveryTTLMS != wantTTL || generated.MCP.ToolsListTTLMS != wantTTL {
 				t.Fatalf("prepared BFF identity or cooldown is incorrect for %s", tc.environment)
 			}
-			if tc.environment == "local" && (generated.JWTSecret == "" || generated.AuthConsumer != nil) {
-				t.Fatal("local schema-2 BFF config lost its isolated compatibility signing key")
+			if tc.environment == "local" && (generated.JWTSecret != "" || generated.AuthConsumer == nil ||
+				generated.AuthConsumer.RuntimeServiceAccount != "bff-local@localhost" ||
+				generated.AuthConsumer.VerifierAudience != generated.AuthServiceURL ||
+				len(generated.AuthConsumer.AuthorityModes) != 1 || generated.AuthConsumer.AuthorityModes[0] != "synthetic-local-fixture") {
+				t.Fatal("local schema-3 BFF config lost its isolated synthetic Auth consumer")
 			}
 			if tc.environment != "local" && (generated.JWTSecret != "" || generated.AuthConsumer == nil ||
 				generated.AuthConsumer.Environment != tc.environment || generated.AuthConsumer.TimeoutSeconds != 5 ||
@@ -310,21 +309,9 @@ func TestRealPklBFFPrepareRendersSchema3WithoutCloudJWTAndRetainsLocalSchema2(t 
 			assertGeneratedConfigUsesQualityConsumers(t, started, tc.environment, tc.typesafe)
 			if tc.environment == "local" {
 				if generated.Local == nil || generated.Local.Scope != "lwc369-synthetic-acceptance" ||
-					generated.JWTSecret != strings.Repeat("a", 64) || generated.DeepSeekAPIKey != "TEST_ONLY_LOCAL_LLM_KEY" ||
+					generated.JWTSecret != "" || generated.DeepSeekAPIKey != "TEST_ONLY_LOCAL_LLM_KEY" ||
 					generated.ProfileRuntimeAudience != "" || generated.ProfileRuntimeServiceAccount != "" {
 					t.Fatal("local BFF config did not use the isolated synthetic fixtures")
-				}
-				legacyAuthConfig, err := runtimeconfig.Load(localRoot)
-				if err != nil || legacyAuthConfig.JWTSecret != started.JWTSecret {
-					t.Fatalf("Auth and BFF did not load the same local signing key: err=%v", err)
-				}
-				token, err := auth.GenerateAccessToken("lwc369-synthetic-user", "member", legacyAuthConfig.JWTSecret)
-				if err != nil {
-					t.Fatal("Auth could not issue a synthetic access token")
-				}
-				claims, err := auth.ValidateToken(token, started.JWTSecret)
-				if err != nil || claims.Sub != "lwc369-synthetic-user" {
-					t.Fatal("BFF could not validate an Auth token using the generated local config")
 				}
 				t.Run("missing optional Jev key remains loadable", func(t *testing.T) {
 					t.Setenv("TYPESAFE_API_KEY", "")
@@ -1130,6 +1117,74 @@ func TestGoogleSecretManagerSDKAccessPath(t *testing.T) {
 		t.Fatalf("Google Secret Manager client response = %q version=%q, %v", value, resolved, err)
 	}
 	clear(value)
+}
+
+func TestGAT4SyntheticAuthDescriptorProducer(t *testing.T) {
+	var requests []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.Method+" "+r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/projects/llm-wiki-cloud/secrets/jwt-secret-dev/versions":
+			_, _ = w.Write([]byte(`{"versions":[{"name":"projects/llm-wiki-cloud/secrets/jwt-secret-dev/versions/42","state":"ENABLED"}]}`))
+		case "/v1/projects/llm-wiki-cloud/secrets/google-oauth-client-dev/versions/1":
+			_, _ = w.Write([]byte(`{"name":"projects/llm-wiki-cloud/secrets/google-oauth-client-dev/versions/1","state":"ENABLED"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	service, err := secretmanager.NewService(context.Background(), option.WithEndpoint(server.URL+"/"),
+		option.WithHTTPClient(server.Client()), option.WithoutAuthentication())
+	if err != nil {
+		t.Fatal(err)
+	}
+	repoRoot, err := filepath.Abs(filepath.Join("..", "..", "..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LWC_REPOSITORY_ROOT", repoRoot)
+	t.Setenv("PKL_CACHE_DIR", "")
+	sourceSHA := strings.TrimSpace(os.Getenv("GAT4_TEST_SOURCE_SHA"))
+	if sourceSHA == "" {
+		sourceSHA = strings.Repeat("c", 40)
+	}
+	output := t.TempDir()
+	if err := runPrepareTargetModeAtSource(context.Background(), "auth", "dev", output, true, sourceSHA,
+		func(context.Context) (secretReader, error) {
+			return googleSecretReader{service: service}, nil
+		}); err != nil {
+		t.Fatalf("prepare synthetic Auth descriptor: %v", err)
+	}
+	descriptorPath := filepath.Join(output, "auth-inputs.json")
+	descriptor, err := os.ReadFile(descriptorPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot runtimeconfig.AuthInputSnapshot
+	if err := json.Unmarshal(descriptor, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtimeconfig.ValidateAuthInputSnapshot(snapshot); err != nil {
+		t.Fatalf("produced Auth descriptor is invalid: %v", err)
+	}
+	if snapshot.SourceSHA != sourceSHA || snapshot.JWTSecretVersion != "projects/llm-wiki-cloud/secrets/jwt-secret-dev/versions/42" ||
+		snapshot.Google.ClientSecretVersion != "projects/llm-wiki-cloud/secrets/google-oauth-client-dev/versions/1" {
+		t.Fatalf("synthetic metadata was not pinned into the actual Auth descriptor: source=%q jwt=%q google=%q",
+			snapshot.SourceSHA, snapshot.JWTSecretVersion, snapshot.Google.ClientSecretVersion)
+	}
+	if len(requests) != 2 || requests[0] != "GET /v1/projects/llm-wiki-cloud/secrets/jwt-secret-dev/versions" ||
+		requests[1] != "GET /v1/projects/llm-wiki-cloud/secrets/google-oauth-client-dev/versions/1" {
+		t.Fatalf("unexpected loopback metadata requests: %v", requests)
+	}
+	if destination := strings.TrimSpace(os.Getenv("GAT4_TEST_AUTH_DESCRIPTOR_OUTPUT")); destination != "" {
+		if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(destination, descriptor, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func TestGoogleSecretManagerSDKResolvesCanonicalNumericProjectName(t *testing.T) {

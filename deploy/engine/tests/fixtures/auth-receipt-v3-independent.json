@@ -1,0 +1,55 @@
+{
+  "_fixture": {
+    "status": "NOT PUBLISHED",
+    "purpose": "Synthetic schema-3 independent Auth receipt shape from frozen r3."
+  },
+  "receipt": {
+    "schema": 3,
+    "component": "auth",
+    "identity": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "build_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "artifact": {
+      "image": "us-central1-docker.pkg.dev/fixture-project/cloud-run-images/llm-wiki-auth@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "target_config": null,
+    "build": {
+      "project_id": "fixture-project",
+      "location": "us-central1",
+      "build_id": "synthetic-fixture-build-v3",
+      "identity_verified": true,
+      "status": "SUCCESS"
+    },
+    "auth_config_inputs": {
+      "schema_version": 1,
+      "environment": "dev",
+      "target": "auth",
+      "source_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "config_id": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "gcp_project": "fixture-project",
+      "firestore_database_id": "fixture-database",
+      "local_cloud_scope": "",
+      "auth_service_url": "https://auth.example.test",
+      "sync_service_url": "https://bff.example.test",
+      "allowed_hosts": ["auth.example.test"],
+      "allowed_origins": ["https://wiki.example.test"],
+      "auth_session_environment": "fixture",
+      "auth_session_migration": "disabled",
+      "registration_enabled": false,
+      "auth_demo_user_id": "fixture-user",
+      "auth_demo_user_email": "fixture@example.test",
+      "auth_demo_user_role": "member",
+      "jwt_secret_version": "fixture-secret/versions/1",
+      "google": {"enabled": false},
+      "config_secret_resource": "projects/fixture-project/secrets/auth-config/versions/1"
+    },
+    "auth_materialization_schema": 1,
+    "auth_source": {
+      "repository_id": "github:202",
+      "revision": "cccccccccccccccccccccccccccccccccccccccc",
+      "tree_sha256": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "artifact_id": "synthetic-fixture-artifact",
+      "build_run_id": 1002,
+      "build_run_attempt": 1
+    }
+  }
+}

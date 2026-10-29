@@ -105,6 +105,7 @@ func TestRealPklAuthPrepareProducesLocalFileAndCloudInputStages(t *testing.T) {
 	t.Setenv("AUTH_DEMO_USER_ID", "demo-local-test")
 	t.Setenv("AUTH_DEMO_USER_EMAIL", "demo-local@example.test")
 	t.Setenv("AUTH_DEMO_USER_ROLE", "member")
+	t.Setenv("BFF_PORT", "18080")
 	t.Setenv("AUTH_PORT", "18081")
 	t.Setenv("FRONTEND_PORT", "13000")
 	localOutput := t.TempDir()
@@ -127,6 +128,9 @@ func TestRealPklAuthPrepareProducesLocalFileAndCloudInputStages(t *testing.T) {
 		localConfig.Port != "8080" || localConfig.AuthDemoUserID != "demo-local-test" ||
 		localConfig.AuthDemoUserEmail != "demo-local@example.test" || localConfig.AuthDemoUserRole != "member" {
 		t.Fatal("local Auth output did not preserve the fixture key, explicit scope, or default PORT")
+	}
+	if localConfig.SyncServiceURL != "http://localhost:18080" {
+		t.Fatalf("local Auth resource binding=%q, want the selected BFF port", localConfig.SyncServiceURL)
 	}
 	manifest, err := os.ReadFile(filepath.Join(localOutput, "auth", "success.json"))
 	if err != nil {

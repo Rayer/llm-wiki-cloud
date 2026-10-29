@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -117,6 +118,58 @@ func TestClientAccountCheckUsesSameTrustedRuntimeAndRequiresExactSubject(t *test
 	}
 	if _, err := client.CheckAccount(context.Background(), "user-b"); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("subject mismatch error=%v, want unavailable", err)
+	}
+}
+
+func TestClientProjectGrantListKeepsOptionalRevocationDataStrict(t *testing.T) {
+	const revokedAt = "2026-10-29T01:02:03Z"
+	for _, tc := range []struct {
+		name string
+		body string
+		want error
+	}{
+		{name: "active and revoked", body: `{"schema_version":1,"grants":[{"id":"active","client_name":"Agent","project_id":"project-a","resource":"https://bff.example.test/mcp/projects/project-a","scope":"mcp:query","status":"active","created_at":"2026-10-28T01:00:00Z","expires_at":"2026-11-28T01:00:00Z"},{"id":"revoked","client_name":"Agent","project_id":"project-a","resource":"https://bff.example.test/mcp/projects/project-a","scope":"mcp:query","status":"revoked","created_at":"2026-10-28T01:00:00Z","expires_at":"2026-11-28T01:00:00Z","revoked_at":"` + revokedAt + `"}]}`},
+		{name: "unknown field remains rejected", body: `{"schema_version":1,"grants":[{"id":"active","client_name":"Agent","project_id":"project-a","resource":"https://bff.example.test/mcp/projects/project-a","scope":"mcp:query","status":"active","created_at":"2026-10-28T01:00:00Z","expires_at":"2026-11-28T01:00:00Z","future_field":true}]}`, want: ErrUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/api/v1/auth/consumers/lwc/mcp-consent/grants/list" || r.Method != http.MethodPost {
+					t.Errorf("unexpected grant-list request: %s %s", r.Method, r.URL.Path)
+				}
+				w.Header().Set("Cache-Control", "no-store")
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+			client := testClient(t, server.URL, func(context.Context, string) (string, error) { return "runtime", nil })
+			grants, err := client.ListProjectMCPGrants(context.Background(), "user-credential", "user-a", 1, "project-a")
+			if tc.want != nil {
+				if !errors.Is(err, tc.want) {
+					t.Fatalf("error=%v, want %v", err, tc.want)
+				}
+				return
+			}
+			if err != nil || len(grants) != 2 || grants[0].RevokedAt != nil || grants[1].RevokedAt == nil ||
+				grants[1].RevokedAt.UTC().Format(time.RFC3339) != revokedAt {
+				t.Fatalf("grants=%+v err=%v", grants, err)
+			}
+		})
+	}
+}
+
+func TestClientPreservesExpiredConsentStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/auth/consumers/lwc/mcp-consent/transactions/lookup" {
+			t.Errorf("unexpected expired consent path=%q", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusGone)
+		_, _ = w.Write([]byte(`{"error":"transaction_expired"}`))
+	}))
+	defer server.Close()
+	client := testClient(t, server.URL, func(context.Context, string) (string, error) { return "runtime", nil })
+	transactionID := "lwc_mcp_tx_" + strings.Repeat("A", 43)
+	_, err := client.LookupMCPConsent(context.Background(), "credential", transactionID, "user-a", 2)
+	if !errors.Is(err, ErrExpired) {
+		t.Fatalf("expired consent error=%v, want %v", err, ErrExpired)
 	}
 }
 

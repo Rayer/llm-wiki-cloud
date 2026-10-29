@@ -4,6 +4,10 @@ import { getRuntimeConfig } from './runtime-config';
 import { recordRequestResponse } from './request-ids';
 
 export type MCPOAuthConsent = {
+  status?: 'pending' | 'completed';
+  schema_version?: 1;
+  redirect_url?: string;
+  requires_consent?: boolean;
   transaction_id: string;
   can_continue?: boolean;
   account_email: string;
@@ -45,7 +49,15 @@ export class MCPOAuthApiError extends Error {
 }
 
 async function request<T>(path: string, accessToken: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(`${getRuntimeConfig().auth_url}/api/v1/auth/mcp/oauth${path}`, {
+  return requestFrom(`${getRuntimeConfig().auth_url}/api/v1/auth/mcp/oauth${path}`, accessToken, init);
+}
+
+async function requestBFF<T>(path: string, accessToken: string, init: RequestInit = {}): Promise<T> {
+  return requestFrom(`${getRuntimeConfig().api_url}/api/v1/mcp/oauth${path}`, accessToken, init);
+}
+
+async function requestFrom<T>(url: string, accessToken: string, init: RequestInit = {}): Promise<T> {
+  const response = await fetch(url, {
     ...init,
     credentials: 'include',
     cache: 'no-store',
@@ -68,7 +80,11 @@ async function request<T>(path: string, accessToken: string, init: RequestInit =
 }
 
 export function readMCPOAuthConsent(transactionId: string, accessToken: string): Promise<MCPOAuthConsent> {
-  return request(`/consent/${encodeURIComponent(transactionId)}`, accessToken);
+  const route = `/consent/${encodeURIComponent(transactionId)}`;
+  return request<{ schema_version?: number; resource_kind?: string } & MCPOAuthConsent>(route, accessToken)
+    .then((classification) => classification.resource_kind === 'project-template'
+      ? requestBFF<MCPOAuthConsent>(route, accessToken)
+      : classification);
 }
 
 export function decideMCPOAuthConsent(
@@ -76,15 +92,19 @@ export function decideMCPOAuthConsent(
   decision: 'allow' | 'deny' | 'continue',
   accessToken: string,
 ): Promise<MCPOAuthConsentDecision> {
-  return request(`/consent/${encodeURIComponent(transactionId)}/decision`, accessToken, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ decision }),
+  const route = `/consent/${encodeURIComponent(transactionId)}`;
+  return request<{ resource_kind?: string }>(route, accessToken).then((classification) => {
+    const isProject = classification.resource_kind === 'project-template';
+    return (isProject ? requestBFF : request)<MCPOAuthConsentDecision>(`${route}/decision`, accessToken, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(isProject ? { schema_version: 1, decision } : { decision }),
+    });
   });
 }
 
 export async function listMCPOAuthGrants(projectId: string, accessToken: string): Promise<MCPOAuthGrant[]> {
-  const result = await request<{ grants?: unknown }>(`/grants?project_id=${encodeURIComponent(projectId)}`, accessToken);
+  const result = await requestBFF<{ grants?: unknown }>(`/grants?project_id=${encodeURIComponent(projectId)}`, accessToken);
   if (!Array.isArray(result.grants)) throw new MCPOAuthApiError('The MCP grant list was invalid.', 502);
   return result.grants as MCPOAuthGrant[];
 }
@@ -96,7 +116,8 @@ export async function listMCPOAuthResourceGrants(resource: string, accessToken: 
 }
 
 export function revokeMCPOAuthGrant(grantId: string, accessToken: string): Promise<void> {
-  return request(`/grants/${encodeURIComponent(grantId)}`, accessToken, { method: 'DELETE' });
+  const path = `/grants/${encodeURIComponent(grantId)}`;
+  return request(path, accessToken, { method: 'DELETE' });
 }
 
 export function mcpResourceURL(projectId: string): string {

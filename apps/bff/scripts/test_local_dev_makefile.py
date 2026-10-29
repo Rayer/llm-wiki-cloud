@@ -193,6 +193,14 @@ class LocalDevMakefileTests(unittest.TestCase):
         self.assertIn("local-services.py start auth bff", support_frontend)
         self.assertIn("LOCAL_CLOUD_PIPELINE_CONFIG_DIR=", support_frontend)
 
+    def test_auth_service_runs_from_the_durable_gateauth_module(self):
+        module = local_services_module()
+        command, cwd, _ = module.service_command("auth", REPO, {})
+        self.assertEqual(command, ["go", "run", "./cmd/auth"])
+        self.assertEqual(cwd, REPO / "gateauth")
+        auth_local = self.make_dry_run("auth-local")
+        self.assertIn("cd ../../gateauth", auth_local)
+
     def test_bff_child_receives_file_locator_and_ignores_legacy_config_environment(self):
         module = local_services_module()
         with tempfile.TemporaryDirectory() as tmp:

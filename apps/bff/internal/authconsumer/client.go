@@ -16,9 +16,12 @@ import (
 )
 
 const (
-	verifyPath = "/api/v1/auth/consumers/lwc/verify-credential"
-	checkPath  = "/api/v1/auth/consumers/lwc/accounts/check"
-	maxBody    = 64 << 10
+	verifyPath              = "/api/v1/auth/consumers/lwc/verify-credential"
+	checkPath               = "/api/v1/auth/consumers/lwc/accounts/check"
+	maxBody                 = 64 << 10
+	LocalFixtureOIDCToken   = "gateauth-local-fixture:oidc-v1"
+	LocalFixtureCallerEmail = "bff-local@localhost"
+	onboardingIdentityPath  = "/api/v1/auth/consumers/lwc/onboarding/identity"
 )
 
 var (
@@ -26,6 +29,7 @@ var (
 	ErrInactiveAccount   = errors.New("account is inactive or missing")
 	ErrForbidden         = errors.New("Auth consumer denied the requested action")
 	ErrConflict          = errors.New("Auth consumer rejected a conflicting operation")
+	ErrExpired           = errors.New("Auth consumer transaction expired")
 	ErrInvalidRequest    = errors.New("Auth consumer rejected the request")
 	ErrNotFound          = errors.New("Auth management operation was not found")
 	ErrUnavailable       = errors.New("Auth consumer is unavailable")
@@ -65,6 +69,52 @@ type Account struct {
 	Subject       string `json:"subject"`
 	Active        bool   `json:"active"`
 	AuthVersion   int64  `json:"auth_version"`
+}
+
+type OnboardingIdentity struct {
+	SchemaVersion    int    `json:"schema_version"`
+	Subject          string `json:"subject"`
+	AuthVersion      int64  `json:"auth_version"`
+	DefaultProjectID string `json:"default_project_id"`
+}
+
+type MCPConsentResult struct {
+	RedirectURL     string `json:"redirect_url"`
+	RequiresConsent bool   `json:"requires_consent"`
+}
+
+type MCPConsentTransaction struct {
+	SchemaVersion   int               `json:"schema_version"`
+	Status          string            `json:"status"`
+	ResourceKind    string            `json:"resource_kind"`
+	TransactionID   string            `json:"transaction_id"`
+	Resource        string            `json:"resource"`
+	ProjectID       string            `json:"project_id,omitempty"`
+	RequestedScopes []string          `json:"requested_scopes,omitempty"`
+	ExpiresAt       string            `json:"expires_at,omitempty"`
+	CanContinue     bool              `json:"can_continue"`
+	ClientName      string            `json:"client_name,omitempty"`
+	AccountEmail    string            `json:"account_email,omitempty"`
+	DecisionResult  *MCPConsentResult `json:"decision_result,omitempty"`
+}
+
+type MCPConsentDecisionResult struct {
+	SchemaVersion   int    `json:"schema_version"`
+	Status          string `json:"status"`
+	RedirectURL     string `json:"redirect_url"`
+	RequiresConsent bool   `json:"requires_consent"`
+}
+
+type MCPGrant struct {
+	ID         string     `json:"id"`
+	ClientName string     `json:"client_name"`
+	ProjectID  string     `json:"project_id"`
+	Resource   string     `json:"resource"`
+	Scope      string     `json:"scope"`
+	Status     string     `json:"status"`
+	CreatedAt  time.Time  `json:"created_at"`
+	ExpiresAt  time.Time  `json:"expires_at"`
+	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
 }
 
 type ManagementUser struct {
@@ -268,6 +318,113 @@ func (c *Client) CheckAccount(ctx context.Context, userID string) (Account, erro
 		return Account{}, ErrUnavailable
 	}
 	return account, nil
+}
+
+func (c *Client) OnboardingIdentity(ctx context.Context, credential string) (OnboardingIdentity, error) {
+	var identity OnboardingIdentity
+	if strings.TrimSpace(credential) == "" {
+		return identity, ErrInvalidCredential
+	}
+	request := struct {
+		SchemaVersion int `json:"schema_version"`
+	}{SchemaVersion: 1}
+	if err := c.request(ctx, http.MethodPost, onboardingIdentityPath, credential, request, &identity); err != nil {
+		return OnboardingIdentity{}, err
+	}
+	if identity.SchemaVersion != 1 || !validPathSegment(identity.Subject) || identity.AuthVersion < 0 ||
+		!validPathSegment(identity.DefaultProjectID) {
+		return OnboardingIdentity{}, ErrUnavailable
+	}
+	return identity, nil
+}
+
+func (c *Client) LookupMCPConsent(ctx context.Context, credential, transactionID, subject string, authVersion int64) (MCPConsentTransaction, error) {
+	var result MCPConsentTransaction
+	if !validPathSegment(transactionID) || !validPathSegment(subject) || authVersion < 0 {
+		return result, ErrInvalidRequest
+	}
+	body := struct {
+		SchemaVersion int    `json:"schema_version"`
+		TransactionID string `json:"transaction_id"`
+		Subject       string `json:"subject"`
+		AuthVersion   int64  `json:"auth_version"`
+	}{1, transactionID, subject, authVersion}
+	if err := c.request(ctx, http.MethodPost, "/api/v1/auth/consumers/lwc/mcp-consent/transactions/lookup", credential, body, &result); err != nil {
+		return MCPConsentTransaction{}, err
+	}
+	if result.SchemaVersion != 1 || result.TransactionID != transactionID || result.Resource == "" ||
+		result.ResourceKind != "project-template" || (result.Status != "pending" && result.Status != "completed") {
+		return MCPConsentTransaction{}, ErrUnavailable
+	}
+	if result.Status == "pending" && (!validPathSegment(result.ProjectID) || len(result.RequestedScopes) == 0 ||
+		result.ClientName == "" || result.AccountEmail == "" || result.ExpiresAt == "") {
+		return MCPConsentTransaction{}, ErrUnavailable
+	}
+	if result.Status == "completed" && (result.DecisionResult == nil || result.DecisionResult.RequiresConsent || result.DecisionResult.RedirectURL == "") {
+		return MCPConsentTransaction{}, ErrUnavailable
+	}
+	return result, nil
+}
+
+func (c *Client) DecideMCPConsent(ctx context.Context, credential string, request MCPConsentDecisionRequest) (MCPConsentDecisionResult, error) {
+	var result MCPConsentDecisionResult
+	if !validPathSegment(request.TransactionID) || !validPathSegment(request.Subject) || request.AuthVersion < 0 ||
+		(request.Decision != "allow" && request.Decision != "deny" && request.Decision != "continue") {
+		return result, ErrInvalidRequest
+	}
+	body := struct {
+		SchemaVersion  int      `json:"schema_version"`
+		Subject        string   `json:"subject"`
+		AuthVersion    int64    `json:"auth_version"`
+		Decision       string   `json:"decision"`
+		ApprovedScopes []string `json:"approved_scopes"`
+	}{1, request.Subject, request.AuthVersion, request.Decision, request.ApprovedScopes}
+	path := "/api/v1/auth/consumers/lwc/mcp-consent/transactions/" + url.PathEscape(request.TransactionID) + "/decision"
+	if err := c.request(ctx, http.MethodPost, path, credential, body, &result); err != nil {
+		return MCPConsentDecisionResult{}, err
+	}
+	if result.SchemaVersion != 1 || (result.Status != "completed" && result.Status != "pending") ||
+		(result.Status == "pending" && (!result.RequiresConsent || result.RedirectURL != "")) ||
+		(result.Status == "completed" && (result.RequiresConsent || result.RedirectURL == "")) {
+		return MCPConsentDecisionResult{}, ErrUnavailable
+	}
+	return result, nil
+}
+
+type MCPConsentDecisionRequest struct {
+	TransactionID  string
+	Subject        string
+	AuthVersion    int64
+	Decision       string
+	ApprovedScopes []string
+}
+
+func (c *Client) ListProjectMCPGrants(ctx context.Context, credential, subject string, authVersion int64, projectID string) ([]MCPGrant, error) {
+	var response struct {
+		SchemaVersion int        `json:"schema_version"`
+		Grants        []MCPGrant `json:"grants"`
+	}
+	if !validPathSegment(subject) || authVersion < 0 || !validPathSegment(projectID) {
+		return nil, ErrInvalidRequest
+	}
+	body := struct {
+		SchemaVersion int    `json:"schema_version"`
+		Subject       string `json:"subject"`
+		AuthVersion   int64  `json:"auth_version"`
+		ProjectID     string `json:"project_id"`
+	}{1, subject, authVersion, projectID}
+	if err := c.request(ctx, http.MethodPost, "/api/v1/auth/consumers/lwc/mcp-consent/grants/list", credential, body, &response); err != nil {
+		return nil, err
+	}
+	if response.SchemaVersion != 1 || response.Grants == nil {
+		return nil, ErrUnavailable
+	}
+	for _, grant := range response.Grants {
+		if grant.ID == "" || grant.ProjectID != projectID || grant.Resource == "" || grant.Scope == "" {
+			return nil, ErrUnavailable
+		}
+	}
+	return response.Grants, nil
 }
 
 // PublicRegistrationSettings reads dynamic self-service policy from Auth.
@@ -482,6 +639,9 @@ func (c *Client) request(ctx context.Context, method, path, userCredential strin
 	}
 	if response.StatusCode == http.StatusNotFound {
 		return ErrNotFound
+	}
+	if response.StatusCode == http.StatusGone {
+		return ErrExpired
 	}
 	if response.StatusCode != http.StatusOK {
 		return ErrUnavailable

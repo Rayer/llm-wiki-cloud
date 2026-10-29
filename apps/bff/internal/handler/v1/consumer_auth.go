@@ -20,6 +20,16 @@ type consumerVerifier interface {
 	CheckAccount(context.Context, string) (authconsumer.Account, error)
 }
 
+type onboardingConsumer interface {
+	OnboardingIdentity(context.Context, string) (authconsumer.OnboardingIdentity, error)
+}
+
+type mcpConsentConsumer interface {
+	LookupMCPConsent(context.Context, string, string, string, int64) (authconsumer.MCPConsentTransaction, error)
+	DecideMCPConsent(context.Context, string, authconsumer.MCPConsentDecisionRequest) (authconsumer.MCPConsentDecisionResult, error)
+	ListProjectMCPGrants(context.Context, string, string, int64, string) ([]authconsumer.MCPGrant, error)
+}
+
 type managementConsumer interface {
 	ManagementCatalog(context.Context, string) (authconsumer.ManagementCatalog, error)
 	ManagementUsers(context.Context, string) ([]authconsumer.ManagementUser, error)

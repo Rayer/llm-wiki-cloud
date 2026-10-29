@@ -81,6 +81,14 @@ export function MCPOAuthConsentClient({ transactionId }: { transactionId: string
       if (!auth.accessToken || !auth.userId || auth.isDemoSession) throw new Error(translatorRef.current('MCPOAuth.signInRequired'));
       const result = await readMCPOAuthConsent(transactionId, auth.accessToken);
       if (!isCurrent()) return;
+      if (result.status === 'completed') {
+        if (result.requires_consent !== false || !result.redirect_url || !isSafeMCPOAuthReturnURL(result.redirect_url)) {
+          throw new Error(translatorRef.current('MCPOAuth.invalidReturn'));
+        }
+        setTerminalContextKey(identityKey);
+        window.location.assign(result.redirect_url);
+        return;
+      }
       const currentAuth = authRef.current;
       if (currentAuth.userId !== auth.userId || !currentAuth.accessToken || currentAuth.isDemoSession) {
         throw new Error(translatorRef.current('MCPOAuth.signInRequired'));

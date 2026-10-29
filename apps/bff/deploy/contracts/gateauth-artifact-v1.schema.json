@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "lwc-gateauth-artifact-v1",
+  "type": "object",
+  "required": ["schema", "component", "source", "build", "artifact"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {"const": "lwc-gateauth-artifact-v1"},
+    "component": {"const": "auth"},
+    "source": {
+      "type": "object",
+      "required": ["kind", "repository_id", "revision", "tree_sha256", "origin_lwc_revision"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {"const": "local_snapshot"},
+        "repository_id": {"const": "local-snapshot:gateauth-module"},
+        "revision": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "tree_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "description": "SHA-256 over sorted GateAuth relative paths, modes, lengths, and file bytes."
+        },
+        "origin_lwc_revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+      }
+    },
+    "build": {
+      "type": "object",
+      "required": [
+        "module_path", "go_version", "module_sum_sha256", "config_schema_version",
+        "config_digest", "version", "test_log", "native_binary", "linux_binary"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "module_path": {"const": "github.com/rayer/gateauth"},
+        "go_version": {"type": "string", "pattern": "^go[0-9]+(\\.[0-9]+){1,2}$"},
+        "module_sum_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "config_schema_version": {"type": "integer", "const": 1},
+        "config_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "description": "SHA-256 of the exact synthetic, nonsecret local config fixture bytes."
+        },
+        "version": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9.+-]*$"},
+        "test_log": {
+          "type": "object",
+          "required": ["file", "sha256"],
+          "additionalProperties": false,
+          "properties": {
+            "file": {"const": "go-test.txt"},
+            "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+          }
+        },
+        "native_binary": {
+          "type": "object",
+          "required": ["file", "sha256", "goos", "goarch"],
+          "additionalProperties": false,
+          "properties": {
+            "file": {"const": "auth"},
+            "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+            "goos": {"type": "string", "pattern": "^[a-z0-9]+$"},
+            "goarch": {"type": "string", "pattern": "^[a-z0-9]+$"}
+          }
+        },
+        "linux_binary": {
+          "type": "object",
+          "required": ["file", "sha256", "goos", "goarch"],
+          "additionalProperties": false,
+          "properties": {
+            "file": {"const": "auth-linux-amd64"},
+            "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+            "goos": {"const": "linux"},
+            "goarch": {"const": "amd64"}
+          }
+        }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "required": ["kind", "file", "digest", "digest_kind", "archive_sha256"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {"const": "oci_image_archive"},
+        "file": {"const": "gateauth-image.oci.tar"},
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "description": "Digest of the OCI image manifest blob, not the tar archive."
+        },
+        "digest_kind": {"const": "oci_image_manifest"},
+        "archive_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "description": "SHA-256 of the exact OCI archive file bytes."
+        }
+      }
+    }
+  }
+}

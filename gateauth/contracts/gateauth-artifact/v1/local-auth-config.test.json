@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "target": "auth",
+  "environment": "local",
+  "config_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "gcp_project": "fixture-project",
+  "firestore_database_id": "gat4-local-only",
+  "local_cloud_scope": "worktree-0123456789abcdef01234567",
+  "auth_service_url": "http://127.0.0.1:8081",
+  "sync_service_url": "http://127.0.0.1:8080",
+  "allowed_hosts": ["localhost", "127.0.0.1"],
+  "allowed_origins": ["http://localhost:3000"],
+  "auth_session_environment": "gat4-local-only",
+  "auth_session_migration": "disabled",
+  "registration_enabled": false,
+  "auth_demo_user_id": "fixture-demo-user",
+  "auth_demo_user_email": "fixture-demo@example.test",
+  "auth_demo_user_role": "member",
+  "jwt_secret": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "google": {
+    "enabled": false,
+    "client_id": "",
+    "client_secret": "",
+    "issuer": "",
+    "jwks_url": "",
+    "token_url": "",
+    "login_redirect_url": "",
+    "link_redirect_url": "",
+    "completion_url": ""
+  }
+}

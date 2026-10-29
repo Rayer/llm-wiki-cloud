@@ -353,6 +353,7 @@ func runPrepareTargetModeAtSource(ctx context.Context, target, environment, outp
 			{"authLocalDemoUserID", "AUTH_DEMO_USER_ID", ""},
 			{"authLocalDemoUserEmail", "AUTH_DEMO_USER_EMAIL", ""},
 			{"authLocalDemoUserRole", "AUTH_DEMO_USER_ROLE", ""},
+			{"bffLocalPort", "BFF_PORT", "8080"},
 			{"authLocalAuthPort", "AUTH_PORT", "8081"},
 			{"bffLocalFrontendPort", "FRONTEND_PORT", "3000"},
 		} {
@@ -656,11 +657,10 @@ func validateBFFSourceProjection(p bffSourceProjection, environment string) erro
 			return err
 		}
 	} else {
-		if p.Environment == "local" || p.JWTSecretReference != nil || p.AuthConsumer == nil ||
+		if p.JWTSecretReference != nil || p.AuthConsumer == nil ||
 			p.AuthConsumer.SchemaVersion != 1 || p.AuthConsumer.Environment != environment ||
 			p.AuthConsumer.Resource != p.MCPResourceOrigin || p.AuthConsumer.TimeoutSeconds != 5 ||
-			!pipelineScheduleServiceAccountPattern.MatchString(p.AuthConsumer.RuntimeServiceAccount) ||
-			!validBFFScheduleAudience(p.AuthConsumer.VerifierAudience) {
+			!validBFFAuthConsumerProjection(p, environment) {
 			return errors.New("selected BFF auth_consumer identity is invalid")
 		}
 	}
@@ -698,6 +698,25 @@ func validateBFFSourceProjection(p bffSourceProjection, environment string) erro
 		return errors.New("selected BFF legacy query config is invalid")
 	}
 	return nil
+}
+
+func validBFFAuthConsumerProjection(p bffSourceProjection, environment string) bool {
+	consumer := p.AuthConsumer
+	if consumer == nil || consumer.AuthURL != p.AuthServiceURL || consumer.Issuer != consumer.AuthURL ||
+		consumer.VerifierPath != "/api/v1/auth/consumers/lwc/verify-credential" ||
+		consumer.AccountCheckPath != "/api/v1/auth/consumers/lwc/accounts/check" ||
+		consumer.CatalogPath != "/api/v1/auth/consumers/lwc/management/catalog" {
+		return false
+	}
+	if environment == "local" {
+		return consumer.RuntimeServiceAccount == "bff-local@localhost" &&
+			consumer.VerifierAudience == consumer.AuthURL && validateBFFURL(consumer.VerifierAudience, true) == nil &&
+			len(consumer.AuthorityModes) == 1 && consumer.AuthorityModes[0] == "synthetic-local-fixture"
+	}
+	return pipelineScheduleServiceAccountPattern.MatchString(consumer.RuntimeServiceAccount) &&
+		validBFFScheduleAudience(consumer.VerifierAudience) &&
+		slicesContains(consumer.AuthorityModes, "legacy-shadow") && slicesContains(consumer.AuthorityModes, "central") &&
+		len(consumer.AuthorityModes) == 2
 }
 
 func validBFFScheduleAudience(value string) bool {

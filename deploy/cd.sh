@@ -23,8 +23,18 @@ selected_image_components() {
 }
 
 consume_dev_images() {
-  local runs candidates run id artifacts artifact
+  local runs candidates run id artifacts artifact mode expected_lwc expected_auth expected_components
   need GH_TOKEN; need GITHUB_REPOSITORY; need ARTIFACT_DIR; need SOURCE_SHA
+  mode="${GAT4_RELEASE_SOURCE_MODE:-}"
+  case "$mode" in
+    legacy_monorepo) ;;
+    independent)
+      need GITHUB_REPOSITORY_ID; need GAT4_AUTH_SOURCE_REPOSITORY_ID; need GAT4_AUTH_SOURCE_REVISION
+      need GAT4_AUTH_SOURCE_TREE_SHA256; need GAT4_AUTH_SOURCE_RUN_ID; need GAT4_AUTH_SOURCE_RUN_ATTEMPT
+      need GAT4_AUTH_SOURCE_ARTIFACT_ID; need GAT4_AUTH_SOURCE_ARTIFACT_DIGEST
+      ;;
+    *) die "GAT4_RELEASE_SOURCE_MODE must explicitly select legacy_monorepo or independent" ;;
+  esac
   runs=$(gh_paginated_array "repos/$GITHUB_REPOSITORY/actions/workflows/deploy-dev.yml/runs?event=workflow_dispatch&status=completed&head_sha=${SOURCE_SHA}&branch=develop" workflow_runs) || die "DEV receipt run list is malformed or partial"
   jq -e 'map(.id) as $ids | ($ids|length) == ($ids|unique|length) and all(.[]; type == "object")' <<<"$runs" >/dev/null || die "DEV receipt run list contains duplicate or malformed entries"
   jq -e 'all(.[]; (.id|type == "number" and floor == . and . > 0) and (.run_attempt|type == "number" and floor == . and . > 0) and (.path|type == "string") and (.event|type == "string") and (.head_branch|type == "string") and (.head_sha|type == "string") and (.status|type == "string") and (.conclusion|type == "string"))' <<<"$runs" >/dev/null || die "DEV receipt run list contains malformed records"
@@ -38,7 +48,25 @@ consume_dev_images() {
   mkdir -p "$ARTIFACT_DIR/dev-images"
   gh run download "$id" --repo "$GITHUB_REPOSITORY" --name "cd-images-$SOURCE_SHA" --dir "$ARTIFACT_DIR/dev-images" || die "DEV receipt artifact download failed"
   [[ -s "$ARTIFACT_DIR/dev-images/dev-receipt.json" ]] || die "DEV receipt content is missing"
-  jq -e --arg sha "$SOURCE_SHA" --argjson run_id "$id" --argjson run_attempt "$(jq -er '.run_attempt' <<<"$run")" --argjson selected "$(selected_image_components)" '.schema == "lwc-306-dev-image-receipt-v1" and .source.sha == $sha and .source.ref == "develop" and .source.workflow_path == ".github/workflows/deploy-dev.yml" and .source.event == "workflow_dispatch" and .source.run_id == $run_id and .source.run_attempt == $run_attempt and .config.environment == "development" and .config.path == "deploy/environments/development.yaml" and .components == $selected and (.images|type) == "object"' "$ARTIFACT_DIR/dev-images/dev-receipt.json" >/dev/null || die "DEV receipt provenance does not match the selected production bundle"
+  local attempt
+  attempt=$(jq -er '.run_attempt' <<<"$run")
+  if [[ "$mode" == legacy_monorepo ]]; then
+    expected_lwc=$(jq -cn --arg sha "$SOURCE_SHA" --argjson run_id "$id" --argjson run_attempt "$attempt" \
+      '{sha:$sha,run_id:$run_id,run_attempt:$run_attempt}')
+  else
+    expected_lwc=$(jq -cn --arg repository_id "github:$GITHUB_REPOSITORY_ID" --arg sha "$SOURCE_SHA" --argjson run_id "$id" --argjson run_attempt "$attempt" \
+      '{repository_id:$repository_id,sha:$sha,run_id:$run_id,run_attempt:$run_attempt}')
+    expected_auth=$(jq -cn --arg repository_id "$GAT4_AUTH_SOURCE_REPOSITORY_ID" --arg revision "$GAT4_AUTH_SOURCE_REVISION" \
+      --arg tree_sha256 "$GAT4_AUTH_SOURCE_TREE_SHA256" --argjson run_id "$GAT4_AUTH_SOURCE_RUN_ID" \
+      --argjson run_attempt "$GAT4_AUTH_SOURCE_RUN_ATTEMPT" --arg artifact_id "$GAT4_AUTH_SOURCE_ARTIFACT_ID" \
+      --arg artifact_digest "$GAT4_AUTH_SOURCE_ARTIFACT_DIGEST" \
+      '{repository_id:$repository_id,revision:$revision,tree_sha256:$tree_sha256,run_id:$run_id,run_attempt:$run_attempt,artifact_id:$artifact_id,artifact_digest:$artifact_digest}')
+  fi
+  expected_components=$(selected_image_components)
+  local validator_args=(validate --dev-receipt "$ARTIFACT_DIR/dev-images/dev-receipt.json" --mode "$mode" \
+    --expected-lwc-json "$expected_lwc" --expected-components-json "$expected_components")
+  if [[ "$mode" == independent ]]; then validator_args+=(--expected-auth-json "$expected_auth"); fi
+  python3 "$ROOT/deploy/engine/receipt_contract.py" "${validator_args[@]}" || die "DEV receipt provenance does not match the selected production bundle"
   jq -n --argjson id "$(jq -er '.id' <<<"$artifact")" --arg digest "$(jq -er '.digest' <<<"$artifact")" '{schema:"lwc-306-dev-artifact-v1",id:$id,digest:$digest,run_id:'"$id"'}' > "$ARTIFACT_DIR/dev-images/dev-artifact.json"
 }
 

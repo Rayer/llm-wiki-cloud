@@ -17,7 +17,7 @@ import urllib.request
 import tomllib
 
 from support import (ROOT, Breakpoint, InputShapeError, digest, read, require, run,
-                     safe_error_message, structured_cause, write)
+                     release_source_mode, safe_error_message, structured_cause, write)
 sys.path.insert(0, str(ROOT / 'deploy/components'))
 import auth_config
 import frontend_build_config
@@ -794,13 +794,54 @@ class Providers:
             record['poll_outcome'] = 'identity_mismatch'
         return record, reason
 
+    def _auth_source_context(self):
+        source = self.plan.get('auth_source')
+        require(isinstance(source, dict) and
+                set(source) == {'repository_id', 'revision', 'tree_sha256',
+                                'artifact_id', 'run_id', 'run_attempt'},
+                'independent-auth-source-required')
+        root = os.environ.get('AUTH_SOURCE_ROOT', '').strip()
+        require(root != '', 'independent-auth-source-checkout-required')
+        source_root = Path(root).resolve()
+        require(source_root.is_dir(), 'independent-auth-source-checkout-invalid')
+        tree_digest = run(['python3', ROOT / 'scripts/gat4-local/artifact.py',
+                           'tree-digest', '--root', str(source_root)], timeout=120).strip()
+        require(tree_digest == source['tree_sha256'], 'independent-auth-source-tree-mismatch')
+        try:
+            module = (source_root / 'go.mod').read_text(encoding='utf-8').splitlines()
+        except (OSError, UnicodeError):
+            raise Breakpoint('independent-auth-source-module-invalid') from None
+        require('module github.com/rayer/gateauth' in module and
+                (source_root / 'Dockerfile').is_file() and
+                (source_root / 'cloudbuild.yaml').is_file() and
+                (source_root / 'VERSION').is_file(),
+                'independent-auth-source-module-invalid')
+        return source, source_root
+
+    def _build_source_environment(self, c):
+        if c != 'auth':
+            return self.plan['source'], self.plan['branch'], {}
+        mode = release_source_mode(self.plan)
+        if mode == 'legacy_monorepo':
+            return self.plan['source'], self.plan['branch'], {}
+        require(mode == 'independent', 'release-source-mode-required')
+        source, root = self._auth_source_context()
+        return source['revision'], '', {
+            'AUTH_SOURCE_ROOT': str(root),
+            'AUTH_SOURCE_REVISION': source['revision'],
+            'AUTH_SOURCE_TREE_SHA256': source['tree_sha256'],
+            'LWC_SOURCE_SHA': self.plan['source'],
+        }
+
     def submit_build(self, c):
+        source_sha, source_ref, source_env = self._build_source_environment(c)
         # Resolve project ID -> number before creating a build. Cloud Build's
         # resource name may use either identifier; the numeric alias is accepted
         # only after this explicit, read-only identity check.
         self.gcp_project_number()
         env = dict(os.environ, PLAN_PATH=str(self.directory / 'plan.json'), ROOT=str(ROOT),
-                   SOURCE_SHA=self.plan['source'], SOURCE_REF=self.plan['branch'],
+                   SOURCE_SHA=source_sha, SOURCE_REF=source_ref, **source_env,
+                   GAT4_RELEASE_SOURCE_MODE=release_source_mode(self.plan) or '',
                    GITHUB_RUN_ID=os.environ.get('GITHUB_RUN_ID', '1'),
                    GITHUB_RUN_ATTEMPT=os.environ.get('GITHUB_RUN_ATTEMPT', '1'))
         output = run(['bash', ROOT / 'deploy/components' / (c + '.sh'), 'submit'], env=env,
@@ -886,8 +927,10 @@ class Providers:
                          stage='build-status', timeout_class='build-poll-deadline', build=build)
 
     def resolve_build_image(self, c):
+        source_sha, source_ref, source_env = self._build_source_environment(c)
         env = dict(os.environ, PLAN_PATH=str(self.directory / 'plan.json'), ROOT=str(ROOT),
-                   SOURCE_SHA=self.plan['source'], SOURCE_REF=self.plan['branch'],
+                   SOURCE_SHA=source_sha, SOURCE_REF=source_ref, **source_env,
+                   GAT4_RELEASE_SOURCE_MODE=release_source_mode(self.plan) or '',
                    GITHUB_RUN_ID=os.environ.get('GITHUB_RUN_ID', '1'),
                    GITHUB_RUN_ATTEMPT=os.environ.get('GITHUB_RUN_ATTEMPT', '1'))
         image = run(['bash', ROOT / 'deploy/components' / (c + '.sh'), 'resolve'], env=env,

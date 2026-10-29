@@ -484,8 +484,8 @@ func TestLoadBFFFileUsesOnlyPortEnvironmentOverride(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadBFFFile() error = %v", err)
 	}
-	if cfg.Port != "9091" || cfg.PipelineCooldownSeconds != 600 || cfg.DeepSeekAPIKey != "fixture-deepseek-key" {
-		t.Fatalf("loaded config port=%q cooldown=%d key=%q; stale env must not override file", cfg.Port, cfg.PipelineCooldownSeconds, cfg.DeepSeekAPIKey)
+	if cfg.Port != "9091" || cfg.PipelineCooldownSeconds != 600 || cfg.DeepSeekAPIKey != "fixture-deepseek-key" || cfg.AuthEnvironment != file.Environment {
+		t.Fatalf("loaded config port=%q cooldown=%d key=%q auth environment=%q; want file environment %q and stale env must not override file", cfg.Port, cfg.PipelineCooldownSeconds, cfg.DeepSeekAPIKey, cfg.AuthEnvironment, file.Environment)
 	}
 	if cfg.MCP == nil || cfg.MCP.DiscoveryTTLMS != 60_000 || cfg.MCP.ToolsListTTLMS != 60_000 || cfg.MCP.Instructions != "configured instructions" {
 		t.Fatalf("MCP environment values overrode CaC metadata: %+v", cfg.MCP)

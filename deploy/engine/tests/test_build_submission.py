@@ -206,6 +206,7 @@ class AsyncBuildSubmission(unittest.TestCase):
             'LWC_TEST_FAKE_UPLOADS': str(self.fake_uploads),
             'FAKE_STATUSES': json.dumps(['SUCCESS']),
             'FAKE_BUILD_IDS': json.dumps(list(BUILD_IDS)),
+            'GAT4_RELEASE_SOURCE_MODE': 'legacy_monorepo',
         }
         for key in ('PKL_BIN', 'PKL_CACHE_DIR'):
             if os.environ.get(key):
@@ -227,7 +228,8 @@ class AsyncBuildSubmission(unittest.TestCase):
                 'normalized': normalized,
                 'identities': {c: {'profile': 'test', 'inputs': 'test', 'files': []}
                                for c in selected},
-                'dev_reference': None, 'selected': list(selected)}
+                'dev_reference': None, 'selected': list(selected),
+                'release_source_mode': 'legacy_monorepo'}
         plan['id'] = digest(engine.release_identity(plan))
         write(directory / 'plan.json', plan)
         return directory
@@ -254,7 +256,7 @@ class AsyncBuildSubmission(unittest.TestCase):
         source = source or subprocess.check_output(['git','rev-parse','HEAD'], cwd=ROOT, text=True).strip()
         args = SimpleNamespace(environment='development', source=source,
                                components=','.join(selected), tag=tag or 'test-lwc358-'+name,
-                               dev_reference=None)
+                               dev_reference=None, release_source_mode='legacy_monorepo')
         def admit_command(command, **kwargs):
             argv = [str(value) for value in command]
             if (argv[:5] == ['go', 'run', './cmd/pipeline_config', 'prepare', '--target'] and
@@ -310,7 +312,7 @@ class AsyncBuildSubmission(unittest.TestCase):
         self.assertNotEqual(source, executor)
         args = SimpleNamespace(environment='development', source=source, executor_sha=executor,
                                components='bff', tag='test-lwc373-source-config-identity',
-                               dev_reference=None)
+                               dev_reference=None, release_source_mode='legacy_monorepo')
         captured = {}
         real_run = support.run
 

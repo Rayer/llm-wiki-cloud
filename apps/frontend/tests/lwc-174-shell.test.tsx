@@ -11,6 +11,7 @@ if (!(React as { act?: (callback: () => unknown) => Promise<unknown> | unknown }
 const { act, cleanup, fireEvent, render, screen, waitFor } = await import('@testing-library/react');
 
 const mocks = vi.hoisted(() => ({
+  bootstrapDefaultProject: vi.fn(),
   getProjects: vi.fn(),
   renameProject: vi.fn(),
   getStatus: vi.fn(),
@@ -31,6 +32,7 @@ vi.mock('@/lib/projects', async () => {
   const actual = await vi.importActual<typeof import('@/lib/projects')>('@/lib/projects');
   return {
     ...actual,
+    bootstrapDefaultProject: mocks.bootstrapDefaultProject,
     getProjects: mocks.getProjects,
     renameProject: mocks.renameProject,
   };
@@ -89,6 +91,7 @@ function deferred<T>() {
 }
 
 beforeEach(() => {
+  mocks.bootstrapDefaultProject.mockReset().mockResolvedValue('default');
   mocks.getProjects.mockResolvedValue([
     { id: 'project-a', name: 'Project Alpha' },
     { id: 'project-b', name: 'Project Beta' },

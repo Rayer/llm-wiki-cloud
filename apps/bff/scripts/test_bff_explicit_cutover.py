@@ -321,6 +321,7 @@ class SharedCDContractTest(unittest.TestCase):
             "environment": "${{ inputs.environment }}", "source_sha": "${{ inputs.source_sha }}",
             "executor_sha": "${{ github.sha }}",
             "components": "${{ inputs.components }}", "release_tag": "${{ inputs.release_tag }}",
+            "release_source_mode": "${{ inputs.release_source_mode }}",
             "operation": "${{ inputs.operation }}", "artifact_id": "${{ inputs.artifact_id }}",
         })
         diagnostic_recovery = recovery["jobs"]["auth-image-diagnostic"]

@@ -28,7 +28,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
-func TestLocalRouterKeepsAuthCompatibilityLaneAndProductionHasNone(t *testing.T) {
+func TestBFFDoesNotOwnIdentityRoutes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	router := newProductionRouter(
@@ -41,42 +41,14 @@ func TestLocalRouterKeepsAuthCompatibilityLaneAndProductionHasNone(t *testing.T)
 		nil,
 	)
 
-	for _, path := range []string{"/api/v1/auth/login", "/api/v1/auth/register", "/api/v1/auth/refresh", "/api/v1/auth/logout"} {
-		if !hasRoute(router, http.MethodPost, path) {
-			t.Fatalf("BFF production router is missing compatibility route POST %s", path)
+	identityRoutes := []string{"/api/v1/auth/login", "/api/v1/auth/register", "/api/v1/auth/refresh", "/api/v1/auth/logout"}
+	for _, path := range identityRoutes {
+		if hasRoute(router, http.MethodPost, path) {
+			t.Fatalf("BFF production router unexpectedly owns identity route POST %s", path)
 		}
-	}
-
-	request := func(path string, body string) *httptest.ResponseRecorder {
-		recorder := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "http://localhost"+path, bytes.NewBufferString(body))
-		req.Header.Set("Content-Type", "application/json")
-		router.ServeHTTP(recorder, req)
-		return recorder
-	}
-	if got := request("/api/v1/auth/login", `{"email":"demo@llm-wiki.dev","password":"demo123456"}`).Code; got != http.StatusServiceUnavailable {
-		t.Fatalf("local compatibility login without Firestore status = %d, want %d", got, http.StatusServiceUnavailable)
-	}
-	badHost := httptest.NewRequest(http.MethodPost, "http://example.test/api/v1/auth/login", strings.NewReader(`{}`))
-	badHostRecorder := httptest.NewRecorder()
-	router.ServeHTTP(badHostRecorder, badHost)
-	if badHostRecorder.Code != http.StatusBadRequest {
-		t.Fatalf("local compatibility auth accepted Host %q: status=%d, want 400", badHost.Host, badHostRecorder.Code)
-	}
-	if got := request("/api/v1/auth/register", `{}`).Code; got != http.StatusServiceUnavailable {
-		t.Fatalf("local compatibility register status = %d, want %d", got, http.StatusServiceUnavailable)
-	}
-	if got := request("/api/v1/auth/refresh", "").Code; got != http.StatusServiceUnavailable {
-		t.Fatalf("local compatibility refresh without Firestore status = %d, want %d", got, http.StatusServiceUnavailable)
-	}
-	if got := request("/api/v1/auth/logout", "").Code; got != http.StatusOK {
-		t.Fatalf("local compatibility logout status = %d, want %d", got, http.StatusOK)
-	}
-	if got := request("/api/v1/auth/login", `{}`).Code; got != http.StatusServiceUnavailable {
-		t.Fatalf("local compatibility login without Firestore status = %d, want %d", got, http.StatusServiceUnavailable)
-	}
-	if got := request("/api/v1/auth/login", `{"email":"demo@llm-wiki.dev","password":"`+strings.Repeat("x", 64<<10)+`"}`).Code; got != http.StatusRequestEntityTooLarge {
-		t.Fatalf("oversized local compatibility login status = %d, want %d", got, http.StatusRequestEntityTooLarge)
+		if got := servePost(router, path).Code; got != http.StatusNotFound {
+			t.Fatalf("BFF identity route %s status = %d, want %d", path, got, http.StatusNotFound)
+		}
 	}
 
 	unavailable := newProductionRouter(
@@ -88,7 +60,7 @@ func TestLocalRouterKeepsAuthCompatibilityLaneAndProductionHasNone(t *testing.T)
 		&syssettings.FakeStore{Enabled: true},
 		nil,
 	)
-	for _, path := range []string{"/api/v1/auth/login", "/api/v1/auth/register", "/api/v1/auth/refresh", "/api/v1/auth/logout"} {
+	for _, path := range identityRoutes {
 		if got := servePost(unavailable, path).Code; got != http.StatusNotFound {
 			t.Fatalf("production compatibility endpoint %s status = %d, want %d", path, got, http.StatusNotFound)
 		}

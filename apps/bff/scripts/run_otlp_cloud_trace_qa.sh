@@ -48,9 +48,10 @@ run_case() {
   local case_name="$1"
   local package="$2"
   local pattern="$3"
+  local module_root="${4:-.}"
   local log="$tmpdir/$case_name.log"
   printf 'OTLP_QA_COMMAND case=%s package=%s pattern=%s\n' "$case_name" "$package" "$pattern"
-  if go test -count=1 -v -run "$pattern" "$package" >"$log" 2>&1; then
+  if (cd "$module_root" && go test -count=1 -v -run "$pattern" "$package") >"$log" 2>&1; then
     printf 'OTLP_QA_COMMAND case=%s exit=0\n' "$case_name"
   else
     printf 'OTLP_QA_COMMAND case=%s exit=1\n' "$case_name" >&2
@@ -59,7 +60,7 @@ run_case() {
   fi
 }
 
-run_case UC1 ./cmd/auth '^TestOTLPCaptureAuthSafeMetadataAndRejectOutcomes$'
+run_case UC1 ./cmd/auth '^TestOTLPCaptureAuthSafeMetadataAndRejectOutcomes$' ../../gateauth
 run_case UC2 ./internal/observability '^TestOTLPTransportUseCaseRealHTTPAndConcurrentIsolation$'
 run_case UC3_UC4 ./internal/handler/v1 '^TestOTLPCaptureActualQuerySuccessAndLogicalFallback$'
 run_case UC5_NATIVE ./cmd/bff '^TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure$'

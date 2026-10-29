@@ -9,6 +9,35 @@ import yaml
 ROOT=Path(__file__).resolve().parents[1]
 
 class EngineWorkflowContract(unittest.TestCase):
+    def test_independent_auth_source_tuple_is_typed_verified_and_forwarded(self):
+        workflow = yaml.safe_load((ROOT / '.github/workflows/cd.yml').read_text())
+        trigger = workflow.get('on', workflow.get(True, {}))
+        inputs = trigger['workflow_call']['inputs']
+        self.assertTrue(inputs['release_source_mode']['required'])
+        self.assertEqual(inputs['release_source_mode']['type'], 'string')
+        expected_types = {
+            'auth_repository_id': 'number', 'auth_revision': 'string',
+            'auth_tree_sha256': 'string', 'auth_artifact_id': 'number',
+            'auth_run_id': 'number', 'auth_run_attempt': 'number',
+        }
+        for name, input_type in expected_types.items():
+            self.assertEqual(inputs[name]['type'], input_type)
+        release = workflow['jobs']['release']
+        self.assertEqual(release['env']['GAT4_RELEASE_SOURCE_MODE'], '${{ inputs.release_source_mode }}')
+        self.assertEqual(release['env']['GAT4_DEV_RECEIPT_MODE'], '${{ inputs.release_source_mode }}')
+        resolve = next(step for step in release['steps']
+                       if step.get('name') == 'Resolve immutable GateAuth source identity')
+        self.assertIn('inputs.release_source_mode == \'independent\'', resolve['if'])
+        self.assertEqual(resolve['env']['AUTH_REPOSITORY_ID'], '${{ inputs.auth_repository_id }}')
+        checkout = next(step for step in release['steps']
+                        if step.get('name') == 'Verify and stage exact GateAuth source tree')
+        self.assertIn('archive "$AUTH_REVISION"', checkout['run'])
+        self.assertIn('tree-digest --root "$source_root"', checkout['run'])
+        action = (ROOT / '.github/actions/deployment-engine/index.cjs').read_text()
+        for flag in ('--auth-repository-id', '--auth-revision', '--auth-tree-sha256',
+                     '--auth-artifact-id', '--auth-run-id', '--auth-run-attempt'):
+            self.assertIn(flag, action)
+
     def test_bff_plan_admission_includes_generated_nonsecret_descriptor(self):
         engine=(ROOT/'deploy/engine/engine.py').read_text()
         config=(ROOT/'apps/bff/cmd/deploy_config/main.go').read_text()
@@ -192,6 +221,13 @@ class EngineWorkflowContract(unittest.TestCase):
             'environment':'development','source_sha':"${{ inputs.operation == 'release' && (inputs.source_sha || github.sha) || inputs.source_sha }}",
             'executor_sha':'${{ github.sha }}',
             'components':'${{ inputs.components }}','release_tag':'${{ inputs.release_tag }}',
+            'release_source_mode':'${{ inputs.release_source_mode }}',
+            'auth_repository_id':'${{ inputs.auth_repository_id }}',
+            'auth_revision':'${{ inputs.auth_revision }}',
+            'auth_tree_sha256':'${{ inputs.auth_tree_sha256 }}',
+            'auth_artifact_id':'${{ inputs.auth_artifact_id }}',
+            'auth_run_id':'${{ inputs.auth_run_id }}',
+            'auth_run_attempt':'${{ inputs.auth_run_attempt }}',
             'artifact_id':'${{ inputs.artifact_id }}','dev_artifact_id':'${{ inputs.dev_artifact_id }}',
             'frontend_config_artifact_id':'${{ inputs.frontend_config_artifact_id }}',
             'operation':'${{ inputs.operation }}',
@@ -244,6 +280,7 @@ class EngineWorkflowContract(unittest.TestCase):
         self.assertEqual(wrapper['with'],{
             'environment':'${{ inputs.environment }}','source_sha':'${{ inputs.source_sha }}',
             'executor_sha':'${{ github.sha }}',
+            'release_source_mode':'${{ inputs.release_source_mode }}',
             'components':'${{ inputs.components }}','release_tag':'${{ inputs.release_tag }}',
             'operation':'${{ inputs.operation }}','artifact_id':'${{ inputs.artifact_id }}',
         })

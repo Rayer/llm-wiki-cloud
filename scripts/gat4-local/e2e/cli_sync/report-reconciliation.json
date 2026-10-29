@@ -1,0 +1,605 @@
+{
+  "auth_firestore_audit": {
+    "evidence_accepted": true,
+    "file_mode": "0o600",
+    "forbidden_collections": [],
+    "forbidden_field_coverage_complete": true,
+    "positive_collection_count": 87,
+    "positive_evidence": true,
+    "rejection_reason": null,
+    "rpc_count": 165,
+    "rpc_lines_with_forbidden_field": 165
+  },
+  "builds": [
+    {
+      "exit_code": 0,
+      "label": "install pinned GCS emulator"
+    },
+    {
+      "exit_code": 0,
+      "label": "build GateAuth cmd/auth"
+    },
+    {
+      "exit_code": 0,
+      "label": "build BFF cmd/bff"
+    },
+    {
+      "exit_code": 0,
+      "label": "build current lwc-sync cmd/sync"
+    },
+    {
+      "exit_code": 0,
+      "label": "build real GCS SDK diagnostic helper"
+    },
+    {
+      "exit_code": 0,
+      "label": "build local pipeline worker required by BFF runtime"
+    },
+    {
+      "exit_code": 0,
+      "label": "build baseline 4d290 CLI v1"
+    },
+    {
+      "exit_code": 0,
+      "label": "CaC prepare target=bff environment=local"
+    },
+    {
+      "exit_code": 0,
+      "label": "CaC prepare target=auth environment=local"
+    }
+  ],
+  "checks": {
+    "actual_v1_auth_proxy": {
+      "api_host_absent": true,
+      "auth_host_matches": true,
+      "auth_proxy_binding_route_observed": true,
+      "auth_proxy_project_route_observed": true,
+      "binding_created_through_auth_locator": true,
+      "binding_exit_code": 0,
+      "config_keys": [
+        "auth_host"
+      ],
+      "credentials_mode": "0o600",
+      "list_exit_code": 0,
+      "listed_only_owned_projects": true,
+      "source_commit": "4d290cb7d2f5d9d8be9523f0ddc02b8ce1b621c9",
+      "vault_identity": {
+        "binding_id": "a192278e500f7f5c571096f20f8d1379",
+        "host": "http://localhost:58116",
+        "project_id": "synthetic-proxy-project",
+        "wiki_id": "c03dfbc8f9c6751a051ae84d4a34b0f9"
+      }
+    },
+    "auth_firestore_audit": {
+      "evidence_accepted": true,
+      "file_mode": "0o600",
+      "forbidden_collections": [],
+      "forbidden_field_coverage_complete": true,
+      "positive_collection_count": 87,
+      "positive_evidence": true,
+      "rejection_reason": null,
+      "rpc_count": 165,
+      "rpc_lines_with_forbidden_field": 165
+    },
+    "auth_firestore_audit_negative_controls": {
+      "blank_log_checked": true,
+      "blank_log_evidence_accepted": false,
+      "blank_log_mode": "0o600",
+      "blank_log_path": "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/gat4-cli-sync-3t0xlopz/auth-audit-negative-controls/blank.log",
+      "blank_log_rejection_reason": "no_rpc_records",
+      "blank_log_rpc_count": 0,
+      "both_log_controls_rejected": true,
+      "header_only_log_checked": true,
+      "header_only_log_evidence_accepted": false,
+      "header_only_log_mode": "0o600",
+      "header_only_log_path": "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/gat4-cli-sync-3t0xlopz/auth-audit-negative-controls/header-only.log",
+      "header_only_log_rejection_reason": "no_rpc_records",
+      "header_only_log_rpc_count": 0,
+      "same_acceptance_guard_used": true
+    },
+    "auth_stateless_proxy_zero_product_firestore": {
+      "forbidden_project_or_binding_collections": [],
+      "positive_auth_firestore_rpc_and_collection_evidence": true,
+      "v1_and_v2_legacy_auth_proxy_exercised": true
+    },
+    "bff_401_refresh_once": {
+      "auth_refresh_requests": 1,
+      "captured_bff_401": true,
+      "cli_exit_code": 0,
+      "credentials_mode": "0o600",
+      "refresh_token_rotated": true,
+      "success_after_refresh": true
+    },
+    "cli_readback_matches_persisted_content": {
+      "exit_code": 0,
+      "file_exists": true,
+      "matches": true,
+      "restart_session_preserved": true,
+      "sha256": "aeae04eb46b84ee094016d7d8edaa1881225612f827f97dd26bc06bf4fe9998c"
+    },
+    "cli_restart_continuity": {
+      "auth_host_unchanged": true,
+      "exit_code": 0,
+      "session_id_unchanged": true,
+      "vault_identity_unchanged": true
+    },
+    "persisted_storage_sync": {
+      "actual_product_write_and_read": true,
+      "cli_upload_exit": 0,
+      "storage": {
+        "generation": "1793217542073598",
+        "name": "local_scopes/worktree-791ae715fa80252294e8acf7/users/3fa9869379c5a55ec1620e7d/projects/synthetic-project/raw/synthetic-note.md",
+        "readback_sha256": "aeae04eb46b84ee094016d7d8edaa1881225612f827f97dd26bc06bf4fe9998c",
+        "sha256_metadata": "aeae04eb46b84ee094016d7d8edaa1881225612f827f97dd26bc06bf4fe9998c",
+        "size": "35",
+        "storage_http_list": 200,
+        "storage_http_read": 200
+      }
+    },
+    "reauthorization_identity": {
+      "after_identity": {
+        "binding_id": "6cd7c8a73a90f20b182facada2fba982",
+        "host": "http://localhost:58116",
+        "project_id": "synthetic-project",
+        "wiki_id": "6801739dc143dc502890063416147cc3"
+      },
+      "before_identity": {
+        "binding_id": "7bf4c29879420b9c20ee776f4526099a",
+        "host": "http://localhost:58116",
+        "project_id": "synthetic-project",
+        "wiki_id": "6801739dc143dc502890063416147cc3"
+      },
+      "binding_id_rotated": true,
+      "exit_code": 0,
+      "interpretation": "explicit reauthorization uses the established replacement generation; migration/restart preserve identity, and the CLI updates vault metadata to the new binding ID",
+      "issuer_host_preserved": true,
+      "new_metadata_matches_product_response": true,
+      "pre_reauthorize_metadata_copy": "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/gat4-cli-sync-3t0xlopz/vaults/primary-pre-reauthorize.json",
+      "pre_reauthorize_metadata_copy_mode": "0o600",
+      "project_id_preserved": true,
+      "wiki_id_preserved": true
+    },
+    "reauthorized_binding_usable": {
+      "exit_code": 0,
+      "success": true
+    },
+    "refresh_stays_at_auth": {
+      "api_host_absent_from_credentials": true,
+      "auth_host": "http://localhost:58116",
+      "credentials_mode": "0o600",
+      "exit_code": 0,
+      "refresh_rotated": true
+    },
+    "revoke_rejects_subsequent_sync": {
+      "bff_observed_http_403": true,
+      "bff_sync_route_statuses": [
+        403
+      ],
+      "cli_observed_http_403": true,
+      "rejected": true,
+      "revoke_exit_code": 0,
+      "subsequent_sync_exit_code": 1
+    },
+    "stale_binding_id_denied_after_reauthorize": {
+      "bff_observed_http_403": true,
+      "bff_sync_route_statuses": [
+        403
+      ],
+      "cli_observed_http_403": true,
+      "current_binding_id": "6cd7c8a73a90f20b182facada2fba982",
+      "current_metadata_restored": true,
+      "exit_code": 1,
+      "old_binding_id": "7bf4c29879420b9c20ee776f4526099a",
+      "private_pre_reauthorize_copy_mode": "0o600"
+    },
+    "v2_explicit_api_no_fallback": {
+      "api_404_exit_code": 1,
+      "api_404_not_fallback_success": true,
+      "api_404_probe_hits": 1,
+      "auth_product_route_not_hit_after_404": true,
+      "auth_product_route_not_hit_after_redirect": true,
+      "redirect_exit_code": 1,
+      "redirect_not_followed": true,
+      "redirect_probe_hits": 1
+    },
+    "v2_legacy_config_proxy": {
+      "auth_host_only_config": true,
+      "auth_proxy_route_observed": true,
+      "credentials_mode": "0o600",
+      "exit_code": 0,
+      "listed_allowed_projects": true
+    },
+    "v2_project_acl_list": {
+      "allowed_only": true,
+      "project_ids": [
+        "synthetic-project",
+        "synthetic-proxy-project"
+      ],
+      "unowned_absent": true
+    },
+    "v2_unowned_direct_operation_denied": {
+      "bff_binding_route_statuses": [
+        200,
+        403
+      ],
+      "bff_observed_http_403": true,
+      "denied": true,
+      "exit_code": 1
+    }
+  },
+  "cleanup": {
+    "all_child_processes_exited": true,
+    "all_owned_listeners_closed": true,
+    "owned_processes": [
+      {
+        "exit_code": 0,
+        "listener_closed": true,
+        "name": "storage",
+        "pid": 93525
+      },
+      {
+        "exit_code": -15,
+        "listener_closed": true,
+        "name": "firestore",
+        "pid": 93534
+      },
+      {
+        "exit_code": -15,
+        "listener_closed": true,
+        "name": "auth",
+        "pid": 93580
+      },
+      {
+        "exit_code": 0,
+        "listener_closed": true,
+        "name": "bff",
+        "pid": 93589
+      }
+    ],
+    "probe_servers": [
+      {
+        "hits": 1,
+        "listener_closed": true,
+        "name": "probe404",
+        "status": 404
+      },
+      {
+        "hits": 1,
+        "listener_closed": true,
+        "name": "probe302",
+        "status": 302
+      }
+    ]
+  },
+  "commands": [
+    {
+      "exit_code": 0,
+      "label": "v2 CLI actual Auth pairing/login",
+      "pid": 93598,
+      "stderr": "",
+      "stdout": "\u8acb\u5728\u700f\u89bd\u5668\u767b\u5165\u4e26\u6838\u51c6\u6b64 CLI\uff1ahttp://localhost:58118/cli-pairing?user_code=[redacted]\n[pairing code redacted]\n[harness Auth pairing approval HTTP 200]\n\u6709\u6548\u671f\u9650\uff1aThu, 29 Oct 2026 04:08:58 CST\nCLI \u767b\u5165\u5b8c\u6210\uff1b\u6191\u8b49\u4fdd\u5b58\u5728\u672c\u6a5f\u79c1\u6709\u8a2d\u5b9a\u76ee\u9304\u3002\n"
+    },
+    {
+      "exit_code": 0,
+      "label": "v2 projects list through explicit BFF API host",
+      "pid": null,
+      "stderr": "",
+      "stdout": "{\n  \"projects\": [\n    {\n      \"id\": \"synthetic-project\",\n      \"name\": \"Allowed synthetic Project\"\n    },\n    {\n      \"id\": \"synthetic-proxy-project\",\n      \"name\": \"Legacy proxy Project\"\n    }\n  ]\n}\n"
+    },
+    {
+      "exit_code": 1,
+      "label": "v2 direct init against unowned Project",
+      "pid": null,
+      "stderr": "Error: Auth service returned HTTP 403\n",
+      "stdout": ""
+    },
+    {
+      "exit_code": 0,
+      "label": "v2 create/bind local vault",
+      "pid": null,
+      "stderr": "",
+      "stdout": "Initialized raw sync for Project synthetic-project at /Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/gat4-cli-sync-3t0xlopz/vaults/primary.\n"
+    },
+    {
+      "exit_code": 0,
+      "label": "v2 actual raw sync upload to BFF",
+      "pid": null,
+      "stderr": "lwc-sync observation operation=push outcome=success wall_ms=29 added=1 updated=0 skipped=0 downloaded=0 failed=0 auth_requests=1 sync_requests=3 remote_list_calls=2 remote_list_pages=2 refresh_requests=0 upload_attempts=1 download_attempts=0 readback_calls=0 inventory_passes=2 inventory_files=2 inventory_hash_bytes=70 verify_hashes=3 verify_hash_bytes=105 compared_files=1 inventory_scan_hash_calls=2 inventory_scan_hash_errors=0 inventory_scan_hash_ms=0 remote_inventory_calls=2 remote_inventory_errors=0 remote_inventory_ms=13 diff_validate_calls=2 diff_validate_errors=0 diff_validate_ms=0 upload_calls=2 upload_errors=0 upload_ms=7\n",
+      "stdout": "add    synthetic-note.md\nAdded: 1  Updated: 0  Skipped: 0  Downloaded: 0  Failed: 0\n"
+    },
+    {
+      "exit_code": 0,
+      "label": "v2 fresh-process remote sync readback",
+      "pid": null,
+      "stderr": "lwc-sync observation operation=push outcome=success wall_ms=33 added=0 updated=0 skipped=0 downloaded=1 failed=0 auth_requests=1 sync_requests=3 remote_list_calls=2 remote_list_pages=2 refresh_requests=0 upload_attempts=0 download_attempts=1 readback_calls=0 inventory_passes=2 inventory_files=0 inventory_hash_bytes=0 verify_hashes=0 verify_hash_bytes=0 compared_files=0 inventory_scan_hash_calls=2 inventory_scan_hash_errors=0 inventory_scan_hash_ms=0 remote_inventory_calls=2 remote_inventory_errors=0 remote_inventory_ms=11 diff_validate_calls=1 diff_validate_errors=0 diff_validate_ms=0 download_calls=1 download_errors=0 download_ms=14\n",
+      "stdout": "pull   synthetic-note.md\nAdded: 0  Updated: 0  Skipped: 0  Downloaded: 1  Failed: 0\n"
+    },
+    {
+      "exit_code": 0,
+      "label": "v2 explicit credential refresh at Auth",
+      "pid": null,
+      "stderr": "",
+      "stdout": "CLI \u6191\u8b49\u5df2\u66f4\u65b0\u3002\n"
+    },
+    {
+      "exit_code": 0,
+      "label": "v2 BFF 401 causes one Auth refresh then succeeds",
+      "pid": null,
+      "stderr": "",
+      "stdout": "{\n  \"projects\": [\n    {\n      \"id\": \"synthetic-project\",\n      \"name\": \"Allowed synthetic Project\"\n    },\n    {\n      \"id\": \"synthetic-proxy-project\",\n      \"name\": \"Legacy proxy Project\"\n    }\n  ]\n}\n"
+    },
+    {
+      "exit_code": 0,
+      "label": "v2 CLI restart continues same session and locator",
+      "pid": null,
+      "stderr": "",
+      "stdout": "\u5df2\u767b\u5165\n\u4f7f\u7528\u8005\uff1a3fa9869379c5a55ec1620e7d\nSession\uff1ab4e4292b51d81b8bd6661d8a409b0b2a\n\u89d2\u8272\uff1a\nAuth host\uff1ahttp://localhost:58116\n"
+    },
+    {
+      "exit_code": 0,
+      "label": "current v2 legacy auth_host-only config through Auth proxy",
+      "pid": null,
+      "stderr": "",
+      "stdout": "{\n  \"projects\": [\n    {\n      \"id\": \"synthetic-project\",\n      \"name\": \"Allowed synthetic Project\"\n    },\n    {\n      \"id\": \"synthetic-proxy-project\",\n      \"name\": \"Legacy proxy Project\"\n    }\n  ]\n}\n"
+    },
+    {
+      "exit_code": 0,
+      "label": "v2 explicit binding reauthorization",
+      "pid": null,
+      "stderr": "",
+      "stdout": "Project synthetic-project \u7684 binding \u5df2\u660e\u78ba\u91cd\u65b0\u6388\u6b0a\u3002\n"
+    },
+    {
+      "exit_code": 1,
+      "label": "v2 stale pre-reauthorize binding ID is rejected",
+      "pid": null,
+      "stderr": "lwc-sync observation operation=push outcome=error wall_ms=10 auth_requests=1 sync_requests=1 remote_list_calls=1 remote_list_pages=1 refresh_requests=0 upload_attempts=0 download_attempts=0 readback_calls=0 inventory_passes=1 inventory_files=1 inventory_hash_bytes=35 verify_hashes=0 verify_hash_bytes=0 compared_files=0 inventory_scan_hash_calls=1 inventory_scan_hash_errors=0 inventory_scan_hash_ms=0 remote_inventory_calls=1 remote_inventory_errors=1 remote_inventory_ms=4\nError: Sync data service returned HTTP 403\n",
+      "stdout": ""
+    },
+    {
+      "exit_code": 0,
+      "label": "v2 sync continues after explicit reauthorization",
+      "pid": null,
+      "stderr": "lwc-sync observation operation=push outcome=success wall_ms=17 added=0 updated=0 skipped=1 downloaded=0 failed=0 auth_requests=1 sync_requests=2 remote_list_calls=2 remote_list_pages=2 refresh_requests=0 upload_attempts=0 download_attempts=0 readback_calls=0 inventory_passes=2 inventory_files=2 inventory_hash_bytes=70 verify_hashes=1 verify_hash_bytes=35 compared_files=1 inventory_scan_hash_calls=2 inventory_scan_hash_errors=0 inventory_scan_hash_ms=0 remote_inventory_calls=2 remote_inventory_errors=0 remote_inventory_ms=10 diff_validate_calls=2 diff_validate_errors=0 diff_validate_ms=0\n",
+      "stdout": "skip   synthetic-note.md\nAdded: 0  Updated: 0  Skipped: 1  Downloaded: 0  Failed: 0\n"
+    },
+    {
+      "exit_code": 0,
+      "label": "baseline 4d290 actual CLI v1 Auth pairing/login",
+      "pid": 93718,
+      "stderr": "",
+      "stdout": "\u8acb\u5728\u700f\u89bd\u5668\u767b\u5165\u4e26\u6838\u51c6\u6b64 CLI\uff1ahttp://localhost:58118/cli-pairing?user_code=[redacted]\n[pairing code redacted]\n[harness Auth pairing approval HTTP 200]\n\u6709\u6548\u671f\u9650\uff1aThu, 29 Oct 2026 04:09:02 CST\nCLI \u767b\u5165\u5b8c\u6210\uff1b\u6191\u8b49\u4fdd\u5b58\u5728\u672c\u6a5f\u79c1\u6709\u8a2d\u5b9a\u76ee\u9304\u3002\n"
+    },
+    {
+      "exit_code": 0,
+      "label": "baseline 4d290 CLI v1 projects through stateless Auth proxy",
+      "pid": null,
+      "stderr": "",
+      "stdout": "{\n  \"projects\": [\n    {\n      \"id\": \"synthetic-project\",\n      \"name\": \"Allowed synthetic Project\"\n    },\n    {\n      \"id\": \"synthetic-proxy-project\",\n      \"name\": \"Legacy proxy Project\"\n    }\n  ]\n}\n"
+    },
+    {
+      "exit_code": 0,
+      "label": "baseline 4d290 CLI v1 binding create through Auth proxy",
+      "pid": null,
+      "stderr": "",
+      "stdout": "Initialized raw sync for Project synthetic-proxy-project at /Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/gat4-cli-sync-3t0xlopz/vaults/v1-proxy.\n"
+    },
+    {
+      "exit_code": 1,
+      "label": "v2 explicit api_host 404 has no Auth fallback",
+      "pid": null,
+      "stderr": "Error: Auth service returned HTTP 404\n",
+      "stdout": ""
+    },
+    {
+      "exit_code": 1,
+      "label": "v2 explicit api_host redirect is not followed",
+      "pid": null,
+      "stderr": "Error: Auth service returned HTTP 302\n",
+      "stdout": ""
+    },
+    {
+      "exit_code": 0,
+      "label": "v2 product binding revoke",
+      "pid": null,
+      "stderr": "",
+      "stdout": "sync binding \u5df2\u64a4\u92b7\uff1bCLI session \u8207 wiki \u8cc7\u6599\u672a\u8b8a\u66f4\u3002\n"
+    },
+    {
+      "exit_code": 1,
+      "label": "v2 subsequent raw sync access rejected after revoke",
+      "pid": null,
+      "stderr": "lwc-sync observation operation=push outcome=error wall_ms=32 auth_requests=1 sync_requests=1 remote_list_calls=1 remote_list_pages=1 refresh_requests=0 upload_attempts=0 download_attempts=0 readback_calls=0 inventory_passes=1 inventory_files=1 inventory_hash_bytes=35 verify_hashes=0 verify_hash_bytes=0 compared_files=0 inventory_scan_hash_calls=1 inventory_scan_hash_errors=0 inventory_scan_hash_ms=0 remote_inventory_calls=1 remote_inventory_errors=1 remote_inventory_ms=9\nError: Sync data service returned HTTP 403\n",
+      "stdout": ""
+    }
+  ],
+  "config": {
+    "api_origin": "http://localhost:58117",
+    "auth_config_mode": "0600",
+    "auth_origin": "http://localhost:58116",
+    "bff_config_mode": "0600",
+    "local_cloud_scope": "worktree-791ae715fa80252294e8acf7",
+    "producer": "apps/bff/cmd/pipeline_config prepare --target {bff,auth} --environment local"
+  },
+  "exit_counts": {
+    "build_steps": {
+      "failed": 0,
+      "passed": 9,
+      "total": 9
+    },
+    "cli_commands": {
+      "expected_control_count": 5,
+      "expected_controls_that_succeeded_unexpectedly": [],
+      "expected_nonzero_controls": [
+        "v2 direct init against unowned Project",
+        "v2 stale pre-reauthorize binding ID is rejected",
+        "v2 explicit api_host 404 has no Auth fallback",
+        "v2 explicit api_host redirect is not followed",
+        "v2 subsequent raw sync access rejected after revoke"
+      ],
+      "missing_expected_controls": [],
+      "passed": 15,
+      "total": 20,
+      "unexpected_nonzero_failures": []
+    }
+  },
+  "finished_at": "2026-10-28T19:59:06.633352+00:00",
+  "fixture_setup": [
+    {
+      "backend": "memory",
+      "bucket": "llm-wiki-cloud-local",
+      "created_status": 200,
+      "generation_pinned_reads_supported": true,
+      "persistence": "service lifetime; actual product writes are read by a fresh CLI process",
+      "seeded_bucket": true,
+      "type": "synthetic_object_storage"
+    },
+    {
+      "collection": "local_scopes/{scope}/system",
+      "seeded": true,
+      "type": "registration_policy"
+    },
+    {
+      "owner": "synthetic-other-owner",
+      "project_id": "synthetic-unowned",
+      "seeded": true,
+      "type": "project_acl"
+    },
+    {
+      "owner": "registered synthetic user",
+      "project_id": "synthetic-project",
+      "seeded": true,
+      "type": "project_acl"
+    },
+    {
+      "owner": "registered synthetic user",
+      "project_id": "synthetic-proxy-project",
+      "seeded": true,
+      "type": "project_acl"
+    }
+  ],
+  "harness": {
+    "runner_sha256": "51861600bf6f34d32c5810387c49966513bb02e067856279e673b619f088f558",
+    "storage_sdk_probe_sha256": "020dab3a60cb4c2a86eee89f5af7977b0c23388b4331cea9a6524bc21edd11e0"
+  },
+  "harness_exit_code": 0,
+  "http_setup": [
+    {
+      "label": "Auth password registration",
+      "status": 201
+    },
+    {
+      "label": "Auth password login",
+      "status": 200
+    },
+    {
+      "label": "BFF rejects scoped invalid access-token control",
+      "status": 401
+    }
+  ],
+  "identity": {
+    "registered_and_logged_in_via_auth": true,
+    "user_id": "3fa9869379c5a55ec1620e7d"
+  },
+  "not_run": [
+    "Google OIDC validation; local typed synthetic OIDC validator only",
+    "provider or LLM calls",
+    "cloud services, live accounts, deployment, remote repository, publication, and production readback",
+    "GAT-4 acceptance outside CLI acceptance 2 and compatibility acceptance 7"
+  ],
+  "ports": {
+    "auth": 58116,
+    "bff": 58117,
+    "firestore": 58114,
+    "frontend": 58118,
+    "probe302": 58120,
+    "probe404": 58119,
+    "storage": 58115
+  },
+  "probe_servers": [
+    {
+      "name": "probe404",
+      "port": 58119,
+      "status": 404
+    },
+    {
+      "name": "probe302",
+      "port": 58120,
+      "status": 302
+    }
+  ],
+  "processes": {
+    "api_origin": "http://localhost:58117",
+    "auth_origin": "http://localhost:58116",
+    "firestore_origin": "http://127.0.0.1:58114",
+    "service_bind_address": "127.0.0.1",
+    "storage_origin": "http://127.0.0.1:58115"
+  },
+  "qualification": {
+    "cli_acceptance_2": "PASS: restart preserves binding identity; explicit reauthorization rotates the generation while preserving issuer/WikiID/ProjectID, writes the new ID to the vault, rejects the old ID, and permits sync with the new ID; revoke then rejects access",
+    "cli_acceptance_7": "PASS: actual baseline CLI v1 and current v2 legacy config used Auth proxy; explicit v2 api_host produced no Auth fallback or redirect",
+    "persisted_sync": "PASS: product wrote to loopback GCS emulator and a fresh CLI process read exact bytes back",
+    "qualification_complete": true,
+    "scope": "CLI acceptance 2 and compatibility acceptance 7 only"
+  },
+  "report_path": "/Users/rayer/orca/workspaces/llm-wiki-cloud/GAT-4-cli-local-qa/scripts/gat4-local/e2e/cli_sync/report-reconciliation.json",
+  "schema": "gat4-cli-local-qualification-v2",
+  "scratch_path": "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/gat4-cli-sync-3t0xlopz",
+  "service_logs": {
+    "auth": "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/gat4-cli-sync-3t0xlopz/logs/auth.log",
+    "bff": "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/gat4-cli-sync-3t0xlopz/logs/bff.log",
+    "firestore": "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/gat4-cli-sync-3t0xlopz/logs/firestore.log",
+    "storage": "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/gat4-cli-sync-3t0xlopz/logs/storage.log",
+    "terminal": "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/gat4-cli-sync-3t0xlopz/logs/terminal.log"
+  },
+  "source": {
+    "bff_tree": "f5da7fa70442d33e582959117bb9c0f39334b54c",
+    "candidate_commit": "51bfc0ee7da8625b2fbd7b533febde219843b0e6",
+    "current_cli_tree": "78f2dbc57f920ef9dd5ef6e4acfc0169b95a080c",
+    "gateauth_tree": "1130034f986b700d08f933044e85afec64185476",
+    "gcs_emulator": "fake-gcs-server v1.52.1, in-memory backend; XML public host pinned to numeric loopback",
+    "go_version": "go version go1.26.5 darwin/arm64",
+    "legacy_cli_commit": "4d290cb7d2f5d9d8be9523f0ddc02b8ce1b621c9",
+    "legacy_cli_tree": "1346e2845bb20af01fd4b2e4d1e59c276889af37"
+  },
+  "started_at": "2026-10-28T19:58:45.028281+00:00",
+  "terminal_log": "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/gat4-cli-sync-3t0xlopz/logs/terminal.log",
+  "v2_local_files": {
+    "api_host_absent_from_credentials": true,
+    "config_api_host_matches": true,
+    "config_auth_host_matches": true,
+    "config_keys": [
+      "api_host",
+      "auth_host"
+    ],
+    "config_mode": "0o600",
+    "credentials_auth_host_matches": true,
+    "credentials_keys": [
+      "access_token",
+      "auth_host",
+      "auth_version",
+      "refresh_token",
+      "role",
+      "session_id",
+      "user_id"
+    ],
+    "credentials_mode": "0o600",
+    "session_id_present": true,
+    "user_id_matches_registered": true
+  },
+  "v2_vault": {
+    "identity": {
+      "binding_id": "7bf4c29879420b9c20ee776f4526099a",
+      "host": "http://localhost:58116",
+      "project_id": "synthetic-project",
+      "wiki_id": "6801739dc143dc502890063416147cc3"
+    },
+    "metadata_keys": [
+      "binding_id",
+      "host",
+      "project_id",
+      "wiki_id"
+    ],
+    "metadata_mode": "0o600"
+  }
+}
