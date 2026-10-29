@@ -20,7 +20,11 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"github.com/rayer/llm-wiki-bff/internal/observability/otlpfixture"
 	"github.com/rayer/llm-wiki-bff/internal/urlintake"
+	tracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
+	commonv1 "go.opentelemetry.io/proto/otlp/common/v1"
 	tracev1 "go.opentelemetry.io/proto/otlp/trace/v1"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 type intakeTestResolver struct{}
@@ -246,10 +250,20 @@ func TestScrapeRawFailureLogAndFilteredTraceShareCorrelation(t *testing.T) {
 	}
 
 	capture.Flush(t, provider)
+	exportRequests := capture.Requests()
+	if len(exportRequests) == 0 {
+		t.Fatal("filtered OTLP exporter made no export request")
+	}
 	var requestSpan *tracev1.Span
-	for _, span := range capture.Spans() {
-		if span.Name == "http.request" {
-			requestSpan = span
+	for _, exportRequest := range exportRequests {
+		for _, resource := range exportRequest.ResourceSpans {
+			for _, scope := range resource.ScopeSpans {
+				for _, span := range scope.Spans {
+					if span.Name == "http.request" {
+						requestSpan = span
+					}
+				}
+			}
 		}
 	}
 	if requestSpan == nil || requestSpan.Status == nil || requestSpan.Status.Code != tracev1.Status_STATUS_CODE_ERROR ||
@@ -266,11 +280,42 @@ func TestScrapeRawFailureLogAndFilteredTraceShareCorrelation(t *testing.T) {
 	if spanAttributes["request.id"] != requestID || spanAttributes["http.response.status_code"] != int64(http.StatusServiceUnavailable) {
 		t.Fatalf("filtered HTTP span attributes = %#v", spanAttributes)
 	}
-	combined := response.Body.String() + logs.String() + fmt.Sprintf("%#v", capture.Spans())
-	for _, canary := range []string{"API_KEY_CANARY", "KEY_CANARY", "BODY_CANARY", "query-canary=private"} {
-		if strings.Contains(combined, canary) {
-			t.Fatalf("private Fetch canary %q escaped response/log/trace", canary)
+	canaries := []string{"API_KEY_CANARY", "KEY_CANARY", "BODY_CANARY", "query-canary=private"}
+	var exportedOTLP strings.Builder
+	for _, exportRequest := range exportRequests {
+		payload, err := protojson.Marshal(exportRequest)
+		if err != nil {
+			t.Fatalf("serialize captured OTLP export request: %v", err)
 		}
+		exportedOTLP.Write(payload)
+	}
+	containsCanary := func(payload string) bool {
+		for _, canary := range canaries {
+			if strings.Contains(payload, canary) {
+				return true
+			}
+		}
+		return false
+	}
+	combined := response.Body.String() + logs.String() + exportedOTLP.String()
+	if containsCanary(combined) {
+		for _, canary := range canaries {
+			if strings.Contains(combined, canary) {
+				t.Fatalf("private Fetch canary %q escaped response/log/actual OTLP export", canary)
+			}
+		}
+	}
+	negativeFixture := proto.Clone(exportRequests[0]).(*tracepb.ExportTraceServiceRequest)
+	negativeSpan := negativeFixture.ResourceSpans[0].ScopeSpans[0].Spans[0]
+	negativeSpan.Attributes = append(negativeSpan.Attributes,
+		&commonv1.KeyValue{Key: "test.canary", Value: &commonv1.AnyValue{Value: &commonv1.AnyValue_StringValue{StringValue: "BODY_CANARY"}}},
+	)
+	negativePayload, err := protojson.Marshal(negativeFixture)
+	if err != nil {
+		t.Fatalf("serialize canary-bearing OTLP fixture: %v", err)
+	}
+	if !containsCanary(string(negativePayload)) {
+		t.Fatal("canary checker did not detect a canary in a canary-bearing OTLP export fixture")
 	}
 	fetchLogJSON, _ := json.Marshal(fetchLog)
 	terminalLogJSON, _ := json.Marshal(terminalLog)
