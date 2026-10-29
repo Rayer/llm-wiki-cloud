@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,9 +21,19 @@ import (
 
 func TestLWC438ProductionRouterUsesLoadedEnvironmentForProjectMCP(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	for _, environment := range []string{"dev", "prod", "local"} {
-		t.Run(environment, func(t *testing.T) {
+	for _, testConfig := range []struct {
+		environment   string
+		schemaVersion int
+	}{
+		{environment: "dev", schemaVersion: 2},
+		{environment: "dev", schemaVersion: 3},
+		{environment: "prod", schemaVersion: 2},
+		{environment: "prod", schemaVersion: 3},
+		{environment: "local", schemaVersion: 3},
+	} {
+		t.Run(fmt.Sprintf("%s-schema%d", testConfig.environment, testConfig.schemaVersion), func(t *testing.T) {
 			t.Setenv("PORT", "")
+			environment := testConfig.environment
 			const projectID = "lwc438-project"
 			var resource, issuer, runtimeToken string
 			var loadedEnvironment string
@@ -48,14 +59,20 @@ func TestLWC438ProductionRouterUsesLoadedEnvironmentForProjectMCP(t *testing.T) 
 				credential := r.Header.Get("X-LWC-User-Credential")
 				authVerifierRequests++
 				if credential == "fixture-invalid" || credential == "fixture-expired" {
+					// The Auth authority reports invalid or expired user credentials as 401.
+					w.Header().Set("Cache-Control", "no-store")
 					w.WriteHeader(http.StatusUnauthorized)
 					_, _ = w.Write([]byte(`{"error":"invalid"}`))
 					return
 				}
+				expiresAt := time.Now().Add(time.Minute).Unix()
+				if credential == "fixture-expired-identity" {
+					expiresAt = time.Now().Add(-time.Minute).Unix()
+				}
 				identity := authconsumer.Identity{
 					SchemaVersion: 1, Subject: "fixture-user", CredentialKind: "mcp-oauth",
 					Environment: loadedEnvironment, Issuer: issuer, Resource: resource,
-					ExpiresAt: time.Now().Add(time.Minute).Unix(), Scopes: []string{"mcp:query"},
+					ExpiresAt: expiresAt, Scopes: []string{"mcp:query"},
 					ManagementScopes: []string{}, GrantID: "fixture-grant", ClientID: "fixture-client", ProjectID: projectID,
 				}
 				switch credential {
@@ -73,7 +90,7 @@ func TestLWC438ProductionRouterUsesLoadedEnvironmentForProjectMCP(t *testing.T) 
 			}))
 			defer server.Close()
 
-			file := lwc438BFFFileForLWC438Test(environment, server.URL)
+			file := lwc438BFFFileForLWC438Test(environment, testConfig.schemaVersion, server.URL)
 			issuer = file.AuthServiceURL
 			loadedEnvironment = file.Environment
 			resource = file.MCPResourceOrigin + "/mcp/projects/" + projectID
@@ -133,6 +150,7 @@ func TestLWC438ProductionRouterUsesLoadedEnvironmentForProjectMCP(t *testing.T) 
 				{name: "conflicting project header", credential: "fixture-valid", project: "other-project", wantStatus: http.StatusForbidden, wantProjectCheck: true},
 				{name: "invalid credential", credential: "fixture-invalid", wantStatus: http.StatusUnauthorized},
 				{name: "expired credential", credential: "fixture-expired", wantStatus: http.StatusUnauthorized},
+				{name: "expired identity response", credential: "fixture-expired-identity", wantStatus: http.StatusServiceUnavailable},
 			} {
 				t.Run(test.name, func(t *testing.T) {
 					checksBefore := projectChecks
@@ -187,10 +205,10 @@ func TestLWC438ProductionRouterUsesLoadedEnvironmentForProjectMCP(t *testing.T) 
 	}
 }
 
-func lwc438BFFFileForLWC438Test(environment, localAuthURL string) config.BFFFile {
+func lwc438BFFFileForLWC438Test(environment string, schemaVersion int, localAuthURL string) config.BFFFile {
 	enabled := true
 	file := config.BFFFile{
-		SchemaVersion: 2, Environment: environment, Target: "bff",
+		SchemaVersion: schemaVersion, Environment: environment, Target: "bff",
 		GCPProject: "llm-wiki-cloud", Bucket: "llm-wiki-data-" + environment,
 		FirestoreDatabaseID: "llm-wiki-cloud-" + environment,
 		AuthServiceURL:      "https://auth.dev.rayer.idv.tw", MCPResourceOrigin: "https://llm-wiki-bff-dev-580854833715.asia-east1.run.app",
@@ -212,16 +230,27 @@ func lwc438BFFFileForLWC438Test(environment, localAuthURL string) config.BFFFile
 		file.GCPProject, file.Bucket, file.FirestoreDatabaseID = "llm-wiki-cloud", "llm-wiki-cloud-local", "llm-wiki-cloud-local"
 		file.AuthServiceURL, file.MCPResourceOrigin = localAuthURL, "http://localhost:8080"
 		file.AllowedOrigins, file.AllowedHosts = []string{"http://localhost:3000"}, []string{"localhost", "127.0.0.1"}
-		file.AuthSessionEnvironment, file.JWTSecret = "llm-wiki-cloud-local", ""
+		file.AuthSessionEnvironment = "llm-wiki-cloud-local"
 		file.Query = config.BFFQuery{StageConfigPath: "/tmp/query.json"}
 		file.Local = &config.BFFLocal{Scope: "worktree-current", WorkerPath: "/tmp/worker", PipelineConfigPath: "/tmp/synto.toml", PipelineBindingsPath: "/tmp/bindings.json"}
-		file.AuthConsumer = &config.BFFAuthConsumer{
-			SchemaVersion: 1, Environment: "local", AuthURL: localAuthURL, Issuer: localAuthURL,
-			RuntimeServiceAccount: "bff-local@localhost", VerifierAudience: localAuthURL,
+	}
+	if file.SchemaVersion == 3 {
+		file.JWTSecret = ""
+		consumer := config.BFFAuthConsumer{
+			SchemaVersion: 1, Environment: environment, AuthURL: file.AuthServiceURL, Issuer: file.AuthServiceURL,
 			Resource: file.MCPResourceOrigin, VerifierPath: "/api/v1/auth/consumers/lwc/verify-credential",
 			AccountCheckPath: "/api/v1/auth/consumers/lwc/accounts/check", CatalogPath: "/api/v1/auth/consumers/lwc/management/catalog",
-			AuthorityModes: []string{"synthetic-local-fixture"}, TimeoutSeconds: 5,
+			TimeoutSeconds: 5,
 		}
+		if environment == "local" {
+			consumer.RuntimeServiceAccount, consumer.VerifierAudience = "bff-local@localhost", file.AuthServiceURL
+			consumer.AuthorityModes = []string{"synthetic-local-fixture"}
+		} else {
+			consumer.RuntimeServiceAccount = "lwc-bff-" + environment + "@llm-wiki-cloud.iam.gserviceaccount.com"
+			consumer.VerifierAudience = "https://auth-runtime.example.test"
+			consumer.AuthorityModes = []string{"legacy-shadow", "central"}
+		}
+		file.AuthConsumer = &consumer
 	}
 	return file
 }
