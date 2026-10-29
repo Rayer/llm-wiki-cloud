@@ -115,6 +115,51 @@ class ReceiptContractTests(unittest.TestCase):
                 auth, dev, "independent", expected_lwc_source=dev["source"]["lwc"],
                 expected_auth_source=dev["source"]["auth"], expected_components=["bff"])
 
+    def test_component_inventory_accepts_order_variance_in_both_receipt_modes(self):
+        selected_order = ["auth", "bff", "worker", "exportjob"]
+        plan_order = ["exportjob", "auth", "bff", "worker"]
+        repositories = {
+            "auth": "llm-wiki-auth",
+            "bff": "llm-wiki-bff",
+            "worker": "olw-pipeline",
+            "exportjob": "llm-wiki-bff-export-job",
+        }
+
+        legacy = fixture("dev-receipt-v1-legacy.json")
+        legacy["components"] = selected_order
+        legacy["images"] = {
+            component: f"us-central1-docker.pkg.dev/fixture-project/cloud-run-images/"
+                       f"{repositories[component]}@sha256:{str(index + 1) * 64}"
+            for index, component in enumerate(selected_order)
+        }
+        self.assertTrue(receipt_contract.validate_dev_receipt(
+            legacy, "legacy_monorepo", legacy["source"], expected_components=plan_order))
+
+        independent = fixture("dev-receipt-v2-independent.json")
+        independent["components"] = selected_order
+        independent["images"] = {
+            component: independent["images"]["auth"] if component == "auth" else
+            f"us-central1-docker.pkg.dev/fixture-project/cloud-run-images/"
+            f"{repositories[component]}@sha256:{str(index + 1) * 64}"
+            for index, component in enumerate(selected_order)
+        }
+        self.assertTrue(receipt_contract.validate_dev_receipt(
+            independent, "independent", independent["source"]["lwc"],
+            independent["source"]["auth"], plan_order))
+
+        duplicate = copy.deepcopy(legacy)
+        duplicate["components"][-1] = duplicate["components"][0]
+        with self.assertRaisesRegex(receipt_contract.ReceiptError, "duplicates"):
+            receipt_contract.validate_dev_receipt(
+                duplicate, "legacy_monorepo", duplicate["source"], expected_components=plan_order)
+
+        missing = copy.deepcopy(legacy)
+        missing["components"].remove("worker")
+        del missing["images"]["worker"]
+        with self.assertRaisesRegex(receipt_contract.ReceiptError, "selected components"):
+            receipt_contract.validate_dev_receipt(
+                missing, "legacy_monorepo", missing["source"], expected_components=plan_order)
+
 
 if __name__ == "__main__":
     unittest.main()
