@@ -9,6 +9,20 @@ import yaml
 ROOT=Path(__file__).resolve().parents[1]
 
 class EngineWorkflowContract(unittest.TestCase):
+    def test_dev_dispatch_normalizes_typed_numeric_auth_inputs(self):
+        dev = yaml.safe_load((ROOT / '.github/workflows/deploy-dev.yml').read_text())
+        dispatch_inputs = dev.get('on', dev.get(True, {}))['workflow_dispatch']['inputs']
+        called_inputs = yaml.safe_load((ROOT / '.github/workflows/cd.yml').read_text())
+        called_inputs = called_inputs.get('on', called_inputs.get(True, {}))['workflow_call']['inputs']
+        forwarded = dev['jobs']['release']['with']
+        names = ('auth_repository_id', 'auth_artifact_id', 'auth_run_id', 'auth_run_attempt')
+        for name in names:
+            with self.subTest(input=name):
+                self.assertEqual(dispatch_inputs[name]['type'], 'number')
+                self.assertEqual(dispatch_inputs[name]['default'], 0)
+                self.assertEqual(called_inputs[name]['type'], 'number')
+                self.assertEqual(forwarded[name], f'${{{{ fromJSON(inputs.{name}) }}}}')
+
     def test_independent_auth_source_tuple_is_typed_verified_and_forwarded(self):
         workflow = yaml.safe_load((ROOT / '.github/workflows/cd.yml').read_text())
         trigger = workflow.get('on', workflow.get(True, {}))
@@ -222,12 +236,12 @@ class EngineWorkflowContract(unittest.TestCase):
             'executor_sha':'${{ github.sha }}',
             'components':'${{ inputs.components }}','release_tag':'${{ inputs.release_tag }}',
             'release_source_mode':'${{ inputs.release_source_mode }}',
-            'auth_repository_id':'${{ inputs.auth_repository_id }}',
+            'auth_repository_id':'${{ fromJSON(inputs.auth_repository_id) }}',
             'auth_revision':'${{ inputs.auth_revision }}',
             'auth_tree_sha256':'${{ inputs.auth_tree_sha256 }}',
-            'auth_artifact_id':'${{ inputs.auth_artifact_id }}',
-            'auth_run_id':'${{ inputs.auth_run_id }}',
-            'auth_run_attempt':'${{ inputs.auth_run_attempt }}',
+            'auth_artifact_id':'${{ fromJSON(inputs.auth_artifact_id) }}',
+            'auth_run_id':'${{ fromJSON(inputs.auth_run_id) }}',
+            'auth_run_attempt':'${{ fromJSON(inputs.auth_run_attempt) }}',
             'artifact_id':'${{ inputs.artifact_id }}','dev_artifact_id':'${{ inputs.dev_artifact_id }}',
             'frontend_config_artifact_id':'${{ inputs.frontend_config_artifact_id }}',
             'operation':'${{ inputs.operation }}',
