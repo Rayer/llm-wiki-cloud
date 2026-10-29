@@ -45,6 +45,7 @@ export function UrlPreviewDialog({
   const savedStorage = result?.status === 'stored' ? result.storage : undefined;
   const saved = Boolean(savedStorage);
   const qualityUnchecked = result?.preview?.quality_status === 'not_checked';
+  const fetchDiagnostic = result?.failure_diagnostic;
   const needsStatus = result?.status === 'uncertain' && result.candidate_id;
   const rawHref = savedStorage ? `/raw?file=${encodeURIComponent(savedStorage.path)}` : '';
   const savedOutcome = savedStorage?.status === 'created' ? labels.created
@@ -66,6 +67,12 @@ export function UrlPreviewDialog({
             <div aria-live="polite" className="space-y-4">
               {(!qualityUnchecked || !saved) ? (
                 <p className={`text-sm ${result.status === 'stored' ? 'text-emerald-200' : result.status === 'uncertain' || result.status === 'conflict' ? 'text-amber-200' : 'text-zinc-300'}`}>{result.message}</p>
+              ) : null}
+              {fetchDiagnostic ? (
+                <p className="text-xs text-zinc-400">
+                  {fetchDiagnostic.dependency} {fetchDiagnostic.operation}: {fetchDiagnostic.category}
+                  {fetchDiagnostic.upstream_status ? ` (upstream HTTP ${fetchDiagnostic.upstream_status})` : ''}
+                </p>
               ) : null}
               {qualityUnchecked && !saved ? <p role="status" className="text-sm text-amber-200">{labels.qualityUnavailable}</p> : null}
               {qualityUnchecked && saved ? <p role="status" className="text-sm text-amber-200">{labels.qualityUnavailableSaved}</p> : null}

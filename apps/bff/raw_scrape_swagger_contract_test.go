@@ -182,7 +182,7 @@ func assertRawScrapeRouteContract(t *testing.T, artifact swaggerArtifact) {
 			t.Fatalf("%s response schema = %q, want %q", status, got, "#/definitions/handler.ScrapeResponse")
 		}
 	}
-	for _, field := range []string{"status", "message", "confirmation_ref", "preview", "storage"} {
+	for _, field := range []string{"status", "message", "confirmation_ref", "preview", "storage", "failure_diagnostic"} {
 		if _, ok := artifact.Definitions["handler.ScrapeResponse"].Properties[field]; !ok {
 			t.Fatalf("scrape response schema is missing %q", field)
 		}
