@@ -11,7 +11,6 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 GIT_SHA = re.compile(r"^(?:[a-f0-9]{40}|[a-f0-9]{64})$")
 CATALOG_SHA = re.compile(r"^[a-f0-9]{64}$")
-TMPDIR = "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch"
 
 
 class I18nPrepareError(RuntimeError):
@@ -57,7 +56,6 @@ def prepare(environment, output, frontend_root, *, source_sha="", mode="auto", f
     catalog_output = output / "catalog"
     child_env = dict(os.environ if env is None else env)
     child_env.update({
-        "TMPDIR": TMPDIR,
         "GOMAXPROCS": "2",
         "GOFLAGS": "-p=2",
         "LWC_REPOSITORY_ROOT": str(root),
