@@ -4,6 +4,8 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import subprocess
+import sys
 import time
 import unittest
 from unittest.mock import patch
@@ -13,6 +15,38 @@ SCRIPT = Path(__file__).resolve().parents[3] / "apps" / "frontend" / "scripts" /
 SPEC = importlib.util.spec_from_file_location("prepare_i18n", SCRIPT)
 prepare_i18n = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(prepare_i18n)
+ENGINE_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ENGINE_DIR))
+ENGINE_SPEC = importlib.util.spec_from_file_location(
+    "frontend_i18n", ENGINE_DIR / "frontend_i18n.py")
+frontend_i18n = importlib.util.module_from_spec(ENGINE_SPEC)
+ENGINE_SPEC.loader.exec_module(frontend_i18n)
+
+
+class FrontendI18nPrepareDiagnostics(unittest.TestCase):
+    def test_start_failure_includes_stage_errno_and_public_executable(self):
+        failure = FileNotFoundError(2, "No such file or directory", "go")
+        with patch.object(frontend_i18n.subprocess, "run", side_effect=failure):
+            with self.assertRaises(frontend_i18n.I18nPrepareError) as caught:
+                frontend_i18n.run_stage(
+                    ["go", "run"], cwd=Path("/tmp"), env={"LLM_API_KEY": "fixture-secret"},
+                    timeout=1, stage="i18n source assembly")
+        self.assertIn("i18n source assembly could not start", str(caught.exception))
+        self.assertIn("FileNotFoundError errno=2 executable=go", str(caught.exception))
+
+    def test_nonzero_child_stderr_is_bounded_and_redacted(self):
+        result = subprocess.CompletedProcess(
+            ["go", "run"], 7, stdout="", stderr="LLM_API_KEY=fixture-secret " + "x" * 1000)
+        with patch.object(frontend_i18n.subprocess, "run", return_value=result):
+            with self.assertRaises(frontend_i18n.I18nPrepareError) as caught:
+                frontend_i18n.run_stage(
+                    ["go", "run"], cwd=Path("/tmp"), env={"LLM_API_KEY": "fixture-secret"},
+                    timeout=1, stage="i18n source assembly")
+        message = str(caught.exception)
+        self.assertIn("exit_code=7", message)
+        self.assertIn("[REDACTED]", message)
+        self.assertNotIn("fixture-secret", message)
+        self.assertLess(len(message), 700)
 
 
 class FrontendI18nCatalog(unittest.TestCase):

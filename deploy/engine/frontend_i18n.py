@@ -8,9 +8,12 @@ import re
 import subprocess
 import sys
 
+from support import safe_error_message
+
 ROOT = Path(__file__).resolve().parents[2]
 GIT_SHA = re.compile(r"^(?:[a-f0-9]{40}|[a-f0-9]{64})$")
 CATALOG_SHA = re.compile(r"^[a-f0-9]{64}$")
+SECRET_ENV_NAME = re.compile(r"(?:api[_-]?key|token|secret|password|credential)", re.I)
 
 
 class I18nPrepareError(RuntimeError):
@@ -18,15 +21,30 @@ class I18nPrepareError(RuntimeError):
 
 
 def run_stage(args, *, cwd, env, timeout, stage):
+    executable = Path(args[0]).name if args else "unknown"
+    sensitive_values = tuple(
+        value for name, value in (os.environ if env is None else env).items()
+        if isinstance(value, str) and value and SECRET_ENV_NAME.search(name)
+    )
     try:
         result = subprocess.run(args, cwd=cwd, env=env, capture_output=True,
                                 text=True, timeout=timeout, check=False)
     except subprocess.TimeoutExpired:
-        raise I18nPrepareError(stage + " timed out") from None
-    except OSError:
-        raise I18nPrepareError(stage + " could not start") from None
+        raise I18nPrepareError(f"{stage} timed out: executable={executable}") from None
+    except OSError as exc:
+        message, _ = safe_error_message(
+            exc.strerror or "OS error", sensitive_values=sensitive_values, max_bytes=512)
+        raise I18nPrepareError(
+            f"{stage} could not start: {type(exc).__name__} errno={exc.errno} "
+            f"executable={executable} message={message or 'unavailable'}"
+        ) from None
     if result.returncode != 0:
-        raise I18nPrepareError(stage + " failed")
+        stderr, _ = safe_error_message(
+            result.stderr, sensitive_values=sensitive_values, max_bytes=512)
+        raise I18nPrepareError(
+            f"{stage} failed: executable={executable} exit_code={result.returncode} "
+            f"stderr={stderr or 'unavailable'}"
+        )
     return result.stdout
 
 

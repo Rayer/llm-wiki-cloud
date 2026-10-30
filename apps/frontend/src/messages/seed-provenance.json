@@ -3,7 +3,7 @@
   "locale": "zh_tw",
   "migration_source_revision": "b8f167ef9fe3d7e3f6b53c860356eb1c2d87b9bf",
   "migration_catalog_revision": "3a0e6da83c9113423b9582f6fe3b7df6d15ab414fefc197641b1ef1c6bc25e9b",
-  "seed_map_sha256": "9e17783b43b3d399b493b916a10c87f0baeeb1486f3f7130de2eb6f2dfe66e52",
+  "seed_map_sha256": "40883a4227faffad7a56ff0412e641caf5d106d6ae9f709fad4f4e68ed1a5f96",
   "entries": {
     "AccountSettings.accountTab": "9d4435cd4778e9d6f90f5797c2e556e1baaffe742ef1b78150f3b61931a4a8b2",
     "AccountSettings.bindingActive": "155e79378bcb9e2d77d0d0c40999baccc08c8b72d2bbfbf835a45ea757ef1177",
@@ -1334,7 +1334,18 @@
     "Source.documentImport.state.succeeded": "7e67884a21c4886b040df5c4e9b54ca54abfc5fe659a22929cc48404832ba513",
     "Source.documentImport.statusUnknown": "6fe8da0294951a4cd1ee40cf3f808f9d0dfbcba394d30cc59f8e889ff62f0b5e",
     "Source.documentImport.switchingProject": "51b6b1fb66d0a1eaa87d03e00026bc668cec58f14d9ed1d862fe03d811243423",
-    "Source.documentImport.viewFailures": "d37e4b0997cbc9a0e71c89202a013180c4782886bbe20799b71b420009c46d88"
+    "Source.documentImport.viewFailures": "d37e4b0997cbc9a0e71c89202a013180c4782886bbe20799b71b420009c46d88",
+    "RawUpload.duplicateFilenameInBatch": "d958228b3bd1a6cb000c4bfabd17850cb1d346cb077c2432f90dbf945cc5a1de",
+    "RawUpload.retry": "a643d27d83f91a207334aa6d0a5f7946395eff3748affebe75de7eac38e8cc1e",
+    "RawUpload.status.accepted": "9d25a6a9eed02b229f1ccafc2ece7c4a9f38ec00445454fdfdff6647424d3f2b",
+    "RawUpload.status.alreadyExists": "ceb2db93b1ad533949506c561a0d3314ff6411fe0bee56dc533a63029ea5dc96",
+    "RawUpload.status.created": "277b645853703d9551fb00c867bea6cc875b4fa9dd02d5e06c12b4cb3475b5db",
+    "RawUpload.status.failed": "0b8b6946de920ecf8660a0d8b8aa1821e75e6fe8b7c6b8b7c532454439785da7",
+    "RawUpload.status.queued": "159a50979b940111acff9e0552f848bf977f7f764972aa99efcfe17399745d43",
+    "RawUpload.status.replaced": "c8e3a593cc25f6d5ff74dd0b1f3739c0db6127919680d76c1bd77202bc453ebe",
+    "RawUpload.status.uploading": "2ddfc398067e113031ce100f3cf05c7e8550a81161e4c7f2d7b48fb92ee6309f",
+    "RawUpload.uploadFailed": "564a46050b956d6a5326c39be9314e005e029085f7e0f06c10c4259c5b91b79c",
+    "RawUpload.uploadSummary": "982b29e289b5d917119c2f5ec614683a692238f83389f5c948903a40396d7faf"
   },
   "candidate_catalog_revision": "049a79128b92240ecce6118e76c0c41622ec00bb9c53edb59fde0d7cb9288de6"
 }

@@ -1337,7 +1337,20 @@
     "summary": "{created} created · {existing} already exists · {replaced} replaced · {failed} failed · {pending} in progress",
     "fileProgress": "{filename}: {status} {progress}%",
     "retryFile": "Retry {filename}",
-    "documentStatus": "Document {id} · {conversion} · source {source}"
+    "documentStatus": "Document {id} · {conversion} · source {source}",
+    "duplicateFilenameInBatch": "A file with this destination name is already selected.",
+    "retry": "Retry",
+    "status": {
+      "accepted": "Accepted",
+      "alreadyExists": "Already exists",
+      "created": "Created",
+      "failed": "Failed",
+      "queued": "Queued",
+      "replaced": "Replaced",
+      "uploading": "Uploading"
+    },
+    "uploadFailed": "Upload failed.",
+    "uploadSummary": "{created} created, {existing} already exists, {accepted} accepted, {replaced} replaced, {failed} failed, {pending} in progress"
   },
   "ComingSoon": {
     "title": "Coming Soon"

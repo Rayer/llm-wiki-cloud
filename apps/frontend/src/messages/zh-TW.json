@@ -1337,7 +1337,20 @@
     "summary": "新增 {created} 個 · 已存在 {existing} 個 · 取代 {replaced} 個 · 失敗 {failed} 個 · 處理中 {pending} 個",
     "fileProgress": "{filename}：{status} {progress}%",
     "retryFile": "重試 {filename}",
-    "documentStatus": "文件 {id} · {conversion} · 來源{source}"
+    "documentStatus": "文件 {id} · {conversion} · 來源{source}",
+    "duplicateFilenameInBatch": "已選取相同目的檔名的檔案。",
+    "retry": "重試",
+    "status": {
+      "accepted": "已接受",
+      "alreadyExists": "已存在",
+      "created": "已建立",
+      "failed": "失敗",
+      "queued": "排入佇列",
+      "replaced": "已取代",
+      "uploading": "上傳中"
+    },
+    "uploadFailed": "上傳失敗。",
+    "uploadSummary": "{created} 個已建立、{existing} 個已存在、{accepted} 個已接受、{replaced} 個已取代、{failed} 個失敗、{pending} 個處理中"
   },
   "ComingSoon": {
     "title": "Coming Soon"

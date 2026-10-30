@@ -533,6 +533,17 @@
         "replaced"
       ]
     },
+    "RawUpload.uploadSummary": {
+      "kind": "literal",
+      "params": [
+        "accepted",
+        "created",
+        "existing",
+        "failed",
+        "pending",
+        "replaced"
+      ]
+    },
     "Source.previewRawAria": {
       "kind": "literal",
       "params": [
