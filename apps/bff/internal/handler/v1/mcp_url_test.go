@@ -448,3 +448,142 @@ func TestMCPImportURLReportsSafeFetchFailureAttribution(t *testing.T) {
 		t.Fatalf("Fetch failure changed raw content: files=%v err=%v", files, err)
 	}
 }
+
+func TestMCPImportURLSerializesDistinctFetchFailureMeanings(t *testing.T) {
+	tests := []struct {
+		name     string
+		failure  *urlintake.ProviderFailure
+		category urlintake.FailureCategory
+		status   int
+		want     []string
+		notWant  []string
+	}{
+		{
+			name: "content unavailable 404",
+			failure: &urlintake.ProviderFailure{Provider: urlintake.DeepSeekFetchProvider, Kind: urlintake.FailureProvider,
+				Category: urlintake.FailureCategoryContentUnavailable, StatusCode: http.StatusNotFound},
+			category: urlintake.FailureCategoryContentUnavailable, status: http.StatusNotFound,
+			want: []string{"could not retrieve usable page content", "target access restrictions or target errors",
+				"unsupported content type", "extraction yielding no usable content",
+				"does not establish that the target website returned HTTP 404", "upstream HTTP 404"},
+		},
+		{
+			name: "provider downstream timeout 504",
+			failure: &urlintake.ProviderFailure{Provider: urlintake.DeepSeekFetchProvider, Kind: urlintake.FailureProvider,
+				Category: urlintake.FailureCategoryProviderTimeout, StatusCode: http.StatusGatewayTimeout},
+			category: urlintake.FailureCategoryProviderTimeout, status: http.StatusGatewayTimeout,
+			want:    []string{"downstream fetch timed out", "upstream HTTP 504"},
+			notWant: []string{"local LWC-to-DeepSeek Fetch transport timed out"},
+		},
+		{
+			name: "rate limited 429",
+			failure: &urlintake.ProviderFailure{Provider: urlintake.DeepSeekFetchProvider, Kind: urlintake.FailureRateLimited,
+				Category: urlintake.FailureCategoryRateLimited, StatusCode: http.StatusTooManyRequests},
+			category: urlintake.FailureCategoryRateLimited, status: http.StatusTooManyRequests,
+			want:    []string{"rate limited", "upstream HTTP 429"},
+			notWant: []string{"timed out", "could not retrieve usable page content"},
+		},
+		{
+			name: "request timeout 408",
+			failure: &urlintake.ProviderFailure{Provider: urlintake.DeepSeekFetchProvider, Kind: urlintake.FailureProvider,
+				Category: urlintake.FailureCategoryProviderTimeout, StatusCode: http.StatusRequestTimeout},
+			category: urlintake.FailureCategoryProviderTimeout, status: http.StatusRequestTimeout,
+			want:    []string{"Request Timeout", "complete request", "upstream HTTP 408"},
+			notWant: []string{"downstream fetch timed out"},
+		},
+		{
+			name: "unexpected status",
+			failure: &urlintake.ProviderFailure{Provider: urlintake.DeepSeekFetchProvider, Kind: urlintake.FailureProvider,
+				Category: urlintake.FailureCategoryUnexpectedStatus, StatusCode: http.StatusTeapot},
+			category: urlintake.FailureCategoryUnexpectedStatus, status: http.StatusTeapot,
+			want:    []string{"unexpected HTTP status", "upstream HTTP 418"},
+			notWant: []string{"downstream fetch timed out", "local LWC-to-DeepSeek Fetch transport timed out"},
+		},
+		{
+			name: "local transport timeout after HTTP 200",
+			failure: &urlintake.ProviderFailure{Provider: urlintake.DeepSeekFetchProvider, Kind: urlintake.FailureTransport,
+				StatusCode: http.StatusOK, Cause: context.DeadlineExceeded},
+			category: urlintake.FailureCategoryTransportTimeout, status: http.StatusOK,
+			want:    []string{"local LWC-to-DeepSeek Fetch transport timed out", "upstream HTTP 200"},
+			notWant: []string{"downstream fetch timed out", "HTTP 504"},
+		},
+		{
+			name: "local transport timeout with unknown status",
+			failure: &urlintake.ProviderFailure{Provider: urlintake.DeepSeekFetchProvider, Kind: urlintake.FailureTransport,
+				Cause: context.DeadlineExceeded},
+			category: urlintake.FailureCategoryTransportTimeout,
+			want:     []string{"local LWC-to-DeepSeek Fetch transport timed out"},
+			notWant:  []string{"upstream HTTP", "downstream fetch timed out", "HTTP 504"},
+		},
+		{
+			name: "unknown provider timeout status",
+			failure: &urlintake.ProviderFailure{Provider: urlintake.DeepSeekFetchProvider, Kind: urlintake.FailureProvider,
+				Category: urlintake.FailureCategoryProviderTimeout},
+			category: urlintake.FailureCategoryProviderTimeout,
+			want:     []string{"reported a request timeout"},
+			notWant:  []string{"downstream fetch timed out", "upstream HTTP"},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := localfs.New(t.TempDir())
+			service := urlintake.NewService(
+				mcpURLFetcherFunc(func(context.Context, string) (urlintake.Page, error) {
+					return urlintake.Page{}, test.failure
+				}),
+				mcpURLEvaluatorFunc(func(context.Context, urlintake.QualityInput) (urlintake.QualityEvaluation, error) {
+					t.Fatal("Fetch failure must stop before quality evaluation")
+					return urlintake.QualityEvaluation{}, nil
+				}),
+				func(scope urlintake.ActorProject) (urlintake.ProjectStore, error) {
+					return root.WithScope(scope.ActorID, scope.ProjectID), nil
+				},
+				urlintake.DefaultQualityThresholds,
+			)
+			service.Resolver = mcpURLResolver{}
+			h := New(root, nil, nil, nil, nil, nil)
+			h.SetURLIntakeService(service)
+			h.SetMCPFrontendOrigin("https://wiki.trusted.example")
+			identity := mcpProjectKeyIdentity{
+				userID: "user", projectID: "project", keyID: "write-grant",
+				capabilities: []string{mcpQueryCapability, mcpRawWriteCapability},
+			}
+			response := serveMCPRequest(t, h, identity, mcpToolCallBody(1, "import_url", `{"url":"https://example.com/article?query-canary=private"}`))
+			result, _ := response["result"].(map[string]any)
+			payload := mcpStructuredResult(t, response)
+			metadata, _ := result["_meta"].(map[string]any)
+			diagnostic, _ := payload["failure_diagnostic"].(map[string]any)
+			if result["isError"] != true || metadata["request_id"] == "" || payload["status"] != "unavailable" ||
+				payload["failure_stage"] != "fetch" || diagnostic["dependency"] != urlintake.DeepSeekFetchProvider ||
+				diagnostic["category"] != string(test.category) {
+				t.Fatalf("MCP result=%#v diagnostic=%#v", payload, diagnostic)
+			}
+			if test.status == 0 {
+				if _, ok := diagnostic["upstream_status"]; ok {
+					t.Fatalf("unknown upstream status was fabricated: %#v", diagnostic)
+				}
+			} else if diagnostic["upstream_status"] != float64(test.status) {
+				t.Fatalf("upstream status=%v, want %d", diagnostic["upstream_status"], test.status)
+			}
+			message, _ := payload["reason"].(string)
+			for _, fragment := range test.want {
+				if !strings.Contains(message, fragment) {
+					t.Errorf("MCP reason %q does not contain %q", message, fragment)
+				}
+			}
+			for _, fragment := range test.notWant {
+				if strings.Contains(message, fragment) {
+					t.Errorf("MCP reason %q must not contain %q", message, fragment)
+				}
+			}
+			if strings.Contains(message, "query-canary=private") {
+				t.Fatal("source URL query leaked into the MCP error reason")
+			}
+			files, err := root.WithScope(identity.userID, identity.projectID).ListRawFiles(context.Background())
+			if err != nil || len(files) != 0 {
+				t.Fatalf("Fetch failure changed raw content: files=%v err=%v", files, err)
+			}
+		})
+	}
+}
