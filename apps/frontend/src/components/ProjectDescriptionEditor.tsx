@@ -51,7 +51,9 @@ export function ProjectDescriptionEditor({ projectId }: { projectId: string }) {
   );
   const currentScopeRef = useRef<RequestScope | null>(null);
 
-  useEffect(() => { tRef.current = t; }, [t]);
+  useLayoutEffect(() => {
+    tRef.current = t;
+  }, [t]);
 
   useLayoutEffect(() => {
     currentScopeRef.current = currentScope;
@@ -74,6 +76,14 @@ export function ProjectDescriptionEditor({ projectId }: { projectId: string }) {
   const load = useCallback(async () => {
     const scope = currentScope;
     const sequence = ++sequenceRef.current;
+    setLoadState('loading');
+    setLoadingError('');
+    setSaved(null);
+    setDraft('');
+    setSaveError('');
+    setSavedNotice(false);
+    setConflict(false);
+    setLatest(null);
     try {
       const result = await getProjectDescription(scope.projectId);
       if (!requestIsCurrent(scope, sequence)) return;
@@ -89,34 +99,14 @@ export function ProjectDescriptionEditor({ projectId }: { projectId: string }) {
   }, [currentScope, requestIsCurrent]);
 
   useEffect(() => {
-    const scope = currentScope;
-    const sequence = ++sequenceRef.current;
-    void getProjectDescription(scope.projectId)
-      .then((result) => {
-        if (!requestIsCurrent(scope, sequence)) return;
-        if (result.projectId !== scope.projectId) throw new Error(tRef.current('ProjectDescription.responseMismatch'));
-        setSaved(result);
-        setDraft(result.description);
-        setLoadState('ready');
-      })
-      .catch((error: unknown) => {
-        if (!requestIsCurrent(scope, sequence)) return;
-        setLoadState('failed');
-        setLoadingError(message(error, tRef.current('ProjectDescription.loadFailed')));
-      });
-    return () => { sequenceRef.current += 1; };
-  }, [currentScope, requestIsCurrent]);
-
-  const retryLoad = useCallback(() => {
-    setLoadState('loading');
-    setLoadingError('');
-    setSaved(null);
-    setDraft('');
-    setSaveError('');
-    setSavedNotice(false);
-    setConflict(false);
-    setLatest(null);
-    void load();
+    let active = true;
+    queueMicrotask(() => {
+      if (active) void load();
+    });
+    return () => {
+      active = false;
+      sequenceRef.current += 1;
+    };
   }, [load]);
 
   useEffect(() => {
@@ -130,9 +120,9 @@ export function ProjectDescriptionEditor({ projectId }: { projectId: string }) {
   const valid = isValidProjectDescription(draft);
 
   useEffect(() => {
-    const blockerOwner = blockerOwnerRef.current;
-    setBlocked(dirty || saving, blockerOwner);
-    return () => setBlocked(false, blockerOwner);
+    const owner = blockerOwnerRef.current;
+    setBlocked(dirty || saving, owner);
+    return () => setBlocked(false, owner);
   }, [dirty, saving, setBlocked]);
 
   const refreshLatest = useCallback(async () => {
@@ -231,7 +221,7 @@ export function ProjectDescriptionEditor({ projectId }: { projectId: string }) {
       {loadState === 'failed' ? (
         <div className="mt-4" role="alert">
           <p className="text-sm text-red-200">{t('ProjectDescription.loadFailed', { error: loadingError })}</p>
-          <button type="button" onClick={retryLoad} className="mt-2 min-h-10 rounded-md border border-white/10 px-3 text-sm text-zinc-200 hover:bg-white/5">
+          <button type="button" onClick={() => void load()} className="mt-2 min-h-10 rounded-md border border-white/10 px-3 text-sm text-zinc-200 hover:bg-white/5">
             {t('ProjectDescription.retry')}
           </button>
         </div>
