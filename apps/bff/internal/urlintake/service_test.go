@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"math"
 	"net/http"
 	"net/netip"
@@ -140,6 +141,145 @@ func TestServiceReturnsNotConfiguredFetchDiagnosticWithoutProviderCall(t *testin
 		result.FailureDiagnostic.Dependency != DeepSeekFetchProvider || result.FailureDiagnostic.Category != FailureCategoryNotConfigured ||
 		!strings.Contains(result.Message, "no provider request was made") || calls != 0 || listErr != nil || len(files) != 0 {
 		t.Fatalf("not-configured Fetch result=%#v err=%v calls=%d files=%#v listErr=%v", result, err, calls, files, listErr)
+	}
+}
+
+func TestFetchFailureMessagesDistinguishProviderAndLocalTimeouts(t *testing.T) {
+	tests := []struct {
+		name     string
+		failure  *ProviderFailure
+		category FailureCategory
+		status   int
+		want     []string
+		notWant  []string
+	}{
+		{
+			name: "content unavailable 404",
+			failure: &ProviderFailure{Provider: DeepSeekFetchProvider, Kind: FailureProvider,
+				Category: FailureCategoryContentUnavailable, StatusCode: http.StatusNotFound},
+			category: FailureCategoryContentUnavailable, status: http.StatusNotFound,
+			want: []string{"DeepSeek Fetch", "could not retrieve usable page content", "upstream HTTP 404",
+				"target access restrictions or target errors", "unsupported content type", "extraction yielding no usable content",
+				"does not establish that the target website returned HTTP 404"},
+		},
+		{
+			name: "provider downstream timeout 504",
+			failure: &ProviderFailure{Provider: DeepSeekFetchProvider, Kind: FailureProvider,
+				Category: FailureCategoryProviderTimeout, StatusCode: http.StatusGatewayTimeout},
+			category: FailureCategoryProviderTimeout, status: http.StatusGatewayTimeout,
+			want:    []string{"DeepSeek Fetch", "downstream fetch timed out", "upstream HTTP 504"},
+			notWant: []string{"local transport timed out"},
+		},
+		{
+			name: "rate limited 429",
+			failure: &ProviderFailure{Provider: DeepSeekFetchProvider, Kind: FailureRateLimited,
+				Category: FailureCategoryRateLimited, StatusCode: http.StatusTooManyRequests},
+			category: FailureCategoryRateLimited, status: http.StatusTooManyRequests,
+			want:    []string{"DeepSeek Fetch", "rate limited", "upstream HTTP 429"},
+			notWant: []string{"timed out", "content unavailable"},
+		},
+		{
+			name: "request timeout 408",
+			failure: &ProviderFailure{Provider: DeepSeekFetchProvider, Kind: FailureProvider,
+				Category: FailureCategoryProviderTimeout, StatusCode: http.StatusRequestTimeout},
+			category: FailureCategoryProviderTimeout, status: http.StatusRequestTimeout,
+			want:    []string{"DeepSeek Fetch", "Request Timeout", "complete request", "upstream HTTP 408"},
+			notWant: []string{"downstream fetch timed out"},
+		},
+		{
+			name: "unexpected status 418",
+			failure: &ProviderFailure{Provider: DeepSeekFetchProvider, Kind: FailureProvider,
+				Category: FailureCategoryUnexpectedStatus, StatusCode: http.StatusTeapot},
+			category: FailureCategoryUnexpectedStatus, status: http.StatusTeapot,
+			want:    []string{"DeepSeek Fetch", "unexpected HTTP status", "upstream HTTP 418"},
+			notWant: []string{"downstream fetch timed out", "local transport timed out"},
+		},
+		{
+			name: "local transport timeout after HTTP 200",
+			failure: &ProviderFailure{Provider: DeepSeekFetchProvider, Kind: FailureTransport,
+				StatusCode: http.StatusOK, Cause: context.DeadlineExceeded},
+			category: FailureCategoryTransportTimeout, status: http.StatusOK,
+			want:    []string{"local LWC-to-DeepSeek Fetch transport timed out", "upstream HTTP 200"},
+			notWant: []string{"downstream fetch timed out", "HTTP 504"},
+		},
+		{
+			name: "local transport timeout without upstream status",
+			failure: &ProviderFailure{Provider: DeepSeekFetchProvider, Kind: FailureTransport,
+				Cause: context.DeadlineExceeded},
+			category: FailureCategoryTransportTimeout,
+			want:     []string{"local LWC-to-DeepSeek Fetch transport timed out"},
+			notWant:  []string{"upstream HTTP", "downstream fetch timed out", "HTTP 504"},
+		},
+		{
+			name: "provider timeout without known status",
+			failure: &ProviderFailure{Provider: DeepSeekFetchProvider, Kind: FailureProvider,
+				Category: FailureCategoryProviderTimeout},
+			category: FailureCategoryProviderTimeout,
+			want:     []string{"DeepSeek Fetch", "reported a request timeout"},
+			notWant:  []string{"downstream fetch timed out", "upstream HTTP"},
+		},
+		{
+			name: "local request cancellation",
+			failure: &ProviderFailure{Provider: DeepSeekFetchProvider, Kind: FailureTransport,
+				Cause: context.Canceled},
+			category: FailureCategoryTransportCancelled,
+			want:     []string{"local LWC-to-DeepSeek Fetch request was cancelled"},
+			notWant:  []string{"upstream HTTP", "downstream fetch"},
+		},
+		{
+			name:     "unknown provider status",
+			failure:  &ProviderFailure{Provider: DeepSeekFetchProvider, Kind: FailureProvider, Category: FailureCategoryUnknown},
+			category: FailureCategoryUnknown,
+			want:     []string{"DeepSeek Fetch failed with an unknown cause"},
+			notWant:  []string{"upstream HTTP", "no response was received"},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result := failureResult(test.failure)
+			if result.FailureDiagnostic == nil || result.FailureDiagnostic.Category != test.category ||
+				result.FailureDiagnostic.UpstreamStatus != test.status {
+				t.Fatalf("diagnostic = %#v, want category=%s upstream_status=%d", result.FailureDiagnostic, test.category, test.status)
+			}
+			for _, fragment := range test.want {
+				if !strings.Contains(result.Message, fragment) {
+					t.Errorf("message %q does not contain %q", result.Message, fragment)
+				}
+			}
+			for _, fragment := range test.notWant {
+				if strings.Contains(result.Message, fragment) {
+					t.Errorf("message %q must not contain %q", result.Message, fragment)
+				}
+			}
+		})
+	}
+}
+
+type deadlineReader struct{}
+
+func (deadlineReader) Read([]byte) (int, error) { return 0, context.DeadlineExceeded }
+
+func TestDeepSeekBodyReadTimeoutKeepsHTTP200AndLocalMeaning(t *testing.T) {
+	fetcher := NewDeepSeekFetcher("fixture-key")
+	fetcher.Resolver = resolverStub{netip.MustParseAddr("93.184.216.34")}
+	fetcher.Client = &http.Client{Transport: urlintakeRoundTripper(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(deadlineReader{}), Request: request,
+		}, nil
+	})}
+	_, err := fetcher.Fetch(context.Background(), "https://example.com/article")
+	var failure *ProviderFailure
+	if !errors.As(err, &failure) || !errors.Is(err, context.DeadlineExceeded) || failure.StatusCode != http.StatusOK {
+		t.Fatalf("Fetch failure = %#v, want preserved local body timeout after upstream HTTP 200", err)
+	}
+	result := failureResult(err)
+	if result.FailureDiagnostic == nil || result.FailureDiagnostic.Category != FailureCategoryTransportTimeout ||
+		result.FailureDiagnostic.UpstreamStatus != http.StatusOK ||
+		!strings.Contains(result.Message, "local LWC-to-DeepSeek Fetch transport timed out") ||
+		!strings.Contains(result.Message, "upstream HTTP 200") || strings.Contains(result.Message, "HTTP 504") ||
+		strings.Contains(result.Message, "downstream fetch timed out") {
+		t.Fatalf("body timeout result = %#v", result)
 	}
 }
 
