@@ -1368,6 +1368,246 @@ class Acceptance(unittest.TestCase):
         self.assertEqual(e.state['components']['documentimport']['status'], 'rolled_back')
         self.assertNotIn(name, self.current()['resources'])
 
+    def test_documentimport_policy_defaults_only_omitted_bindings_and_keeps_errors_fail_closed(self):
+        e = self.make(('documentimport',), name='documentimport-policy-shape')
+        with patch.object(e.provider, 'cloud', return_value=json.dumps({'etag':'ACAB','version':3})):
+            self.assertEqual(e.provider.document_import_policy(),
+                             {'etag':'ACAB','version':3,'bindings':[]})
+
+        for policy in (
+                {'etag':'ACAB','bindings':None},
+                {'etag':'ACAB','bindings':'invalid'},
+                {'etag':'ACAB','bindings':[None]},
+                {'etag':'ACAB','bindings':[{'role':1,'members':[]}]},
+                {'etag':'ACAB','bindings':[{'role':'roles/viewer','members':'invalid'}]},
+                {'etag':'ACAB','bindings':[{'role':'roles/viewer','members':[1]}]},
+                {'bindings':[]}, {'etag':'','bindings':[]}):
+            with self.subTest(policy=policy):
+                with patch.object(e.provider, 'cloud', return_value=json.dumps(policy)):
+                    with self.assertRaises(Breakpoint) as caught:
+                        e.provider.document_import_policy()
+                self.assertEqual(caught.exception.reason, 'document-import-job-policy-unreadable')
+
+        errors = (
+            Breakpoint('permission-denied','failed',True,'reconcile-before-replay',
+                       stage='document-import-job-policy',
+                       cause={'message':'ERROR: 403 Permission denied reading job policy.\n'}),
+            Breakpoint('provider-timeout','unknown',True,'reconcile-before-replay',
+                       stage='document-import-job-policy',
+                       cause={'message':'policy transport timed out'}),
+        )
+        for error in errors:
+            with self.subTest(reason=error.reason):
+                with patch.object(e.provider, 'cloud', side_effect=error):
+                    with self.assertRaises(Breakpoint) as caught:
+                        e.provider.document_import_policy()
+                self.assertIs(caught.exception, error)
+                self.assertIs(caught.exception.cause, error.cause)
+
+    def documentimport_checkpoint18(self, name, policy_get_stderr=None,
+                                    policy=None, policy_set_stderr=None):
+        selected = ('documentimport','bff','worker','frontend')
+        e = self.ready(self.make(selected, name=name))
+        job_name = self.normalized['document_import_job']['job_name']
+        self.provider = self.current()
+        self.provider['resources'].pop(job_name)
+        self.provider['iam_policies'].pop(job_name)
+        self.provider['document_import_create_policy'] = {'etag':'ACAB'}
+        self.provider['document_import_policy_next_etag'] = 'ACAD'
+        if policy_get_stderr:
+            self.provider['document_import_policy_get_stderr'] = policy_get_stderr
+        self.flush()
+        e.snapshot()
+
+        self.provider = self.current()
+        config = e.provider.document_import_job_config()
+        artifact = e.receipt('documentimport')['artifact']
+        owner = e.provider.document_import_owner()
+        container = {'image':artifact['image'],'env':copy.deepcopy(config['env']),
+                     'resources':{'limits':{'cpu':config['cpu'],'memory':config['memory']}}}
+        template = {'serviceAccountName':config['service_account'],'containers':[container],
+                    'timeoutSeconds':str(config['timeout_seconds']),
+                    'maxRetries':config['max_retries']}
+        self.provider['resources'][job_name] = {
+            'metadata':{'name':job_name,'labels':copy.deepcopy(owner)},
+            'spec':{'template':{'spec':{'parallelism':config['parallelism'],
+                'taskCount':config['tasks'],'template':{'spec':template}}}}}
+        member = 'serviceAccount:'+self.normalized['bff']['runtime_service_account']
+        self.provider['iam_policies'][job_name] = (copy.deepcopy(policy) if policy is not None else {
+            'etag':'BwZfFgGkpeA=','version':1,'bindings':[
+                {'role':'roles/run.jobsExecutorWithOverrides','members':[member]}]})
+        if policy_set_stderr:
+            self.provider['document_import_policy_set_stderr'] = policy_set_stderr
+        self.flush()
+
+        e.state['status'] = 'unknown'
+        e.state['sequence'] = 18
+        entry = e.state['components']['documentimport']
+        entry['status'] = 'unknown'
+        entry['prior'] = {'absent':True}
+        entry['candidate'] = {'create_if_absent':True,'create_owner':owner,
+                              'create_state':'created','image':artifact['image']}
+        write(e.state_path, e.state)
+        latest = self.latest_checkpoint(plan=e.plan['id'],sequence=18,status='unknown',
+                                        components={c:{'status':'unknown' if c == 'documentimport' else 'unstarted'}
+                                                     for c in selected})
+        return e, latest
+
+    def test_documentimport_checkpoint18_recovery_uses_owned_job_and_omitted_policy_bindings(self):
+        e, latest = self.documentimport_checkpoint18('documentimport-checkpoint18-recovery')
+        action, release, _, _ = self.invoke_runtime_action(
+            e, latest, operation='deploy', extra_env={'COMPONENTS':'documentimport'})
+        self.assertEqual(action.returncode, 0, action.stdout+action.stderr)
+        result = json.loads(action.stdout.strip().splitlines()[-1])
+        self.assertEqual(result['status'], 'partially_reactivated')
+        self.assertEqual(result['reason'], 'completed')
+        state = read(release/'state.json')
+        self.assertEqual(state['sequence'] > 18, True)
+        self.assertEqual(state['components']['documentimport']['status'], 'verified')
+        self.assertEqual(state['components']['documentimport']['prior'], {'absent':True})
+        self.assertEqual(state['components']['documentimport']['candidate']['create_state'], 'created')
+        for component in ('bff','worker','frontend'):
+            self.assertEqual(state['components'][component]['status'], 'unstarted')
+
+        name = self.normalized['document_import_job']['job_name']
+        policy = self.current()['iam_policies'][name]
+        member = 'serviceAccount:'+self.normalized['bff']['runtime_service_account']
+        self.assertEqual(policy, {'etag':'BwZfFgGkpeA=','version':1,'bindings':[
+            {'role':'roles/run.jobsExecutorWithOverrides','members':[member]}]})
+        self.assertEqual(self.current().get('iam_policy_submissions', []), [])
+        self.assertEqual(len(self.calls('create')), 0)
+        self.assertEqual(len(self.calls('delete')), 0)
+        self.assertEqual(len(self.calls('set-iam-policy')), 0)
+        self.assertEqual(len(self.calls('execute')), 0)
+        self.assertEqual(len(self.calls('update')), 0)
+
+    def test_documentimport_checkpoint18_rejects_changed_create_owner_before_policy_access(self):
+        e, latest = self.documentimport_checkpoint18('documentimport-checkpoint18-owner-mismatch')
+        name = self.normalized['document_import_job']['job_name']
+        self.provider = self.current()
+        self.provider['resources'][name]['metadata']['labels']['lwc-created-by-run'] = 'different-plan'
+        self.flush()
+        action, release, _, _ = self.invoke_runtime_action(
+            e, latest, operation='deploy', extra_env={'COMPONENTS':'documentimport'})
+        result = json.loads(action.stdout.strip().splitlines()[-1])
+        self.assertEqual(result['status'], 'unknown')
+        self.assertEqual(result['reason'], 'provider-result-unreadable')
+        self.assertEqual(result['causes'][0]['reason'], 'pending-job-mismatch')
+        state = read(release/'state.json')
+        self.assertEqual(state['components']['documentimport']['status'], 'unknown')
+        self.assertEqual(self.current()['iam_policies'][name]['etag'], 'BwZfFgGkpeA=')
+        self.assertEqual(len(self.calls('create')), 0)
+        self.assertEqual(len(self.calls('delete')), 0)
+        self.assertEqual(len(self.calls('get-iam-policy')), 0)
+        self.assertEqual(len(self.calls('set-iam-policy')), 0)
+
+    def test_documentimport_create_reconciles_concurrent_policy_etag_without_losing_external_bindings(self):
+        e = self.ready(self.make(('documentimport',), name='documentimport-policy-etag-conflict'))
+        name = self.normalized['document_import_job']['job_name']
+        self.provider['resources'].pop(name)
+        self.provider['iam_policies'].pop(name)
+        conditional = {'title':'existing-policy','description':'preserve condition',
+                       'expression':"request.time < timestamp('2030-01-01T00:00:00Z')"}
+        initial_bindings = [
+            {'role':'roles/run.jobsExecutorWithOverrides','members':['serviceAccount:existing'],
+             'condition':conditional},
+            {'role':'roles/logging.logWriter','members':['serviceAccount:logger']},
+        ]
+        concurrent_bindings = initial_bindings + [
+            {'role':'roles/storage.objectViewer','members':['serviceAccount:concurrent-writer'],
+             'condition':{'title':'concurrent','expression':'true'}},
+        ]
+        self.provider['document_import_create_policy'] = {
+            'etag':'ACAB','version':3,'bindings':initial_bindings}
+        self.provider['document_import_policy_conflict_once'] = True
+        self.provider['document_import_policy_concurrent_policy'] = {
+            'etag':'CONCURRENT','version':3,'bindings':concurrent_bindings}
+        self.provider['document_import_policy_next_etag'] = 'AFTER-CONFLICT'
+        self.flush()
+        e.snapshot()
+        e.deploy()
+
+        submissions = self.current()['iam_policy_submissions']
+        member = 'serviceAccount:'+self.normalized['bff']['runtime_service_account']
+        self.assertEqual([policy['etag'] for policy in submissions], ['ACAB','CONCURRENT'])
+        self.assertEqual(submissions[0]['version'], 3)
+        self.assertEqual(submissions[0]['bindings'], initial_bindings + [
+            {'role':'roles/run.jobsExecutorWithOverrides','members':[member]}])
+        self.assertEqual(submissions[1]['version'], 3)
+        self.assertEqual(submissions[1]['bindings'], concurrent_bindings + [
+            {'role':'roles/run.jobsExecutorWithOverrides','members':[member]}])
+        final = self.current()['iam_policies'][name]
+        self.assertEqual(final['etag'], 'AFTER-CONFLICT')
+        self.assertEqual(final['version'], 3)
+        self.assertEqual(final['bindings'], concurrent_bindings + [
+            {'role':'roles/run.jobsExecutorWithOverrides','members':[member]}])
+        self.assertEqual(len(self.calls('create')), 1)
+        self.assertEqual(len(self.calls('delete')), 0)
+
+    def test_documentimport_first_create_reads_merges_and_reads_back_etag_only_policy(self):
+        e = self.ready(self.make(('documentimport',), name='documentimport-etag-only-create'))
+        name = self.normalized['document_import_job']['job_name']
+        self.provider['resources'].pop(name)
+        self.provider['iam_policies'].pop(name)
+        self.provider['document_import_create_policy'] = {'etag':'ACAB'}
+        self.provider['document_import_policy_next_etag'] = 'ACAD'
+        self.flush()
+        e.snapshot()
+        self.assertEqual(e.state['components']['documentimport']['prior'], {'absent':True})
+        e.deploy()
+
+        member = 'serviceAccount:'+self.normalized['bff']['runtime_service_account']
+        minimal = [{'role':'roles/run.jobsExecutorWithOverrides','members':[member]}]
+        policy = self.current()['iam_policies'][name]
+        self.assertEqual(policy, {'etag':'ACAD','bindings':minimal})
+        self.assertEqual(self.current()['iam_policy_submissions'],
+                         [{'etag':'ACAB','bindings':minimal}])
+        self.assertEqual(len(self.calls('get-iam-policy')), 3)
+        self.assertEqual(len(self.calls('set-iam-policy')), 1)
+        self.assertEqual(len(self.calls('create')), 1)
+        self.assertEqual(e.state['components']['documentimport']['status'], 'verified')
+
+    def test_documentimport_checkpoint18_policy_permission_failure_keeps_unknown_and_original_cause(self):
+        e, latest = self.documentimport_checkpoint18(
+            'documentimport-checkpoint18-policy-denied',
+            policy_get_stderr='ERROR: (gcloud.run.jobs.get-iam-policy) 403 Permission denied.\n')
+        action, release, _, _ = self.invoke_runtime_action(
+            e, latest, operation='deploy', extra_env={'COMPONENTS':'documentimport'})
+        result = json.loads(action.stdout.strip().splitlines()[-1])
+        self.assertEqual(result['status'], 'unknown')
+        self.assertEqual(result['reason'], 'provider-result-unreadable')
+        self.assertEqual(result['allowed_next_action'], 'reconcile-before-replay')
+        self.assertEqual(result['causes'][0]['phase'], 'reconcile')
+        self.assertEqual(result['causes'][0]['reason'], 'permission-denied')
+        self.assertEqual(result['causes'][0]['status'], 'failed')
+        self.assertEqual(result['causes'][0]['cause']['message'],
+                         'ERROR: (gcloud.run.jobs.get-iam-policy) 403 Permission denied.\n')
+        state = read(release/'state.json')
+        self.assertEqual(state['sequence'] > 18, True)
+        self.assertEqual(state['components']['documentimport']['status'], 'unknown')
+        self.assertEqual(state['components']['documentimport']['prior'], {'absent':True})
+        self.assertEqual(state['components']['documentimport']['candidate']['create_state'], 'created')
+        name = self.normalized['document_import_job']['job_name']
+        self.assertEqual(self.current()['iam_policies'][name]['etag'], 'BwZfFgGkpeA=')
+        self.assertEqual(len(self.calls('create')), 0)
+        self.assertEqual(len(self.calls('delete')), 0)
+        self.assertEqual(len(self.calls('set-iam-policy')), 0)
+        self.assertEqual(len(self.calls('update')), 0)
+
+    def test_documentimport_policy_set_permission_failure_keeps_original_cause(self):
+        e = self.make(('documentimport',), name='documentimport-policy-set-denied')
+        name = self.normalized['document_import_job']['job_name']
+        self.provider['iam_policies'][name] = {'etag':'ACAB'}
+        stderr = 'ERROR: (gcloud.run.jobs.set-iam-policy) 403 Permission denied.\n'
+        self.provider['document_import_policy_set_stderr'] = stderr
+        self.flush()
+        with self.assertRaises(Breakpoint) as caught:
+            e.provider.ensure_document_import_invoker()
+        self.assertEqual(caught.exception.reason, 'permission-denied')
+        self.assertEqual(caught.exception.cause['message'], stderr)
+        self.assertEqual(self.current()['iam_policies'][name], {'etag':'ACAB'})
+        self.assertEqual(self.current()['iam_policy_submissions'][0]['etag'], 'ACAB')
+
     def test_documentimport_snapshot_requires_exact_bff_invoker_binding(self):
         name = self.normalized['document_import_job']['job_name']
         self.provider['iam_policies'][name]['bindings'] = []

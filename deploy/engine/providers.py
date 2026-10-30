@@ -419,12 +419,12 @@ class Providers:
         self._gcp_project_number = project_number
         return project_number
 
-    def cloud(self, c, *args, mutation=False):
+    def cloud(self, c, *args, mutation=False, stage=None):
         key = {'exportjob': 'export_job', 'documentimport': 'document_import_job'}.get(c, c)
         cfg = self.p[key]
         region = cfg.get('location', self.p['gcp']['region'])
         return run(['gcloud', 'run', *args, '--project', self.p['gcp']['project_id'],
-                    '--region', region, '--format=json', '--quiet'], mutation=mutation)
+                    '--region', region, '--format=json', '--quiet'], mutation=mutation, stage=stage)
 
     def resource(self, c):
         cfg = {'exportjob': 'export_job', 'documentimport': 'document_import_job'}.get(c, c)
@@ -1433,9 +1433,12 @@ class Providers:
     def document_import_policy(self):
         _, name = self.resource('documentimport')
         try:
-            policy = json.loads(self.cloud('documentimport', 'jobs', 'get-iam-policy', name))
+            policy = json.loads(self.cloud('documentimport', 'jobs', 'get-iam-policy', name,
+                                           stage='document-import-job-policy'))
         except (TypeError, ValueError):
             raise Breakpoint('document-import-job-policy-unreadable') from None
+        if isinstance(policy, dict) and 'bindings' not in policy:
+            policy['bindings'] = []
         require(isinstance(policy, dict) and isinstance(policy.get('etag'), str) and policy['etag'] and
                 isinstance(policy.get('bindings'), list) and
                 all(isinstance(binding, dict) and isinstance(binding.get('role'), str) and
@@ -1482,7 +1485,8 @@ class Providers:
         with tempfile.TemporaryDirectory(prefix='lwc-document-import-iam-') as temporary:
             path = Path(temporary) / 'policy.json'
             path.write_text(json.dumps(after))
-            self.cloud('documentimport', 'jobs', 'set-iam-policy', name, path, mutation=True)
+            self.cloud('documentimport', 'jobs', 'set-iam-policy', name, path, mutation=True,
+                       stage='document-import-job-policy')
         observed = self.document_import_policy()
         require(observed['etag'] != before['etag'] and
                 self.document_import_policy_has(observed, member) and
