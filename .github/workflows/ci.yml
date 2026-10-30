@@ -83,7 +83,7 @@ jobs:
           bash ../../scripts/ensure-pkl.sh "$pkl"
           echo "PKL_BIN=$pkl" >> "$GITHUB_ENV"
           echo "PKL_CACHE_DIR=$RUNNER_TEMP/pkl-cache" >> "$GITHUB_ENV"
-          echo "$(dirname "$pkl")" >> "$GITHUB_PATH"
+          dirname "$pkl" >> "$GITHUB_PATH"
       - run: npm ci
       - run: npm run lint
 
@@ -110,7 +110,7 @@ jobs:
           bash ../../scripts/ensure-pkl.sh "$pkl"
           echo "PKL_BIN=$pkl" >> "$GITHUB_ENV"
           echo "PKL_CACHE_DIR=$RUNNER_TEMP/pkl-cache" >> "$GITHUB_ENV"
-          echo "$(dirname "$pkl")" >> "$GITHUB_PATH"
+          dirname "$pkl" >> "$GITHUB_PATH"
       - run: npm ci
       - run: npm run typecheck
 
@@ -137,7 +137,7 @@ jobs:
           bash ../../scripts/ensure-pkl.sh "$pkl"
           echo "PKL_BIN=$pkl" >> "$GITHUB_ENV"
           echo "PKL_CACHE_DIR=$RUNNER_TEMP/pkl-cache" >> "$GITHUB_ENV"
-          echo "$(dirname "$pkl")" >> "$GITHUB_PATH"
+          dirname "$pkl" >> "$GITHUB_PATH"
       - run: npm ci
       - run: npm test
       - name: Validate Frontend receipt and artifact handoff contracts
@@ -169,7 +169,7 @@ jobs:
           bash ../../scripts/ensure-pkl.sh "$pkl"
           echo "PKL_BIN=$pkl" >> "$GITHUB_ENV"
           echo "PKL_CACHE_DIR=$RUNNER_TEMP/pkl-cache" >> "$GITHUB_ENV"
-          echo "$(dirname "$pkl")" >> "$GITHUB_PATH"
+          dirname "$pkl" >> "$GITHUB_PATH"
       - run: npm ci
       - run: npm run build
 
