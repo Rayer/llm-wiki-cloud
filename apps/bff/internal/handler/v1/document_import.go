@@ -71,6 +71,9 @@ func (h *Handler) ListDocumentImports(c *gin.Context) {
 		writeDocumentImportError(c, err)
 		return
 	}
+	for i := range result.Items {
+		result.Items[i] = h.projectDocumentImportPipeline(c.Request.Context(), userID, projectID, result.Items[i])
+	}
 	observability.WriteDataJSON(c, http.StatusOK, result)
 }
 
@@ -92,6 +95,7 @@ func (h *Handler) GetDocumentImport(c *gin.Context) {
 		observability.WriteDataJSON(c, http.StatusGone, handler.ErrorResponse{Error: "document import is no longer available"})
 		return
 	}
+	record = h.projectDocumentImportPipeline(c.Request.Context(), userID, projectID, record)
 	observability.WriteDataJSON(c, http.StatusOK, documentimport.PublicRecord(record))
 }
 
@@ -113,6 +117,7 @@ func (h *Handler) GetDocumentImportBySubmission(c *gin.Context) {
 		observability.WriteDataJSON(c, http.StatusNotFound, handler.ErrorResponse{Error: "document import not found"})
 		return
 	}
+	record = h.projectDocumentImportPipeline(c.Request.Context(), userID, projectID, record)
 	statusURL := fmt.Sprintf("/api/v1/projects/%s/document-imports/%s", url.PathEscape(projectID), url.PathEscape(record.DocumentID))
 	if record.ConversionState == documentimport.ConversionReceiving {
 		observability.WriteDataJSON(c, http.StatusOK, gin.H{"acceptance_status": "confirming", "status_url": statusURL})

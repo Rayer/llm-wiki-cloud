@@ -2,6 +2,7 @@ package v1
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"net/http"
@@ -9,16 +10,20 @@ import (
 	"time"
 
 	"cloud.google.com/go/firestore"
+	cloudstorage "cloud.google.com/go/storage"
 	"github.com/gin-gonic/gin"
 	"github.com/rayer/llm-wiki-bff/internal/auth"
 	"github.com/rayer/llm-wiki-bff/internal/documentimport"
 	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"github.com/rayer/llm-wiki-bff/internal/llm"
+	"github.com/rayer/llm-wiki-bff/internal/localcloud"
 	"github.com/rayer/llm-wiki-bff/internal/observability"
+	"github.com/rayer/llm-wiki-bff/internal/pipelinequota"
 	"github.com/rayer/llm-wiki-bff/internal/profilederive"
 	"github.com/rayer/llm-wiki-bff/internal/profileruntime"
 	"github.com/rayer/llm-wiki-bff/internal/profiletags"
 	"github.com/rayer/llm-wiki-bff/internal/sourceautomation"
+	"github.com/rayer/llm-wiki-bff/internal/storage"
 	"google.golang.org/api/idtoken"
 	"google.golang.org/api/iterator"
 	"google.golang.org/grpc/codes"
@@ -314,6 +319,23 @@ func (d *ProfileDispatcher) finish(ctx context.Context, repo *firestoreProfileRe
 			w.Attempts--
 			w.Status = "waiting_manual"
 			w.Due = repo.now().Add(time.Minute)
+			if w.Kind == "document_import" {
+				documentRef := scopedfirestore.Collection(repo.client, "projects").Doc(projectDocID(w.UserID, w.ProjectID)).Collection("document_imports").Doc(w.DocumentID)
+				documentSnapshot, readErr := tx.Get(documentRef)
+				if readErr != nil && status.Code(readErr) != codes.NotFound {
+					return readErr
+				}
+				if readErr == nil {
+					var record documentimport.Record
+					if err := documentSnapshot.DataTo(&record); err != nil {
+						return err
+					}
+					if record.AttemptID == w.ID && record.LeaseUntil.After(repo.now()) {
+						w.Status = "waiting_worker"
+						w.Due = record.LeaseUntil
+					}
+				}
+			}
 		} else if cause == nil {
 			if w.Kind == "document_import" {
 				documentRef := scopedfirestore.Collection(repo.client, "projects").Doc(projectDocID(w.UserID, w.ProjectID)).Collection("document_imports").Doc(w.DocumentID)
@@ -327,11 +349,15 @@ func (d *ProfileDispatcher) finish(ctx context.Context, repo *firestoreProfileRe
 						return err
 					}
 				}
-				if err == nil && record.AttemptID == w.ID && record.ConversionState == documentimport.ConversionSucceeded &&
-					(record.SourceState == documentimport.SourceSaving || record.SourceState == documentimport.SourceUnknown) {
+				if err == nil && documentImportWorkRecoverable(record, w.ID) {
 					w.Pending = true
 					w.Status = "retry_wait"
 					w.Due = repo.now().Add(profileruntime.LeaseDuration)
+					if record.LeaseUntil.After(repo.now()) {
+						w.Attempts--
+						w.Status = "waiting_worker"
+						w.Due = record.LeaseUntil
+					}
 				} else {
 					w.Pending = false
 					w.Status = "complete"
@@ -393,7 +419,10 @@ func (d *ProfileDispatcher) execute(ctx context.Context, repo *firestoreProfileR
 		if _, err := d.Handler.AuthorizeProject(ctx, w.UserID, w.ProjectID, ProjectEdit); err != nil {
 			return err
 		}
-		return d.executePipelineAutomation(ctx, repo, w)
+		if err := d.executePipelineAutomation(ctx, repo, w); err != nil {
+			return err
+		}
+		return d.associateDocumentImportsWithPipeline(ctx, repo, w.UserID, w.ProjectID)
 	}
 	if _, err := d.Handler.AuthorizeProject(ctx, w.UserID, w.ProjectID, ProjectEdit); err != nil {
 		return err
@@ -444,6 +473,197 @@ func (d *ProfileDispatcher) execute(ctx context.Context, repo *firestoreProfileR
 	return d.Handler.RunProfileTagging(ctx, w.UserID, w.ProjectID, w.Revision, w.CandidateID, w.ID, d.Evaluator, d.Policy)
 }
 
+func (d *ProfileDispatcher) associateDocumentImportsWithPipeline(ctx context.Context, repo *firestoreProfileRepository, ownerID, projectID string) error {
+	if d.Handler.documentImports == nil || d.Handler.documentImports.Repository == nil || d.Handler.store == nil {
+		return nil
+	}
+	intentStore, ok := d.Handler.effectiveQuotaStore().(pipelineIntentQuotaStore)
+	if !ok {
+		return nil
+	}
+	reservation, exists, err := latestDocumentSourceCommitIntent(ctx, repo, intentStore, ownerID, projectID)
+	if err != nil || !exists {
+		return err
+	}
+	if reservation.SourceRevision <= 0 {
+		return nil
+	}
+	objects, ok := d.Handler.store.Scope(ownerID, projectID).(storage.ConditionalWriter)
+	if !ok {
+		return nil
+	}
+	docs := scopedfirestore.Collection(repo.client, "projects").Doc(projectDocID(ownerID, projectID)).Collection("document_imports").Documents(ctx)
+	defer docs.Stop()
+	for {
+		snapshot, err := docs.Next()
+		if errors.Is(err, iterator.Done) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		var record documentimport.Record
+		if err := snapshot.DataTo(&record); err != nil {
+			return err
+		}
+		if record.PipelineRef == nil || record.PipelineRef.SourceRevision <= 0 || record.PipelineRef.SourceRevision > reservation.SourceRevision ||
+			record.SourceRef == nil || record.ConversionState != documentimport.ConversionSucceeded || record.SourceState != documentimport.SourceSaved ||
+			record.DeletionState != documentimport.DeletionPresent || storage.ValidateRawSyncPath(record.SourceRef.RawPath) != nil {
+			continue
+		}
+		data, generation, err := objects.ReadFileWithGeneration(ctx, "raw/"+record.SourceRef.RawPath)
+		if errors.Is(err, storage.ErrObjectNotExist) || errors.Is(err, cloudstorage.ErrObjectNotExist) || status.Code(err) == codes.NotFound {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if generation != record.SourceRef.ObjectGeneration || fmt.Sprintf("%x", sha256.Sum256(data)) != record.SourceRef.SHA256 {
+			continue
+		}
+		pipelineRef := documentImportPipelineRef(reservation, record.PipelineRef.SourceRevision)
+		if _, err := d.Handler.documentImports.Repository.SetPipelineAssociation(ctx, ownerID, projectID, record.DocumentID,
+			record.AttemptID, *record.SourceRef, pipelineRef); err != nil {
+			return err
+		}
+	}
+}
+
+func latestDocumentSourceCommitIntent(ctx context.Context, repo *firestoreProfileRepository, intentStore pipelineIntentQuotaStore, ownerID, projectID string) (scopedfirestore.QuotaReservation, bool, error) {
+	docs := scopedfirestore.Collection(repo.client, "pipeline_quota_reservations").Where("project_id", "==", projectID).Documents(ctx)
+	defer docs.Stop()
+	var reservationID string
+	var sourceRevision int64
+	for {
+		snapshot, err := docs.Next()
+		if errors.Is(err, iterator.Done) {
+			break
+		}
+		if err != nil {
+			return scopedfirestore.QuotaReservation{}, false, err
+		}
+		data := snapshot.Data()
+		if data["user_id"] != ownerID || data["project_id"] != projectID || data["trigger"] != string(pipelinequota.TriggerSourceCommit) {
+			continue
+		}
+		revision, _ := data["source_revision"].(int64)
+		if revision > sourceRevision {
+			sourceRevision, reservationID = revision, snapshot.Ref.ID
+		}
+	}
+	if reservationID == "" {
+		return scopedfirestore.QuotaReservation{}, false, nil
+	}
+	return intentStore.GetPipelineIntent(ctx, ownerID, projectID, reservationID)
+}
+
+func documentImportPipelineRef(reservation scopedfirestore.QuotaReservation, sourceRevision int64) documentimport.PipelineRef {
+	ref := documentimport.PipelineRef{
+		Status: "pending", IntentID: reservation.ID, ExecutionID: reservation.ExecutionID, SourceRevision: sourceRevision,
+		Reason: reservation.IntentErrorCode,
+	}
+	switch reservation.IntentStatus {
+	case "failed", "cancelled":
+		ref.Status = "failed"
+	case "compiling", "succeeded":
+		ref.Status = "running"
+	}
+	return ref
+}
+
+func (h *Handler) projectDocumentImportPipeline(ctx context.Context, ownerID, projectID string, record documentimport.Record) documentimport.Record {
+	ref := record.PipelineRef
+	if ref == nil || ref.IntentID == "" || ref.SourceRevision <= 0 {
+		return record
+	}
+	ref.ContentGeneration = ""
+	intentStore, ok := h.effectiveQuotaStore().(pipelineIntentQuotaStore)
+	if !ok {
+		return record
+	}
+	reservation, exists, err := intentStore.GetPipelineIntent(ctx, ownerID, projectID, ref.IntentID)
+	if err != nil {
+		ref.Status = "unknown"
+		return record
+	}
+	if !exists || reservation.Trigger != pipelinequota.TriggerSourceCommit || reservation.SourceRevision < ref.SourceRevision {
+		ref.Status = "unknown"
+		return record
+	}
+	ref.ExecutionID = reservation.ExecutionID
+	ref.Reason = reservation.IntentErrorCode
+	if reservation.IntentStatus == "failed" || reservation.IntentStatus == "cancelled" {
+		ref.Status = "failed"
+		return record
+	}
+	if reservation.ExecutionID == "" {
+		if reservation.IntentStatus == "preparing" || reservation.IntentStatus == "ready" || reservation.IntentStatus == "invoking" || reservation.IntentStatus == "invocation_unknown" {
+			ref.Status = "pending"
+		} else {
+			ref.Status = "unknown"
+		}
+		return record
+	}
+	execution, err := h.pipelineExecutionStatusForOwner(ctx, reservation.ExecutionID, ownerID, projectID)
+	if err != nil || execution == nil {
+		ref.Status = "unknown"
+		return record
+	}
+	owner := &pipelineExecutionOwner{userID: ownerID, projectID: projectID}
+	publication, contentGeneration := h.documentPipelinePublication(ctx, owner, reservation.ExecutionID)
+	if publication == pipelinePublicationCommitted {
+		ref.Status = "published"
+		ref.ContentGeneration = contentGeneration
+		return record
+	}
+	ref.ContentGeneration = ""
+	switch strings.ToUpper(execution.Status) {
+	case "RUNNING":
+		ref.Status = "running"
+	case "SUCCEEDED", "FAILED", "CANCELLED", "UNKNOWN":
+		if publication == pipelinePublicationAbsent {
+			ref.Status = "failed"
+			if ref.Reason == "" {
+				ref.Reason = "pipeline_publication_missing"
+			}
+		} else {
+			ref.Status = "unknown"
+		}
+	default:
+		ref.Status = "unknown"
+	}
+	return record
+}
+
+func (h *Handler) documentPipelinePublication(ctx context.Context, owner *pipelineExecutionOwner, executionID string) (pipelinePublicationOutcome, string) {
+	if h.store != nil && owner != nil && executionID != "" {
+		project := h.store.Scope(owner.userID, owner.projectID)
+		if reader, ok := project.(pipelinePublicationReceiptReader); ok {
+			data, err := reader.ReadLocalPublicationReceipt(ctx, executionID)
+			if err == nil {
+				receipt, decodeErr := localcloud.DecodePublicationReceipt(data)
+				if decodeErr == nil && receipt.ExecutionID == executionID {
+					return pipelinePublicationCommitted, receipt.GenerationID
+				}
+				return pipelinePublicationUnknown, ""
+			}
+			if !errors.Is(err, storage.ErrObjectNotExist) && !errors.Is(err, cloudstorage.ErrObjectNotExist) {
+				return pipelinePublicationUnknown, ""
+			}
+		}
+		if reader, ok := project.(pipelineCurrentManifestReader); ok {
+			manifest, _, exists, err := reader.CurrentManifest(ctx)
+			if err != nil {
+				return pipelinePublicationUnknown, ""
+			}
+			if exists && manifest.LocalExecutionID == executionID {
+				return pipelinePublicationCommitted, manifest.GenerationID
+			}
+		}
+	}
+	return h.cloudRunPublicationOutcome(ctx, owner, executionID), ""
+}
+
 func (d *ProfileDispatcher) executeDocumentImport(ctx context.Context, repo *firestoreProfileRepository, w profileruntime.Work) error {
 	if d.Handler.documentImports == nil || d.Handler.documentImports.Repository == nil || d.Handler.documentImports.Starter == nil {
 		return errors.New("document import dispatcher is unavailable")
@@ -455,12 +675,11 @@ func (d *ProfileDispatcher) executeDocumentImport(ctx context.Context, repo *fir
 	if record.AttemptID != w.ID {
 		return errors.New("document import dispatch identity changed")
 	}
-	if record.ConversionState == documentimport.ConversionFailed ||
-		(record.ConversionState == documentimport.ConversionSucceeded && (record.SourceState == documentimport.SourceSaved || record.SourceState == documentimport.SourceFailed)) {
+	if !documentImportWorkRecoverable(record, w.ID) {
 		return nil
 	}
-	if record.DispatchState == "started" && record.SourceState != documentimport.SourceSaving && record.SourceState != documentimport.SourceUnknown {
-		return nil
+	if record.LeaseUntil.After(repo.now()) {
+		return errProfileRuntimeWaiting
 	}
 	executionID, err := d.Handler.documentImports.Starter.Start(ctx, w.UserID, w.ProjectID, w.DocumentID, w.ID)
 	if err != nil {
@@ -468,6 +687,16 @@ func (d *ProfileDispatcher) executeDocumentImport(ctx context.Context, repo *fir
 		return err
 	}
 	return d.Handler.documentImports.Repository.SetDispatchState(ctx, w.UserID, w.ProjectID, w.DocumentID, "started", executionID)
+}
+
+func documentImportWorkRecoverable(record documentimport.Record, attemptID string) bool {
+	if record.AttemptID != attemptID || record.DeletionState != documentimport.DeletionPresent || record.ConversionState == documentimport.ConversionFailed {
+		return false
+	}
+	if record.ConversionState == documentimport.ConversionSucceeded {
+		return record.SourceState != documentimport.SourceSaved && record.SourceState != documentimport.SourceFailed
+	}
+	return record.ConversionState == documentimport.ConversionAccepted || record.ConversionState == documentimport.ConversionQueued || record.ConversionState == documentimport.ConversionConverting
 }
 func prepareProfileRuntimeAttempt(ctx context.Context, repo *firestoreProfileRepository, w profileruntime.Work) error {
 	return repo.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
@@ -613,7 +842,7 @@ func markProfileRuntimeExhausted(ctx context.Context, tx *firestore.Transaction,
 		return scopedfirestore.SettlePipelineIntentRuntimeExhaustedInTransaction(ctx, tx, repo.client, w.ID, w.ID, w.UserID, w.ProjectID, w.Revision)
 	}
 	if w.Kind == "document_import" {
-		return documentimport.NewFirestoreRepository(repo.client).FailDispatch(ctx, w.UserID, w.ProjectID, w.DocumentID, w.ID)
+		return documentimport.NewFirestoreRepository(repo.client).FailDispatchInTransaction(ctx, tx, w.UserID, w.ProjectID, w.DocumentID, w.ID)
 	}
 	_, stateRef, err := repo.authorizeTransaction(ctx, tx, w.UserID, w.ProjectID, ProjectEdit)
 	if errors.Is(err, errProfileProjectNotFound) {

@@ -578,8 +578,8 @@ export function RawUploadPanel({
                     conversion: t(`Source.documentImport.state.${item.document.conversion_state}`),
                     source: t(`Source.documentImport.sourceState.${item.document.source_state}`),
                   })}</p> : null}
-                  {item.result ? <p className="truncate text-zinc-400" title={item.result.path} data-testid="upload-path">{item.result.path}</p> : null}
-                  {item.result?.processing_status ? (
+                  {item.result && 'path' in item.result ? <p className="truncate text-zinc-400" title={item.result.path} data-testid="upload-path">{item.result.path}</p> : null}
+                  {item.result && 'processing_status' in item.result && item.result.processing_status ? (
                     <p className="mt-0.5 text-emerald-200/90" data-testid="upload-processing-status" role="status">
                       {automationStatusLabel(item.result.processing_status, t)}
                     </p>

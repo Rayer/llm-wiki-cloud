@@ -247,57 +247,61 @@ func (r *FirestoreRepository) SetDispatchState(ctx context.Context, ownerID, pro
 }
 
 func (r *FirestoreRepository) FailDispatch(ctx context.Context, ownerID, projectID, documentID, attemptID string) error {
+	return r.client.RunTransaction(ctx, func(ctx context.Context, tx *cloudfirestore.Transaction) error {
+		return r.FailDispatchInTransaction(ctx, tx, ownerID, projectID, documentID, attemptID)
+	})
+}
+
+func (r *FirestoreRepository) FailDispatchInTransaction(ctx context.Context, tx *cloudfirestore.Transaction, ownerID, projectID, documentID, attemptID string) error {
 	project := r.projectRef(ownerID, projectID)
 	recordRef := r.documentsRef(ownerID, projectID).Doc(documentID)
-	return r.client.RunTransaction(ctx, func(ctx context.Context, tx *cloudfirestore.Transaction) error {
-		recordSnap, err := tx.Get(recordRef)
-		if err != nil {
-			return err
-		}
-		projectSnap, err := tx.Get(project)
-		if err != nil {
-			return err
-		}
-		var record Record
-		if err := recordSnap.DataTo(&record); err != nil {
-			return err
-		}
-		if record.AttemptID != attemptID || record.DeletionState != DeletionPresent {
+	recordSnap, err := tx.Get(recordRef)
+	if err != nil {
+		return err
+	}
+	projectSnap, err := tx.Get(project)
+	if err != nil {
+		return err
+	}
+	var record Record
+	if err := recordSnap.DataTo(&record); err != nil {
+		return err
+	}
+	if record.AttemptID != attemptID || record.DeletionState != DeletionPresent {
+		return ErrStateConflict
+	}
+	state := readProjectState(projectSnap.Data())
+	failure := &Failure{Stage: "dispatch", Class: "worker_unavailable", SafeMessageKey: "worker_unavailable", DiagnosticID: diagnosticID()}
+	switch record.ConversionState {
+	case ConversionAccepted, ConversionQueued, ConversionConverting:
+		state.FailedCount++
+		state.LatestFailureSequence++
+		record.FailureSequence = state.LatestFailureSequence
+		record.ConversionState = ConversionFailed
+	case ConversionSucceeded:
+		if record.SourceState != SourceSaving && record.SourceState != SourceUnknown {
 			return ErrStateConflict
 		}
-		state := readProjectState(projectSnap.Data())
-		failure := &Failure{Stage: "dispatch", Class: "worker_unavailable", SafeMessageKey: "worker_unavailable", DiagnosticID: diagnosticID()}
-		switch record.ConversionState {
-		case ConversionAccepted, ConversionQueued, ConversionConverting:
-			state.FailedCount++
-			state.LatestFailureSequence++
-			record.FailureSequence = state.LatestFailureSequence
-			record.ConversionState = ConversionFailed
-		case ConversionSucceeded:
-			if record.SourceState != SourceSaving && record.SourceState != SourceUnknown {
-				return ErrStateConflict
-			}
-			failure.Stage = FailureStageSourceSave
-			record.SourceState = SourceUnknown
-		default:
-			return ErrStateConflict
-		}
-		state.Revision++
-		record.Failure = failure
-		record.DispatchState = "exhausted"
-		record.LeaseToken = ""
-		record.LeaseUntil = time.Time{}
-		record.UpdatedAt = time.Now().UTC()
-		record.Revision++
-		if err := tx.Set(recordRef, record); err != nil {
-			return err
-		}
-		return tx.Set(project, map[string]any{
-			"document_import_failed_count":            state.FailedCount,
-			"document_import_latest_failure_sequence": state.LatestFailureSequence,
-			"document_import_revision":                state.Revision,
-		}, cloudfirestore.MergeAll)
-	})
+		failure.Stage = FailureStageSourceSave
+		record.SourceState = SourceUnknown
+	default:
+		return ErrStateConflict
+	}
+	state.Revision++
+	record.Failure = failure
+	record.DispatchState = "exhausted"
+	record.LeaseToken = ""
+	record.LeaseUntil = time.Time{}
+	record.UpdatedAt = time.Now().UTC()
+	record.Revision++
+	if err := tx.Set(recordRef, record); err != nil {
+		return err
+	}
+	return tx.Set(project, map[string]any{
+		"document_import_failed_count":            state.FailedCount,
+		"document_import_latest_failure_sequence": state.LatestFailureSequence,
+		"document_import_revision":                state.Revision,
+	}, cloudfirestore.MergeAll)
 }
 
 func (r *FirestoreRepository) Claim(ctx context.Context, ownerID, projectID, documentID, attemptID string, lease time.Duration) (Record, string, bool, error) {
@@ -489,6 +493,54 @@ func (r *FirestoreRepository) SetSourceOutcome(ctx context.Context, ownerID, pro
 		return Record{}, err
 	}
 	return r.Get(ctx, ownerID, projectID, documentID)
+}
+
+func (r *FirestoreRepository) SetPipelineAssociation(ctx context.Context, ownerID, projectID, documentID, attemptID string, sourceRef SourceRef, pipelineRef PipelineRef) (bool, error) {
+	if pipelineRef.IntentID == "" || pipelineRef.SourceRevision <= 0 || pipelineRef.SourceRevision < 1 {
+		return false, ErrStateConflict
+	}
+	project := r.projectRef(ownerID, projectID)
+	recordRef := r.documentsRef(ownerID, projectID).Doc(documentID)
+	applied := false
+	err := r.client.RunTransaction(ctx, func(ctx context.Context, tx *cloudfirestore.Transaction) error {
+		applied = false
+		recordSnapshot, err := tx.Get(recordRef)
+		if err != nil {
+			return err
+		}
+		projectSnapshot, err := tx.Get(project)
+		if err != nil {
+			return err
+		}
+		var record Record
+		if err := recordSnapshot.DataTo(&record); err != nil {
+			return err
+		}
+		if record.AttemptID != attemptID || record.ConversionState != ConversionSucceeded || record.SourceState != SourceSaved ||
+			record.DeletionState != DeletionPresent || record.SourceRef == nil || record.PipelineRef == nil ||
+			record.PipelineRef.SourceRevision <= 0 || record.PipelineRef.SourceRevision > pipelineRef.SourceRevision ||
+			record.SourceRef.RawPath != sourceRef.RawPath || record.SourceRef.SHA256 != sourceRef.SHA256 ||
+			record.SourceRef.ObjectGeneration != sourceRef.ObjectGeneration {
+			return nil
+		}
+		if *record.PipelineRef == pipelineRef {
+			return nil
+		}
+		record.PipelineRef = &pipelineRef
+		record.UpdatedAt = time.Now().UTC()
+		record.Revision++
+		if err := tx.Set(recordRef, record); err != nil {
+			return err
+		}
+		projectState := readProjectState(projectSnapshot.Data())
+		projectState.Revision++
+		if err := tx.Set(project, map[string]any{"document_import_revision": projectState.Revision}, cloudfirestore.MergeAll); err != nil {
+			return err
+		}
+		applied = true
+		return nil
+	})
+	return applied, err
 }
 
 func (r *FirestoreRepository) FailConversion(ctx context.Context, ownerID, projectID, documentID, leaseToken string, failure Failure) (Record, error) {

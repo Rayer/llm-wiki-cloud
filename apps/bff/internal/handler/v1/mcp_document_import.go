@@ -140,6 +140,7 @@ func (h *Handler) callMCPGetDocumentImport(ctx context.Context, _ *mcp.CallToolR
 	if record.DeletionState == documentimport.DeletionComplete {
 		return mcpDocumentImportError("not_found", "Document import is no longer available."), nil, nil
 	}
+	record = h.projectDocumentImportPipeline(ctx, identity.userID, identity.projectID, record)
 	return mcpDocumentImportResult(map[string]any{"status": "ok", "document": documentimport.PublicRecord(record)}, false), nil, nil
 }
 

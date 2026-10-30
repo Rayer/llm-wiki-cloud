@@ -274,8 +274,9 @@ func TestMCPProjectOAuthRejectsConflictingProjectHeaderBeforeSDK(t *testing.T) {
 	for _, item := range writerTools {
 		writerNames[item.(map[string]any)["name"].(string)] = true
 	}
-	if len(writerNames) != 4 || !writerNames["query_project"] || !writerNames["pipeline_status"] || !writerNames["add_raw"] || !writerNames["import_url"] {
-		t.Fatalf("OAuth raw-write discovery = %v, want query_project, pipeline_status, add_raw, and import_url", writerNames)
+	if len(writerNames) != 6 || !writerNames["query_project"] || !writerNames["pipeline_status"] || !writerNames["add_raw"] ||
+		!writerNames["import_url"] || !writerNames["get_document_import"] || !writerNames["import_document"] {
+		t.Fatalf("OAuth raw-write discovery = %v, want query and Pipeline status, raw and URL import, and document import tools", writerNames)
 	}
 
 	urlImportRequest := httptest.NewRequest(http.MethodPost, "/mcp/projects/"+projectID,

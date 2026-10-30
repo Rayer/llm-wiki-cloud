@@ -1465,7 +1465,7 @@ export type DocumentImportRecord = {
   source_state: 'not_started' | 'saving' | 'saved' | 'failed' | 'unknown' | string;
   failure?: { stage: string; class: string; safe_message_key: string; diagnostic_id?: string; retryable: boolean } | null;
   source_ref?: { raw_path: string; sha256: string; object_generation: number; source_id?: string } | null;
-  pipeline_ref?: { status: string; intent_id?: string; execution_id?: string; content_generation?: string; reason?: string } | null;
+  pipeline_ref?: { status: string; intent_id?: string; execution_id?: string; source_revision?: number; content_generation?: string; reason?: string } | null;
   failure_sequence?: number;
   deletion_state: 'present' | 'deleting' | 'delete_failed' | 'deleted' | string;
 };
