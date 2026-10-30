@@ -818,7 +818,7 @@ class Providers:
             raise Breakpoint('independent-auth-source-module-invalid') from None
         require('module github.com/rayer/gateauth' in module and
                 (source_root / 'Dockerfile').is_file() and
-                (source_root / 'cloudbuild.yaml').is_file() and
+                (source_root / 'cloudbuild.json').is_file() and
                 (source_root / 'VERSION').is_file(),
                 'independent-auth-source-module-invalid')
         return source, source_root
@@ -869,21 +869,10 @@ class Providers:
                                              poll_outcome='succeeded', expected_id=build_id)
         require(reason is None and raw.get('status') == 'SUCCESS',
                 'independent-auth-build-identity-mismatch')
-        expected_tag = f"{gat4_ci_artifact.IMAGE_PREFIX}:{source['revision']}"
-        substitutions = raw.get('substitutions')
-        require(isinstance(substitutions, dict) and
-                substitutions.get('_IMAGE') == expected_tag and
-                substitutions.get('_GIT_SHA') == source['revision'] and
-                substitutions.get('_APP_VERSION') == manifest['product_version'] and
-                substitutions.get('_GIT_BRANCH') == 'main',
-                'independent-auth-build-input-mismatch')
-        result = raw.get('results')
-        images = result.get('images') if isinstance(result, dict) else None
-        matching = [item for item in images or []
-                    if isinstance(item, dict) and item.get('name') == expected_tag]
-        require(len(matching) == 1 and
-                matching[0].get('digest') == manifest['artifact']['image_digest'],
-                'independent-auth-build-image-mismatch')
+        try:
+            gat4_ci_artifact.validate_cloud_build(raw, manifest)
+        except gat4_ci_artifact.ArtifactError:
+            raise Breakpoint('independent-auth-build-input-mismatch', stage='auth-build-readback') from None
         record.update(status='SUCCESS', last_observed_status='SUCCESS', poll_outcome='succeeded')
         return {'image': manifest['artifact']['image']}, record
 

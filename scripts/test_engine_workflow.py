@@ -42,6 +42,15 @@ class EngineWorkflowContract(unittest.TestCase):
         package = next(step for step in release['steps']
                        if step.get('name') == 'Download and verify immutable GateAuth CI package')
         self.assertIn('inputs.release_source_mode == \'independent\'', package['if'])
+        preflight = next(step for step in release['steps']
+                         if step.get('name') == 'Validate retained Auth receipt before private package fetch')
+        prepare = next(step for step in release['steps']
+                       if step.get('name') == 'Resolve explicit receipt references and prepare selected artifacts')
+        self.assertEqual(preflight['with']['operation'], 'auth-preflight')
+        self.assertNotIn('GATEAUTH_SOURCE_READ_TOKEN', preflight.get('env', {}))
+        self.assertIn("steps.gat4-preflight.outputs.needs_auth_ci_package == 'true'", package['if'])
+        self.assertLess(release['steps'].index(preflight), release['steps'].index(package))
+        self.assertLess(release['steps'].index(package), release['steps'].index(prepare))
         self.assertEqual(package['env']['AUTH_REPOSITORY_ID'], '${{ inputs.auth_repository_id }}')
         self.assertEqual(package['env']['GATEAUTH_SOURCE_READ_TOKEN'],
                          '${{ secrets.GATEAUTH_SOURCE_READ_TOKEN }}')
@@ -56,6 +65,10 @@ class EngineWorkflowContract(unittest.TestCase):
         self.assertIn('image=$(image_for auth)', independent)
         self.assertNotIn('auth_build_image', independent)
         action = (ROOT / '.github/actions/deployment-engine/index.cjs').read_text()
+        engine = (ROOT / 'deploy/engine/engine.py').read_text()
+        self.assertIn("'auth-preflight'", action)
+        self.assertIn('auth_package_preflight', engine)
+        self.assertIn('validate_auth_component_receipt(candidate, \'independent\')', engine)
         for flag in ('--auth-repository-id', '--auth-revision', '--auth-tree-sha256',
                      '--auth-artifact-id', '--auth-run-id', '--auth-run-attempt'):
             self.assertIn(flag, action)

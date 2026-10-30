@@ -112,35 +112,6 @@ jobs:
           persist-credentials: false
       - name: Validate executor checkout
         run: test "$(git rev-parse HEAD)" = "$EXECUTOR_SHA"
-      - name: Download and verify immutable GateAuth CI package
-        id: gateauth-source
-        if: inputs.operation == 'release' && inputs.environment == 'development' && inputs.release_source_mode == 'independent' && contains(format(',{0},', inputs.components), ',auth,')
-        env:
-          GATEAUTH_SOURCE_READ_TOKEN: ${{ secrets.GATEAUTH_SOURCE_READ_TOKEN }}
-          AUTH_REPOSITORY_ID: ${{ inputs.auth_repository_id }}
-          AUTH_REVISION: ${{ inputs.auth_revision }}
-          AUTH_TREE_SHA256: ${{ inputs.auth_tree_sha256 }}
-          AUTH_ARTIFACT_ID: ${{ inputs.auth_artifact_id }}
-          AUTH_RUN_ID: ${{ inputs.auth_run_id }}
-          AUTH_RUN_ATTEMPT: ${{ inputs.auth_run_attempt }}
-        run: |
-          set -Eeuo pipefail
-          [[ "$AUTH_REPOSITORY_ID" =~ ^[1-9][0-9]*$ && "$AUTH_ARTIFACT_ID" =~ ^[1-9][0-9]*$ &&
-             "$AUTH_RUN_ID" =~ ^[1-9][0-9]*$ && "$AUTH_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ &&
-             "$AUTH_REVISION" =~ ^[0-9a-f]{40}$ && "$AUTH_TREE_SHA256" =~ ^sha256:[0-9a-f]{64}$ &&
-             "$AUTH_REPOSITORY_ID" != "$GITHUB_REPOSITORY_ID" ]] || {
-            echo "Independent Auth source inputs are incomplete or malformed." >&2
-            exit 1
-          }
-          package="$RUNNER_TEMP/gateauth-ci-package.zip"
-          envelope="$RUNNER_TEMP/gateauth-ci-envelope.json"
-          python3 deploy/engine/gat4_ci_artifact.py download \
-            --repository-id "$AUTH_REPOSITORY_ID" --revision "$AUTH_REVISION" \
-            --tree-sha256 "$AUTH_TREE_SHA256" --artifact-id "$AUTH_ARTIFACT_ID" \
-            --run-id "$AUTH_RUN_ID" --run-attempt "$AUTH_RUN_ATTEMPT" \
-            --package "$package" --envelope "$envelope"
-          printf 'GATEAUTH_CI_PACKAGE_PATH=%s\n' "$package" >> "$GITHUB_ENV"
-          printf 'GATEAUTH_CI_ENVELOPE_PATH=%s\n' "$envelope" >> "$GITHUB_ENV"
       - name: Select independent DEV receipt producer
         if: inputs.environment == 'development' && inputs.release_source_mode == 'independent'
         run: echo "GAT4_DEV_RECEIPT_SOURCE_METADATA_FILE=$RUNNER_TEMP/release/dev-source-metadata.json" >> "$GITHUB_ENV"
@@ -184,6 +155,49 @@ jobs:
           workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
           service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
       - uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f
+      - name: Validate retained Auth receipt before private package fetch
+        id: gat4-preflight
+        if: inputs.operation == 'release' && inputs.environment == 'development' && inputs.release_source_mode == 'independent' && contains(format(',{0},', inputs.components), ',auth,')
+        uses: ./.github/actions/deployment-engine
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AUTH_REPOSITORY_ID: ${{ inputs.auth_repository_id }}
+          AUTH_REVISION: ${{ inputs.auth_revision }}
+          AUTH_TREE_SHA256: ${{ inputs.auth_tree_sha256 }}
+          AUTH_ARTIFACT_ID: ${{ inputs.auth_artifact_id }}
+          AUTH_RUN_ID: ${{ inputs.auth_run_id }}
+          AUTH_RUN_ATTEMPT: ${{ inputs.auth_run_attempt }}
+        with:
+          operation: auth-preflight
+      - name: Download and verify immutable GateAuth CI package
+        id: gateauth-source
+        if: inputs.operation == 'release' && inputs.environment == 'development' && inputs.release_source_mode == 'independent' && contains(format(',{0},', inputs.components), ',auth,') && steps.gat4-preflight.outputs.needs_auth_ci_package == 'true'
+        env:
+          GATEAUTH_SOURCE_READ_TOKEN: ${{ secrets.GATEAUTH_SOURCE_READ_TOKEN }}
+          AUTH_REPOSITORY_ID: ${{ inputs.auth_repository_id }}
+          AUTH_REVISION: ${{ inputs.auth_revision }}
+          AUTH_TREE_SHA256: ${{ inputs.auth_tree_sha256 }}
+          AUTH_ARTIFACT_ID: ${{ inputs.auth_artifact_id }}
+          AUTH_RUN_ID: ${{ inputs.auth_run_id }}
+          AUTH_RUN_ATTEMPT: ${{ inputs.auth_run_attempt }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$AUTH_REPOSITORY_ID" =~ ^[1-9][0-9]*$ && "$AUTH_ARTIFACT_ID" =~ ^[1-9][0-9]*$ &&
+             "$AUTH_RUN_ID" =~ ^[1-9][0-9]*$ && "$AUTH_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ &&
+             "$AUTH_REVISION" =~ ^[0-9a-f]{40}$ && "$AUTH_TREE_SHA256" =~ ^sha256:[0-9a-f]{64}$ &&
+             "$AUTH_REPOSITORY_ID" != "$GITHUB_REPOSITORY_ID" ]] || {
+            echo "Independent Auth source inputs are incomplete or malformed." >&2
+            exit 1
+          }
+          package="$RUNNER_TEMP/gateauth-ci-package.zip"
+          envelope="$RUNNER_TEMP/gateauth-ci-envelope.json"
+          python3 deploy/engine/gat4_ci_artifact.py download \
+            --repository-id "$AUTH_REPOSITORY_ID" --revision "$AUTH_REVISION" \
+            --tree-sha256 "$AUTH_TREE_SHA256" --artifact-id "$AUTH_ARTIFACT_ID" \
+            --run-id "$AUTH_RUN_ID" --run-attempt "$AUTH_RUN_ATTEMPT" \
+            --package "$package" --envelope "$envelope"
+          printf 'GATEAUTH_CI_PACKAGE_PATH=%s\n' "$package" >> "$GITHUB_ENV"
+          printf 'GATEAUTH_CI_ENVELOPE_PATH=%s\n' "$envelope" >> "$GITHUB_ENV"
       - name: Resolve explicit receipt references and prepare selected artifacts
         if: inputs.operation == 'release'
         uses: ./.github/actions/deployment-engine

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import copy
+import base64
 import io
 import json
+import hashlib
 from pathlib import Path
 import sys
 import tempfile
@@ -19,10 +21,23 @@ import gat4_ci_artifact as artifact
 
 class GateAuthCiArtifactTests(unittest.TestCase):
     def fixture(self):
+        revision = "1" * 40
+        version = "1.0.0"
+        image_tag = f"{artifact.IMAGE_PREFIX}:{revision}"
+        config = {
+            "substitutions": {key: "" for key in artifact.BUILD_SUBSTITUTION_KEYS},
+            "steps": [{"name": "gcr.io/cloud-builders/docker", "args": [
+                "build", "--build-arg", "APP_VERSION=${_APP_VERSION}",
+                "--build-arg", "GIT_SHA=${_GIT_SHA}", "--build-arg", "GIT_BRANCH=${_GIT_BRANCH}",
+                "--build-arg", "GIT_TAG=${_GIT_TAG}", "--tag", "${_IMAGE}",
+                "--file", "Dockerfile", "."], "waitFor": ["-"]}],
+            "images": ["${_IMAGE}"],
+            "options": {"logging": "CLOUD_LOGGING_ONLY", "sourceProvenanceHash": ["SHA256"]},
+        }
         files = {
             "Dockerfile": b"FROM scratch\n",
             "VERSION": b"1.0.0\n",
-            "cloudbuild.yaml": b"steps: []\nimages: []\n",
+            "cloudbuild.json": json.dumps(config, sort_keys=True).encode(),
             "go.mod": b"module github.com/rayer/gateauth\n\ngo 1.26.0\n",
             "go.sum": b"example.invalid dependency hash\n",
             "cmd/auth/main.go": b"package main\nfunc main() {}\n",
@@ -40,7 +55,7 @@ class GateAuthCiArtifactTests(unittest.TestCase):
         tree_files = artifact._tree_files(source_tar)
         source_id = {
             "repository_id": artifact.REPOSITORY_ID,
-            "revision": "1" * 40,
+            "revision": revision,
             "tree_sha256": artifact._tree_digest(tree_files),
             "artifact_id": "77",
             "run_id": 88,
@@ -49,6 +64,10 @@ class GateAuthCiArtifactTests(unittest.TestCase):
         image_prefix = artifact.IMAGE_PREFIX
         image_digest = "sha256:" + "c" * 64
         image_tag = f"{image_prefix}:{source_id['revision']}"
+        generation = "1740000000000000"
+        build_input_digest, build_inputs = artifact._inputs_digest(
+            source_tar, tree_files, source_id["revision"], image_prefix, version,
+            source_id["run_id"], source_id["run_attempt"], generation)
         manifest = {
             "schema": "gateauth-ci-build-v1",
             "component": "auth",
@@ -71,8 +90,8 @@ class GateAuthCiArtifactTests(unittest.TestCase):
                 "location": "global",
                 "build_id": "11111111-2222-3333-4444-555555555555",
                 "status": "SUCCESS",
-                "inputs_digest": artifact._inputs_digest(
-                    source_tar, tree_files, source_id["revision"], image_prefix, "1.0.0"),
+                "inputs_digest": build_input_digest,
+                **build_inputs,
             },
             "artifact": {"image": f"{image_prefix}@{image_digest}",
                          "image_digest": image_digest},
@@ -168,6 +187,18 @@ class GateAuthCiArtifactTests(unittest.TestCase):
                     artifact.verify_package(package_zip, package_envelope, source,
                                             "llm-wiki-cloud", image_prefix)
 
+    def test_boolean_contract_versions_are_not_integer_versions(self):
+        _, _, source, manifest, _, image_prefix, make_zip = self.fixture()
+        for key, value in (("auth_config_schema_versions", [True, 2, 3]),
+                           ("lwc_consumer_schema_version", True)):
+            changed = copy.deepcopy(manifest)
+            changed["contracts"][key] = value
+            package_zip, package_envelope = make_zip(manifest_value=changed)
+            with self.subTest(key=key):
+                with self.assertRaisesRegex(artifact.ArtifactError, "contract versions"):
+                    artifact.verify_package(package_zip, package_envelope, source,
+                                            "llm-wiki-cloud", image_prefix)
+
     def test_private_download_binds_repository_run_artifact_and_raw_zip_bytes(self):
         package_zip, outer, source, _, _, image_prefix, _ = self.fixture()
         artifact_name = f"{artifact.ARTIFACT_PREFIX}{source['revision']}-{source['run_attempt']}"
@@ -187,6 +218,13 @@ class GateAuthCiArtifactTests(unittest.TestCase):
                   "workflow_run": {"id": source["run_id"],
                                    "repository_id": artifact.REPOSITORY_ID,
                                    "head_sha": source["revision"], "head_branch": "main"}}
+        prior_attempt = {"id": int(source["artifact_id"]) - 1,
+                         "name": f"{artifact.ARTIFACT_PREFIX}{source['revision']}-1",
+                         "workflow_run": listed["workflow_run"]}
+        listed_items = [prior_attempt] + [
+            {"id": 1000 + index, "name": f"unrelated-{index}"} for index in range(99)
+        ] + [listed]
+        artifact_pages = []
         details = {
             **listed,
             "expired": False,
@@ -200,8 +238,13 @@ class GateAuthCiArtifactTests(unittest.TestCase):
                 return repo
             if path == f"/repos/{artifact.REPOSITORY_NAME}/actions/runs/{source['run_id']}":
                 return run
-            if path == f"/repos/{artifact.REPOSITORY_NAME}/actions/runs/{source['run_id']}/artifacts":
-                return {"total_count": 1, "artifacts": [listed]}
+            if path.startswith(f"/repos/{artifact.REPOSITORY_NAME}/actions/runs/{source['run_id']}/artifacts?"):
+                from urllib.parse import parse_qs, urlsplit
+                query = parse_qs(urlsplit(path).query)
+                page = int(query["page"][0])
+                artifact_pages.append(page)
+                start = (page - 1) * 100
+                return {"total_count": len(listed_items), "artifacts": listed_items[start:start + 100]}
             if path == f"/repos/{artifact.REPOSITORY_NAME}/actions/artifacts/{source['artifact_id']}":
                 return details
             raise AssertionError(f"unexpected API path: {path}")
@@ -220,6 +263,7 @@ class GateAuthCiArtifactTests(unittest.TestCase):
             self.assertEqual(package_path.read_bytes(), package_zip)
             self.assertEqual(json.loads(envelope_path.read_text()), outer)
             self.assertEqual(download.call_count, 1)
+            self.assertEqual(artifact_pages, [1, 2])
             self.assertEqual(artifact.load_package(package_path, envelope_path, source,
                                                    "llm-wiki-cloud", image_prefix)["schema"],
                              "gateauth-ci-build-v1")
@@ -234,6 +278,22 @@ class GateAuthCiArtifactTests(unittest.TestCase):
                     "unused.zip", "unused.json", token="synthetic-read-only-token",
                 )
             download.assert_not_called()
+
+    def test_artifact_pages_reject_duplicates_and_truncation(self):
+        base = f"/repos/{artifact.REPOSITORY_NAME}/actions/runs/88/artifacts?"
+        for responses, reason in (
+            ([{"total_count": 2, "artifacts": [{"id": 1}]},
+              {"total_count": 2, "artifacts": [{"id": 1}]}], "duplicate ID"),
+            ([{"total_count": 2, "artifacts": [{"id": 1}]},
+              {"total_count": 2, "artifacts": []}], "ended before total_count"),
+        ):
+            def api_read(_token, path, responses=responses):
+                from urllib.parse import parse_qs, urlsplit
+                page = int(parse_qs(urlsplit(path).query)["page"][0])
+                return responses[page - 1]
+            with patch.object(artifact, "_api_json", side_effect=api_read):
+                with self.subTest(reason=reason), self.assertRaisesRegex(artifact.ArtifactError, reason):
+                    artifact._list_run_artifacts("token", 88)
 
 
 if __name__ == "__main__":
