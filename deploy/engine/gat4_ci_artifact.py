@@ -383,9 +383,19 @@ def verify_package(package_zip: bytes, envelope: dict, expected_source: dict,
 def validate_cloud_build(raw: dict, manifest: dict) -> None:
     """Reconcile the read-back Cloud Build record with the verified package."""
     build = manifest["build"]
-    if (not isinstance(raw, dict) or raw.get("id") != build["build_id"] or
-            raw.get("projectId") != build["project_id"] or raw.get("location") != build["location"] or
-            raw.get("status") != "SUCCESS" or raw.get("serviceAccount") != build["service_account"]):
+    name = raw.get("name") if isinstance(raw, dict) else None
+    name_match = (re.fullmatch(
+        r"projects/([^/]+)/locations/([a-z][a-z0-9-]{0,62})/builds/([0-9a-fA-F-]{36})",
+        name) if isinstance(name, str) else None)
+    build_id = raw.get("id") if isinstance(raw, dict) else None
+    if (not isinstance(raw, dict) or not isinstance(build_id, str) or
+            not BUILD_ID_RE.fullmatch(build_id) or build_id.lower() != build["build_id"].lower() or
+            raw.get("projectId") != build["project_id"] or raw.get("status") != "SUCCESS" or
+            raw.get("serviceAccount") != build["service_account"] or name_match is None or
+            name_match.group(1) not in (build["project_id"], build["project_number"]) or
+            name_match.group(2) != build["location"] or
+            name_match.group(3).lower() != build_id.lower() or
+            raw.get("location") not in (None, build["location"])):
         raise ArtifactError("Cloud Build identity, status, or service account differs from the package")
 
     source = build["source"]
@@ -399,11 +409,15 @@ def validate_cloud_build(raw: dict, manifest: dict) -> None:
         raise ArtifactError("Cloud Build source locator or generation differs from the package")
 
     hashes = provenance.get("fileHashes")
-    entries = ([entry for values in hashes.values() if isinstance(values, list) for entry in values]
-               if isinstance(hashes, dict) else [])
+    source_hash_path = f"gs://{source['bucket']}/{source['object']}#{source['generation']}"
+    source_hashes = hashes.get(source_hash_path) if isinstance(hashes, dict) else None
+    entries = source_hashes.get("fileHash") if isinstance(source_hashes, dict) else None
     expected_hash = base64.b64encode(bytes.fromhex(source["sha256"].removeprefix("sha256:"))).decode("ascii")
-    if (len(entries) != 1 or not isinstance(entries[0], dict) or
-            entries[0].get("fileHashType") != "SHA256" or entries[0].get("value") != expected_hash):
+    if (not isinstance(hashes, dict) or set(hashes) != {source_hash_path} or
+            not isinstance(source_hashes, dict) or set(source_hashes) != {"fileHash"} or
+            not isinstance(entries, list) or len(entries) != 1 or
+            not isinstance(entries[0], dict) or set(entries[0]) != {"type", "value"} or
+            entries[0].get("type") != "SHA256" or entries[0].get("value") != expected_hash):
         raise ArtifactError("Cloud Build source provenance hash differs from the package")
 
     substitutions = raw.get("substitutions")

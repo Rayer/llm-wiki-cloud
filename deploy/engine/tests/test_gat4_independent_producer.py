@@ -186,20 +186,20 @@ class IndependentProducerTests(unittest.TestCase):
         config = gat4_ci_artifact._build_config(files, image_tag, "1.0.0")
         storage = build_inputs["source"].copy()
         storage.pop("sha256")
+        source_hash_path = f"gs://{storage['bucket']}/{storage['object']}#{storage['generation']}"
         build = {
             "id": build_id,
             "projectId": normalized["gcp"]["project_id"],
-            "location": "global",
             "name": f"projects/{normalized['gcp']['project_id']}/locations/global/builds/{build_id}",
             "status": "SUCCESS",
             "source": {"storageSource": storage},
             "sourceProvenance": {
                 "resolvedStorageSource": storage,
-                "fileHashes": {"source.tar.gz": [{
-                    "fileHashType": "SHA256",
+                "fileHashes": {source_hash_path: {"fileHash": [{
+                    "type": "SHA256",
                     "value": base64.b64encode(hashlib.sha256(
                         gat4_ci_artifact._deterministic_gzip(source_tar)).digest()).decode("ascii"),
-                }]},
+                }]}},
             },
             "serviceAccount": gat4_ci_artifact.BUILD_SERVICE_ACCOUNT,
             "substitutions": {
@@ -388,16 +388,48 @@ else:
                 run = engine.Engine(directory)
                 run.provider.gcp_project_number = lambda: "580854833715"
                 valid_build = read(build_path)
-                for mutate in (
+                self.assertNotIn("location", valid_build)
+
+                def move_hash_to_unrelated_source(value):
+                    hashes = value["sourceProvenance"]["fileHashes"]
+                    hash_record = hashes.pop(next(iter(hashes)))
+                    hashes["gs://unrelated-bucket/unrelated-source.tar.gz#1"] = hash_record
+
+                def change_hash_generation(value):
+                    hashes = value["sourceProvenance"]["fileHashes"]
+                    path = next(iter(hashes))
+                    hash_record = hashes.pop(path)
+                    hashes[path.rsplit("#", 1)[0] + "#99"] = hash_record
+
+                identity_mutations = (
+                    lambda value: value.update(projectId="other-project"),
+                    lambda value: value.update(id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+                    lambda value: value.update(name=value["name"].replace(
+                        "projects/llm-wiki-cloud", "projects/other-project")),
+                    lambda value: value.update(name=value["name"].replace(
+                        f"/builds/{valid_build['id']}", "/builds/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")),
+                    lambda value: value.update(name=value["name"].replace(
+                        "locations/global", "locations/us-east1")),
+                    lambda value: value.update(location="us-east1"),
+                )
+                input_mutations = (
                     lambda value: value["source"]["storageSource"].update(object="sources/other/source.tar.gz"),
+                    lambda value: value["source"]["storageSource"].update(generation="99"),
+                    lambda value: value["sourceProvenance"]["resolvedStorageSource"].update(generation="99"),
+                    move_hash_to_unrelated_source,
+                    change_hash_generation,
+                    lambda value: next(iter(value["sourceProvenance"]["fileHashes"].values()))[
+                        "fileHash"][0].update(value="invalid"),
                     lambda value: value["steps"][0]["args"].__setitem__(2, "APP_VERSION=9.9.9"),
                     lambda value: value["substitutions"].update(_APP_VERSION="9.9.9"),
                     lambda value: value["substitutions"].update(_GIT_TAG="unexpected-tag"),
-                ):
+                    lambda value: value["substitutions"].update(_UNEXPECTED="value"),
+                )
+                for mutate in identity_mutations + input_mutations:
                     changed = copy.deepcopy(valid_build)
                     mutate(changed)
                     write(build_path, changed)
-                    with self.assertRaisesRegex(engine.Breakpoint, "independent-auth-build-input-mismatch"):
+                    with self.assertRaises(engine.Breakpoint):
                         run.provider.prepare_independent_auth()
                 write(build_path, valid_build)
                 auth_submit_calls = []
@@ -471,7 +503,9 @@ else:
             calls = [json.loads(line) for line in provider_log.read_text().splitlines()]
             self.assertFalse(any(call["argv"][:2] == ["builds", "submit"] for call in calls),
                              "canonical consumer rebuilt the independent Auth image")
-            self.assertEqual(sum(call["argv"][:2] == ["builds", "describe"] for call in calls), 5)
+            self.assertEqual(
+                sum(call["argv"][:2] == ["builds", "describe"] for call in calls),
+                len(identity_mutations) + len(input_mutations) + 1)
             self.assertTrue(any(call["argv"][:4] == ["artifacts", "docker", "images", "describe"]
                                 for call in calls), "canonical consumer skipped registry digest readback")
 
