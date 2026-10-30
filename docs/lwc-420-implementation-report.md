@@ -13,6 +13,7 @@ The descriptor captures the bounded selection-v1 summary input in the same journ
 - Frontend `npm test` passed after the 446 merge: 568/568 Node tests and 621/621 component tests; `npm run typecheck` passed.
 - After integrating source-stable LWC-443 commit `446b613a91faf39255408404bc980dc88d1b038a`, `FIRESTORE_EMULATOR_HOST=127.0.0.1:8585 go test ./cmd/olw_worker ./internal/localfs ./internal/contentcontext ./internal/cache ./internal/llm ./internal/queryruntime -count=1` passed; a rerun of `./cmd/olw_worker ./internal/contentcontext` also passed after adding the digest-work identity assertion.
 - `FIRESTORE_EMULATOR_HOST=127.0.0.1:8585 go test ./internal/handler/v1 -count=1` still has the known held LWC-443 failure: `TestProfileRuntimeConnectedManualThenCompileTagging/retained-candidate-exhaustion-retries-through-activation` reports `calls=3` at `profile_runtime_e2e_test.go:385`.
+- The post-merge Project context handler/MCP readback tests passed with `FIRESTORE_EMULATOR_HOST=127.0.0.1:8585 go test ./internal/handler/v1 -run 'ContentContext|ProjectContent' -count=1`.
 - Final LWC-445 head `c66e6f863cee77c4d2aedce25b6747a4abf8b4c5` is integrated; `npm exec vitest run tests/project-description-editor.test.tsx` passed (6 tests).
 
 ## Pending immutable dependency
