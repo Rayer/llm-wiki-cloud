@@ -8,6 +8,9 @@ inputs:
     required: false
     default: 'false'
     description: DEV-only bypass for another attempt's unresolved target status on a new ready deploy
+outputs:
+  needs_auth_ci_package:
+    description: Whether auth-preflight requires a new immutable Auth CI package
 runs:
   using: node20
   main: index.cjs

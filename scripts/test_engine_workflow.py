@@ -49,6 +49,8 @@ class EngineWorkflowContract(unittest.TestCase):
         self.assertEqual(preflight['with']['operation'], 'auth-preflight')
         self.assertNotIn('GATEAUTH_SOURCE_READ_TOKEN', preflight.get('env', {}))
         self.assertIn("steps.gat4-preflight.outputs.needs_auth_ci_package == 'true'", package['if'])
+        action_metadata = yaml.safe_load((ROOT / '.github/actions/deployment-engine/action.yml').read_text())
+        self.assertIn('needs_auth_ci_package', action_metadata['outputs'])
         self.assertLess(release['steps'].index(preflight), release['steps'].index(package))
         self.assertLess(release['steps'].index(package), release['steps'].index(prepare))
         self.assertEqual(package['env']['AUTH_REPOSITORY_ID'], '${{ inputs.auth_repository_id }}')
