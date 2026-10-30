@@ -5,6 +5,7 @@ import type { PipelineStatus } from '@/lib/api';
 const mocks = vi.hoisted(() => ({
   currentProject: { id: 'project-a', name: 'Project A' },
   getPipelineStatus: vi.fn(),
+  getProjectPipelineAutomation: vi.fn(),
   getRecompileAllCapability: vi.fn(),
   triggerPipeline: vi.fn(),
 }));
@@ -12,6 +13,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('@/lib/api', async () => ({
   ...await vi.importActual<typeof import('@/lib/api')>('@/lib/api'),
   getPipelineStatus: mocks.getPipelineStatus,
+  getProjectPipelineAutomation: mocks.getProjectPipelineAutomation,
   getRecompileAllCapability: mocks.getRecompileAllCapability,
   triggerPipeline: mocks.triggerPipeline,
 }));
@@ -72,6 +74,10 @@ beforeEach(() => {
     if (!intervals.delete(id)) nativeClearInterval(id);
   }) as typeof clearInterval);
   mocks.getRecompileAllCapability.mockResolvedValue({ allowed: true, compile_mode: 'full', quota });
+  mocks.getProjectPipelineAutomation.mockImplementation(async () => ({
+    enabled: true, revision: 1, admin_allowed: true, effective_enabled: true,
+    backlog_scan_status: 'idle', pipeline_status: 'idle', source_revision: 1, processed_revision: 0,
+  }));
   mocks.triggerPipeline.mockResolvedValue({ status: 'accepted', project_id: 'project-a', execution_id: 'execution-a' });
 });
 
@@ -124,6 +130,58 @@ it('shows an initial read failure, resumes the same intent and tracks its termin
   await screen.findByText('Pipeline complete');
   expect(mocks.triggerPipeline).not.toHaveBeenCalled();
   expect(intervals.size).toBe(0);
+});
+
+it('refreshes automatic processing status during mounted Pipeline polling through publication', async () => {
+	let automationStatus = 'idle';
+	let executionPolls = 0;
+	mocks.getPipelineStatus.mockImplementation(async (projectId: string, executionId?: string, intentId?: string) => {
+		if (!executionId && !intentId) return intentStatus(projectId, 'preparing');
+		executionPolls += 1;
+		automationStatus = executionPolls === 1 ? 'pending' : executionPolls === 2 ? 'running' : 'published';
+		return intentStatus(projectId, executionPolls < 3 ? 'compiling' : 'succeeded');
+	});
+	mocks.getProjectPipelineAutomation.mockImplementation(async () => ({
+		enabled: true, revision: 1, admin_allowed: true, effective_enabled: true,
+		backlog_scan_status: 'idle', pipeline_status: automationStatus, source_revision: 1,
+		processed_revision: automationStatus === 'published' ? 1 : 0,
+	}));
+
+	render(<PipelineClient />);
+	const settings = await screen.findByTestId('pipeline-automation-settings');
+	await waitFor(() => expect(settings.textContent).toContain('Processing status: pending'));
+	await tickPipelinePoll();
+	await waitFor(() => expect(settings.textContent).toContain('Processing status: running'));
+	await tickPipelinePoll();
+	await waitFor(() => expect(settings.textContent).toContain('Processing status: published'));
+	expect(mocks.getProjectPipelineAutomation).toHaveBeenCalledTimes(4);
+	expect(intervals.size).toBe(0);
+});
+
+it('refreshes mounted automatic processing state through a terminal failure', async () => {
+	let automationStatus = 'idle';
+	let executionPolls = 0;
+	mocks.getPipelineStatus.mockImplementation(async (projectId: string, executionId?: string, intentId?: string) => {
+		if (!executionId && !intentId) return intentStatus(projectId, 'preparing');
+		executionPolls += 1;
+		automationStatus = executionPolls === 1 ? 'pending' : executionPolls === 2 ? 'running' : 'failed';
+		return intentStatus(projectId, executionPolls < 3 ? 'compiling' : 'failed');
+	});
+	mocks.getProjectPipelineAutomation.mockImplementation(async () => ({
+		enabled: true, revision: 1, admin_allowed: true, effective_enabled: true,
+		backlog_scan_status: 'idle', pipeline_status: automationStatus, source_revision: 1,
+		processed_revision: 0, ...(automationStatus === 'failed' ? { failure_stage: 'pipeline', failure_code: 'pipeline_failed' } : {}),
+	}));
+
+	render(<PipelineClient />);
+	const settings = await screen.findByTestId('pipeline-automation-settings');
+	await waitFor(() => expect(settings.textContent).toContain('Processing status: pending'));
+	await tickPipelinePoll();
+	await waitFor(() => expect(settings.textContent).toContain('Processing status: running'));
+	await tickPipelinePoll();
+	await waitFor(() => expect(settings.textContent).toContain('Processing status: failed'));
+	await waitFor(() => expect(screen.getByTestId('pipeline-automation-failure').textContent).toContain('pipeline_failed'));
+	expect(intervals.size).toBe(0);
 });
 
 it('ignores a late recovery read after switching Projects', async () => {

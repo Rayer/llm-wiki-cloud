@@ -15,11 +15,14 @@ import (
 
 	"github.com/rayer/llm-wiki-bff/internal/localfs"
 	"github.com/rayer/llm-wiki-bff/internal/rawintake"
+	"github.com/rayer/llm-wiki-bff/internal/sourceautomation"
 	"github.com/rayer/llm-wiki-bff/internal/storage"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type fetcherFunc func(context.Context, string) (Page, error)
@@ -38,6 +41,40 @@ type candidateReadFaultStore struct {
 }
 
 type candidateWriteFaultStore struct{ ProjectStore }
+
+type urlPostWriteReadFaultStore struct {
+	ProjectStore
+	failNextRead atomic.Bool
+}
+
+func (s *urlPostWriteReadFaultStore) WriteFileIfGeneration(ctx context.Context, data []byte, path string, expected int64) (int64, error) {
+	generation, err := s.ProjectStore.WriteFileIfGeneration(ctx, data, path, expected)
+	if err == nil && strings.HasPrefix(path, "raw/") {
+		s.failNextRead.Store(true)
+	}
+	return generation, err
+}
+
+func (s *urlPostWriteReadFaultStore) ReadFileWithGeneration(ctx context.Context, path string) ([]byte, int64, error) {
+	if strings.HasPrefix(path, "raw/") && s.failNextRead.CompareAndSwap(true, false) {
+		return nil, 0, errors.New("injected raw readback timeout")
+	}
+	return s.ProjectStore.ReadFileWithGeneration(ctx, path)
+}
+
+type unavailableURLSourceJournal struct{}
+
+func (unavailableURLSourceJournal) PrepareSourceCommit(_ context.Context, project sourceautomation.VerifiedProject, request sourceautomation.PrepareRequest) (sourceautomation.Ref, error) {
+	return sourceautomation.Ref{OwnerID: project.OwnerID, ProjectID: project.ProjectID, OperationID: "firestore-unavailable"}, nil
+}
+
+func (unavailableURLSourceJournal) ConfirmSourceCommit(context.Context, sourceautomation.Ref, sourceautomation.ConfirmRequest) (sourceautomation.CommitResult, error) {
+	return sourceautomation.CommitResult{State: "unknown", ProcessingStatus: "unknown"}, status.Error(codes.Unavailable, "injected Firestore outage")
+}
+
+func (unavailableURLSourceJournal) ReconcileSourceCommit(context.Context, sourceautomation.Ref) (sourceautomation.CommitResult, error) {
+	return sourceautomation.CommitResult{State: "unknown", ProcessingStatus: "unknown"}, status.Error(codes.Unavailable, "injected Firestore outage")
+}
 
 func (s candidateWriteFaultStore) WriteFileIfGeneration(ctx context.Context, data []byte, path string, expected int64) (int64, error) {
 	if strings.HasPrefix(path, candidateObjectPrefix) {
@@ -123,6 +160,52 @@ func TestServiceCreatesRefreshesAndNoOpsWithNormalizedTrackingIdentity(t *testin
 	files, err := markdownRawFiles(store)
 	if err != nil || len(files) != 1 {
 		t.Fatalf("raw files = %#v, %v; want one stable source", files, err)
+	}
+}
+
+func TestImportReportsSavedUnknownAfterPostWriteJournalFailures(t *testing.T) {
+	tests := []struct {
+		name       string
+		readFault  bool
+		journalErr bool
+	}{
+		{name: "raw readback timeout", readFault: true, journalErr: true},
+		{name: "Firestore unavailable", journalErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			base := localfs.New(t.TempDir()).WithScope("actor-1", "project-1")
+			var projectStore ProjectStore = base
+			if test.readFault {
+				projectStore = &urlPostWriteReadFaultStore{ProjectStore: base}
+			}
+			service := NewService(fetcherFunc(func(context.Context, string) (Page, error) {
+				return Page{Title: "Saved after outage", Markdown: "# Saved after outage\n\nThe committed bytes are still present.\n"}, nil
+			}), evaluatorFunc(usableEvaluator), func(scope ActorProject) (ProjectStore, error) {
+				if scope != (ActorProject{ActorID: "actor-1", ProjectID: "project-1"}) {
+					return nil, ErrInvalidScope
+				}
+				return projectStore, nil
+			}, DefaultQualityThresholds)
+			service.Resolver = resolverStub{netip.MustParseAddr("93.184.216.34")}
+			service.Now = func() time.Time { return time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC) }
+			if test.journalErr {
+				service.SourceJournal = unavailableURLSourceJournal{}
+			}
+
+			result, err := service.Import(context.Background(), ActorProject{ActorID: "actor-1", ProjectID: "project-1"}, ImportRequest{URL: "https://example.com/saved-after-outage"})
+			if err != nil || result.Status != "stored" || result.ProcessingStatus != "unknown" || result.Storage == nil ||
+				result.Storage.Path == "" || result.Storage.SHA256 == "" || !strings.Contains(strings.ToLower(result.Message), "saved") {
+				t.Fatalf("post-write outage result=%#v err=%v", result, err)
+			}
+			stored, err := base.ReadFile(context.Background(), result.Storage.Path)
+			if err != nil || len(stored) == 0 || digestString(stored) != result.Storage.SHA256 {
+				t.Fatalf("saved bytes=%d digest=%q err=%v", len(stored), result.Storage.SHA256, err)
+			}
+			if !strings.HasPrefix(result.Storage.Path, "raw/") || result.Storage.Status == "" {
+				t.Fatalf("saved storage identity is incomplete: %+v", result.Storage)
+			}
+		})
 	}
 }
 

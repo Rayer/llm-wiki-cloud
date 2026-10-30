@@ -39,10 +39,11 @@ type Tab = 'projects' | 'users' | 'settings' | 'shared-llm';
 type Notice = { tone: 'success' | 'error' | 'pending'; message: string } | null;
 const userReadbackFailure: Notice = { tone: 'error', message: 'Update succeeded, but current user state is unknown. Retry loading users before making another change.' };
 
-function adminAutomationCopy(t: (key: string) => string, key: string, fallback: string): string {
-  const translated = t(key);
+function adminAutomationCopy(t: (key: string, params?: Record<string, string | number>) => string, key: string, fallback: string, params?: Record<string, string | number>): string {
+  const translated = t(key, params);
   return translated === key ? fallback : translated;
 }
+
 type Action =
   | { kind: 'rename-project'; project: AdminProject }
   | { kind: 'delete-project'; project: AdminProject }
@@ -168,9 +169,9 @@ export function AdminClient() {
     try {
       const updated = await updateAdminPipelineAutomation(!pipelineAutomation.allow_auto_pipeline, pipelineAutomation.revision);
       setPipelineAutomation(updated);
-      setNotice({ tone: 'success', message: 'Auto-pipeline settings updated. Enabling it starts a backlog scan for Projects with saved pending source changes.' });
+      setNotice({ tone: 'success', message: adminAutomationCopy(t, 'Admin.autoPipelineUpdateSucceeded', 'Automatic Pipeline settings updated. Enabling the switch scans Projects for saved source changes.') });
     } catch (error) {
-      setSettingsError(error instanceof Error ? error.message : 'Auto-pipeline settings update failed.');
+      setSettingsError(error instanceof Error ? error.message : adminAutomationCopy(t, 'Admin.autoPipelineUpdateFailed', 'Automatic Pipeline settings update failed.'));
       void getAdminPipelineAutomation().then(setPipelineAutomation).catch(() => undefined);
     } finally {
       setSettingsPending(false);
@@ -466,6 +467,10 @@ export function AdminClient() {
           pipelineAutomation={pipelineAutomation}
           pipelineAutomationLabel={adminAutomationCopy(t, 'Admin.autoPipelineEnabled', 'Allow automatic Pipeline runs')}
           pipelineAutomationDescription={adminAutomationCopy(t, 'Admin.autoPipelineDescription', 'This global switch must be on with a Project switch for source commits to start incremental runs. Enabling scans existing Projects for pending saved sources. Manual runs and the daily schedule stay independent.')}
+          pipelineAutomationUnavailable={adminAutomationCopy(t, 'Admin.autoPipelineUnavailable', 'Automatic Pipeline settings are unavailable.')}
+          pipelineAutomationBacklogStatus={pipelineAutomation
+            ? adminAutomationCopy(t, 'Admin.autoPipelineBacklogStatus', `Backlog scan: ${pipelineAutomation.backlog_scan_status} · Revision ${pipelineAutomation.revision}`, { status: pipelineAutomation.backlog_scan_status, revision: pipelineAutomation.revision })
+            : ''}
           masterLabel={t('Admin.registrationEnabled')}
           emailLabel={t('Admin.emailRegistrationEnabled')}
           googleLabel={t('Admin.googleRegistrationEnabled')}
@@ -597,6 +602,8 @@ function SettingsPanel({
   pipelineAutomation,
   pipelineAutomationLabel,
   pipelineAutomationDescription,
+  pipelineAutomationUnavailable,
+  pipelineAutomationBacklogStatus,
   masterLabel,
   emailLabel,
   googleLabel,
@@ -618,6 +625,8 @@ function SettingsPanel({
   pipelineAutomation: AdminPipelineAutomation | null;
   pipelineAutomationLabel: string;
   pipelineAutomationDescription: string;
+  pipelineAutomationUnavailable: string;
+  pipelineAutomationBacklogStatus: string;
   masterLabel: string;
   emailLabel: string;
   googleLabel: string;
@@ -678,10 +687,10 @@ function SettingsPanel({
                   />
                 </label>
                 <p className="mt-2 text-xs text-zinc-500" role="status">
-                  Backlog scan: {pipelineAutomation.backlog_scan_status} · Revision {pipelineAutomation.revision}
+                  {pipelineAutomationBacklogStatus}
                 </p>
               </>
-            ) : <p className="mt-3 text-sm text-zinc-500">Auto-pipeline settings are unavailable.</p>}
+            ) : <p className="mt-3 text-sm text-zinc-500">{pipelineAutomationUnavailable}</p>}
           </div> : null}
           {canManageAnnouncement ? <div>
             <h2 className="text-lg font-semibold text-white">Announcement</h2>

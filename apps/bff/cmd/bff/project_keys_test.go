@@ -305,8 +305,12 @@ func TestProjectKeyManagementAndQueryRoutes(t *testing.T) {
 	if err := json.Unmarshal(listed.Body.Bytes(), &toolsResult); err != nil {
 		t.Fatalf("MCP tools/list response: %v: %s", err, listed.Body.String())
 	}
-	if len(toolsResult.Result.Tools) != 1 || toolsResult.Result.Tools[0].Name != "query_project" {
-		t.Fatalf("MCP exposed tools outside query-only contract: %+v", toolsResult.Result.Tools)
+	toolNames := make(map[string]bool, len(toolsResult.Result.Tools))
+	for _, tool := range toolsResult.Result.Tools {
+		toolNames[tool.Name] = true
+	}
+	if len(toolNames) != 2 || !toolNames["query_project"] || !toolNames["pipeline_status"] {
+		t.Fatalf("MCP tools=%+v, want existing query_project plus additive pipeline_status", toolsResult.Result.Tools)
 	}
 	toolCall := `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"query_project","arguments":{"q":"coffee"}}}`
 	called := mcpRequest(http.MethodPost, created.Secret, toolCall, "", "fixture-session")

@@ -73,14 +73,18 @@ func TestProjectAutomationMissingFieldsAreDisabledAndFailClosed(t *testing.T) {
 
 func TestPipelineAutomationReservationIDChangesWhenEitherSwitchReopens(t *testing.T) {
 	fingerprint := strings.Repeat("a", 64)
-	initial := pipelineAutomationReservationID(fingerprint, 1, 1)
-	if initial == pipelineAutomationReservationID(fingerprint, 2, 1) {
+	initial := pipelineAutomationReservationID("owner-a", "project-a", fingerprint, 1, 1)
+	if initial == pipelineAutomationReservationID("owner-a", "project-a", fingerprint, 2, 1) {
 		t.Fatal("Project reopen reused a previous reservation ID")
 	}
-	if initial == pipelineAutomationReservationID(fingerprint, 1, 3) {
+	if initial == pipelineAutomationReservationID("owner-a", "project-a", fingerprint, 1, 3) {
 		t.Fatal("Admin reopen reused a previous reservation ID")
 	}
-	if initial != pipelineAutomationReservationID(fingerprint, 1, 1) {
+	if initial == pipelineAutomationReservationID("owner-b", "project-a", fingerprint, 1, 1) ||
+		initial == pipelineAutomationReservationID("owner-a", "project-b", fingerprint, 1, 1) {
+		t.Fatal("identical content in another Project reused a reservation ID")
+	}
+	if initial != pipelineAutomationReservationID("owner-a", "project-a", fingerprint, 1, 1) {
 		t.Fatal("same source and switch revisions did not preserve reservation identity")
 	}
 }
@@ -107,7 +111,7 @@ func TestPipelineAutomationAdmissionRejectsStaleSourceAndAllowsReopen(t *testing
 		_, ok, err := client.ReserveQuotaForPipelineAutomation(ctx, id, owner, projectID, limits, time.Now().UTC(), false, false, 1, 0, 0, admission)
 		return ok, err
 	}
-	staleID := pipelineAutomationReservationID(fingerprint, 1, 1)
+	staleID := pipelineAutomationReservationID(owner, projectID, fingerprint, 1, 1)
 	reserved, err := reserve(staleID, scopedfirestore.PipelineAutomationAdmission{
 		SourceFingerprint: fingerprint, SourceRevision: 0, ProjectRevision: 1, AdminRevision: 1,
 	})
@@ -118,7 +122,7 @@ func TestPipelineAutomationAdmissionRejectsStaleSourceAndAllowsReopen(t *testing
 		t.Fatalf("stale source created a reservation: exists=%t err=%v", exists, err)
 	}
 
-	firstID := pipelineAutomationReservationID(fingerprint, 1, 1)
+	firstID := pipelineAutomationReservationID(owner, projectID, fingerprint, 1, 1)
 	reserved, err = reserve(firstID, scopedfirestore.PipelineAutomationAdmission{
 		SourceFingerprint: fingerprint, SourceRevision: 1, ProjectRevision: 1, AdminRevision: 1,
 	})
@@ -137,7 +141,7 @@ func TestPipelineAutomationAdmissionRejectsStaleSourceAndAllowsReopen(t *testing
 	if _, err := adminRef.Update(ctx, []cloudfirestore.Update{{Path: "revision", Value: int64(3)}}); err != nil {
 		t.Fatal(err)
 	}
-	reopenedID := pipelineAutomationReservationID(fingerprint, 2, 3)
+	reopenedID := pipelineAutomationReservationID(owner, projectID, fingerprint, 2, 3)
 	reserved, err = reserve(reopenedID, scopedfirestore.PipelineAutomationAdmission{
 		SourceFingerprint: fingerprint, SourceRevision: 1, ProjectRevision: 2, AdminRevision: 3,
 	})
@@ -192,6 +196,36 @@ func TestPipelineAutomationSwitchesUseCASAndQueueBacklogWork(t *testing.T) {
 	}
 	if !seen["pipeline_automation"] || !seen["pipeline_automation_scan"] {
 		t.Fatalf("queued work kinds=%v", seen)
+	}
+}
+
+func TestProjectAutomationPUTResponseMatchesGETProjection(t *testing.T) {
+	client := newOnboardingFirestore(t)
+	ctx := context.Background()
+	fs := client.Raw()
+	owner, projectID := "automation-put-owner", "wiki"
+	projectRef := scopedfirestore.Collection(fs, "projects").Doc(projectDocID(owner, projectID))
+	if _, err := projectRef.Set(ctx, map[string]interface{}{"user_id": owner, "project_id": projectID, "status": "ready"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pipelineAutomationAdminRef(fs).Set(ctx, map[string]interface{}{"allow_auto_pipeline": true, "revision": int64(1)}); err != nil {
+		t.Fatal(err)
+	}
+	for _, request := range []struct {
+		enabled  bool
+		revision int64
+	}{{enabled: true, revision: 0}, {enabled: false, revision: 1}, {enabled: true, revision: 2}} {
+		updated, err := updatePipelineAutomationProject(ctx, fs, owner, projectID, request.enabled, request.revision)
+		if err != nil {
+			t.Fatalf("PUT enabled=%t revision=%d: %v", request.enabled, request.revision, err)
+		}
+		readback, err := readPipelineAutomationProject(ctx, fs, owner, projectID)
+		if err != nil || updated != readback {
+			t.Fatalf("PUT response=%+v GET=%+v err=%v", updated, readback, err)
+		}
+		if updated.EffectiveEnabled != request.enabled || updated.AdminAllowed != true || updated.Revision != request.revision+1 {
+			t.Fatalf("PUT projection does not reflect switches: %+v", updated)
+		}
 	}
 }
 

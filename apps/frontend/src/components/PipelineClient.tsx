@@ -196,9 +196,9 @@ export function PipelineClient() {
     } catch (error) {
       const latest = pipelineProjectContextRef.current;
       if (!pipelineMountedRef.current || latest.projectId !== scope.projectId || latest.generation !== scope.contextGeneration) return;
-      setPipelineAutomationError(error instanceof Error ? error.message : 'Pipeline automation status unavailable');
+      setPipelineAutomationError(error instanceof Error ? error.message : automationCopy(t, 'Pipeline.automationStatusUnavailable', 'Automatic processing status is unavailable.'));
     }
-  }, [setPipelineAutomation, setPipelineAutomationError]);
+  }, [setPipelineAutomation, setPipelineAutomationError, t]);
 
   useEffect(() => {
     if (!projectId) {
@@ -233,14 +233,14 @@ export function PipelineClient() {
       if (isCurrent()) setPipelineAutomation(next);
     } catch (error) {
       if (isCurrent()) {
-        setPipelineAutomationError(error instanceof Error ? error.message : 'Pipeline automation update failed');
+        setPipelineAutomationError(error instanceof Error ? error.message : automationCopy(t, 'Pipeline.automationUpdateFailed', 'Automatic processing settings could not be updated.'));
         void refreshPipelineAutomation({ projectId, contextGeneration: context.generation });
       }
     } finally {
       setPipelineAutomationPending(false);
     }
   }, [pipelineAutomation, pipelineAutomationPending, projectId, refreshPipelineAutomation,
-    setPipelineAutomation, setPipelineAutomationError, setPipelineAutomationPending]);
+    setPipelineAutomation, setPipelineAutomationError, setPipelineAutomationPending, t]);
 
   const pipelinePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -292,6 +292,7 @@ export function PipelineClient() {
       pipelinePollErrorNotifiedRef.current = false;
       setPipelineStatusReadFailedProjectId(null);
       setPipelineStatus(status);
+      void refreshPipelineAutomation({ projectId: scope.projectId, contextGeneration: scope.contextGeneration });
 
       if (isTerminal) {
         if (status.last_execution?.compile_mode === 'full') {
@@ -311,7 +312,7 @@ export function PipelineClient() {
         addToast(err instanceof Error ? err.message : 'Pipeline status failed', 'error');
       }
     }
-  }, [addToast, isPipelineRequestCurrent, stopPipelinePolling]);
+  }, [addToast, isPipelineRequestCurrent, refreshPipelineAutomation, stopPipelinePolling]);
 
   useEffect(() => stopPipelinePolling, [currentProject?.id, stopPipelinePolling]);
 
@@ -812,7 +813,7 @@ export function PipelineClient() {
             <div className="mt-3 space-y-1 text-xs text-zinc-400" aria-live="polite">
               {!pipelineAutomation.admin_allowed ? (
                 <p className="text-amber-200/90" data-testid="pipeline-automation-blocked">
-                  {automationCopy(t, 'Pipeline.automationAdminDisabled', 'Automatic processing is disabled by the Admin. Saved sources remain pending; turning this Project switch on will take effect when the Admin allows it.')}
+                  {automationCopy(t, 'Pipeline.automationAdminDisabled', 'Automatic processing is disabled by the Admin. Saved sources remain pending until the Admin allows processing.')}
                 </p>
               ) : null}
               <p>

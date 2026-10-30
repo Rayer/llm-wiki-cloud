@@ -379,6 +379,7 @@ func updatePipelineAutomationProject(ctx context.Context, fs *cloudfirestore.Cli
 		if enabled {
 			updates = append(updates,
 				cloudfirestore.Update{Path: "pipeline_failure_blocked_fingerprint", Value: cloudfirestore.Delete},
+				cloudfirestore.Update{Path: "pipeline_failure_blocked_admin_revision", Value: cloudfirestore.Delete},
 				cloudfirestore.Update{Path: "pipeline_automation_epoch", Value: result.Revision},
 				cloudfirestore.Update{Path: "pipeline_automation_status", Value: "pending"},
 			)
@@ -388,7 +389,10 @@ func updatePipelineAutomationProject(ctx context.Context, fs *cloudfirestore.Cli
 		}
 		return nil
 	})
-	return result, err
+	if err != nil {
+		return pipelineAutomationProjectSettings{}, err
+	}
+	return readPipelineAutomationProject(ctx, fs, ownerID, projectID)
 }
 
 func projectPipelineAutomationFromData(project map[string]interface{}, admin pipelineAutomationSetting) pipelineAutomationProjectSettings {
