@@ -727,6 +727,47 @@ func TestExportJobConfigSupportsBothEnvironmentContracts(t *testing.T) {
 	}
 }
 
+func TestDocumentImportJobIsDevelopmentOnlyAndRequiresItsBFFTarget(t *testing.T) {
+	root := repoRoot(t)
+	dev, err := decodeConfig(filepath.Join(root, "deploy/environments/development.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateConfigForEnvironment("development", dev); err != nil {
+		t.Fatalf("reviewed DEV document import Job config: %v", err)
+	}
+	job := dev.DocumentImportJob
+	if !job.Enabled || job.JobName != "document-import-job-dev" ||
+		job.RuntimeServiceAccount != "lwc-document-import-dev@llm-wiki-cloud.iam.gserviceaccount.com" ||
+		job.Bucket != "llm-wiki-data-dev" || job.FirestoreDatabaseID != "llm-wiki-cloud-dev" ||
+		job.Location != "asia-east1" || job.JobTimeout != "180s" || job.MaxRetries != 0 ||
+		job.Parallelism != 1 || job.Tasks != 1 || job.CPU != 1 || job.Memory != "1Gi" {
+		t.Fatalf("DEV document import Job config = %#v", job)
+	}
+	prod, err := decodeConfig(filepath.Join(root, "deploy/environments/production.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateConfigForEnvironment("production", prod); err != nil {
+		t.Fatalf("reviewed Production config remains valid: %v", err)
+	}
+	if prod.DocumentImportJob.Enabled {
+		t.Fatal("Production enabled the development-only document import Job")
+	}
+	inputs := componentInputs(dev, QueryConfigIdentity{}, []string{"bff", "documentimport"})
+	input, ok := inputs["documentimport"].(DocumentImportJobConfig)
+	if !ok || !reflect.DeepEqual(input, job) {
+		t.Fatalf("documentimport component input omitted the reviewed Job config: %#v", inputs)
+	}
+	if _, err := Load("development", filepath.Join(root, "deploy/environments/development.yaml"), "documentimport"); err == nil {
+		t.Fatal("documentimport selection unexpectedly omitted the BFF invocation target")
+	}
+	if _, err := LoadWithBFFInputs("production", filepath.Join(root, "deploy/environments/production.yaml"), "bff,documentimport",
+		writeBFFDescriptorFixture(t, "production", 3600)); err == nil {
+		t.Fatal("Production accepted the development-only document import component")
+	}
+}
+
 func TestDecodeAndQueryPathValidationFailClosed(t *testing.T) {
 	root := repoRoot(t)
 	valid := filepath.Join(root, "deploy/environments/development.yaml")

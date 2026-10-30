@@ -365,7 +365,7 @@ class EngineWorkflowContract(unittest.TestCase):
 
     def test_profiles_and_real_component_operations(self):
         profiles=json.loads((ROOT/'deploy/engine/profiles.json').read_text())
-        self.assertEqual(set(profiles),{'auth','bff','worker','exportjob','frontend'})
+        self.assertEqual(set(profiles),{'auth','bff','worker','exportjob','documentimport','frontend'})
         for c,p in profiles.items():
             self.assertGreater(p['revision'],0);self.assertTrue(p['inputs'])
         s=(ROOT/'deploy/engine/providers.py').read_text()

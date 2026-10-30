@@ -11,6 +11,7 @@ import (
 	"cloud.google.com/go/firestore"
 	"github.com/gin-gonic/gin"
 	"github.com/rayer/llm-wiki-bff/internal/auth"
+	"github.com/rayer/llm-wiki-bff/internal/documentimport"
 	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"github.com/rayer/llm-wiki-bff/internal/llm"
 	"github.com/rayer/llm-wiki-bff/internal/observability"
@@ -279,6 +280,9 @@ func validProfileRuntimeIdentity(w profileruntime.Work) bool {
 	if w.Kind == "pipeline" {
 		return w.Revision >= 0
 	}
+	if w.Kind == "document_import" {
+		return w.Revision > 0 && auth.ValidPathSegment(w.DocumentID)
+	}
 	return w.Revision > 0 && (w.Kind == "derive" || w.Kind == "tag" || w.Kind == "compile")
 }
 func (d *ProfileDispatcher) finish(ctx context.Context, repo *firestoreProfileRepository, ref *firestore.DocumentRef, claimed profileruntime.Work, cause error) (string, error) {
@@ -304,8 +308,31 @@ func (d *ProfileDispatcher) finish(ctx context.Context, repo *firestoreProfileRe
 			w.Status = "waiting_manual"
 			w.Due = repo.now().Add(time.Minute)
 		} else if cause == nil {
-			w.Pending = false
-			w.Status = "complete"
+			if w.Kind == "document_import" {
+				documentRef := scopedfirestore.Collection(repo.client, "projects").Doc(projectDocID(w.UserID, w.ProjectID)).Collection("document_imports").Doc(w.DocumentID)
+				documentSnapshot, err := tx.Get(documentRef)
+				if err != nil && status.Code(err) != codes.NotFound {
+					return err
+				}
+				var record documentimport.Record
+				if err == nil {
+					if err := documentSnapshot.DataTo(&record); err != nil {
+						return err
+					}
+				}
+				if err == nil && record.AttemptID == w.ID && record.ConversionState == documentimport.ConversionSucceeded &&
+					(record.SourceState == documentimport.SourceSaving || record.SourceState == documentimport.SourceUnknown) {
+					w.Pending = true
+					w.Status = "retry_wait"
+					w.Due = repo.now().Add(profileruntime.LeaseDuration)
+				} else {
+					w.Pending = false
+					w.Status = "complete"
+				}
+			} else {
+				w.Pending = false
+				w.Status = "complete"
+			}
 		} else if errors.As(cause, &conflict) || errors.Is(cause, errProfileCandidateNotCurrent) || errors.Is(cause, errProfileProjectNotFound) {
 			if w.Kind == "compile" {
 				if err := clearSupersededProfileCompileRetry(ctx, tx, repo, w); err != nil {
@@ -338,6 +365,9 @@ func (d *ProfileDispatcher) finish(ctx context.Context, repo *firestoreProfileRe
 func (d *ProfileDispatcher) execute(ctx context.Context, repo *firestoreProfileRepository, w profileruntime.Work) error {
 	if _, err := d.Handler.AuthorizeProject(ctx, w.UserID, w.ProjectID, ProjectEdit); err != nil {
 		return err
+	}
+	if w.Kind == "document_import" {
+		return d.executeDocumentImport(ctx, repo, w)
 	}
 	projectClient, _, err := d.Handler.projectLLMClient(ctx, w.UserID, w.ProjectID)
 	if err != nil {
@@ -380,6 +410,32 @@ func (d *ProfileDispatcher) execute(ctx context.Context, repo *firestoreProfileR
 		return err
 	}
 	return d.Handler.RunProfileTagging(ctx, w.UserID, w.ProjectID, w.Revision, w.CandidateID, w.ID, d.Evaluator, d.Policy)
+}
+
+func (d *ProfileDispatcher) executeDocumentImport(ctx context.Context, repo *firestoreProfileRepository, w profileruntime.Work) error {
+	if d.Handler.documentImports == nil || d.Handler.documentImports.Repository == nil || d.Handler.documentImports.Starter == nil {
+		return errors.New("document import dispatcher is unavailable")
+	}
+	record, err := d.Handler.documentImports.Repository.Get(ctx, w.UserID, w.ProjectID, w.DocumentID)
+	if err != nil {
+		return err
+	}
+	if record.AttemptID != w.ID {
+		return errors.New("document import dispatch identity changed")
+	}
+	if record.ConversionState == documentimport.ConversionFailed ||
+		(record.ConversionState == documentimport.ConversionSucceeded && (record.SourceState == documentimport.SourceSaved || record.SourceState == documentimport.SourceFailed)) {
+		return nil
+	}
+	if record.DispatchState == "started" && record.SourceState != documentimport.SourceSaving && record.SourceState != documentimport.SourceUnknown {
+		return nil
+	}
+	executionID, err := d.Handler.documentImports.Starter.Start(ctx, w.UserID, w.ProjectID, w.DocumentID, w.ID)
+	if err != nil {
+		_ = d.Handler.documentImports.Repository.SetDispatchState(ctx, w.UserID, w.ProjectID, w.DocumentID, "unknown", "")
+		return err
+	}
+	return d.Handler.documentImports.Repository.SetDispatchState(ctx, w.UserID, w.ProjectID, w.DocumentID, "started", executionID)
 }
 func prepareProfileRuntimeAttempt(ctx context.Context, repo *firestoreProfileRepository, w profileruntime.Work) error {
 	return repo.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
@@ -523,6 +579,9 @@ func markProfileRuntimeExhausted(ctx context.Context, tx *firestore.Transaction,
 			return err
 		}
 		return scopedfirestore.SettlePipelineIntentRuntimeExhaustedInTransaction(ctx, tx, repo.client, w.ID, w.ID, w.UserID, w.ProjectID, w.Revision)
+	}
+	if w.Kind == "document_import" {
+		return documentimport.NewFirestoreRepository(repo.client).FailDispatch(ctx, w.UserID, w.ProjectID, w.DocumentID, w.ID)
 	}
 	_, stateRef, err := repo.authorizeTransaction(ctx, tx, w.UserID, w.ProjectID, ProjectEdit)
 	if errors.Is(err, errProfileProjectNotFound) {

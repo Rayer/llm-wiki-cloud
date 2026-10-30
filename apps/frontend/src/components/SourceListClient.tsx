@@ -10,6 +10,8 @@ import { EmptyState, ErrorState, LoadingState, useErrorIdCopy } from './States';
 import { useWorkspace } from './WorkspaceProvider';
 import { NavigationLink } from './NavigationBlocker';
 import { rawFileNameFromSource } from '@/lib/raw-file-name';
+import { usePathname, useSearchParams } from 'next/navigation';
+import { DocumentImportsPanel } from './DocumentImportsPanel';
 
 const lifecycleVariant: Record<SourceListItem['lifecycle'], 'muted' | 'published' | 'draft'> = {
   new: 'muted',
@@ -23,15 +25,23 @@ type SourceListError = { message: string; requestId?: string; diagnosticId?: str
 type PreviewError = SourceListError & { path: string };
 
 export function SourceListClient() {
-  const { currentProject, token } = useWorkspace();
-  const identityKey = JSON.stringify([currentProject?.id ?? 'no-project', token]);
+  const { currentProject, token, sessionEpoch } = useWorkspace();
+  const identityKey = JSON.stringify([currentProject?.id ?? 'no-project', token, sessionEpoch]);
   return <SourceListSession key={identityKey} />;
 }
 
 function SourceListSession() {
   const { t } = useT();
-  const { currentProject, token } = useWorkspace();
+  const { currentProject, token, projects, projectsLoading, selectProject } = useWorkspace();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const currentProjectId = currentProject?.id;
+  const requestedProjectId = searchParams.get('project_id');
+  const authorizedTarget = requestedProjectId ? projects.find((project) => project.id === requestedProjectId) : null;
+  const projectMismatch = Boolean(requestedProjectId && currentProjectId !== requestedProjectId);
+  const deepLinkError = requestedProjectId && !projectsLoading && !authorizedTarget
+    ? t('Source.documentImport.projectUnavailable')
+    : '';
   const [sources, setSources] = useState<SourceListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<SourceListError | null>(null);
@@ -47,6 +57,16 @@ function SourceListSession() {
     useErrorIdCopy(previewError, previewError?.requestId, previewError?.diagnosticId);
 
   useEffect(() => {
+    if (!requestedProjectId || currentProjectId === requestedProjectId || projectsLoading) return;
+    if (!authorizedTarget) return;
+    const query = searchParams.toString();
+    selectProject(requestedProjectId, `${pathname ?? '/sources'}${query ? `?${query}` : ''}`);
+  }, [authorizedTarget, currentProjectId, pathname, projectsLoading, requestedProjectId, searchParams, selectProject, t]);
+
+  useEffect(() => {
+    if (requestedProjectId && currentProjectId !== requestedProjectId) {
+      return;
+    }
     let cancelled = false;
     getSources(currentProjectId)
       .then((data) => {
@@ -68,7 +88,7 @@ function SourceListSession() {
       cancelled = true;
       previewRequestRef.current += 1;
     };
-  }, [currentProjectId, token]);
+  }, [currentProjectId, requestedProjectId, token]);
 
   const openRawPreview = useCallback(async (rawPath: string) => {
     const request = ++previewRequestRef.current;
@@ -118,6 +138,9 @@ function SourceListSession() {
       : sources;
   }, [search, sources]);
 
+  if (deepLinkError) return <p role="alert" className="rounded-md border border-red-400/20 bg-red-950/30 p-4 text-red-100">{deepLinkError}</p>;
+  if (projectMismatch) return <p role="status" className="rounded-md border border-white/10 p-4 text-zinc-300">{projectsLoading ? t('Source.documentImport.loadingProject') : t('Source.documentImport.switchingProject')}</p>;
+
   return (
     <div className="space-y-6">
       <header>
@@ -133,6 +156,8 @@ function SourceListSession() {
         aria-label={t('List.searchPlaceholder', { title: t('List.sourcesTitle').toLowerCase() })}
         className="min-h-11 w-full rounded-[var(--radius-lg)] border border-white/10 bg-zinc-900/50 px-4 py-2.5 text-sm text-white outline-none transition placeholder:text-zinc-400 focus:border-emerald-400/50 focus:ring-1 focus:ring-emerald-400/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
       />
+
+      {currentProjectId ? <DocumentImportsPanel projectId={currentProjectId} sourcePaths={sources.map((source) => source.rawPath)} /> : null}
 
       {loading ? <LoadingState label={t('Source.loading')} /> : null}
       {error ? (

@@ -20,7 +20,7 @@ import {
   clearForceHomeRedirect,
   consumeForceHomeRedirect,
 } from '@/lib/auth-core';
-import { getStatus } from '@/lib/api';
+import { getDocumentImportFailureSummary, getStatus } from '@/lib/api';
 import { clearCompletedQueryResults } from '@/lib/query-result-history';
 import {
   bootstrapDefaultProject,
@@ -36,6 +36,7 @@ import { useNavigationBlocker } from './NavigationBlocker';
 export type NavCounts = {
   sources: number | null;
   concepts: number | null;
+  documentImportFailures: number | null;
 };
 
 type ProfileOnboardingIntent = {
@@ -116,6 +117,7 @@ function profileOnboardingWasPresented(ownerId: string, projectId: string): bool
 const emptyNavCounts: NavCounts = {
   sources: null,
   concepts: null,
+  documentImportFailures: null,
 };
 
 function consumeExpiredLoginRedirect(router: { replace: (href: string) => void }): void {
@@ -151,7 +153,7 @@ type WorkspaceContextValue = {
   signInAsDemo: () => Promise<void>;
   register: (email: string, password: string) => Promise<void>;
   signOut: () => Promise<void>;
-  selectProject: (projectId: string) => void;
+  selectProject: (projectId: string, destination?: string) => void;
   addProject: (name: string) => Promise<Project>;
   renameProject: (projectId: string, name: string) => Promise<string>;
   refreshProjects: () => Promise<void>;
@@ -267,12 +269,23 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         || requestIdentity.token !== token
         || requestIdentity.sessionEpoch !== sessionEpoch
       ) return;
-      setNavCounts({
+      setNavCounts((current) => ({
         sources: status.sourcesCount,
         concepts: status.conceptsCount,
-      });
+        documentImportFailures: current.documentImportFailures,
+      }));
     } catch {
       // Keep previous badge values on refresh failure (LWC-129).
+    }
+    try {
+      const summary = await getDocumentImportFailureSummary(projectId);
+      if (
+        requestIdentityRef.current !== requestIdentity || requestIdentity.projectId !== projectId
+        || requestIdentity.token !== token || requestIdentity.sessionEpoch !== sessionEpoch
+      ) return;
+      setNavCounts((current) => ({ ...current, documentImportFailures: summary.failed_count }));
+    } catch {
+      // Preserve the last known count when the failure summary is unavailable.
     }
   }, [token, currentProject, sessionEpoch]);
 
@@ -380,7 +393,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setNavCounts(emptyNavCounts);
   }, [confirmNavigation, logout]);
 
-  const selectProject = useCallback((projectId: string) => {
+  const selectProject = useCallback((projectId: string, destination?: string) => {
     const selected = projects.find((project) => project.id === projectId);
     if (!selected) return;
     // Same project: keep current route/query as-is.
@@ -388,9 +401,10 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     if (!confirmNavigation()) return;
     writeLastProjectId(selected.id);
     setCurrentProject(selected);
+    setNavCounts(emptyNavCounts);
     // Concept/source/detail routes and home search query belong to the previous
     // project — always land on a clean home after switching.
-    router.replace('/');
+    router.replace(destination ?? '/');
   }, [confirmNavigation, currentProject?.id, projects, router]);
 
   const addProject = useCallback(async (name: string) => {
@@ -531,13 +545,22 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     void getStatus(currentProject.id)
       .then((status) => {
         if (ignore || requestIdentityRef.current !== requestIdentity) return;
-        setNavCounts({
+        setNavCounts((current) => ({
           sources: status.sourcesCount,
           concepts: status.conceptsCount,
-        });
+          documentImportFailures: current.documentImportFailures,
+        }));
       })
       .catch(() => {
         // Leave previous values; display layer derives null when no project.
+      });
+    void getDocumentImportFailureSummary(currentProject.id)
+      .then((summary) => {
+        if (ignore || requestIdentityRef.current !== requestIdentity) return;
+        setNavCounts((current) => ({ ...current, documentImportFailures: summary.failed_count }));
+      })
+      .catch(() => {
+        // Keep the last known value; an unavailable count is never presented as zero.
       });
 
     return () => {

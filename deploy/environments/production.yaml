@@ -48,6 +48,9 @@ export_job:
   parallelism: 1
   tasks: 1
 
+document_import_job:
+  enabled: false
+
 frontend:
   project_name: llm-wiki-frontend
   team_slug: rayer-tung-s-projects

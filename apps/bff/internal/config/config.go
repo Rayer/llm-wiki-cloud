@@ -74,6 +74,7 @@ type Config struct {
 	AnswerSynthesisReasoning    llm.Reasoning
 	JWTSecret                   string
 	PipelineJobURL              string
+	DocumentImportJobURL        string
 	ExportJobURL                string
 	ExportSigningServiceAccount string
 	AllowedOrigins              []string

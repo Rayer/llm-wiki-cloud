@@ -76,6 +76,29 @@ func TestPublicRecordHidesStorageAndDispatchDetails(t *testing.T) {
 	}
 }
 
+func TestValidateSubmissionIDRequiresBoundedOpaqueValue(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		value string
+		valid bool
+	}{
+		{name: "uuid", value: "9f5d24ca-0cef-4bcb-98c9-c06615be0c68", valid: true},
+		{name: "opaque", value: "upload_01HT8NP6XTVP9M3", valid: true},
+		{name: "empty", value: ""},
+		{name: "path", value: "../document"},
+		{name: "space", value: "id value"},
+		{name: "control", value: "id\r\nX-Injected: yes"},
+		{name: "oversized", value: strings.Repeat("x", 129)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ValidateSubmissionID(tc.value) == nil
+			if got != tc.valid {
+				t.Fatalf("ValidateSubmissionID(%q) valid=%t, want %t", tc.value, got, tc.valid)
+			}
+		})
+	}
+}
+
 func officeFixture(t *testing.T, contentType string) []byte {
 	t.Helper()
 	var output bytes.Buffer

@@ -24,15 +24,17 @@ const (
 )
 
 var (
-	ErrInvalidFilename = errors.New("invalid filename")
-	ErrUnsupportedFile = errors.New("unsupported file type")
-	ErrEmptyFile       = errors.New("empty file")
-	ErrFileTooLarge    = errors.New("file too large")
-	ErrInvalidContent  = errors.New("file content does not match its extension")
-	ErrNoReadableText  = errors.New("no readable text")
-	ErrConflict        = errors.New("document import conflict")
-	ErrNotFound        = errors.New("document import not found")
-	ErrStateConflict   = errors.New("document import state conflict")
+	ErrInvalidFilename     = errors.New("invalid filename")
+	ErrUnsupportedFile     = errors.New("unsupported file type")
+	ErrEmptyFile           = errors.New("empty file")
+	ErrFileTooLarge        = errors.New("file too large")
+	ErrInvalidContent      = errors.New("file content does not match its extension")
+	ErrInvalidSubmissionID = errors.New("invalid client submission id")
+	ErrArchiveResourceLimit = errors.New("office archive exceeds safe processing limits")
+	ErrNoReadableText      = errors.New("no readable text")
+	ErrConflict            = errors.New("document import conflict")
+	ErrNotFound            = errors.New("document import not found")
+	ErrStateConflict       = errors.New("document import state conflict")
 )
 
 type ConversionState string
@@ -96,6 +98,7 @@ type Record struct {
 	ProjectID            string          `json:"-" firestore:"project_id"`
 	DocumentID           string          `json:"document_id" firestore:"document_id"`
 	ClientSubmissionID   string          `json:"-" firestore:"client_submission_id"`
+	BatchID              string          `json:"batch_id,omitempty" firestore:"batch_id,omitempty"`
 	OriginalFilename     string          `json:"original_filename" firestore:"original_filename"`
 	MediaType            string          `json:"media_type" firestore:"media_type"`
 	Bytes                int64           `json:"bytes" firestore:"bytes"`
@@ -112,6 +115,7 @@ type Record struct {
 	Failure              *Failure        `json:"failure,omitempty" firestore:"failure,omitempty"`
 	SourceRef            *SourceRef      `json:"source_ref,omitempty" firestore:"source_ref,omitempty"`
 	PipelineRef          *PipelineRef    `json:"pipeline_ref" firestore:"pipeline_ref"`
+	SourceOperationID    string          `json:"-" firestore:"source_operation_id,omitempty"`
 	FailureSequence      int64           `json:"failure_sequence,omitempty" firestore:"failure_sequence,omitempty"`
 	DeletionState        DeletionState   `json:"deletion_state" firestore:"deletion_state"`
 	AttemptCount         int             `json:"-" firestore:"attempt_count"`
@@ -169,6 +173,25 @@ func ValidateUpload(filename string, data []byte) (string, string, error) {
 	return mediaType, fmt.Sprintf("%x", sum[:]), nil
 }
 
+func IsSupportedFilename(filename string) bool {
+	_, err := mediaTypeForExtension(strings.ToLower(filepath.Ext(filename)))
+	return err == nil
+}
+
+// ValidateSubmissionID accepts opaque, bounded identifiers while rejecting
+// characters that could be misinterpreted as paths, headers, or log controls.
+func ValidateSubmissionID(value string) error {
+	if value == "" || len(value) > 128 || strings.TrimSpace(value) != value {
+		return ErrInvalidSubmissionID
+	}
+	for _, r := range value {
+		if r < 0x21 || r == 0x7f || strings.ContainsRune(`/\\`, r) || r >= 0x80 && r <= 0x9f {
+			return ErrInvalidSubmissionID
+		}
+	}
+	return nil
+}
+
 func safeFilename(filename string) bool {
 	if filename == "" || !utf8.ValidString(filename) || len(filename) > MaxFilenameBytes ||
 		filename == "." || filename == ".." || strings.TrimSpace(filename) != filename || strings.ContainsAny(filename, `/\\`) {
@@ -218,7 +241,15 @@ func validateSignature(ext string, data []byte) error {
 			return ErrInvalidContent
 		}
 		var contentType string
+		if len(zipReader.File) > 2000 {
+			return ErrArchiveResourceLimit
+		}
+		var uncompressed uint64
 		for _, entry := range zipReader.File {
+			uncompressed += entry.UncompressedSize64
+			if uncompressed > 64<<20 {
+				return ErrArchiveResourceLimit
+			}
 			if entry.Name != "[Content_Types].xml" || entry.UncompressedSize64 > 1<<20 {
 				continue
 			}

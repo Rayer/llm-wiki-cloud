@@ -19,6 +19,10 @@ bff_preflight() {
   [[ "$(gcloud secrets versions describe "$typesafe_version" --secret "$typesafe_secret" --project "$project" --format='value(state)' --quiet)" == ENABLED ]] || die "configured TypeSafe secret version is not enabled"
   preflight_public_service "$(plan_json '.bff.service_name')" "$project" "$region"
   preflight_job_binding "$(plan_json '.bff.pipeline_job_name')" "$project" "$region" roles/run.jobsExecutorWithOverrides "$account"
+  if [[ -n "$(plan_json '.bff.document_import_job_url // empty')" ]]; then
+    preflight_job_binding "$(plan_json '.document_import_job.job_name')" "$project" \
+      "$(plan_json '.document_import_job.location')" roles/run.jobsExecutorWithOverrides "$account"
+  fi
 }
 
 bff_freeze() {

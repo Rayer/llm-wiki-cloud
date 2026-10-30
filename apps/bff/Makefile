@@ -2,6 +2,8 @@ REGION ?= asia-east1
 IMAGE_REPO ?= asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/llm-wiki-bff
 IMAGE_TAG ?= $(shell git rev-parse HEAD)
 IMAGE := $(IMAGE_REPO):$(IMAGE_TAG)
+DOCUMENT_IMPORT_IMAGE_REPO ?= asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/llm-wiki-document-import-worker
+DOCUMENT_IMPORT_IMAGE := $(DOCUMENT_IMPORT_IMAGE_REPO):$(IMAGE_TAG)
 FRONTEND_DIR ?= ../frontend
 BFF_PORT ?= 8080
 AUTH_PORT ?= 8081
@@ -16,12 +18,18 @@ LOCAL_SERVICES := ../../scripts/local-services.py
 LOCAL_DEMO_CONFIG_PATH ?= $(abspath $(CAC_OUTPUT_DIR)/local/local_demo.json)
 LOCAL_DEMO_CONFIG_ENV := LOCAL_DEMO_CONFIG_PATH="$(LOCAL_DEMO_CONFIG_PATH)"
 LOCAL_FIXTURE_CONFIG := $(abspath $(CAC_OUTPUT_DIR)/local/local_fixture.yaml)
+DOCUMENT_IMPORT_DIR := ../../apps/document-import-worker
+DOCUMENT_IMPORT_PYTHON_VERSION ?= 3.12
+DOCUMENT_IMPORT_PYTHON_BIN ?= $(shell command -v python$(DOCUMENT_IMPORT_PYTHON_VERSION) 2>/dev/null)
+DOCUMENT_IMPORT_VENV := $(abspath ../../.build/document-import-worker-venv)
+DOCUMENT_IMPORT_WORKER := $(abspath ../../.build/document_import_worker)
+DOCUMENT_IMPORT_LOCK_DIGEST = $(shell python3 -c 'import hashlib; print(hashlib.sha256(open("$(DOCUMENT_IMPORT_DIR)/uv.lock", "rb").read()).hexdigest())')
 SYNTO_VERSION := 0.7.0
 SYNTO_ARTIFACT_URL := https://files.pythonhosted.org/packages/4a/e9/41c6b61338d98820780a43ed075cd77525674c38242110435330771d771b/synto-0.7.0-py3-none-any.whl
 SYNTO_SHA256 := 4bc8dcf14b53f45fac32ce737ecf878f1a46d6d0b010c7decbe6c3b7b10afa77
 TEST_ENV := env -u LLM_API_KEY -u DEEPSEEK_API_KEY -u SYNTO_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u GEMINI_API_KEY -u TYPESAFE_API_KEY -u TYPESAFE_JEV_API_KEY -u LWC331_TEST_API_KEY
 
-.PHONY: help ensure-pkl docker-build docker-build-export-job docker-push deploy deploy-dev deploy-prod all build-sync build-sync-target cli-release-source-check setup local-config local-fixture-config auth-config-local local-synto-runtime local-synto-runtime-test local-worker-build local-fixture local-start dev support-bff support-frontend support-pipeline bff-local auth-local frontend-local local-stop kill-local pipeline-test test-flash-execution vet test build
+.PHONY: help ensure-pkl docker-build docker-build-export-job docker-build-document-import-worker docker-push deploy deploy-dev deploy-prod all build-sync build-sync-target cli-release-source-check setup local-config local-fixture-config auth-config-local local-synto-runtime local-synto-runtime-test local-worker-build local-document-import-runtime local-document-import-worker-build local-document-import-test local-fixture local-start dev support-bff support-frontend support-pipeline bff-local auth-local frontend-local local-stop kill-local pipeline-test test-flash-execution vet test build
 
 CLI_VERSION ?= dev
 CLI_COMMIT ?= $(shell git rev-parse --verify HEAD 2>/dev/null || printf unknown)
@@ -38,13 +46,17 @@ help:
 	  'support-pipeline   Start all apps; use pipeline-test for no-provider worker tests' \
 	  'auth-local         Start Auth with the generated local Auth config file' \
 	  'local-stop         Stop only processes supervised for this worktree' \
-	  'pipeline-test      Run worker tests without calling a paid provider'
+	  'pipeline-test      Run worker tests without calling a paid provider' \
+	  'local-document-import-test  Convert actual fixtures with pinned MarkItDown'
 
 docker-build:
 	docker build -t $(IMAGE) .
 
 docker-build-export-job:
 	docker build -f Dockerfile.exportjob -t $(IMAGE_REPO)-export-job:$(IMAGE_TAG) .
+
+docker-build-document-import-worker:
+	docker build -f ../document-import-worker/Dockerfile -t $(DOCUMENT_IMPORT_IMAGE) ../..
 
 docker-push:
 	docker push $(IMAGE)
@@ -120,16 +132,28 @@ local-synto-runtime-test: local-synto-runtime
 	  BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)" \
 	  $(LOCAL_ENV) -- go test -tags lwc_local_synto_runtime ./cmd/olw_worker -run '^TestLocalSyntoRuntime' -count=1 -v
 
+local-document-import-runtime:
+	@test -n "$(DOCUMENT_IMPORT_PYTHON_BIN)" || (echo "Python $(DOCUMENT_IMPORT_PYTHON_VERSION) is required" >&2; exit 1)
+	@if [ ! -x "$(DOCUMENT_IMPORT_VENV)/bin/python" ]; then "$(DOCUMENT_IMPORT_PYTHON_BIN)" -m venv "$(DOCUMENT_IMPORT_VENV)"; fi
+	PIP_CONFIG_FILE=/dev/null PIP_INDEX_URL=https://pypi.org/simple "$(DOCUMENT_IMPORT_VENV)/bin/python" -m pip install --disable-pip-version-check --no-input --no-cache-dir --require-hashes -r "$(abspath $(DOCUMENT_IMPORT_DIR))/requirements.lock"
+
+local-document-import-worker-build: local-document-import-runtime
+	mkdir -p "$(dir $(DOCUMENT_IMPORT_WORKER))"
+	GOMAXPROCS=2 GOFLAGS=-p=2 go build -o "$(DOCUMENT_IMPORT_WORKER)" ./cmd/document_import_worker
+
+local-document-import-test: local-document-import-runtime
+	PYTHONDONTWRITEBYTECODE=1 PATH="$(DOCUMENT_IMPORT_VENV)/bin:$$PATH" "$(DOCUMENT_IMPORT_VENV)/bin/python" "$(abspath $(DOCUMENT_IMPORT_DIR))/test_converter.py"
+
 local-worker-build:
 	worker="$$($(LOCAL_ENV) --worker-path)"; mkdir -p "$$(dirname "$$worker")"; go build -o "$$worker" ./cmd/olw_worker
 
 local-fixture: local-config
 	BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)" $(LOCAL_DEMO_CONFIG_ENV) $(LOCAL_ENV) -- go run ./cmd/local_fixture --config "$(LOCAL_FIXTURE_CONFIG)"
 
-local-start: local-config local-synto-runtime
+local-start: local-config local-synto-runtime local-document-import-worker-build
 	$(MAKE) local-worker-build BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)"
 	$(MAKE) local-fixture BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)"
-	LOCAL_CLOUD_PIPELINE_CONFIG_DIR="$(abspath $(CAC_OUTPUT_DIR)/local)" $(LOCAL_DEMO_CONFIG_ENV) BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)" $(LOCAL_ENV) -- python3 $(LOCAL_SERVICES) start auth bff frontend
+	LOCAL_DOCUMENT_IMPORT_WORKER_PATH="$(DOCUMENT_IMPORT_WORKER)" DOCUMENT_IMPORT_PYTHON="$(DOCUMENT_IMPORT_VENV)/bin/python" DOCUMENT_IMPORT_LOCK_DIGEST="$(DOCUMENT_IMPORT_LOCK_DIGEST)" LOCAL_CLOUD_PIPELINE_CONFIG_DIR="$(abspath $(CAC_OUTPUT_DIR)/local)" $(LOCAL_DEMO_CONFIG_ENV) BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)" $(LOCAL_ENV) -- python3 $(LOCAL_SERVICES) start auth bff frontend
 
 dev: local-start
 
@@ -138,15 +162,15 @@ support-bff: local-config
 	$(MAKE) local-fixture BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)"
 	$(LOCAL_DEMO_CONFIG_ENV) BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)" $(LOCAL_ENV) -- python3 $(LOCAL_SERVICES) start auth frontend
 
-support-frontend: local-config local-synto-runtime
+support-frontend: local-config local-synto-runtime local-document-import-worker-build
 	$(MAKE) local-worker-build BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)"
 	$(MAKE) local-fixture BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)"
-	LOCAL_CLOUD_PIPELINE_CONFIG_DIR="$(abspath $(CAC_OUTPUT_DIR)/local)" BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)" $(LOCAL_ENV) -- python3 $(LOCAL_SERVICES) start auth bff
+	LOCAL_DOCUMENT_IMPORT_WORKER_PATH="$(DOCUMENT_IMPORT_WORKER)" DOCUMENT_IMPORT_PYTHON="$(DOCUMENT_IMPORT_VENV)/bin/python" DOCUMENT_IMPORT_LOCK_DIGEST="$(DOCUMENT_IMPORT_LOCK_DIGEST)" LOCAL_CLOUD_PIPELINE_CONFIG_DIR="$(abspath $(CAC_OUTPUT_DIR)/local)" BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)" $(LOCAL_ENV) -- python3 $(LOCAL_SERVICES) start auth bff
 
 support-pipeline: local-start
 
-bff-local: local-config local-synto-runtime local-worker-build local-fixture
-	LOCAL_CLOUD_PIPELINE_CONFIG_DIR="$(abspath $(CAC_OUTPUT_DIR)/local)" $(LOCAL_DEMO_CONFIG_ENV) BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)" PORT="$(BFF_PORT)" $(LOCAL_ENV) -- go run ./cmd/bff
+bff-local: local-config local-synto-runtime local-worker-build local-document-import-worker-build local-fixture
+	LOCAL_DOCUMENT_IMPORT_WORKER_PATH="$(DOCUMENT_IMPORT_WORKER)" DOCUMENT_IMPORT_PYTHON="$(DOCUMENT_IMPORT_VENV)/bin/python" DOCUMENT_IMPORT_LOCK_DIGEST="$(DOCUMENT_IMPORT_LOCK_DIGEST)" LOCAL_CLOUD_PIPELINE_CONFIG_DIR="$(abspath $(CAC_OUTPUT_DIR)/local)" $(LOCAL_DEMO_CONFIG_ENV) BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)" PORT="$(BFF_PORT)" $(LOCAL_ENV) -- go run ./cmd/bff
 
 auth-local: local-config local-fixture
 	cd ../../gateauth && $(LOCAL_DEMO_CONFIG_ENV) BFF_PORT="$(BFF_PORT)" AUTH_PORT="$(AUTH_PORT)" FRONTEND_PORT="$(FRONTEND_PORT)" PORT="$(AUTH_PORT)" $(LOCAL_ENV_ABS) -- go run ./cmd/auth

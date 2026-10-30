@@ -136,7 +136,7 @@ class CDContractTests(LegacyMonorepoCDTestMixin, unittest.TestCase):
         self.assertEqual(set(development), set(production))
         self.assertEqual(
             set(development),
-        {"gcp", "auth", "bff", "worker", "export_job", "frontend"},
+        {"gcp", "auth", "bff", "worker", "export_job", "document_import_job", "frontend"},
         )
         self.assertEqual(
             self.normalized("development")["query_config"],
@@ -483,6 +483,7 @@ class CDContractTests(LegacyMonorepoCDTestMixin, unittest.TestCase):
         production = (ROOT / ".github/workflows/promote-production.yml").read_text()
         self.assertNotIn("\n  push:", development)
         self.assertNotIn("\n  push:", production)
+        self.assertIn("!contains(inputs.components, 'documentimport')", development)
         source = source_bundle()
         consume_start = source.index("consume_dev_images()")
         consume = source[consume_start:source.index("\n}\n\npreflight_shared", consume_start)]
@@ -2393,7 +2394,7 @@ class CDContractTests(LegacyMonorepoCDTestMixin, unittest.TestCase):
 
 
 class ArchitectureAuthorityTests(LegacyMonorepoCDTestMixin, unittest.TestCase):
-    COMPONENTS = ("auth", "bff", "worker", "exportjob", "frontend")
+    COMPONENTS = ("auth", "bff", "worker", "exportjob", "documentimport", "frontend")
 
     def test_gateauth_build_contract_is_outside_the_bff_module(self):
         gateauth = ROOT / "gateauth"

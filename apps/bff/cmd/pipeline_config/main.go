@@ -122,6 +122,7 @@ type bffSourceProjection struct {
 	MCPResourceOrigin            string                         `json:"mcp_resource_origin"`
 	MCP                          runtimeconfig.BFFMCP           `json:"mcp"`
 	PipelineJobURL               string                         `json:"pipeline_job_url"`
+	DocumentImportJobURL         string                         `json:"document_import_job_url,omitempty"`
 	ExportJobURL                 string                         `json:"export_job_url"`
 	ExportSigningServiceAccount  string                         `json:"export_signing_service_account"`
 	AllowedOrigins               []string                       `json:"allowed_origins"`
@@ -559,7 +560,7 @@ func decodeBFFSourceProjection(data []byte, environment string) (bffSourceProjec
 	} else if sourceVersion == 2 {
 		required = append(required, "jwt_secret_reference")
 	}
-	optional := []string{"registration_enabled", "local", "typesafe_api_key_reference", "byok_credential_encryption_key_reference", "pipeline_worker_service_account"}
+	optional := []string{"registration_enabled", "local", "typesafe_api_key_reference", "byok_credential_encryption_key_reference", "pipeline_worker_service_account", "document_import_job_url"}
 	if sourceVersion == 2 {
 		optional = append(optional, "auth_consumer")
 	} else if sourceVersion == 3 {
@@ -623,6 +624,9 @@ func validateBFFSourceProjection(p bffSourceProjection, environment string) erro
 	}
 	if err := validateBFFPipelineURL(p.PipelineJobURL); err != nil {
 		return errors.New("selected BFF pipeline_job_url is invalid")
+	}
+	if p.DocumentImportJobURL != "" && !validateDocumentImportJobURL(p.DocumentImportJobURL, environment) {
+		return errors.New("selected BFF document_import_job_url is invalid")
 	}
 	if (p.ExportJobURL == "") != (p.ExportSigningServiceAccount == "") {
 		return errors.New("selected BFF export URL and signer must be configured together")
@@ -794,6 +798,22 @@ func validateBFFPipelineURL(raw string) error {
 	return nil
 }
 
+func validateDocumentImportJobURL(raw, environment string) bool {
+	const prefix = "https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/"
+	if !strings.HasPrefix(raw, prefix) || strings.ContainsAny(raw, "?#\\\r\n\t ") {
+		return false
+	}
+	job := strings.TrimSuffix(strings.TrimPrefix(raw, prefix), ":run")
+	if !regexp.MustCompile(`^[a-z][a-z0-9-]{0,61}[a-z0-9]$`).MatchString(job) ||
+		raw != prefix+job+":run" {
+		return false
+	}
+	if environment == "dev" {
+		return strings.HasSuffix(job, "-dev")
+	}
+	return environment == "prod" && !strings.HasSuffix(job, "-dev")
+}
+
 func absoluteFilePath(path string) bool {
 	return filepath.IsAbs(path) && !strings.ContainsAny(path, "\r\n\x00")
 }
@@ -887,8 +907,9 @@ func prepareBFFRuntimeConfig(ctx context.Context, root, output string, source bf
 		SchemaVersion: source.SchemaVersion, Environment: source.Environment, Target: source.Target,
 		GCPProject: source.GCPProject, Bucket: source.Bucket, FirestoreDatabaseID: source.FirestoreDatabaseID,
 		AuthServiceURL: source.AuthServiceURL, MCPResourceOrigin: source.MCPResourceOrigin, MCP: &source.MCP,
-		PipelineJobURL: source.PipelineJobURL,
-		ExportJobURL:   source.ExportJobURL, ExportSigningServiceAccount: source.ExportSigningServiceAccount,
+		PipelineJobURL:       source.PipelineJobURL,
+		DocumentImportJobURL: source.DocumentImportJobURL,
+		ExportJobURL:         source.ExportJobURL, ExportSigningServiceAccount: source.ExportSigningServiceAccount,
 		AllowedOrigins: source.AllowedOrigins, AllowedHosts: source.AllowedHosts,
 		PipelineDailyLimit: source.PipelineDailyLimit, PipelineCooldownSeconds: source.PipelineCooldownSeconds,
 		PipelineMinNewRaw: source.PipelineMinNewRaw, PipelineDemoUserIDs: source.PipelineDemoUserIDs,

@@ -175,6 +175,12 @@ func (h *Handler) mcpSDKHandler(identity mcpProjectKeyIdentity) http.Handler {
 		InputSchema:  queryProjectInputSchema,
 		OutputSchema: queryProjectOutputSchema,
 	}, h.callMCPQuery)
+	if hasMCPCapability(capabilities, mcpQueryCapability) {
+		mcp.AddTool[mcpGetDocumentImportInput, any](server, &mcp.Tool{
+			Name: "get_document_import", Title: "Get document import status", Description: mcpGetDocumentImportDescription,
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true}, InputSchema: mcpGetDocumentImportInputSchema,
+		}, h.callMCPGetDocumentImport)
+	}
 	if hasMCPCapability(capabilities, mcpQueryCapability) && hasMCPCapability(capabilities, mcpRawWriteCapability) {
 		mcp.AddTool[addRawInput, any](server, &mcp.Tool{
 			Name:        "add_raw",
@@ -190,6 +196,11 @@ func (h *Handler) mcpSDKHandler(identity mcpProjectKeyIdentity) http.Handler {
 			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: boolHint(false), IdempotentHint: true, OpenWorldHint: boolHint(true)},
 			InputSchema: importURLInputSchema, OutputSchema: importURLOutputSchema,
 		}, h.callMCPImportURL)
+		mcp.AddTool[mcpImportDocumentInput, any](server, &mcp.Tool{
+			Name: "import_document", Title: "Import a document file", Description: mcpImportDocumentDescription,
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: boolHint(false), IdempotentHint: true, OpenWorldHint: boolHint(false)},
+			InputSchema: mcpImportDocumentInputSchema,
+		}, h.callMCPImportDocument)
 	}
 
 	transport := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
@@ -217,6 +228,7 @@ func (h *Handler) mcpAuthenticatedHandler(identity mcpProjectKeyIdentity) http.H
 }
 
 func (h *Handler) serveAuthenticatedMCP(sdkAuthenticated http.Handler, identity mcpProjectKeyIdentity, w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxDocumentImportMCPRequestBytes)
 	ctx := context.WithValue(r.Context(), mcpProjectKeyIdentityContextKey{}, identity)
 	control := newMCPListenControl(h.eventTiming())
 	ctx = context.WithValue(ctx, mcpListenControlContextKey{}, control)

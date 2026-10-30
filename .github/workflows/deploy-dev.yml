@@ -127,6 +127,7 @@ jobs:
       always() && github.event_name == 'workflow_dispatch' &&
       github.ref == 'refs/heads/develop' &&
       inputs.components != 'provision-exportjob-dev' &&
+      !contains(inputs.components, 'documentimport') &&
       inputs.operation != 'diagnose-auth-image' &&
       inputs.operation != 'config-only' &&
       inputs.operation != 'frontend-config-only' &&

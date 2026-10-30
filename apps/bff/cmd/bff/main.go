@@ -30,6 +30,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/byok"
 	conceptcache "github.com/rayer/llm-wiki-bff/internal/cache"
 	"github.com/rayer/llm-wiki-bff/internal/config"
+	"github.com/rayer/llm-wiki-bff/internal/documentimport"
 	"github.com/rayer/llm-wiki-bff/internal/exportjob"
 	"github.com/rayer/llm-wiki-bff/internal/firestore"
 	"github.com/rayer/llm-wiki-bff/internal/gcs"
@@ -238,6 +239,18 @@ func main() {
 	hV1.SetMCPConfig(cfg.MCP)
 	hV1.SetQueryExecutor(productionExecutor)
 	hV1.SetPipelineJobURL(cfg.PipelineJobURL)
+	if localMode {
+		if workerPath := strings.TrimSpace(os.Getenv("LOCAL_DOCUMENT_IMPORT_WORKER_PATH")); workerPath != "" {
+			hV1.SetDocumentImportStarter(documentimport.ProcessStarter{
+				Path: workerPath, Project: cfg.GCPProject, Bucket: cfg.Bucket,
+				DatabaseID: cfg.FirestoreDatabaseID, Scope: cfg.LocalCloudScope,
+				PythonPath: os.Getenv("DOCUMENT_IMPORT_PYTHON"), LockDigest: os.Getenv("DOCUMENT_IMPORT_LOCK_DIGEST"),
+				StorageHost: os.Getenv("STORAGE_EMULATOR_HOST"), FirestoreHost: os.Getenv("FIRESTORE_EMULATOR_HOST"),
+			})
+		}
+	} else {
+		hV1.SetDocumentImportJobURL(cfg.DocumentImportJobURL)
+	}
 	hV1.SetPipelineQuotaConfig(
 		cfg.PipelineDailyLimit,
 		cfg.PipelineCooldownSeconds,
@@ -633,6 +646,14 @@ func newProductionRouter(
 		v1.GET("/raw", hV1.RawList)
 		v1.GET("/raw/*path", hV1.RawPreview)
 		v1.POST("/raw/upload", hV1.RawUpload)
+		documentImports := v1.Group("/projects/:pid/document-imports")
+		documentImports.GET("", hV1.ListDocumentImports)
+		documentImports.GET("/failure-summary", hV1.GetDocumentImportFailureSummary)
+		documentImports.PUT("/failure-reminder", hV1.DismissDocumentImportFailureReminder)
+		documentImports.GET("/by-submission/:submissionID", hV1.GetDocumentImportBySubmission)
+		documentImports.GET("/:id/original", hV1.DownloadDocumentImportOriginal)
+		documentImports.GET("/:id", hV1.GetDocumentImport)
+		documentImports.DELETE("/:id", hV1.DeleteDocumentImport)
 		v1.GET("/status", hV1.Status)
 		v1.GET("/metrics", hV1.PrometheusMetrics)
 	}

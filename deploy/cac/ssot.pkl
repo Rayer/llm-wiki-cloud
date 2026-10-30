@@ -119,6 +119,7 @@ class BffConfig {
   auth_service_url: String
   mcp_resource_origin: String? = null
   pipeline_job_url: String
+  document_import_job_url: String? = null
   export_job_url: String
   export_signing_service_account: String
   allowed_origins: Listing<String>
@@ -505,6 +506,7 @@ local localBff = new BffConfig {
   }
   mcp_resource_origin = localBffResourceOrigin
   pipeline_job_url = "https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/olw-pipeline:run"
+  document_import_job_url = null
   export_job_url = ""
   export_signing_service_account = ""
   allowed_origins = new Listing {
@@ -578,6 +580,7 @@ local devBff = new BffConfig {
   auth_service_url = "https://auth.dev.rayer.idv.tw"
   mcp_resource_origin = devBffResourceOrigin
   pipeline_job_url = "https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/olw-pipeline-dev:run"
+  document_import_job_url = "https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/document-import-job-dev:run"
   export_job_url = "https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/export-job-dev:run"
   export_signing_service_account = "lwc-export-signer-dev@llm-wiki-cloud.iam.gserviceaccount.com"
   allowed_origins = new Listing {

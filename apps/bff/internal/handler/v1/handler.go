@@ -13,6 +13,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/byok"
 	conceptcache "github.com/rayer/llm-wiki-bff/internal/cache"
 	"github.com/rayer/llm-wiki-bff/internal/config"
+	"github.com/rayer/llm-wiki-bff/internal/documentimport"
 	"github.com/rayer/llm-wiki-bff/internal/firestore"
 	handlerapi "github.com/rayer/llm-wiki-bff/internal/handler"
 	"github.com/rayer/llm-wiki-bff/internal/llm"
@@ -34,6 +35,8 @@ type Handler struct {
 	syncBindingHost                string
 	projectKeyService              *auth.ProjectKeyService
 	urlIntake                      *urlintake.Service
+	documentImports                *documentimport.Service
+	documentImportJobURL           string
 	mcpFrontendOrigin              string
 	mcpConfig                      *config.BFFMCP
 	store                          store.RootStore
@@ -124,8 +127,25 @@ func New(wikiStore store.RootStore, fs *firestore.Client, idx *search.Index, cac
 		h.accountLookup = auth.FirestoreAccountLookup(fs.Raw())
 		h.projectKeyService = auth.NewProjectKeyService(fs.Raw())
 		h.profileRepository = newFirestoreProfileRepository(fs.Raw())
+		h.documentImports = &documentimport.Service{Repository: documentimport.NewFirestoreRepository(fs.Raw())}
 	}
 	return h
+}
+
+func (h *Handler) SetDocumentImportStarter(starter documentimport.JobStarter) {
+	if h.documentImports == nil {
+		h.documentImports = &documentimport.Service{}
+	}
+	h.documentImports.Starter = starter
+}
+
+func (h *Handler) SetDocumentImportJobURL(jobURL string) {
+	h.documentImportJobURL = strings.TrimSpace(jobURL)
+	if h.documentImportJobURL == "" {
+		h.SetDocumentImportStarter(nil)
+		return
+	}
+	h.SetDocumentImportStarter(&documentImportCloudRunStarter{handler: h})
 }
 
 // SetAccountLookup supplies the shared account authority (also used by local test adapters).

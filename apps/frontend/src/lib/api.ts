@@ -416,6 +416,7 @@ type BuildRequestInitOptions = {
   accessToken?: string | null;
   json?: boolean;
   body?: BodyInit;
+  headers?: HeadersInit;
   signal?: AbortSignal;
 };
 
@@ -425,10 +426,12 @@ export function buildRequestInit({
   accessToken,
   json = false,
   body,
+  headers: extraHeaders,
   signal,
 }: BuildRequestInitOptions): RequestInit {
   const headers: Record<string, string> = {
     ...(json ? { 'Content-Type': 'application/json' } : {}),
+    ...(extraHeaders ? Object.fromEntries(new Headers(extraHeaders).entries()) : {}),
   };
 
   if (accessToken) {
@@ -487,6 +490,7 @@ type ApiFetchOptions = {
   projectId?: string;
   json?: boolean;
   body?: BodyInit;
+  headers?: HeadersInit;
   requireProject?: boolean;
   signal?: AbortSignal;
   onRequestDispatched?: () => void;
@@ -1282,6 +1286,56 @@ export async function getSources(projectId?: string) {
   return extractArray(await requestJson<unknown>('/api/v1/sources', { projectId })).map(normalizeSourceListItem);
 }
 
+async function documentImportRequest<T>(path: string, options: ApiFetchOptions = {}): Promise<T> {
+  const response = await apiFetch(path, options);
+  const payload: unknown = response.status === 204 ? null : await response.json().catch(() => null);
+  if (!response.ok) {
+    const message = isRecord(payload) ? asString(payload.error) ?? asString(payload.message) : undefined;
+    throw new ApiError(message ?? `Document import request failed (${response.status})`, response.status,
+      diagnosticIdFromPayload(payload), response.headers.get('X-Request-ID'));
+  }
+  return payload as T;
+}
+
+export async function getDocumentImports(projectId: string, conversionStatus = 'all', cursor?: string): Promise<DocumentImportList> {
+  const query = new URLSearchParams({ conversion_status: conversionStatus, limit: '100' });
+  if (cursor) query.set('cursor', cursor);
+  return documentImportRequest<DocumentImportList>(`/api/v1/projects/${encodeURIComponent(projectId)}/document-imports?${query}`, { projectId });
+}
+
+export async function getDocumentImport(projectId: string, documentId: string): Promise<DocumentImportRecord> {
+  return documentImportRequest<DocumentImportRecord>(`/api/v1/projects/${encodeURIComponent(projectId)}/document-imports/${encodeURIComponent(documentId)}`, { projectId });
+}
+
+export async function getDocumentImportBySubmission(projectId: string, submissionId: string): Promise<Record<string, unknown>> {
+  return documentImportRequest<Record<string, unknown>>(`/api/v1/projects/${encodeURIComponent(projectId)}/document-imports/by-submission/${encodeURIComponent(submissionId)}`, { projectId });
+}
+
+export async function getDocumentImportFailureSummary(projectId: string): Promise<DocumentImportSummary> {
+  return documentImportRequest<DocumentImportSummary>(`/api/v1/projects/${encodeURIComponent(projectId)}/document-imports/failure-summary`, { projectId });
+}
+
+export async function dismissDocumentImportFailureReminder(projectId: string, sequence: number): Promise<DocumentImportSummary> {
+  return documentImportRequest<DocumentImportSummary>(`/api/v1/projects/${encodeURIComponent(projectId)}/document-imports/failure-reminder`, {
+    method: 'PUT', projectId, json: true, body: JSON.stringify({ dismissed_through_sequence: sequence }),
+  });
+}
+
+export async function downloadDocumentImportOriginal(projectId: string, documentId: string): Promise<Blob> {
+  const response = await apiFetch(`/api/v1/projects/${encodeURIComponent(projectId)}/document-imports/${encodeURIComponent(documentId)}/original`, { projectId });
+  if (!response.ok) {
+    const payload: unknown = await response.json().catch(() => null);
+    throw new ApiError(`Original file download failed (${response.status})`, response.status, diagnosticIdFromPayload(payload), response.headers.get('X-Request-ID'));
+  }
+  return response.blob();
+}
+
+export async function deleteDocumentImport(projectId: string, documentId: string, revision: number): Promise<void> {
+  await documentImportRequest<void>(`/api/v1/projects/${encodeURIComponent(projectId)}/document-imports/${encodeURIComponent(documentId)}`, {
+    method: 'DELETE', projectId, headers: { 'If-Match': String(revision) },
+  });
+}
+
 export async function getSource(slug: string) {
 	const safeSlug = safeWikiRouteSegment(slug);
 	if (!safeSlug) throw new ApiError('Invalid source lookup segment', 400);
@@ -1371,6 +1425,46 @@ export type RawUploadResult = {
   sha256: string;
   status: RawUploadStatus;
 };
+
+export type DocumentImportRecord = {
+  document_id: string;
+  original_filename: string;
+  media_type: string;
+  bytes: number;
+  sha256: string;
+  created_at: string;
+  updated_at: string;
+  revision: number;
+  converter_version: string;
+  dependency_lock_digest?: string;
+  conversion_state: 'receiving' | 'accepted' | 'queued' | 'converting' | 'succeeded' | 'failed' | string;
+  source_state: 'not_started' | 'saving' | 'saved' | 'failed' | 'unknown' | string;
+  failure?: { stage: string; class: string; safe_message_key: string; diagnostic_id?: string; retryable: boolean } | null;
+  source_ref?: { raw_path: string; sha256: string; object_generation: number; source_id?: string } | null;
+  pipeline_ref?: { status: string; intent_id?: string; execution_id?: string; content_generation?: string; reason?: string } | null;
+  failure_sequence?: number;
+  deletion_state: 'present' | 'deleting' | 'delete_failed' | 'deleted' | string;
+};
+
+export type DocumentImportSummary = {
+  failed_count: number;
+  latest_failure_sequence: number;
+  reminder_visible: boolean;
+  dismissed_through_sequence: number;
+  site_url: string;
+  snapshot_revision: number;
+};
+
+export type DocumentImportList = {
+  items: DocumentImportRecord[];
+  next_cursor?: string;
+  snapshot_revision: number;
+  failed_count: number;
+  latest_failure_sequence: number;
+};
+
+export type DocumentImportUploadResult = DocumentImportRecord & { status_url: string; site_url: string; status?: RawUploadStatus };
+export type RawFileUploadResult = RawUploadResult | DocumentImportUploadResult;
 
 export type RawUploadProgressCallback = (progress: number) => void;
 
@@ -1557,6 +1651,8 @@ function sendRawUploadRequest(
   projectId: string,
   accessToken: string,
   reportProgress: (progress: number) => void,
+  submissionID?: string,
+  batchID?: string,
 ): Promise<XhrResponse> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -1566,6 +1662,8 @@ function sendRawUploadRequest(
     for (const [name, value] of Object.entries(buildProjectHeaders(projectId, accessToken))) {
       xhr.setRequestHeader(name, value);
     }
+    if (submissionID) formData.set('client_submission_id', submissionID);
+    if (batchID) formData.set('batch_id', batchID);
 
     xhr.upload.onprogress = (event) => {
       if (!event.lengthComputable || event.total <= 0) return;
@@ -1583,7 +1681,9 @@ export async function uploadRawFile(
   file: File,
   onProgress?: RawUploadProgressCallback,
   explicitProjectId?: string,
-): Promise<RawUploadResult> {
+  submissionID?: string,
+  batchID?: string,
+): Promise<RawFileUploadResult> {
   if (file.size > RAW_UPLOAD_MAX_BYTES) {
     throw new Error('file too large (max 5 MiB)');
   }
@@ -1595,6 +1695,10 @@ export async function uploadRawFile(
   const { auth, accessToken, epoch: requestEpoch } = await accessTokenOrRefresh();
   const formData = new FormData();
   formData.append('file', file);
+  const extension = file.name.toLowerCase().slice(file.name.lastIndexOf('.'));
+  const isDocumentImport = ['.pdf', '.docx', '.pptx', '.xlsx', '.xls'].includes(extension);
+  const documentSubmissionID = isDocumentImport ? submissionID ?? crypto.randomUUID() : undefined;
+  if (documentSubmissionID) formData.set('client_submission_id', documentSubmissionID);
   let lastProgress = -1;
   const reportProgress = (progress: number) => {
     const bounded = Math.max(0, Math.min(100, Math.round(progress)));
@@ -1608,6 +1712,8 @@ export async function uploadRawFile(
     projectId,
     accessToken,
     reportProgress,
+    documentSubmissionID,
+    batchID,
   );
   if (
     response.status === 401
@@ -1641,6 +1747,8 @@ export async function uploadRawFile(
         projectId,
         refreshedOperation.accessToken,
         reportProgress,
+        documentSubmissionID,
+        batchID,
       );
       if (
         response.status === 401
@@ -1659,6 +1767,12 @@ export async function uploadRawFile(
 
   reportProgress(100);
   const body = (await response.json()) as Partial<RawUploadResult> & Record<string, unknown>;
+  if (isDocumentImport) {
+    if (response.status !== 202 || typeof body.document_id !== 'string' || typeof body.status_url !== 'string') {
+      throw new ApiError('The document acceptance response was incomplete.', 502, undefined, response.requestId);
+    }
+    return body as unknown as DocumentImportUploadResult;
+  }
   const status = body.status === 'already_exists' || body.status === 'replaced'
     ? body.status
     : response.status === 200 ? 'already_exists' : 'created';

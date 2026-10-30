@@ -186,6 +186,22 @@ class Acceptance(unittest.TestCase):
             t={'serviceAccountName':cfg['runtime_service_account'],'containers':[{'image':'prior@sha256:'+'b'*64,'env':env}],
                'timeoutSeconds':'82800','maxRetries':0}
             self.provider['resources'][cfg['job_name']]={'spec':{'template':{'spec':{'parallelism':1,'taskCount':1,'template':{'spec':t}}}}}
+        cfg=n['document_import_job']
+        document_import_env=[
+            {'name':'GCP_PROJECT','value':n['gcp']['project_id']},
+            {'name':'FIRESTORE_DATABASE_ID','value':cfg['firestore_database_id']},
+            {'name':'BUCKET','value':cfg['bucket']},
+        ]
+        document_import_template={
+            'serviceAccountName':cfg['runtime_service_account'],
+            'containers':[{'image':'prior@sha256:'+'b'*64,'env':document_import_env,
+                           'resources':{'limits':{'cpu':str(cfg['cpu']),'memory':cfg['memory']}}}],
+            'timeoutSeconds':str(int(cfg['job_timeout'][:-1])),
+            'maxRetries':cfg['max_retries'],
+        }
+        self.provider['resources'][cfg['job_name']]={'spec':{'template':{'spec':{
+            'parallelism':cfg['parallelism'],'taskCount':cfg['tasks'],
+            'template':{'spec':document_import_template}}}}}
         for environment in ('development', 'production'):
             bucket=n['worker']['bucket'] if environment == n['environment'] else ('llm-wiki-data' if environment == 'production' else 'llm-wiki-data-dev')
             self.provider.setdefault('pipeline_configs', {})[
@@ -1248,6 +1264,47 @@ class Acceptance(unittest.TestCase):
                 self.assertNotIn('OTEL_EXPORTER_OTLP_ENDPOINT', env)
                 self.assertNotIn('LWC_DEV_FULL_TRACE_SAMPLING', env)
                 self.assertTrue(e.provider.observe(component, prior, {}, prior=True))
+
+    def test_documentimport_image_update_readback_and_rollback_keep_parent_runtime_config(self):
+        e = self.ready(self.make(('documentimport',), name='documentimport-image-only'))
+        e.snapshot()
+        prior = e.state['components']['documentimport']['prior']
+        artifact = e.receipt('documentimport')['artifact']
+        self.assertEqual(prior['service_account'], self.normalized['document_import_job']['runtime_service_account'])
+        self.assertEqual([entry['name'] for entry in prior['env']],
+                         ['GCP_PROJECT', 'FIRESTORE_DATABASE_ID', 'BUCKET'])
+        self.assertNotIn('secret', json.dumps(prior).lower())
+        e.provider.deploy('documentimport', artifact, {}, lambda: None)
+        self.assertTrue(e.provider.observe('documentimport', artifact, {}, prior=False))
+        self.assertEqual(len(self.calls('update')), 1)
+        update = self.calls('update')[0]
+        self.assertEqual(update[1:4], ['run', 'jobs', 'update'])
+        self.assertIn('--image', update)
+        self.assertNotIn('--update-env-vars', update)
+        self.assertNotIn('--service-account', update)
+        e.provider.rollback('documentimport', prior)
+        self.assertTrue(e.provider.observe('documentimport', prior, {}, prior=True))
+
+    def test_documentimport_snapshot_rejects_secret_environment_or_volume(self):
+        name = self.normalized['document_import_job']['job_name']
+        baseline = copy.deepcopy(self.provider)
+        for case in ('secret-env', 'secret-volume'):
+            with self.subTest(case=case):
+                self.provider = copy.deepcopy(baseline)
+                self.flush()
+                e = self.make(('documentimport',), name='documentimport-'+case)
+                template = providers.Providers.job_template(self.provider['resources'][name])
+                if case == 'secret-env':
+                    template['containers'][0]['env'].append({
+                        'name': 'PROVIDER_KEY',
+                        'valueFrom': {'secretKeyRef': {'name': 'fixture', 'key': 'latest'}},
+                    })
+                else:
+                    template['volumes'] = [{'name': 'provider-key',
+                                            'secret': {'secretName': 'provider-key'}}]
+                self.flush()
+                with self.assertRaisesRegex(Breakpoint, 'document-import-job-config-incompatible'):
+                    e.provider.snapshot('documentimport')
 
     def test_production_worker_and_exportjob_enable_endpoint_without_dev_sampling_and_rollback(self):
         normalized = self.production_jobs_normalized

@@ -124,7 +124,7 @@ validate_inputs() {
   [[ "$GITHUB_REF_NAME" == "$SOURCE_REF" ]] || die "workflow branch does not match source ref"
   local components_json
   components_json=$(jq -Rn --arg raw "$COMPONENTS" '$raw | split(",") | map(gsub("^\\s+|\\s+$"; ""))')
-  jq -e 'type == "array" and length > 0 and all(.[]; . == "auth" or . == "bff" or . == "worker" or . == "exportjob" or . == "frontend") and (unique|length == length)' <<<"$components_json" >/dev/null || die "component selection is not an exact nonempty allowlist"
+  jq -e 'type == "array" and length > 0 and all(.[]; . == "auth" or . == "bff" or . == "worker" or . == "exportjob" or . == "documentimport" or . == "frontend") and (unique|length == length)' <<<"$components_json" >/dev/null || die "component selection is not an exact nonempty allowlist"
   [[ "$ENVIRONMENT" == development && "$SOURCE_REF" == develop || "$ENVIRONMENT" == production && "$SOURCE_REF" == main ]] || die "environment and source ref do not match"
   [[ "$CONFIG_PATH" == "deploy/environments/$ENVIRONMENT.yaml" ]] || die "config path is not fixed for the environment"
 }
@@ -178,7 +178,7 @@ write_rollback_result() {
 journal_validate() {
   local selected
   selected=$(plan_json '.selected_components') || return 1
-  jq -e --argjson selected "$selected" --argjson known '["auth","bff","worker","exportjob","frontend"]' '
+  jq -e --argjson selected "$selected" --argjson known '["auth","bff","worker","exportjob","documentimport","frontend"]' '
     def allowed_state:
       . == "pending" or . == "accepted" or . == "unknown" or . == "rejected_or_no_mutation" or
       . == "rollback_pending" or . == "rollback_accepted" or . == "rollback_failed" or . == "rollback_unknown";
@@ -290,6 +290,7 @@ component_image_name() {
     bff) printf 'llm-wiki-bff\n' ;;
     worker) printf 'olw-pipeline\n' ;;
     exportjob) printf 'llm-wiki-bff-export-job\n' ;;
+    documentimport) printf 'llm-wiki-document-import-worker\n' ;;
     *) die "component $1 has no backend image" ;;
   esac
 }

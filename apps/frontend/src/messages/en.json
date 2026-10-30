@@ -287,6 +287,70 @@
       "notes_pending": "Notes pending",
       "content_pending": "Content pending",
       "error": "Error"
+    },
+    "documentImport": {
+      "navBadge": "Document import failures: {count}",
+      "projectUnavailable": "The requested project is unavailable.",
+      "loadingProject": "Loading the requested project…",
+      "switchingProject": "Switching to the requested project…",
+      "failureTitle": "Document imports need attention",
+      "failureCount": "{count} document imports failed.",
+      "viewFailures": "View document imports",
+      "dismiss": "Dismiss reminder",
+      "refreshFailed": "Unable to refresh document import status.",
+      "dismissFailed": "Unable to dismiss the document import reminder.",
+      "downloadPrepared": "Original download prepared.",
+      "confirmDelete": "Delete the failed import for {filename}?",
+      "deleteAccepted": "Deletion queued.",
+      "listTitle": "Document imports",
+      "failedCount": "{count} failed",
+      "filterLabel": "Show:",
+      "filter": {
+        "all": "All",
+        "pending": "Pending",
+        "succeeded": "Succeeded",
+        "failed": "Failed"
+      },
+      "loadFailed": "Unable to load document imports",
+      "loading": "Loading document imports…",
+      "deleting": "Deleting original",
+      "deleteFailed": "Original deletion failed",
+      "failure": {
+        "conversion_error": "Conversion failed",
+        "converter_unavailable": "The document converter is unavailable",
+        "password_protected": "This document is password protected",
+        "corrupt_file": "This file is damaged or unreadable",
+        "resource_limit": "This document exceeds conversion limits",
+        "conversion_timeout": "Conversion took too long",
+        "no_readable_text": "No readable text was found",
+        "original_unavailable": "The original file is unavailable",
+        "original_changed": "The original file changed during import",
+        "conversion_storage_error": "Converted text could not be stored",
+        "worker_unavailable": "The conversion worker could not start"
+      },
+      "sourceSaved": "Converted text was saved as a source",
+      "sourceSaveFailed": "Converted text could not be saved as a source",
+      "statusUnknown": "The source save status is being reconciled",
+      "state": {
+        "receiving": "Receiving upload",
+        "accepted": "Accepted",
+        "queued": "Queued for conversion",
+        "converting": "Converting",
+        "succeeded": "Conversion complete",
+        "failed": "Conversion failed"
+      },
+      "sourceState": {
+        "none": "not saved",
+        "saving": "saving",
+        "saved": "saved",
+        "failed": "save failed",
+        "unknown": "status unknown"
+      },
+      "pipelineState": "Source pipeline: {state}",
+      "diagnostic": "Diagnostic ID: {id}",
+      "downloadOriginal": "Download original",
+      "delete": "Delete failed import",
+      "loadMore": "Load more"
     }
   },
   "Annotation": {
@@ -1025,7 +1089,22 @@
     "importIntoProject": "Import into {project} ({id}) at the raw root.",
     "cancel": "Cancel",
     "confirmImport": "Confirm import",
-    "projectLabel": "Project: {project} ({id})"
+    "projectLabel": "Project: {project} ({id})",
+    "status": {
+      "queued": "Queued",
+      "uploading": "Uploading",
+      "accepted": "Accepted",
+      "created": "Created",
+      "alreadyExists": "Already exists",
+      "replaced": "Replaced",
+      "failed": "Failed"
+    },
+    "uploadSummary": "{created} created, {existing} already exists, {accepted} accepted, {replaced} replaced, {failed} failed, {pending} in progress",
+    "uploadFailed": "Upload failed.",
+    "duplicateFilenameInBatch": "A file with this destination name is already selected.",
+    "documentStatus": "Document {id} · {conversion} · source {source}",
+    "retryFile": "Retry upload of {filename}",
+    "retry": "Retry"
   },
   "ComingSoon": {
     "title": "Coming Soon"

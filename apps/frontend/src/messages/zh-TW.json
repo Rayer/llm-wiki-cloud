@@ -287,6 +287,70 @@
       "notes_pending": "註解待處理",
       "content_pending": "內容待處理",
       "error": "錯誤"
+    },
+    "documentImport": {
+      "navBadge": "文件匯入失敗：{count}",
+      "projectUnavailable": "找不到指定的專案。",
+      "loadingProject": "正在載入指定專案…",
+      "switchingProject": "正在切換至指定專案…",
+      "failureTitle": "文件匯入需要處理",
+      "failureCount": "{count} 個文件匯入失敗。",
+      "viewFailures": "查看文件匯入",
+      "dismiss": "關閉提醒",
+      "refreshFailed": "無法更新文件匯入狀態。",
+      "dismissFailed": "無法關閉文件匯入提醒。",
+      "downloadPrepared": "已準備下載原始檔案。",
+      "confirmDelete": "要刪除 {filename} 的失敗匯入嗎？",
+      "deleteAccepted": "已排入刪除工作。",
+      "listTitle": "文件匯入",
+      "failedCount": "{count} 個失敗",
+      "filterLabel": "顯示：",
+      "filter": {
+        "all": "全部",
+        "pending": "處理中",
+        "succeeded": "成功",
+        "failed": "失敗"
+      },
+      "loadFailed": "無法載入文件匯入",
+      "loading": "正在載入文件匯入…",
+      "deleting": "正在刪除原始檔案",
+      "deleteFailed": "原始檔案刪除失敗",
+      "failure": {
+        "conversion_error": "轉換失敗",
+        "converter_unavailable": "文件轉換器目前無法使用",
+        "password_protected": "此文件受密碼保護",
+        "corrupt_file": "檔案損毀或無法讀取",
+        "resource_limit": "文件超出轉換限制",
+        "conversion_timeout": "轉換逾時",
+        "no_readable_text": "找不到可讀取的文字",
+        "original_unavailable": "無法取得原始檔案",
+        "original_changed": "匯入期間原始檔案發生變更",
+        "conversion_storage_error": "無法儲存轉換後的文字",
+        "worker_unavailable": "無法啟動轉換工作"
+      },
+      "sourceSaved": "轉換後的文字已儲存為來源",
+      "sourceSaveFailed": "無法將轉換後的文字儲存為來源",
+      "statusUnknown": "正在確認來源儲存狀態",
+      "state": {
+        "receiving": "正在接收上傳",
+        "accepted": "已接受",
+        "queued": "等待轉換",
+        "converting": "轉換中",
+        "succeeded": "轉換完成",
+        "failed": "轉換失敗"
+      },
+      "sourceState": {
+        "none": "尚未儲存",
+        "saving": "儲存中",
+        "saved": "已儲存",
+        "failed": "儲存失敗",
+        "unknown": "狀態不明"
+      },
+      "pipelineState": "來源流程：{state}",
+      "diagnostic": "診斷編號：{id}",
+      "downloadOriginal": "下載原始檔案",
+      "delete": "刪除失敗匯入",
+      "loadMore": "載入更多"
     }
   },
   "Annotation": {
@@ -1025,7 +1089,22 @@
     "importIntoProject": "匯入至 {project}（{id}）的 raw 根目錄。",
     "cancel": "取消",
     "confirmImport": "確認匯入",
-    "projectLabel": "專案：{project}（{id}）"
+    "projectLabel": "專案：{project}（{id}）",
+    "status": {
+      "queued": "排入佇列",
+      "uploading": "上傳中",
+      "accepted": "已接受",
+      "created": "已建立",
+      "alreadyExists": "已存在",
+      "replaced": "已取代",
+      "failed": "失敗"
+    },
+    "uploadSummary": "{created} 個已建立、{existing} 個已存在、{accepted} 個已接受、{replaced} 個已取代、{failed} 個失敗、{pending} 個處理中",
+    "uploadFailed": "上傳失敗。",
+    "duplicateFilenameInBatch": "已選取相同目的檔名的檔案。",
+    "documentStatus": "文件 {id} · {conversion} · 來源{source}",
+    "retryFile": "重試上傳 {filename}",
+    "retry": "重試"
   },
   "ComingSoon": {
     "title": "Coming Soon"
