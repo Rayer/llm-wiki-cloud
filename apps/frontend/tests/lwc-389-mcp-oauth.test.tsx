@@ -8,7 +8,8 @@ const mocks = vi.hoisted(() => ({
   sessionEpoch: 1,
   user: { id: 'user-one', email: 'owner@example.com' },
   project: { id: 'project-one', name: 'Research Project' } as { id: string; name: string } | null,
-  translate: (key: string) => key,
+  translate: (key: string, params?: Record<string, string | number>) => { void params; return key; },
+  translateLane: (key: string, params?: Record<string, string | number>) => { void params; return key; },
   readConsent: vi.fn(),
   decideConsent: vi.fn(),
   listGrants: vi.fn(),
@@ -34,8 +35,12 @@ vi.mock('@/components/WorkspaceProvider', () => ({ useWorkspace: () => ({
 
 vi.mock('@/lib/api', () => ({ apiFetch: mocks.apiFetch }));
 
-vi.mock('@/lib/i18n', () => {
-  return { useT: () => ({ t: mocks.translate }) };
+vi.mock('@/lib/i18n', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/i18n')>('@/lib/i18n');
+  const { i18nLaneTestTranslate } = await vi.importActual<typeof import('./i18n-lane-test-helper')>('./i18n-lane-test-helper');
+  mocks.translateLane = (key, params) => i18nLaneTestTranslate(actual.translate, key, params);
+  mocks.translate = mocks.translateLane;
+  return { ...actual, useT: () => ({ t: mocks.translate }) };
 });
 
 vi.mock('next/link', () => ({ default: ({ href, children, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement>) => <a href={href as string} {...props}>{children}</a> }));
@@ -93,7 +98,7 @@ beforeEach(() => {
   mocks.sessionEpoch = 1;
   mocks.user = { id: 'user-one', email: 'owner@example.com' };
   mocks.project = { id: 'project-one', name: 'Research Project' };
-  mocks.translate = (key: string) => key;
+  mocks.translate = mocks.translateLane;
   mocks.readConsent.mockReset().mockResolvedValue(consent);
   mocks.decideConsent.mockReset().mockImplementation((_transactionId: string, decision: string) => Promise.resolve(
     decision === 'continue'

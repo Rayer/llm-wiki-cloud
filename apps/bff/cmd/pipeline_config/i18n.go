@@ -24,10 +24,11 @@ const (
 )
 
 var (
-	i18nLocaleToken = regexp.MustCompile(`^[a-z]{2,3}(?:_[a-z]{2})?$`)
-	i18nSourceSHA   = regexp.MustCompile(`^(?:[a-f0-9]{40}|[a-f0-9]{64})$`)
-	i18nParam       = regexp.MustCompile(`\{([A-Za-z_][A-Za-z0-9_]*)\}`)
-	i18nCACMarker   = regexp.MustCompile(`^@cac:([a-z0-9_.-]+)$`)
+	i18nLocaleToken  = regexp.MustCompile(`^[a-z]{2,3}(?:_[a-z]{2})?$`)
+	i18nSourceSHA    = regexp.MustCompile(`^(?:[a-f0-9]{40}|[a-f0-9]{64})$`)
+	regexpI18nDigest = regexp.MustCompile(`^[a-f0-9]{64}$`)
+	i18nParam        = regexp.MustCompile(`\{([A-Za-z_][A-Za-z0-9_]*)\}`)
+	i18nCACMarker    = regexp.MustCompile(`^@cac:([a-z0-9_.-]+)$`)
 )
 
 type i18nProjection struct {
@@ -201,6 +202,8 @@ func prepareI18nTarget(root, output string, source []byte, environment, sourceSH
 
 	messagesPath := filepath.Join(root, "apps/frontend/src/messages/en.json")
 	registryPath := filepath.Join(root, "apps/frontend/src/messages/source-refs.json")
+	seedMapPath := filepath.Join(root, "apps/frontend/src/messages/zh-TW.json")
+	seedProvenancePath := filepath.Join(root, "apps/frontend/src/messages/seed-provenance.json")
 	messagesBytes, err := readI18nSource(messagesPath)
 	if err != nil {
 		return fmt.Errorf("read i18n base source: %w", err)
@@ -208,6 +211,14 @@ func prepareI18nTarget(root, output string, source []byte, environment, sourceSH
 	registryBytes, err := readI18nSource(registryPath)
 	if err != nil {
 		return fmt.Errorf("read i18n source registry: %w", err)
+	}
+	seedMapBytes, err := readI18nSource(seedMapPath)
+	if err != nil {
+		return fmt.Errorf("read Traditional Chinese translation seed: %w", err)
+	}
+	seedProvenanceBytes, err := readI18nSource(seedProvenancePath)
+	if err != nil {
+		return fmt.Errorf("read i18n seed provenance: %w", err)
 	}
 	baseValue, err := decodeI18nUniqueJSON(messagesBytes)
 	if err != nil {
@@ -289,6 +300,8 @@ func prepareI18nTarget(root, output string, source []byte, environment, sourceSH
 		Files: []i18nSourceFile{
 			{Path: "apps/frontend/src/messages/en.json", SHA256: digestI18n(messagesBytes)},
 			{Path: "apps/frontend/src/messages/source-refs.json", SHA256: registryDigest},
+			{Path: "apps/frontend/src/messages/zh-TW.json", SHA256: digestI18n(seedMapBytes)},
+			{Path: "apps/frontend/src/messages/seed-provenance.json", SHA256: digestI18n(seedProvenanceBytes)},
 			{Path: "deploy/cac/ssot.pkl#i18n-cac-projection", SHA256: cacDigest},
 		},
 	}
@@ -403,7 +416,7 @@ func assembleI18nEntries(flat map[string]string, registry i18nRegistry, mcp i18n
 		}
 		sourceLocale := config.BaseLocale
 		context := "User interface copy: " + strings.Split(key, ".")[0]
-		var protected []string
+		protected := make([]string, 0)
 		if hasRule {
 			usedRules[key] = true
 			if rule.Kind != "literal" && rule.Kind != "cac" {
@@ -415,7 +428,7 @@ func assembleI18nEntries(flat map[string]string, registry i18nRegistry, mcp i18n
 			if rule.Context != "" {
 				context = rule.Context
 			}
-			protected = append([]string(nil), rule.ProtectedLiterals...)
+			protected = append(protected, rule.ProtectedLiterals...)
 			for _, value := range protected {
 				if value == "" || !strings.Contains(text, value) {
 					return nil, nil, fmt.Errorf("i18n entry %s has an invalid protected literal", key)

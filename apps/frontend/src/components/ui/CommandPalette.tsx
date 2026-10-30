@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import type { ProjectOption } from './ProjectSelect';
 import { useNavigationBlocker } from '../NavigationBlocker';
+import { useT } from '@/lib/i18n';
 
 type CommandItem = {
   id: string;
@@ -42,9 +43,12 @@ export function CommandPalette({
     sources: string;
     concepts: string;
     status: string;
+    palette?: string;
+    noMatches?: string;
   };
 }) {
   const router = useRouter();
+  const { t } = useT();
   const { confirmNavigation } = useNavigationBlocker();
   const inputRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState('');
@@ -110,8 +114,8 @@ export function CommandPalette({
     const searchItem: CommandItem[] = q
       ? [{
           id: 'search-query',
-          label: `Search "${q}"`,
-          group: 'Search',
+          label: `${labels.search} "${q}"`,
+          group: labels.search,
           icon: <ArrowRight className="size-4" />,
           action: () => { if (confirmNavigation()) router.push(`/?q=${encodeURIComponent(q)}`); },
           keywords: [q],
@@ -176,7 +180,7 @@ export function CommandPalette({
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
-        aria-label="Command palette"
+        aria-label={labels.palette ?? t('Command.title')}
       >
         <div className="flex items-center gap-3 border-b border-white/10 px-4">
           <Search className="size-4 text-zinc-500" />
@@ -198,7 +202,7 @@ export function CommandPalette({
 
         <div className="max-h-80 overflow-y-auto p-2">
           {filtered.length === 0 ? (
-            <p className="px-3 py-6 text-center text-sm text-zinc-500">No matches</p>
+            <p className="px-3 py-6 text-center text-sm text-zinc-500">{labels.noMatches ?? t('Command.noMatches')}</p>
           ) : (
             groups.map((group) => {
               const groupItems = filtered

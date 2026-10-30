@@ -17,7 +17,11 @@ vi.mock('@/lib/api', () => ({
   updateAdminUserStatus: mocks.update,
 }));
 vi.mock('@/lib/auth', () => ({ useAuth: () => ({ hydrated: true, user: { id: 'admin', role: 'admin', management_scopes: ['auth:admin', 'lwc:admin'] } }) }));
-vi.mock('@/lib/i18n', () => ({ useLocale: () => ({ locale: 'en', t: (key: string) => key }) }));
+vi.mock('@/lib/i18n', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/i18n')>('@/lib/i18n');
+  const { i18nLaneTestTranslate } = await vi.importActual<typeof import('./i18n-lane-test-helper')>('./i18n-lane-test-helper');
+  return { useLocale: () => ({ locale: 'en', t: (key: string, params?: Record<string, string | number>) => i18nLaneTestTranslate(actual.translate, key, params) }) };
+});
 vi.mock('@/components/NavigationBlocker', () => ({ useNavigationBlocker: () => ({ setBlocked: vi.fn() }) }));
 
 afterEach(cleanup);
@@ -65,8 +69,8 @@ it.each(['active', 'suspended'] as const)('requires a successful readback after 
   expect(within(row).getAllByText('Unknown')).toHaveLength(2);
   for (const button of within(row).getAllByRole('button')) expect((button as HTMLButtonElement).disabled).toBe(true);
   expect(screen.queryByText('User suspended.', { exact: true })).toBeNull();
-  fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
-  await within(row).findByText(nextStatus, { exact: true });
+  fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+  await within(row).findByText(nextStatus === 'active' ? 'Active' : 'Suspended', { exact: true });
   expect((within(row).getByRole('button', { name: nextStatus === 'active' ? 'Suspend user' : 'Restore user' }) as HTMLButtonElement).disabled).toBe(false);
   expect(mocks.update).toHaveBeenCalledTimes(1);
 });

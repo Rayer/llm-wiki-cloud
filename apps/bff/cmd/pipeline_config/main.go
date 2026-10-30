@@ -249,8 +249,15 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) >= 2 && os.Args[1] == "translate-i18n" {
+		if err := runTranslateI18nCLI(context.Background(), os.Args[2:], googleReader); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) < 2 || os.Args[1] != "prepare" {
-		fmt.Fprintln(os.Stderr, "usage: pipeline-config prepare --target pipeline|bff|auth|i18n --environment local|dev|prod --output DIR")
+		fmt.Fprintln(os.Stderr, "usage: pipeline-config prepare|translate-i18n ...")
 		os.Exit(2)
 	}
 	flags := flag.NewFlagSet("prepare", flag.ExitOnError)

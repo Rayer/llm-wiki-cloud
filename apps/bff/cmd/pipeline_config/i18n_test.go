@@ -25,6 +25,12 @@ func TestPrepareI18nTargetAssemblesStablePublicSources(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(messagesDir, "source-refs.json"), []byte(registry), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(messagesDir, "zh-TW.json"), []byte(`{"App":{"connect":"連線 {resourceURL}","embedded":"文字 @cac:unknown","instructions":"共用指引"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(messagesDir, "seed-provenance.json"), []byte(`{"schema_version":1}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	projection := i18nProjection{
 		SchemaVersion: 1, Environment: "local", Target: "i18n",
 		I18n: i18nConfig{

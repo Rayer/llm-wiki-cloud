@@ -287,7 +287,7 @@ frontend_freeze() {
 }
 
 frontend_mutate() {
-  local config_url team vercel_environment target cli_release_metadata_url deployment_json deployment_id deployment_url candidate_url alias inventory candidates candidate_count reused=0
+  local config_url team vercel_environment target cli_release_metadata_url deployment_json deployment_id deployment_url candidate_url alias inventory candidates candidate_count reused=0 i18n_result i18n_bundle
   journal_init
   set_mutation_status frontend unknown
   team=$(plan_json '.frontend.team_slug'); config_url=$(plan_json '.frontend.config_url')
@@ -320,7 +320,10 @@ frontend_mutate() {
     vercel_validate_deployment "$deployment_json" "$deployment_id" "$deployment_url" || { journal_rejected frontend; set_mutation_status frontend failed; write_component_result frontend failed '{}' deployment_inspect_mismatch; return 1; }
   else
     (cd "$ROOT/apps/frontend" && npm ci --ignore-scripts >/dev/null)
-    (cd "$ROOT" && NEXT_PUBLIC_CONFIG_URL="$config_url" NEXT_PUBLIC_CLI_RELEASE_METADATA_URL="$cli_release_metadata_url" timeout --signal=TERM --kill-after=5s 120s vercel pull --yes --environment="$vercel_environment" --scope "$team" --token "${VERCEL_TOKEN:?}" >/dev/null && NEXT_PUBLIC_CONFIG_URL="$config_url" NEXT_PUBLIC_CLI_RELEASE_METADATA_URL="$cli_release_metadata_url" timeout --signal=TERM --kill-after=5s 300s vercel build --scope "$team" --token "${VERCEL_TOKEN:?}" $([[ "$target" == production ]] && printf '%s' '--prod') >/dev/null)
+    i18n_result=$(python3 "$ROOT/deploy/engine/frontend_i18n.py" --root "$ROOT" --environment "$ENVIRONMENT" --source-sha "$SOURCE_SHA" --output "$ARTIFACT_DIR/frontend-i18n" --frontend-root "$ROOT/apps/frontend" --mode auto) || die "frontend i18n catalog preparation failed"
+    i18n_bundle=$(jq -er '.bundle_revision | select(type == "string" and test("^[a-f0-9]{64}$"))' <<<"$i18n_result") || die "frontend i18n catalog revision is invalid"
+    (cd "$ROOT" && NEXT_PUBLIC_CONFIG_URL="$config_url" NEXT_PUBLIC_CLI_RELEASE_METADATA_URL="$cli_release_metadata_url" timeout --signal=TERM --kill-after=5s 120s vercel pull --yes --environment="$vercel_environment" --scope "$team" --token "${VERCEL_TOKEN:?}" >/dev/null)
+    (cd "$ROOT" && NEXT_PUBLIC_CONFIG_URL="$config_url" NEXT_PUBLIC_CLI_RELEASE_METADATA_URL="$cli_release_metadata_url" LWC_I18N_PREPARED_BUNDLE_REVISION="$i18n_bundle" timeout --signal=TERM --kill-after=5s 300s vercel build --scope "$team" --token "${VERCEL_TOKEN:?}" $([[ "$target" == production ]] && printf '%s' '--prod') >/dev/null)
     vercel_project_authority || { journal_rejected frontend; die "Vercel project authority changed before frontend deployment"; }
     vercel_verify_frozen_frontend || { journal_rejected frontend; die "frontend alias authority changed from the frozen rollback snapshot"; }
     revalidate_before_provider

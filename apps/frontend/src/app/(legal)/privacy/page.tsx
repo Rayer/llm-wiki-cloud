@@ -8,6 +8,7 @@ export const metadata: Metadata = {
 export default function PrivacyPage() {
   return (
     <>
+      <p className="text-xs text-zinc-400"><span lang="zh-Hant">繁體中文</span> · <a href="/en/privacy" lang="en" className="text-emerald-200 underline underline-offset-4">English</a></p>
       <h1>隱私權政策</h1>
       <p className="text-sm text-zinc-400">本政策自公開發布時生效。</p>
       <p>LLM Wiki Cloud 是由 Rayer Tung 經營的個人興趣專案。本頁說明帳號登入、知識資料整理與查詢過程中的資料處理。你可以不登入，直接閱讀本頁及服務條款。</p>

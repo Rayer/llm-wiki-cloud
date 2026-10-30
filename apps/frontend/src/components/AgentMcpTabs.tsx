@@ -43,22 +43,28 @@ export function AgentMcpTabs({
 }) {
   const [selectedTool, setSelectedTool] = useState<ToolId>('hermes');
   const [copyFeedback, setCopyFeedback] = useState<CopyFeedback | null>(null);
+  const [sharedCopyFeedback, setSharedCopyFeedback] = useState<'copied' | 'error' | null>(null);
+  const sharedInstructions = t('MCPOAuth.sharedInstructions');
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const identityRef = useRef({ key: identityKey, generation: 0 });
   const copyOperationRef = useRef(0);
+  const sharedCopyOperationRef = useRef(0);
   const copyTimeoutRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (identityRef.current.key === identityKey) return;
     identityRef.current = { key: identityKey, generation: identityRef.current.generation + 1 };
     copyOperationRef.current += 1;
+    sharedCopyOperationRef.current += 1;
     setCopyFeedback(null);
+    setSharedCopyFeedback(null);
     if (copyTimeoutRef.current !== null) window.clearTimeout(copyTimeoutRef.current);
     copyTimeoutRef.current = null;
   }, [identityKey]);
 
   useEffect(() => () => {
     copyOperationRef.current += 1;
+    sharedCopyOperationRef.current += 1;
     if (copyTimeoutRef.current !== null) window.clearTimeout(copyTimeoutRef.current);
   }, []);
 
@@ -81,8 +87,7 @@ export function AgentMcpTabs({
     selectTool(nextIndex, true);
   };
 
-  const copySnippet = async (target: MCPGuideTarget) => {
-    const snippet = buildMCPGuideSnippet(target, resourceURL, locale);
+  const copySnippet = async (target: MCPGuideTarget, snippet: string) => {
     const identity = identityRef.current;
     if (!snippet || identity.key !== identityKey) return;
     const operation = ++copyOperationRef.current;
@@ -107,6 +112,20 @@ export function AgentMcpTabs({
     }
   };
 
+  const copySharedInstructions = async (text: string) => {
+    const identity = identityRef.current;
+    const operation = ++sharedCopyOperationRef.current;
+    setSharedCopyFeedback(null);
+    try {
+      await navigator.clipboard.writeText(text);
+      if (identityRef.current.key === identityKey && identityRef.current.generation === identity.generation
+        && sharedCopyOperationRef.current === operation) setSharedCopyFeedback('copied');
+    } catch {
+      if (identityRef.current.key === identityKey && identityRef.current.generation === identity.generation
+        && sharedCopyOperationRef.current === operation) setSharedCopyFeedback('error');
+    }
+  };
+
   const renderCopyBlock = (target: MCPGuideTarget, buttonKey: string) => {
     const snippet = buildMCPGuideSnippet(target, resourceURL, locale);
     const feedback = copyFeedback?.identityKey === identityKey
@@ -118,7 +137,7 @@ export function AgentMcpTabs({
       <div className="mt-4">
         <pre className="overflow-x-auto rounded-lg border border-white/10 bg-black/30 p-4 text-xs leading-5 text-zinc-200"><code>{snippet || t('MCPOAuth.resourceUnavailable')}</code></pre>
         <div className="mt-3 flex flex-wrap items-center gap-3">
-          <button type="button" disabled={!snippet} onClick={() => void copySnippet(target)} className="min-h-11 rounded-lg bg-emerald-300 px-4 py-2 text-sm font-semibold text-black hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-50">{feedback === 'copied' ? t('MCPOAuth.copied') : t(buttonKey)}</button>
+          <button type="button" disabled={!snippet} onClick={() => void copySnippet(target, snippet)} className="min-h-11 rounded-lg bg-emerald-300 px-4 py-2 text-sm font-semibold text-black hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-50">{feedback === 'copied' ? t('MCPOAuth.copied') : t(buttonKey)}</button>
           <span role="status" className="text-sm text-zinc-400">{feedback === 'error' ? t('MCPOAuth.copyFailed') : ''}</span>
         </div>
       </div>
@@ -162,6 +181,16 @@ export function AgentMcpTabs({
         <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-300">{t('MCPOAuth.setupEyebrow')}</p>
         <h2 id="mcp-oauth-setup-title" className="mt-2 text-lg font-semibold text-white">{t('MCPOAuth.setupTitle')}</h2>
         <p className="mt-2 text-sm leading-6 text-zinc-400">{t('MCPOAuth.setupIntro')}</p>
+        <details className="mt-4 rounded-xl border border-white/10 bg-black/20 p-4">
+          <summary className="cursor-pointer font-semibold text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300">{t('MCPOAuth.sharedInstructionsTitle')}</summary>
+          <div className="mt-3">
+            <p className="whitespace-pre-wrap text-sm leading-6 text-zinc-300">{sharedInstructions}</p>
+            <div className="mt-3 flex flex-wrap items-center gap-3">
+              <button type="button" onClick={() => void copySharedInstructions(sharedInstructions)} className="min-h-10 rounded-lg border border-white/10 px-3 text-sm text-zinc-200 hover:bg-white/5">{sharedCopyFeedback === 'copied' ? t('MCPOAuth.sharedInstructionsCopied') : t('MCPOAuth.copySharedInstructions')}</button>
+              <span role="status" className="text-sm text-zinc-400">{sharedCopyFeedback === 'error' ? t('MCPOAuth.sharedInstructionsCopyFailed') : ''}</span>
+            </div>
+          </div>
+        </details>
       </div>
 
       <div role="tablist" aria-label={t('MCPOAuth.toolsTabList')} aria-orientation="horizontal" className="mt-4 flex max-w-full snap-x snap-mandatory overflow-x-auto border-b border-white/10 px-3 [scrollbar-width:thin] sm:px-4">

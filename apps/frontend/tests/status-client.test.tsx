@@ -25,9 +25,13 @@ vi.mock('@/lib/auth', () => ({
   useAuth: () => ({ user: { id: 'user-a' } }),
 }));
 
-vi.mock('@/lib/i18n', () => ({
-  useT: () => ({ t: (key: string) => key === 'Pipeline.quotaLine' ? '{runs}/{limit}' : key }),
-}));
+vi.mock('@/lib/i18n', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/i18n')>('@/lib/i18n');
+  const { i18nLaneTestTranslate } = await vi.importActual<typeof import('./i18n-lane-test-helper')>('./i18n-lane-test-helper');
+  return {
+    useT: () => ({ t: (key: string, params?: Record<string, string | number>) => key === 'Pipeline.quotaLine' ? '{runs}/{limit}' : i18nLaneTestTranslate(actual.translate, key, params) }),
+  };
+});
 
 vi.mock('@/components/WorkspaceProvider', () => ({
   useWorkspace: () => ({ currentProject: mocks.currentProject }),
@@ -422,9 +426,9 @@ describe('StatusClient behavior', () => {
     await screen.findByText('11');
 
     fireEvent.click(screen.getByRole('button', { name: 'Open pipeline log' }));
-    expect(screen.getByRole('button', { name: 'Loading pipeline log...' })).toHaveProperty('disabled', true);
-    expect(screen.getByRole('button', { name: 'Loading pipeline log...' }).getAttribute('aria-busy')).toBe('true');
-    expect(screen.getByRole('status').textContent).toContain('Loading log...');
+    expect(screen.getByRole('button', { name: 'Loading pipeline log…' })).toHaveProperty('disabled', true);
+    expect(screen.getByRole('button', { name: 'Loading pipeline log…' }).getAttribute('aria-busy')).toBe('true');
+    expect(screen.getByRole('status').textContent).toContain('Loading log…');
 
     log.resolve('');
     await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Pipeline log is empty.'));
@@ -470,7 +474,7 @@ describe('StatusClient behavior', () => {
 
     render(<StatusClient />);
     expect(await screen.findByText('Failed — stage unavailable')).not.toBeNull();
-    expect(screen.getByRole('heading', { name: 'Pipeline status' })).not.toBeNull();
+    expect(screen.getByRole('heading', { name: /Pipeline status/i })).not.toBeNull();
     expect(screen.getByRole('heading', { name: 'Pipeline timeline' })).not.toBeNull();
     expect(screen.getByRole('heading', { name: 'Pipeline log' })).not.toBeNull();
     expect(screen.getByRole('button', { name: 'Open pipeline log' })).not.toBeNull();

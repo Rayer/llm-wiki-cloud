@@ -72,6 +72,7 @@ function deferred<T>() {
 }
 
 beforeEach(() => {
+  window.localStorage.setItem('locale', 'en');
   if (typeof HTMLElement.prototype.scrollIntoView !== 'function') {
     Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() });
   }
@@ -99,6 +100,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  window.localStorage.removeItem('locale');
   if (typeof originalScrollIntoView !== 'function') Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
   vi.clearAllMocks();
 });
@@ -156,7 +158,7 @@ describe('LWC-406 optional Profile onboarding', () => {
     expect(within(accountSettingsDialog).getByRole('tab', { name: 'LLM Provider' }).getAttribute('aria-selected')).toBe('true');
     fireEvent.change(screen.getByRole('combobox', { name: 'Provider' }), { target: { value: 'custom' } });
     fireEvent.change(screen.getByRole('textbox', { name: 'Provider name' }), { target: { value: 'New custom provider' } });
-    fireEvent.change(screen.getByRole('textbox', { name: /Model Enter the model name/ }), { target: { value: 'fixture-model' } });
+    fireEvent.change(screen.getByRole('textbox', { name: /^Model Choose a model/ }), { target: { value: 'fixture-model' } });
     fireEvent.click(screen.getByRole('button', { name: 'Add provider' }));
 
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Account settings' })).toBeNull());

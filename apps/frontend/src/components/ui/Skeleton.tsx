@@ -1,3 +1,5 @@
+import { useT } from '@/lib/i18n';
+
 export function Skeleton({ className = '' }: { className?: string }) {
   return (
     <div
@@ -8,8 +10,9 @@ export function Skeleton({ className = '' }: { className?: string }) {
 }
 
 export function SkeletonLines({ lines = 3 }: { lines?: number }) {
+  const { t } = useT();
   return (
-    <div className="space-y-3" aria-label="Loading">
+    <div className="space-y-3" role="status" aria-label={t('Shell.loading')}>
       {Array.from({ length: lines }).map((_, i) => (
         <Skeleton
           key={i}

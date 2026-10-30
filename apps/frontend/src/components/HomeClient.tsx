@@ -1167,7 +1167,7 @@ export function HomeClient() {
               onClick={closeCitationModal}
               autoFocus
               className="absolute right-4 top-4 rounded-md p-1 text-zinc-400 transition hover:bg-white/10 hover:text-white"
-              aria-label="Close"
+              aria-label={t('Common.close')}
             >
               <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
@@ -1243,7 +1243,8 @@ function stripLeadingHeading(md: string): string {
 }
 
 function MarkdownBody({ content }: { content: string }) {
-  if (!content) return <p className="text-zinc-400 italic">No content available.</p>;
+  const { t } = useT();
+  if (!content) return <p className="text-zinc-400 italic">{t('Common.noContent')}</p>;
   // Convert [[wikilinks]] with context-aware routing:
   // Under ## Sources → /sources/ | Under ## Concepts → /concepts/ | else → /concepts/
   const withLinks = resolveWikilinksInMarkdown(content);

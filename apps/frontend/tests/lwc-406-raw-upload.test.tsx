@@ -30,7 +30,11 @@ vi.mock('@/components/WorkspaceProvider', () => ({
   }),
 }));
 
-vi.mock('@/lib/i18n', () => ({ useT: () => ({ t: (key: string) => key }) }));
+vi.mock('@/lib/i18n', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/i18n')>('@/lib/i18n');
+  const { i18nLaneTestTranslate } = await vi.importActual<typeof import('./i18n-lane-test-helper')>('./i18n-lane-test-helper');
+  return { useT: () => ({ t: (key: string, params?: Record<string, string | number>) => i18nLaneTestTranslate(actual.translate, key, params) }) };
+});
 vi.mock('next/navigation', () => ({ useSearchParams: () => new URLSearchParams() }));
 
 import { RawClient } from '@/components/RawClient';
@@ -113,7 +117,7 @@ it('keeps multiple-file selection and queues every file at the raw root without 
     fireEvent.change(uploadInput(), { target: { files: [firstUpload, secondUpload] } });
   });
 
-  expect(await screen.findByText('2 created, 0 already exists, 0 failed')).toBeDefined();
+  expect(await screen.findByText('2 created · 0 already exists · 0 replaced · 0 failed · 0 in progress')).toBeDefined();
   await waitFor(() => expect(mocks.uploadRawFile).toHaveBeenCalledTimes(2));
   expect(mocks.uploadRawFile).toHaveBeenNthCalledWith(1, firstUpload, expect.any(Function), 'project-a');
   expect(mocks.uploadRawFile).toHaveBeenNthCalledWith(2, secondUpload, expect.any(Function), 'project-a');

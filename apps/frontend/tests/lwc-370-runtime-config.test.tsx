@@ -21,6 +21,7 @@ import {
 } from '@/lib/google-auth';
 
 const configURL = 'https://config.example.test/frontend-config.json';
+const originalLocalStorage = window.localStorage;
 const configA = {
   schema_version: 1,
   api_url: 'https://api-a.example.test',
@@ -48,6 +49,7 @@ function resetApiAuth() {
 }
 
 beforeEach(() => {
+  window.localStorage.setItem('locale', 'en');
   clearRuntimeConfigForTests();
   clearPublicConfigCache();
   resetApiAuth();
@@ -56,6 +58,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  originalLocalStorage.removeItem('locale');
   clearRuntimeConfigForTests();
   clearPublicConfigCache();
   resetApiAuth();
@@ -169,7 +172,7 @@ describe('LWC-370 runtime config', () => {
     render(<RuntimeConfigBoundary><p>Workspace ready</p></RuntimeConfigBoundary>);
 
     expect((await screen.findByRole('alert')).textContent).toContain('HTTP 503');
-    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
     await screen.findByText('Workspace ready');
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });

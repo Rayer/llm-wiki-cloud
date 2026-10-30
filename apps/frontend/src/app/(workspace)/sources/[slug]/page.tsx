@@ -14,7 +14,7 @@ export default function SourceDetailPage({
   return (
     <DetailClient
       slug={slug}
-      label="Sources"
+      labelKey="Source.plural"
       backHref="/sources"
       load={getSource}
       entryType="source"

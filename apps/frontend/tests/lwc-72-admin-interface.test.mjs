@@ -40,22 +40,22 @@ test('AdminClient gates access, renders tabs, and loads admin tables', async () 
   assert.match(adminClient, /useAuth/);
   assert.match(adminClient, /user\?\.management_scopes\?\.includes\('auth:admin'\)/);
   assert.match(adminClient, /user\?\.management_scopes\?\.includes\('lwc:admin'\)/);
-  assert.match(adminClient, /Admin access required/);
-  assert.match(adminClient, /Projects/);
-  assert.match(adminClient, /Users/);
+  assert.match(adminClient, /t\('Admin\.accessRequired'\)/);
+  assert.match(adminClient, /t\('Admin\.projects'\)/);
+  assert.match(adminClient, /t\('Admin\.users'\)/);
   assert.match(adminClient, /getAdminProjects/);
   assert.match(adminClient, /getAdminUsers/);
   assert.match(adminClient, /<table/);
-  assert.match(adminClient, /Project name|Project/);
-  assert.match(adminClient, /Project ID/);
-  assert.match(adminClient, /Owner/);
-  assert.match(adminClient, /User ID/);
+  assert.match(adminClient, /t\('Admin\.projectName'\)|t\('Admin\.project'\)/);
+  assert.match(adminClient, /t\('Admin\.projectId'\)/);
+  assert.match(adminClient, /t\('Admin\.owner'\)/);
+  assert.match(adminClient, /t\('Admin\.userId'\)/);
   assert.match(adminClient, /project\.projectId/);
   assert.match(adminClient, /user\.id/);
   assert.match(adminClient, /adminOwnerPrimary|userName/);
-  assert.match(adminClient, /Concept count/);
-  assert.match(adminClient, /Source count/);
-  assert.match(adminClient, /Project count/);
+  assert.match(adminClient, /t\('Admin\.conceptCount'\)/);
+  assert.match(adminClient, /t\('Admin\.sourceCount'\)/);
+  assert.match(adminClient, /t\('Admin\.projectCount'\)/);
 });
 
 test('AdminClient renders the same access-denied surface for backend admin 403s', async () => {
@@ -67,7 +67,7 @@ test('AdminClient renders the same access-denied surface for backend admin 403s'
   assert.match(adminClient, /const \[adminDenied, setAdminDenied\] = useState\(false\);/);
   assert.match(adminClient, /if \(error instanceof ApiError && error.status === 403\) \{/);
   assert.match(adminClient, /if \(accessDenied \|\| adminDenied\) \{/);
-  assert.match(adminClient, /Admin access required/);
+  assert.match(adminClient, /t\('Admin\.accessRequired'\)/);
 });
 
 test('AdminClient wires project and user actions through confirmation modals', async () => {

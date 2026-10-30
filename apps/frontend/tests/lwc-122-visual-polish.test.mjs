@@ -63,7 +63,7 @@ test('shell provides a global smooth scroll-to-top control', async () => {
   assert.match(shell, /ScrollToTopButton/);
   assert.match(shell, /window\.scrollY > 320/);
   assert.match(shell, /window\.scrollTo\(\{ top: 0, behavior: 'smooth' \}\)/);
-  assert.match(shell, /aria-label="Scroll to top"/);
+  assert.match(shell, /aria-label=\{t\('Shell\.scrollToTop'\)\}/);
   assert.match(shell, /fixed bottom-5 right-5/);
   assert.match(shell, /rounded-full/);
   assert.match(shell, /bg-emerald-400/);
