@@ -475,7 +475,8 @@
     "invalidReturn": "The authorization return address is invalid. Restart from your MCP client.",
     "decisionFailed": "Unable to save your decision. The request may have expired.",
     "backToAdvanced": "Open MCP OAuth settings",
-    "selectProject": "Select a Project to manage its MCP OAuth access."
+    "selectProject": "Select a Project to manage its MCP OAuth access.",
+    "sharedInstructions": "@cac:mcp.instructions"
   },
   "Profile": {
     "pageTitle": "Project settings",

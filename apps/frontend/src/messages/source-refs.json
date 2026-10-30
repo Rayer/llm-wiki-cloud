@@ -1,0 +1,341 @@
+{
+  "schema_version": 1,
+  "base_locale": "en",
+  "entries": {
+    "AccountSettings.confirmRevokeProjectKey": {
+      "kind": "literal",
+      "params": [
+        "name"
+      ]
+    },
+    "AccountSettings.projectKeyBoundProject": {
+      "kind": "literal",
+      "params": [
+        "id",
+        "name"
+      ]
+    },
+    "AccountSettings.projectKeyUnknownOutcome": {
+      "kind": "literal",
+      "params": [
+        "keyId"
+      ]
+    },
+    "AccountSettings.projectKeyUnknownOutcomeNoId": {
+      "kind": "literal",
+      "params": [
+        "name"
+      ]
+    },
+    "Annotation.updated": {
+      "kind": "literal",
+      "params": [
+        "date"
+      ]
+    },
+    "BYOK.confirmDelete": {
+      "kind": "literal",
+      "params": [
+        "name"
+      ]
+    },
+    "CLILane.projectContext": {
+      "kind": "literal",
+      "params": [
+        "project"
+      ]
+    },
+    "CLILane.releaseVersion": {
+      "kind": "literal",
+      "params": [
+        "version"
+      ]
+    },
+    "CLIPairing.signedInAs": {
+      "kind": "literal",
+      "params": [
+        "email"
+      ]
+    },
+    "Demo.openCitation": {
+      "kind": "literal",
+      "params": [
+        "citation"
+      ]
+    },
+    "Demo.sourcesCount": {
+      "kind": "literal",
+      "params": [
+        "count"
+      ]
+    },
+    "Detail.backTo": {
+      "kind": "literal",
+      "params": [
+        "label"
+      ]
+    },
+    "Export.blockedCooldown": {
+      "kind": "literal",
+      "params": [
+        "time"
+      ]
+    },
+    "Export.nextAllowed": {
+      "kind": "literal",
+      "params": [
+        "time"
+      ]
+    },
+    "LLMSource.projectName": {
+      "kind": "literal",
+      "params": [
+        "name"
+      ]
+    },
+    "List.noSearchMatches": {
+      "kind": "literal",
+      "params": [
+        "query",
+        "title"
+      ]
+    },
+    "List.searchPlaceholder": {
+      "kind": "literal",
+      "params": [
+        "title"
+      ]
+    },
+    "MCPOAuth.sharedInstructions": {
+      "kind": "cac",
+      "ref": "mcp.instructions",
+      "source_locale": "en",
+      "context": "Shared MCP operating and safety instructions displayed and copied from the Agent & MCP guide."
+    },
+    "NewProject.navigationFailed": {
+      "kind": "literal",
+      "params": [
+        "error"
+      ]
+    },
+    "Pipeline.quotaLine": {
+      "kind": "literal",
+      "params": [
+        "cooldown",
+        "limit",
+        "newFiles",
+        "runs"
+      ]
+    },
+    "Profile.active": {
+      "kind": "literal",
+      "params": [
+        "candidateId"
+      ]
+    },
+    "Profile.activeNotice": {
+      "kind": "literal",
+      "params": [
+        "candidateId"
+      ]
+    },
+    "Profile.artifactVersions": {
+      "kind": "literal",
+      "params": [
+        "model",
+        "prompt",
+        "schema"
+      ]
+    },
+    "Profile.bootstrapConfirmedAt": {
+      "kind": "literal",
+      "params": [
+        "time"
+      ]
+    },
+    "Profile.bootstrapReadError": {
+      "kind": "literal",
+      "params": [
+        "error"
+      ]
+    },
+    "Profile.errors.confirmation": {
+      "kind": "literal",
+      "params": [
+        "error"
+      ]
+    },
+    "Profile.errors.guidanceConfirm": {
+      "kind": "literal",
+      "params": [
+        "error"
+      ]
+    },
+    "Profile.errors.load": {
+      "kind": "literal",
+      "params": [
+        "error"
+      ]
+    },
+    "Profile.errors.previewRetry": {
+      "kind": "literal",
+      "params": [
+        "error"
+      ]
+    },
+    "Profile.errors.saveUnconfirmed": {
+      "kind": "literal",
+      "params": [
+        "error"
+      ]
+    },
+    "Profile.errors.taggingRetry": {
+      "kind": "literal",
+      "params": [
+        "error"
+      ]
+    },
+    "Profile.guidanceReadError": {
+      "kind": "literal",
+      "params": [
+        "error"
+      ]
+    },
+    "Profile.itemsIncomplete": {
+      "kind": "literal",
+      "params": [
+        "count"
+      ]
+    },
+    "Profile.localUx.guide.next": {
+      "kind": "literal",
+      "params": [
+        "stage"
+      ]
+    },
+    "Profile.localUx.guide.position": {
+      "kind": "literal",
+      "params": [
+        "count",
+        "index"
+      ]
+    },
+    "Profile.moveRequirementDown": {
+      "kind": "literal",
+      "params": [
+        "index"
+      ]
+    },
+    "Profile.moveRequirementUp": {
+      "kind": "literal",
+      "params": [
+        "index"
+      ]
+    },
+    "Profile.removeRequirement": {
+      "kind": "literal",
+      "params": [
+        "index"
+      ]
+    },
+    "Profile.requirement": {
+      "kind": "literal",
+      "params": [
+        "index"
+      ]
+    },
+    "Profile.taggingWork": {
+      "kind": "literal",
+      "params": [
+        "status"
+      ]
+    },
+    "ProjectRename.length": {
+      "kind": "literal",
+      "params": [
+        "maxLength"
+      ]
+    },
+    "ProjectSettings.hermesConfigSnippet": {
+      "kind": "literal",
+      "params": [
+        "mcpUrl",
+        "secretRef"
+      ],
+      "protected_literals": [
+        "mcp_servers:\n  llm-wiki:\n    url: \"",
+        "\"\n    transport: streamable-http\n    headers:\n      Authorization: \"Bearer ",
+        "\""
+      ]
+    },
+    "ProjectSettings.lastUsed": {
+      "kind": "literal",
+      "params": [
+        "time"
+      ]
+    },
+    "QueryResults.expansionKeywords": {
+      "kind": "literal",
+      "params": [
+        "keywords"
+      ]
+    },
+    "Raw.downloadAria": {
+      "kind": "literal",
+      "params": [
+        "file"
+      ]
+    },
+    "Raw.linkedProject": {
+      "kind": "literal",
+      "params": [
+        "project"
+      ]
+    },
+    "Raw.previewAria": {
+      "kind": "literal",
+      "params": [
+        "file"
+      ]
+    },
+    "RawUpload.destination": {
+      "kind": "literal",
+      "params": [
+        "filename"
+      ]
+    },
+    "RawUpload.importIntoProject": {
+      "kind": "literal",
+      "params": [
+        "id",
+        "project"
+      ]
+    },
+    "RawUpload.projectLabel": {
+      "kind": "literal",
+      "params": [
+        "id",
+        "project"
+      ]
+    },
+    "RawUpload.selectCandidate": {
+      "kind": "literal",
+      "params": [
+        "path"
+      ]
+    },
+    "RawUpload.selectionSummary": {
+      "kind": "literal",
+      "params": [
+        "bytes",
+        "count"
+      ]
+    },
+    "Source.previewRawAria": {
+      "kind": "literal",
+      "params": [
+        "path"
+      ]
+    }
+  }
+}
