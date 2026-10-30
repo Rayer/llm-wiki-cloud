@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   currentProject: { id: 'project-a', name: 'Project A' } as { id: string; name: string } | null,
   token: 'session-a' as string | null,
   isDemoSession: false,
+  t: (key: string) => key,
   getPipelineStatus: vi.fn(),
   getRecompileAllCapability: vi.fn(),
   getProjectPipelineAutomation: vi.fn(),
@@ -40,7 +41,7 @@ vi.mock('@/components/WorkspaceProvider', () => ({
 
 vi.mock('@/components/RawUploadPanel', () => ({ RawUploadPanel: () => null }));
 vi.mock('@/components/ExportPanel', () => ({ ExportPanel: () => null }));
-vi.mock('@/lib/i18n', () => ({ useT: () => ({ t: (key: string) => key }) }));
+vi.mock('@/lib/i18n', () => ({ useT: () => ({ t: mocks.t }) }));
 
 import { PipelineClient } from '@/components/PipelineClient';
 
@@ -111,12 +112,12 @@ it('saves the Project switch by revision and explains that Admin approval still 
 
   const toggle = await screen.findByTestId('pipeline-automation-project-toggle') as HTMLInputElement;
   expect(toggle.checked).toBe(false);
-  expect(screen.getByTestId('pipeline-automation-blocked').textContent).toContain('disabled by the Admin');
+  expect(screen.getByTestId('pipeline-automation-blocked').textContent).toContain('Automatic processing is disabled by the Admin.');
   fireEvent.click(toggle);
 
   await waitFor(() => expect(mocks.updateProjectPipelineAutomation).toHaveBeenCalledWith('project-a', true, 0));
   await waitFor(() => expect(toggle.checked).toBe(true));
-  expect(screen.getByTestId('pipeline-automation-blocked').textContent).toContain('disabled by the Admin');
+  expect(screen.getByTestId('pipeline-automation-blocked').textContent).toContain('Automatic processing is disabled by the Admin.');
   expect(screen.getByTestId('pipeline-automation-settings').textContent).toContain('Processing status: pending');
 });
 
@@ -133,7 +134,7 @@ it('renders a public URL candidate, binds the edited title, and links to the exa
   expect(await screen.findByText('saved')).toBeDefined();
   expect(screen.getByRole('link', { name: /Pipeline.urlRawArticle: raw\/Example-article\.md/ }).getAttribute('href'))
     .toBe('/raw?file=raw%2FExample-article.md');
-  expect(screen.getByText(/When both auto-pipeline switches are on/)).toBeDefined();
+  expect(screen.getByText('When both auto-pipeline switches are on, changed content is processed automatically; saved content is not searchable until publication succeeds.')).toBeDefined();
   await waitFor(() => expect(mocks.acceptScrapeCandidate).toHaveBeenCalledWith('opaque-candidate-id', 'opaque-candidate-revision', 'Edited title', 'project-a'));
   await waitFor(() => expect(mocks.scrapeUrl).toHaveBeenCalledWith('https://example.com/article', 'project-a'));
   expect(mocks.triggerPipeline).not.toHaveBeenCalled();

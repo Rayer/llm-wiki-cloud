@@ -70,7 +70,7 @@ function automationStatusLabel(status: string, t: (key: string) => string): stri
     unknown: ['Pipeline.automationUnknown', 'Saved; processing status could not be confirmed.'],
     not_started: ['Pipeline.automationNoChange', 'Saved; no new automatic processing was queued for this save.'],
   };
-  const [key, fallback] = copy[status] ?? ['Pipeline.automationQueued', `Saved; processing status is ${status}.`];
+  const [key, fallback] = copy[status] ?? ['Pipeline.automationUnknown', `Saved; processing status is ${status}.`];
   const translated = t(key);
   return translated === key ? fallback : translated;
 }

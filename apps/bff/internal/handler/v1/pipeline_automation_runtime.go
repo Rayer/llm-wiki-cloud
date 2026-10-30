@@ -76,7 +76,7 @@ func (d *ProfileDispatcher) executePipelineAutomation(ctx context.Context, repo 
 	if !ok {
 		return errors.New("pipeline automation intent storage unavailable")
 	}
-	reservationID := pipelineAutomationReservationID(fingerprint, settings.Revision, settings.adminRevision)
+	reservationID := pipelineAutomationReservationID(work.UserID, work.ProjectID, fingerprint, settings.Revision, settings.adminRevision)
 	_, reserved, err := autoStore.ReserveQuotaForPipelineAutomation(ctx, reservationID, work.UserID, work.ProjectID,
 		d.Handler.pipelineLimits(), time.Now().UTC(), d.Handler.isDemoUser(work.UserID), alreadyRunning,
 		newRaw, rawDirty, annotationDirty,
@@ -140,8 +140,9 @@ func (d *ProfileDispatcher) completeProjectAutomationBacklog(ctx context.Context
 	})
 }
 
-func pipelineAutomationReservationID(fingerprint string, projectRevision, adminRevision int64) string {
-	return fmt.Sprintf("auto-%s-%d-%d", fingerprint, projectRevision, adminRevision)
+func pipelineAutomationReservationID(ownerID, projectID, fingerprint string, projectRevision, adminRevision int64) string {
+	projectScope := sha256.Sum256([]byte(ownerID + "\x00" + projectID))
+	return fmt.Sprintf("auto-%s-%s-%d-%d", hex.EncodeToString(projectScope[:]), fingerprint, projectRevision, adminRevision)
 }
 
 func (d *ProfileDispatcher) executePipelineAutomationScan(ctx context.Context, repo *firestoreProfileRepository, work profileruntime.Work) error {

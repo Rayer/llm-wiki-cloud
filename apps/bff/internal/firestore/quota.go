@@ -476,7 +476,8 @@ func (c *Client) reservePipelineQuota(
 				automationAdminRevision = int64FromFirestore(adminData["revision"])
 			}
 			if !projectEnabled || !adminEnabled || strings.TrimSpace(automationAdmission.SourceFingerprint) == "" ||
-				automationProjectData["pipeline_failure_blocked_fingerprint"] == automationAdmission.SourceFingerprint ||
+				(automationProjectData["pipeline_failure_blocked_fingerprint"] == automationAdmission.SourceFingerprint &&
+					int64FromFirestore(automationProjectData["pipeline_failure_blocked_admin_revision"]) == automationAdminRevision) ||
 				automationProjectData["pipeline_auto_consumed_fingerprint"] == automationAdmission.SourceFingerprint {
 				return nil
 			}
@@ -1013,7 +1014,8 @@ func (c *Client) BeginPipelineIntentInvocation(ctx context.Context, reservationI
 				autoPauseReason = "switch_revision_changed"
 			case int64FromFirestore(projectData["pipeline_source_revision"]) != reservation.SourceRevision:
 				autoPauseReason = "source_revision_changed"
-			case reservation.SourceFingerprint != "" && projectData["pipeline_failure_blocked_fingerprint"] == reservation.SourceFingerprint:
+			case reservation.SourceFingerprint != "" && projectData["pipeline_failure_blocked_fingerprint"] == reservation.SourceFingerprint &&
+				int64FromFirestore(projectData["pipeline_failure_blocked_admin_revision"]) == reservation.AutomationAdminRevision:
 				autoPauseReason = "failure_fence"
 			}
 		}
@@ -1193,6 +1195,7 @@ func failPipelineIntentReservationInTransaction(ctx context.Context, tx *firesto
 	if projectRef != nil {
 		return tx.Update(projectRef, []firestore.Update{
 			{Path: "pipeline_failure_blocked_fingerprint", Value: reservation.SourceFingerprint},
+			{Path: "pipeline_failure_blocked_admin_revision", Value: reservation.AutomationAdminRevision},
 			{Path: "pipeline_automation_status", Value: "failed"},
 			{Path: "pipeline_automation_failure_stage", Value: stage},
 			{Path: "pipeline_automation_failure_code", Value: code},
@@ -1423,12 +1426,14 @@ func SettleQuotaReservationInTransactionWithResult(ctx context.Context, tx *fire
 				firestore.Update{Path: "pipeline_auto_consumed_source_revision", Value: reservation.SourceRevision},
 				firestore.Update{Path: "pipeline_automation_status", Value: "published"},
 				firestore.Update{Path: "pipeline_failure_blocked_fingerprint", Value: firestore.Delete},
+				firestore.Update{Path: "pipeline_failure_blocked_admin_revision", Value: firestore.Delete},
 				firestore.Update{Path: "pipeline_automation_failure_stage", Value: firestore.Delete},
 				firestore.Update{Path: "pipeline_automation_failure_code", Value: firestore.Delete},
 			)
 		case "FAILED":
 			updates = append(updates,
 				firestore.Update{Path: "pipeline_failure_blocked_fingerprint", Value: reservation.SourceFingerprint},
+				firestore.Update{Path: "pipeline_failure_blocked_admin_revision", Value: reservation.AutomationAdminRevision},
 				firestore.Update{Path: "pipeline_automation_status", Value: "failed"},
 				firestore.Update{Path: "pipeline_automation_failure_stage", Value: "pipeline"},
 				firestore.Update{Path: "pipeline_automation_failure_code", Value: "pipeline_failed"},

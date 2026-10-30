@@ -24,6 +24,12 @@ var (
 	ErrInvalidSourceCommit     = errors.New("invalid source commit")
 	ErrSourceCommitConflict    = errors.New("source commit operation conflicts with a prior request")
 	ErrSourceCommitUnconfirmed = errors.New("source commit could not be confirmed")
+	ErrSourceCommitPending     = errors.New("source commit is waiting for the raw write")
+)
+
+const (
+	sourceCommitReconcileDelay = time.Minute
+	sourceCommitReconcileGrace = 15 * time.Minute
 )
 
 // VerifiedProject must be populated from the request's authenticated owner and
@@ -104,16 +110,28 @@ func (j *FirestoreJournal) PrepareSourceCommit(ctx context.Context, project Veri
 			if !samePrepare(existing.Data(), request) {
 				return ErrSourceCommitConflict
 			}
-			return nil
+			state, _ := existing.Data()["commit_state"].(string)
+			if state != "prepared" {
+				return nil
+			}
+			createdAt, _ := existing.Data()["created_at"].(time.Time)
+			if createdAt.IsZero() {
+				createdAt = now
+			}
+			return enqueueSourceCommitReconcile(ctx, tx, j.fs, project, request.OperationID, createdAt.Add(sourceCommitReconcileDelay))
 		}
 		if status.Code(err) != codes.NotFound {
+			return err
+		}
+		if err := enqueueSourceCommitReconcile(ctx, tx, j.fs, project, request.OperationID, now.Add(sourceCommitReconcileDelay)); err != nil {
 			return err
 		}
 		return tx.Create(eventRef, map[string]interface{}{
 			"schema_version": 1, "operation_id": request.OperationID, "entrypoint": request.Entrypoint,
 			"raw_path": request.RawPath, "expected_sha256": request.ExpectedSHA256,
 			"batch_id": request.BatchID, "commit_state": "prepared", "created_at": now,
-			"updated_at": now,
+			"reconcile_deadline": now.Add(sourceCommitReconcileGrace),
+			"updated_at":         now,
 		})
 	})
 	if err != nil {
@@ -285,6 +303,14 @@ func (j *FirestoreJournal) ReconcileSourceCommit(ctx context.Context, ref Ref) (
 	bytes, generation, err := reader.ReadFileWithGeneration(ctx, "raw/"+path)
 	if err != nil {
 		if errors.Is(err, storage.ErrObjectNotExist) {
+			deadline, ok := data["reconcile_deadline"].(time.Time)
+			if !ok {
+				createdAt, _ := data["created_at"].(time.Time)
+				deadline = createdAt.Add(sourceCommitReconcileGrace)
+			}
+			if deadline.IsZero() || time.Now().UTC().Before(deadline) {
+				return CommitResult{State: "pending", ProcessingStatus: "unknown"}, ErrSourceCommitPending
+			}
 			if err := j.markCommitAborted(ctx, ref, "raw_missing"); err != nil {
 				return CommitResult{}, err
 			}
@@ -300,6 +326,20 @@ func (j *FirestoreJournal) ReconcileSourceCommit(ctx context.Context, ref Ref) (
 		return CommitResult{State: "aborted", ProcessingStatus: "pending"}, nil
 	}
 	return j.ConfirmSourceCommit(ctx, ref, ConfirmRequest{Generation: strconv.FormatInt(generation, 10), Status: "created"})
+}
+
+func enqueueSourceCommitReconcile(ctx context.Context, tx *cloudfirestore.Transaction, fs *cloudfirestore.Client, project VerifiedProject, operationID string, due time.Time) error {
+	work := profileruntime.Work{
+		UserID: project.OwnerID, ProjectID: project.ProjectID, Kind: "source_commit_reconcile",
+		Revision: 0, ID: operationID, Due: due.UTC(), Pending: true, Status: "pending",
+	}
+	workRef := scopedfirestore.Collection(fs, profileruntime.WorkCollection).Doc(profileruntime.WorkID(work))
+	if _, err := tx.Get(workRef); err == nil {
+		return nil
+	} else if status.Code(err) != codes.NotFound {
+		return err
+	}
+	return tx.Create(workRef, work)
 }
 
 func (j *FirestoreJournal) markCommitAborted(ctx context.Context, ref Ref, reason string) error {

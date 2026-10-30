@@ -1391,17 +1391,27 @@ func (s *Service) commit(ctx context.Context, store ProjectStore, prepared *cand
 		writer := expectedWriter{ConditionalWriter: store, path: "raw/" + prepared.relativePath, expected: prepared.expectedGeneration}
 		committed, processingStatus, sourceRevision, commitErr := s.commitSourceRaw(ctx, store, writer, prepared, overwrite)
 		if commitErr != nil {
-			if errors.Is(commitErr, sourceautomation.ErrSourceCommitUnconfirmed) {
+			if committedSourceResult(committed, prepared) {
+				if processingStatus == "unknown" || (processingStatus == "not_started" && sourceRevision == 0 && s.SourceJournal != nil) {
+					processingStatus = "unknown"
+				}
 				result := storedResult(committed, &prepared.preview)
-				result.ProcessingStatus = "unknown"
-				result.Message = "URL content was saved, but automatic processing status could not be confirmed. Check the Project before retrying."
+				result.ProcessingStatus = processingStatus
+				result.SourceRevision = sourceRevision
+				result.Message = urlProcessingMessage(processingStatus)
 				return result, nil
+			}
+			if errors.Is(commitErr, sourceautomation.ErrSourceCommitUnconfirmed) {
+				return Result{Status: "uncertain", Message: "The URL save outcome could not be confirmed. Check the raw path before retrying.", FailureStage: "commit", Preview: &prepared.preview}, nil
 			}
 			if errors.Is(commitErr, rawintake.ErrCommitUncertain) {
 				readback, _, readbackExists, readErr := readRaw(ctx, store, prepared.relativePath)
 				if readErr == nil && readbackExists && bytes.Equal(readback, prepared.data) {
 					recordIntakeEvent(ctx, "commit", "storage", "recovered")
 					result := storedResult(rawintake.Result{Path: "raw/" + prepared.relativePath, SHA256: prepared.digest, Status: rawintake.StatusAlreadyExists}, &prepared.preview)
+					if processingStatus == "not_started" && sourceRevision == 0 && s.SourceJournal != nil {
+						processingStatus = "unknown"
+					}
 					result.ProcessingStatus = processingStatus
 					result.SourceRevision = sourceRevision
 					result.Message = urlProcessingMessage(processingStatus)
@@ -1447,6 +1457,12 @@ func (s *Service) commit(ctx context.Context, store ProjectStore, prepared *cand
 		return result, nil
 	}
 	return Result{Status: "conflict", Message: ErrURLConflict.Error(), Preview: &prepared.preview}, nil
+}
+
+func committedSourceResult(committed rawintake.Result, prepared *candidate) bool {
+	return prepared != nil && committed.Path == "raw/"+prepared.relativePath &&
+		committed.SHA256 == prepared.digest &&
+		(committed.Status == rawintake.StatusCreated || committed.Status == rawintake.StatusReplaced || committed.Status == rawintake.StatusAlreadyExists)
 }
 
 func (s *Service) commitSourceRaw(ctx context.Context, store ProjectStore, writer storage.ConditionalWriter, prepared *candidate, overwrite bool) (rawintake.Result, string, int64, error) {
