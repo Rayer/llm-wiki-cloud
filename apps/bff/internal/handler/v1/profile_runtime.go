@@ -339,20 +339,38 @@ func (d *ProfileDispatcher) execute(ctx context.Context, repo *firestoreProfileR
 	if _, err := d.Handler.AuthorizeProject(ctx, w.UserID, w.ProjectID, ProjectEdit); err != nil {
 		return err
 	}
-	projectClient, _, err := d.Handler.projectLLMClient(ctx, w.UserID, w.ProjectID)
+	if w.Kind == "pipeline" {
+		return d.executePipelineIntent(ctx, repo, w)
+	}
+	snapshot, _, err := d.Handler.pinProfileRuntimeSnapshot(ctx, w)
 	if err != nil {
 		return err
 	}
-	if projectClient != nil {
-		defer func() {
-			if closer, ok := projectClient.(interface{ Close() }); ok {
-				closer.Close()
+	if snapshot.Source != "bootstrap" {
+		profiles, err := d.Handler.profileRecordsForOperationSnapshot(ctx, w.UserID, snapshot)
+		if err != nil {
+			return err
+		}
+		if profileRecordsHaveCredential(profiles) {
+			previouslyUsed, markErr := d.Handler.markProfileRuntimeCredentialUsed(ctx, w, snapshot)
+			if markErr != nil {
+				return errLLMProfileCredentialUnavailable
 			}
-		}()
-		ctx = llm.WithProjectChatClient(ctx, projectClient)
-	}
-	if w.Kind == "pipeline" {
-		return d.executePipelineIntent(ctx, repo, w)
+			if previouslyUsed && profileRecordsHaveDeploymentCredential(profiles) {
+				return errLLMProfileCredentialUnavailable
+			}
+		}
+		roles, err := d.Handler.profileRoleClientsForRecords(ctx, w.UserID, snapshot.Source, profiles)
+		if err != nil {
+			return err
+		}
+		defer closeProjectRoleClients(roles)
+		selectedClient := roles.Heavy
+		if w.Kind == "tag" {
+			selectedClient = roles.Fast
+		}
+		ctx = llm.WithProjectRoleClients(ctx, roles)
+		ctx = llm.WithProjectChatClient(ctx, selectedClient)
 	}
 	if w.Kind == "compile" {
 		state, err := repo.GetProfile(ctx, w.UserID, w.ProjectID)
