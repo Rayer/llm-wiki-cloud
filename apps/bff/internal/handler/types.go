@@ -175,9 +175,11 @@ type ConceptsListResponse struct {
 
 // ProjectResponse is a project entry returned by GET /api/v1/projects.
 type ProjectResponse struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	CreatedAt string `json:"created_at"`
+	ID                  string `json:"id"`
+	Name                string `json:"name"`
+	CreatedAt           string `json:"created_at"`
+	Description         string `json:"description"`
+	DescriptionRevision int64  `json:"description_revision"`
 }
 
 // ConceptDetailResponse is the response for a concept detail endpoint.

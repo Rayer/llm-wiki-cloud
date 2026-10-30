@@ -6,7 +6,7 @@ import { useT } from '@/lib/i18n';
 import { navigationDecision } from '@/lib/navigation-decision';
 
 type NavigationBlockerValue = {
-  setBlocked: (blocked: boolean) => void;
+  setBlocked: (blocked: boolean, owner?: object) => void;
   confirmNavigation: () => boolean;
   consumeCapturedConfirmation: () => boolean;
 };
@@ -17,7 +17,18 @@ export function NavigationBlockerProvider({ children }: { children: ReactNode })
   // App Router has no supported API to cancel browser back/forward navigation. We guard
   // links and explicit pushes here and retain beforeunload for document exits only.
   const { t } = useT();
-  const [blocked, setBlocked] = useState(false);
+  const defaultOwner = useRef({});
+  const [blockers, setBlockers] = useState<Set<object>>(() => new Set());
+  const blocked = blockers.size > 0;
+  const setBlocked = useCallback((isBlocked: boolean, owner = defaultOwner.current) => {
+    setBlockers((current) => {
+      if (current.has(owner) === isBlocked) return current;
+      const next = new Set(current);
+      if (isBlocked) next.add(owner);
+      else next.delete(owner);
+      return next;
+    });
+  }, []);
   const capturedConfirmation = useRef(false);
   const confirmNavigation = useCallback(
     () => !blocked || window.confirm(t('Annotation.unsavedConfirm')),
