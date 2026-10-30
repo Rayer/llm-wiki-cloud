@@ -16,6 +16,7 @@ import (
 	"cloud.google.com/go/firestore"
 	"github.com/rayer/llm-wiki-bff/internal/contentcontext"
 	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
+	"github.com/rayer/llm-wiki-bff/internal/llm"
 	"github.com/rayer/llm-wiki-bff/internal/localfs"
 )
 
@@ -182,6 +183,144 @@ func TestLocalPublicationAuthorityCarriesSameDigestAndFencesLateAttempt(t *testi
 	if err != nil || state.Status != contentcontext.StatusPending || state.TargetConceptsSHA != localConceptsDigest(localContentContextFixtureConcepts(t, "gamma")) ||
 		state.LastGood == nil || state.LastGood.Text != "summary from first local publication" {
 		t.Fatalf("late local attempt changed current/last-good state: state=%+v err=%v", state, err)
+	}
+}
+
+func TestLocalFirstClaimAfterSameDigestCarryForwardUsesCapturedSource(t *testing.T) {
+	ctx := contentContextEmulatorContext(t, 30*time.Second)
+	cloudProject := fmt.Sprintf("local-content-context-first-claim-%d", time.Now().UnixNano())
+	t.Setenv("GOOGLE_CLOUD_PROJECT", cloudProject)
+	t.Setenv("FIRESTORE_DATABASE_ID", "(default)")
+	client, err := newProfileFirestoreClient(ctx, cloudProject)
+	if err != nil {
+		t.Fatalf("create Firestore emulator client: %v", err)
+	}
+	defer client.Close()
+
+	cfg := workerConfig{UserID: "local-owner", ProjectID: fmt.Sprintf("local-first-claim-%d", time.Now().UnixNano()), ExecutionID: "local-summary-g1"}
+	stateRef := scopedfirestore.Collection(client, "projects").Doc(cfg.UserID + "_" + cfg.ProjectID).Collection("content_context").Doc("state")
+	defer func() { _, _ = stateRef.Delete(context.Background()) }()
+	vault := t.TempDir()
+	first := commitLocalContentContextFixture(t, vault, cfg, "alpha")
+	cfg.ExecutionID = "local-summary-g2"
+	second := commitLocalContentContextFixture(t, vault, cfg, "alpha")
+	if first.Generation == second.Generation || first.SummarySourceGeneration != second.SummarySourceGeneration ||
+		first.SummarySourceIdentity != second.SummarySourceIdentity {
+		t.Fatalf("same-digest fixture did not retain G1 source: G1=%+v G2=%+v", first, second)
+	}
+
+	authority := newLocalContentContextAuthority(cfg, vault)
+	repository := contentcontext.NewFirestoreRepository(client)
+	claim, err := repository.Claim(ctx, cfg.UserID, cfg.ProjectID, authority)
+	if err != nil || claim == nil || claim.SourceGeneration != first.Generation || claim.SourceManifestIdentity != first.SummarySourceIdentity {
+		t.Fatalf("first claim after G2=%+v err=%v, want captured G1 source", claim, err)
+	}
+	input, metadata, err := loadLocalContentContextSummaryInput(ctx, cfg, vault, authority, *claim)
+	if err != nil || len(input) == 0 || metadata.SourceGeneration != first.Generation {
+		t.Fatalf("load captured G1 input after G2: bytes=%d metadata=%+v err=%v", len(input), metadata, err)
+	}
+	completion := contentcontext.SummaryCompletion{
+		Text: "summary from the first committed local generation", PromptRevision: contentcontext.SummaryPromptRevision,
+		ProfileSource: "bootstrap", Role: contentcontext.SummaryRole, RequestedModel: "fast-model", ReturnedModel: "fast-model-v2",
+		InputDigest: metadata.InputDigest, SelectionVersion: contentcontext.SummarySelectionVersion,
+	}
+	if saved, err := repository.Complete(ctx, cfg.UserID, cfg.ProjectID, authority, *claim, completion); err != nil || !saved {
+		t.Fatalf("complete G1 work against G2 publication: saved=%t err=%v", saved, err)
+	}
+	state, err := repository.Read(ctx, cfg.UserID, cfg.ProjectID)
+	if err != nil || state.Status != contentcontext.StatusReady || state.TargetGeneration != second.Generation ||
+		state.LatestPublication == nil || state.LatestPublication.Generation != second.Generation ||
+		state.LastGood == nil || state.LastGood.SourceGeneration != first.Generation || state.SummaryWork == nil ||
+		state.SummaryWork.SourceGeneration != first.Generation || state.SummaryWork.RetryCount != 0 {
+		t.Fatalf("GET state did not preserve current G2 and captured G1 identities: state=%+v err=%v", state, err)
+	}
+}
+
+func TestLocalWorkerRecoversCommittedSummaryWithoutCompilingOrPublishing(t *testing.T) {
+	for _, crashPoint := range []string{"before_first_state_registration", "after_claim_before_complete"} {
+		t.Run(crashPoint, func(t *testing.T) {
+			ctx := contentContextEmulatorContext(t, 30*time.Second)
+			cloudProject := fmt.Sprintf("local-content-context-recovery-%d", time.Now().UnixNano())
+			t.Setenv("GOOGLE_CLOUD_PROJECT", cloudProject)
+			t.Setenv("FIRESTORE_DATABASE_ID", "(default)")
+			client, err := newProfileFirestoreClient(ctx, cloudProject)
+			if err != nil {
+				t.Fatalf("create Firestore emulator client: %v", err)
+			}
+			defer client.Close()
+
+			cfg := workerConfig{
+				UserID: "local-recovery-owner", ProjectID: fmt.Sprintf("local-recovery-%d", time.Now().UnixNano()),
+				ExecutionID: "local-recovery-g1", Postprocess: true, WorkspaceDir: t.TempDir(),
+				PipelineProfileSource: "bootstrap", BootstrapLLMSource: true, APIKey: "fixture-platform-key",
+			}
+			stateRef := scopedfirestore.Collection(client, "projects").Doc(cfg.UserID + "_" + cfg.ProjectID).Collection("content_context").Doc("state")
+			defer func() { _, _ = stateRef.Delete(context.Background()) }()
+			vault := t.TempDir()
+			published := commitLocalContentContextFixture(t, vault, cfg, "alpha")
+			authority := newLocalContentContextAuthority(cfg, vault)
+			repository := contentcontext.NewFirestoreRepository(client)
+			var interruptedClaim *contentcontext.SummaryClaim
+			if crashPoint == "after_claim_before_complete" {
+				interruptedClaim, err = repository.Claim(ctx, cfg.UserID, cfg.ProjectID, authority)
+				if err != nil || interruptedClaim == nil {
+					t.Fatalf("claim before simulated crash: claim=%+v err=%v", interruptedClaim, err)
+				}
+				if _, err := stateRef.Update(ctx, []firestore.Update{{Path: "summary_work.lease", Value: time.Now().UTC().Add(-time.Minute)}}); err != nil {
+					t.Fatalf("expire interrupted claim lease: %v", err)
+				}
+			}
+
+			oldHooks := localWorkspaceBatchHooks
+			t.Cleanup(func() { localWorkspaceBatchHooks = oldHooks })
+			oldBootstrapFactory := newBootstrapContentContextSummaryClient
+			t.Cleanup(func() { newBootstrapContentContextSummaryClient = oldBootstrapFactory })
+			summaryClient := &contentContextTestSummaryClient{result: llm.CompletionResult{
+				Text: `{"summary":"Recovered published project context."}`,
+				Metadata: llm.CompletionMetadata{
+					Provider: "test-provider", Protocol: string(llm.ProtocolOpenAIChatCompletions),
+					Role: string(llm.ProfileRoleFast), RequestedModel: "test-fast", ReturnedModel: "test-fast-v2",
+				},
+			}}
+			newBootstrapContentContextSummaryClient = func(key string) (contentContextSummaryClient, llm.ModelIdentity, error) {
+				if key != cfg.APIKey {
+					t.Fatalf("recovery client received unexpected platform credential")
+				}
+				return summaryClient, llm.ModelIdentity{Provider: "test-provider", Model: "test-fast"}, nil
+			}
+
+			pipelineCalls, publishCalls := 0, 0
+			hooks := oldHooks
+			hooks.snapshotSources = func(string) ([]sourceSnapshot, error) { pipelineCalls++; return nil, nil }
+			hooks.syncWorkspaceOutputs = func(string, string, string) error { publishCalls++; return nil }
+			localWorkspaceBatchHooks = hooks
+			cfg.ExecutionID = "local-recovery-resume"
+			if err := runWorkerBatchWorkspace(ctx, cfg, [][]string{{"run"}}, vault); err != nil {
+				t.Fatalf("run local content-context recovery: %v", err)
+			}
+			if summaryClient.calls != 1 || pipelineCalls != 0 || publishCalls != 0 {
+				t.Fatalf("recovery calls summary=%d compile=%d publish=%d", summaryClient.calls, pipelineCalls, publishCalls)
+			}
+			state, err := repository.Read(ctx, cfg.UserID, cfg.ProjectID)
+			if err != nil || state.Status != contentcontext.StatusReady || state.TargetGeneration != published.Generation ||
+				state.LatestPublication == nil || state.LatestPublication.ManifestIdentity != published.Publication().ManifestIdentity ||
+				state.LastGood == nil || state.LastGood.SourceGeneration != published.SummarySourceGeneration || state.SummaryWork == nil {
+				t.Fatalf("recovered state=%+v err=%v", state, err)
+			}
+			if crashPoint == "after_claim_before_complete" {
+				if state.SummaryWork.RetryCount != 1 || interruptedClaim == nil {
+					t.Fatalf("recovered claim budget=%+v old=%+v", state.SummaryWork, interruptedClaim)
+				}
+				completion := contentcontext.SummaryCompletion{
+					Text: "stale result", PromptRevision: contentcontext.SummaryPromptRevision,
+					ProfileSource: "bootstrap", Role: contentcontext.SummaryRole, RequestedModel: "test-fast", ReturnedModel: "test-fast-v2",
+					InputDigest: strings.Repeat("a", 64), SelectionVersion: contentcontext.SummarySelectionVersion,
+				}
+				if saved, err := repository.Complete(ctx, cfg.UserID, cfg.ProjectID, authority, *interruptedClaim, completion); !errors.Is(err, contentcontext.ErrAttemptRejected) || saved {
+					t.Fatalf("interrupted claim committed after recovery: saved=%t err=%v", saved, err)
+				}
+			}
+		})
 	}
 }
 

@@ -30,11 +30,15 @@ var (
 )
 
 // Publication identifies a confirmed Project publication read while the
-// existing publisher fence is held.
+// existing publisher fence is held. SummarySource identifies the immutable
+// captured input, which may precede the current generation on same-digest
+// local carry-forward.
 type Publication struct {
-	Generation       string
-	ConceptsDigest   string
-	ManifestIdentity string
+	Generation                    string
+	ConceptsDigest                string
+	ManifestIdentity              string
+	SummarySourceGeneration       string
+	SummarySourceManifestIdentity string
 }
 
 // PublicationReader is the narrow optional reader used by the Project context
@@ -473,6 +477,13 @@ func currentPublication(ctx context.Context, ownerID, projectID string, authorit
 		return Publication{}, errors.New("invalid current content-context publication")
 	}
 	publication.ConceptsDigest = digest
+	if publication.SummarySourceGeneration == "" && publication.SummarySourceManifestIdentity == "" {
+		publication.SummarySourceGeneration = publication.Generation
+		publication.SummarySourceManifestIdentity = publication.ManifestIdentity
+	}
+	if strings.TrimSpace(publication.SummarySourceGeneration) == "" || strings.TrimSpace(publication.SummarySourceManifestIdentity) == "" {
+		return Publication{}, errors.New("invalid content-context summary source identity")
+	}
 	return publication, nil
 }
 
@@ -537,7 +548,7 @@ func observePublication(state StateDocument, publication Publication, ownerID, p
 	state.AttemptFinishedAt = nil
 	state.SummaryWork = &SummaryWorkRecord{
 		WorkID: workID, ConceptsSHA256: publication.ConceptsDigest,
-		SourceGeneration: publication.Generation, SourceManifestIdentity: publication.ManifestIdentity,
+		SourceGeneration: publication.SummarySourceGeneration, SourceManifestIdentity: publication.SummarySourceManifestIdentity,
 		Status: StatusPending,
 	}
 	return state, true, nil
@@ -620,5 +631,8 @@ func validateCompletion(completion SummaryCompletion) error {
 func samePublication(left, right Publication) bool {
 	leftDigest, leftOK := NormalizeSHA256(left.ConceptsDigest)
 	rightDigest, rightOK := NormalizeSHA256(right.ConceptsDigest)
-	return leftOK && rightOK && left.Generation == right.Generation && leftDigest == rightDigest && left.ManifestIdentity == right.ManifestIdentity
+	return leftOK && rightOK && left.Generation == right.Generation && leftDigest == rightDigest &&
+		left.ManifestIdentity == right.ManifestIdentity &&
+		left.SummarySourceGeneration == right.SummarySourceGeneration &&
+		left.SummarySourceManifestIdentity == right.SummarySourceManifestIdentity
 }

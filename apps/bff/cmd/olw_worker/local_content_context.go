@@ -189,6 +189,47 @@ func committedLocalContentContextDescriptor(vault string, cfg workerConfig) (con
 	return descriptor, err == nil
 }
 
+// localContentContextRecoveryNeeded reports whether the confirmed local
+// publication has not yet been reconciled or still has pending summary work.
+// The caller holds the publisher lease while checking; inference happens only
+// after that lease is released by the worker entry point.
+func localContentContextRecoveryNeeded(ctx context.Context, cfg workerConfig, vault string) (bool, error) {
+	if ctx == nil || !auth.ValidPathSegment(cfg.UserID) || !auth.ValidPathSegment(cfg.ProjectID) {
+		return false, nil
+	}
+	descriptor, ok := committedLocalContentContextDescriptor(vault, cfg)
+	if !ok || !committedLocalConceptsMatch(vault, cfg, descriptor.ConceptsDigest) {
+		return false, nil
+	}
+	cloudProject := firstNonEmptyEnv("GOOGLE_CLOUD_PROJECT", "GCP_PROJECT", "GCLOUD_PROJECT")
+	if cloudProject == "" {
+		return false, nil
+	}
+	client, err := newContentContextFirestoreClient(ctx, cloudProject)
+	if err != nil {
+		return false, err
+	}
+	if client == nil {
+		return false, errors.New("local content-context Firestore client unavailable")
+	}
+	defer client.Close()
+	state, err := contentcontext.NewFirestoreRepository(client).Read(ctx, cfg.UserID, cfg.ProjectID)
+	if err != nil {
+		return false, err
+	}
+	publication := descriptor.Publication()
+	if state.LatestPublication == nil {
+		return true, nil
+	}
+	latest := state.LatestPublication
+	digest, digestOK := contentcontext.NormalizeSHA256(latest.ConceptsSHA256)
+	if latest.Generation != publication.Generation || latest.ManifestIdentity != publication.ManifestIdentity ||
+		!digestOK || digest != publication.ConceptsDigest {
+		return true, nil
+	}
+	return state.Status == contentcontext.StatusPending, nil
+}
+
 func committedLocalConceptsMatch(vault string, cfg workerConfig, expected string) bool {
 	root, err := os.OpenRoot(vault)
 	if err != nil {

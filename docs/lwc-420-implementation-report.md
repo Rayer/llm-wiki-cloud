@@ -12,15 +12,20 @@ Same-digest carry-forward preserves the original work, lease, retry count, and s
 
 ## Verification
 
-- Focused emulator-backed worker, content-context, handler, carry-forward, fencing, and shared eligibility tests passed:
-  `FIRESTORE_EMULATOR_HOST=127.0.0.1:8585 go test ./cmd/olw_worker ./internal/contentcontext ./internal/handler/v1 -run 'ContentContext|SummaryWork|PublicationCarryForward|PipelineQuotaFallbackRevalidatesEligibility' -count=1`.
-- Broad emulator-backed Go run passed `cmd/olw_worker`, `internal/localfs`, `internal/contentcontext`, `internal/cache`, `internal/llm`, and `internal/queryruntime`. `internal/handler/v1` had one known LWC-443 failure: `TestProfileRuntimeConnectedManualThenCompileTagging/retained-candidate-exhaustion-retries-through-activation` reports `calls=3` at `profile_runtime_e2e_test.go:385`. Project context handler/MCP tests passed in the focused run above.
+- Review repair regression command passed against an owned loopback Firestore emulator at `127.0.0.1:18592`, with ADC and metadata disabled: `go test ./cmd/olw_worker -run 'TestLocal(FirstClaimAfterSameDigestCarryForwardUsesCapturedSource|WorkerRecoversCommittedSummaryWithoutCompilingOrPublishing|PublicationAuthorityCarriesSameDigestAndFencesLateAttempt)$' -count=1 -v`. It passed 3 top-level tests and both recovery subtests (missing first state registration; expired claim before completion). The tests exercise G1 descriptor commit, same-digest G2, actual first Claim/input loader/Firestore Complete/readback, crash recovery without compile or publication, bounded second claim, old-attempt rejection, and changed-digest fencing.
+- A broad `go test ./internal/contentcontext ./cmd/olw_worker -skip 'TestProfileReceiptFirestoreAtomicOutboxAndDuplicate|TestProfileReceiptActualPublisherPersistsOriginRequestID' -count=1` passed both packages with a fresh owned loopback emulator at `127.0.0.1:18593`. The two excluded unrelated profile-receipt cases hard-require `127.0.0.1:8585`; the earlier full package run recorded 472 PASS events, 3 SKIP events, and those 2 port-guard failures. Logs: `/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch/lwc420-r2-review-repair-20261030/bff-focused.log` and `bff-worker-broad.log`.
 - Frontend `npm test` passed 570/570 Node tests and 621/621 component tests; `npm run typecheck` passed.
 - `git diff --check` passed.
 
+## Review repair and causal comparison
+
+The first review hold is fixed by carrying the committed descriptor's summary-source generation and identity separately from the current publication head; first-time work now binds to captured G1 input even when same-digest G2 is current, while the existing input loader and digest fences remain strict. The second hold is fixed at the local worker recovery entry: if the confirmed descriptor is missing from state, stale, or pending, the worker releases its publication lease before resuming reconciliation and returns without compiling or publishing another generation. Ready or failed current work is not automatically retried.
+
+For the separate retained-candidate handler failure, an exact comparison used the same Go 1.26.5 toolchain and distinct fresh loopback Firestore emulators with ADC and metadata disabled: frozen base `3bacc1f8567d040ef4a8f8fd7fa6df2f56116724` passed; exact LWC-443 handoff `c182182f8ce488599a0d7ba4ffdfdf03f1fe30c6` and PR head `37ade67f687c8365ccceff112e901ea9e1626481` failed the same test. A sanitized diagnostic on c182 recorded bootstrap source, no credentials, zero resolved profiles, and `LLM profile is unavailable`; `calls=3` is only the observed counter outcome. The failure is not present on frozen base and is not an established pre-existing 443 failure; its exact runtime stage and final owning-lane verdict remain with the parent. No 440/443-only code or expected-counter assertion was changed here.
+
 ## Qualification limits
 
-No external provider call, production deployment, live-data write, or external Bot/multiconnector client qualification was performed. The last item requires the separately authorized parent DEV/client qualification. The handler retry failure remains assigned to the LWC-443 lane and is not changed by this 420 work.
+No external provider call, production deployment, live-data write, or external Bot/multiconnector client qualification was performed. The last item requires the separately authorized parent DEV/client qualification. GitGuardian remains neutral/skipping due to inherited historical findings recorded as `live4-3985` and `live4-3986`; the dependency history is preserved, no finding values were inspected, and this status is not described as a clean pass.
 
 ## Review status
 

@@ -157,7 +157,10 @@ func validLocalSummarySourceIdentity(identity, sourceGeneration, digest string) 
 func (descriptor LocalPublicationDescriptor) Publication() Publication {
 	digest, _ := NormalizeSHA256(descriptor.ConceptsDigest)
 	return Publication{
-		Generation: descriptor.Generation, ConceptsDigest: digest,
-		ManifestIdentity: LocalPublicationIdentity(descriptor.TransactionID, digest),
+		Generation:                    descriptor.Generation,
+		ConceptsDigest:                digest,
+		ManifestIdentity:              LocalPublicationIdentity(descriptor.TransactionID, digest),
+		SummarySourceGeneration:       descriptor.SummarySourceGeneration,
+		SummarySourceManifestIdentity: descriptor.SummarySourceIdentity,
 	}
 }

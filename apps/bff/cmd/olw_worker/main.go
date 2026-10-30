@@ -720,9 +720,11 @@ func runWorkerBatchWorkspace(ctx context.Context, cfg workerConfig, commands [][
 		_ = recordLocalWorkerFailureLog(workspace, vault, cfg, failure, published)
 	}
 	defer func() {
-		if err := localWorkspaceBatchHooks.releaseVaultLease(lease); err != nil && runErr == nil {
-			runErr = newWorkerFailure(nil, failureStageLeaseCleanup, failureClassIO, "", err)
-			recordTerminal(runErr, true)
+		if lease != nil {
+			if err := localWorkspaceBatchHooks.releaseVaultLease(lease); err != nil && runErr == nil {
+				runErr = newWorkerFailure(nil, failureStageLeaseCleanup, failureClassIO, "", err)
+				recordTerminal(runErr, true)
+			}
 		}
 	}()
 	defer func() {
@@ -732,6 +734,20 @@ func runWorkerBatchWorkspace(ctx context.Context, cfg workerConfig, commands [][
 	}()
 	if err := localWorkspaceBatchHooks.recoverInterruptedPublish(vault); err != nil {
 		return preserveWorkerFailure(err, failureStageGenerationPublish, failureClassIO)
+	}
+	if recoveryNeeded, recoveryErr := localContentContextRecoveryNeeded(ctx, cfg, vault); recoveryErr != nil {
+		reportContentContextReconcileFailure(recoveryErr)
+	} else if recoveryNeeded {
+		if err := localWorkspaceBatchHooks.releaseVaultLease(lease); err != nil {
+			return preserveWorkerFailure(err, failureStageLeaseCleanup, failureClassIO)
+		}
+		lease = nil
+		recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), contentContextRunTimeout)
+		if err := runLocalContentContext(recoveryCtx, cfg, vault); err != nil {
+			reportContentContextReconcileFailure(err)
+		}
+		cancel()
+		return nil
 	}
 	snapshots, err := localWorkspaceBatchHooks.snapshotSources(vault)
 	if err != nil {
