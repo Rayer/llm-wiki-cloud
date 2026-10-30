@@ -117,6 +117,13 @@ func TestPublicRecordHidesStorageAndDispatchDetails(t *testing.T) {
 	}
 }
 
+func TestRawSourcePathIsFlatAndDocumentScoped(t *testing.T) {
+	const documentID = "document-1"
+	if got, want := RawSourcePath(documentID), "document-import-document-1.md"; got != want {
+		t.Fatalf("RawSourcePath(%q) = %q, want %q", documentID, got, want)
+	}
+}
+
 func TestValidateSubmissionIDRequiresBoundedOpaqueValue(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

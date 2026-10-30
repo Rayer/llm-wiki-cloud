@@ -86,6 +86,7 @@ type PipelineRef struct {
 	Status            string `json:"status" firestore:"status"`
 	IntentID          string `json:"intent_id,omitempty" firestore:"intent_id,omitempty"`
 	ExecutionID       string `json:"execution_id,omitempty" firestore:"execution_id,omitempty"`
+	SourceRevision    int64  `json:"source_revision,omitempty" firestore:"source_revision,omitempty"`
 	ContentGeneration string `json:"content_generation,omitempty" firestore:"content_generation,omitempty"`
 	Reason            string `json:"reason,omitempty" firestore:"reason,omitempty"`
 }

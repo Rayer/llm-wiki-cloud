@@ -117,7 +117,7 @@ func (p *Processor) saveSource(ctx context.Context, record Record, leaseToken st
 		pipelineStatus != "not_started_disabled" {
 		pipelineStatus = "unknown"
 	}
-	pipelineRef := &PipelineRef{Status: pipelineStatus}
+	pipelineRef := &PipelineRef{Status: pipelineStatus, SourceRevision: result.SourceRevision}
 	sourceRef := &SourceRef{RawPath: rawPath, SHA256: record.MarkdownSHA256, ObjectGeneration: rawGeneration}
 	_, err = p.Repository.SetSourceOutcome(ctx, record.OwnerID, record.ProjectID, record.DocumentID, leaseToken,
 		SourceSaved, sourceRef, ref.OperationID, pipelineRef, nil)
@@ -135,7 +135,7 @@ func (p *Processor) reconcileSourceFailure(ctx context.Context, record Record, l
 			}
 			_, setErr := p.Repository.SetSourceOutcome(ctx, record.OwnerID, record.ProjectID, record.DocumentID, leaseToken,
 				SourceSaved, &SourceRef{RawPath: RawSourcePath(record.DocumentID), SHA256: record.MarkdownSHA256, ObjectGeneration: storedGeneration},
-				ref.OperationID, &PipelineRef{Status: pipelineStatus}, nil)
+				ref.OperationID, &PipelineRef{Status: pipelineStatus, SourceRevision: result.SourceRevision}, nil)
 			return errors.Join(cause, setErr)
 		}
 		return p.finishSourceFailure(ctx, record, leaseToken, "source_readback_failed", true, errors.Join(readErr, cause))
@@ -214,7 +214,7 @@ func ensureRawSource(ctx context.Context, objects ObjectStore, rawPath string, m
 }
 
 func RawSourcePath(documentID string) string {
-	return "document-imports/" + documentID + ".md"
+	return "document-import-" + documentID + ".md"
 }
 
 func digestBytes(data []byte) string {
