@@ -162,7 +162,7 @@ class IndependentProducerTests(unittest.TestCase):
     def make_ci_package(self, root: Path, auth_source: dict, normalized: dict):
         source_tar = (root / "source.tar").read_bytes()
         files = gat4_ci_artifact._tree_files(source_tar)
-        image_prefix = normalized["gcp"]["artifact_registry"] + "/llm-wiki-auth"
+        image_prefix = gat4_ci_artifact.IMAGE_PREFIX
         image_tag = f"{image_prefix}:{auth_source['revision']}"
         image_digest = "sha256:" + "c" * 64
         build_id = "11111111-2222-3333-4444-555555555555"
@@ -366,6 +366,8 @@ else:
             auth_receipt = read(directory / "receipts/auth.json")
             dev_receipt = read(directory / "images/dev-receipt.json")
             run.provider.usable = lambda _component, _artifact: None
+            self.assertTrue(auth_receipt["artifact"]["image"].startswith(
+                gat4_ci_artifact.IMAGE_PREFIX + "@"))
             self.assertEqual(auth_receipt["schema"], 3)
             self.assertEqual(auth_receipt["build_sha"], lwc_sha)
             self.assertEqual(auth_receipt["auth_source"], {

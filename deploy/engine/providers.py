@@ -730,7 +730,11 @@ class Providers:
 
     def valid_image(self, c, image):
         prefix = self.p['gcp']['artifact_registry'] + '/' + self.profiles[c]['image']
-        require(re.fullmatch(re.escape(prefix) + r'@sha256:[0-9a-f]{64}', image), 'artifact-config-incompatible')
+        prefixes = [prefix]
+        if c == 'auth' and release_source_mode(self.plan) == 'independent':
+            prefixes = [gat4_ci_artifact.IMAGE_PREFIX, gat4_ci_artifact.RETAINED_IMAGE_PREFIX]
+        require(any(re.fullmatch(re.escape(candidate) + r'@sha256:[0-9a-f]{64}', image)
+                    for candidate in prefixes), 'artifact-config-incompatible')
         actual = run(['gcloud', 'artifacts', 'docker', 'images', 'describe', image,
                       '--project', self.p['gcp']['project_id'], '--format=value(image_summary.digest)', '--quiet'],
                      stage='digest-validate')
@@ -839,7 +843,7 @@ class Providers:
                     'run_attempt': source['run_attempt'],
                 },
                 self.p['gcp']['project_id'],
-                self.p['gcp']['artifact_registry'] + '/' + self.profiles['auth']['image'],
+                gat4_ci_artifact.IMAGE_PREFIX,
             )
         except (gat4_ci_artifact.ArtifactError, AttributeError, OSError, TypeError, ValueError):
             raise Breakpoint('independent-auth-artifact-incompatible', stage='auth-artifact-verify') from None
@@ -865,8 +869,7 @@ class Providers:
                                              poll_outcome='succeeded', expected_id=build_id)
         require(reason is None and raw.get('status') == 'SUCCESS',
                 'independent-auth-build-identity-mismatch')
-        expected_tag = (self.p['gcp']['artifact_registry'] + '/' +
-                        self.profiles['auth']['image'] + ':' + source['revision'])
+        expected_tag = f"{gat4_ci_artifact.IMAGE_PREFIX}:{source['revision']}"
         substitutions = raw.get('substitutions')
         require(isinstance(substitutions, dict) and
                 substitutions.get('_IMAGE') == expected_tag and

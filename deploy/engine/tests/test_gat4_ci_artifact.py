@@ -46,7 +46,7 @@ class GateAuthCiArtifactTests(unittest.TestCase):
             "run_id": 88,
             "run_attempt": 2,
         }
-        image_prefix = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/llm-wiki-auth"
+        image_prefix = artifact.IMAGE_PREFIX
         image_digest = "sha256:" + "c" * 64
         image_tag = f"{image_prefix}:{source_id['revision']}"
         manifest = {
