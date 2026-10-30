@@ -1,9 +1,13 @@
 'use client';
 
+import catalog from '@/generated/i18n/catalog';
+import { configuredLocaleOptions } from '@/lib/i18n-core';
 import { useT } from '@/lib/i18n';
 
+const localeOptions = configuredLocaleOptions(catalog.target_locales, catalog.locale_metadata);
+
 export function LocaleControl() {
-  const { t, locale, setLocale, hasFallback, localeOptions } = useT();
+  const { t, locale, setLocale, hasFallback } = useT();
   const hasEnglish = localeOptions.some(({ locale: option }) => option === 'en');
   return (
     <div className="mb-3 flex flex-wrap items-center justify-end gap-3">

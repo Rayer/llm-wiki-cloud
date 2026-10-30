@@ -106,7 +106,7 @@ export function useT() {
     [memoLocale],
   );
 
-  return { locale, t, setLocale, hasFallback: localeHasFallback(locale), catalogRevision, localeOptions };
+  return { locale, t, setLocale, hasFallback: localeHasFallback(locale), catalogRevision };
 }
 
 export const useLocale = useT;
