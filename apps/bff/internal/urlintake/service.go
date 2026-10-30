@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
+	"net"
 	"net/url"
 	"path"
 	"strings"
@@ -23,6 +25,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"github.com/rayer/llm-wiki-bff/internal/rawintake"
 	"github.com/rayer/llm-wiki-bff/internal/storage"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -85,17 +88,26 @@ type CandidatePreview struct {
 }
 
 type Result struct {
-	Status            string            `json:"status"`
-	Message           string            `json:"message"`
-	ConfirmationRef   string            `json:"confirmation_ref,omitempty"`
-	CandidateID       string            `json:"candidate_id,omitempty"`
-	CandidateRevision string            `json:"candidate_revision,omitempty"`
-	ExpiresAt         string            `json:"expires_at,omitempty"`
-	RetryAfterSeconds int64             `json:"retry_after_seconds,omitempty"`
-	FailureStage      string            `json:"failure_stage,omitempty"`
-	Preview           *CandidatePreview `json:"preview,omitempty"`
-	Storage           *StorageOutcome   `json:"storage,omitempty"`
-	ProcessingStatus  string            `json:"processing_status,omitempty"`
+	Status            string             `json:"status"`
+	Message           string             `json:"message"`
+	FailureDiagnostic *FailureDiagnostic `json:"failure_diagnostic,omitempty"`
+	ConfirmationRef   string             `json:"confirmation_ref,omitempty"`
+	CandidateID       string             `json:"candidate_id,omitempty"`
+	CandidateRevision string             `json:"candidate_revision,omitempty"`
+	ExpiresAt         string             `json:"expires_at,omitempty"`
+	RetryAfterSeconds int64              `json:"retry_after_seconds,omitempty"`
+	FailureStage      string             `json:"failure_stage,omitempty"`
+	Preview           *CandidatePreview  `json:"preview,omitempty"`
+	Storage           *StorageOutcome    `json:"storage,omitempty"`
+	ProcessingStatus  string             `json:"processing_status,omitempty"`
+}
+
+// FailureDiagnostic carries a bounded Fetch dependency classification to API consumers.
+type FailureDiagnostic struct {
+	Dependency     string          `json:"dependency"`
+	Operation      string          `json:"operation"`
+	Category       FailureCategory `json:"category"`
+	UpstreamStatus int             `json:"upstream_status,omitempty"`
 }
 
 type Service struct {
@@ -237,10 +249,9 @@ func (s *Service) intake(ctx context.Context, verified ActorProject, request Imp
 	}
 	page, err := s.Fetcher.Fetch(ctx, request.URL)
 	if err != nil {
-		if class := fetchFailureClass(err); class != "" {
-			recordIntakeEvent(ctx, "fetch", class, "failure")
-		}
-		return failureResult(err), nil
+		result := failureResult(err)
+		recordFetchFailure(ctx, err, result.FailureDiagnostic)
+		return result, nil
 	}
 	page.Markdown = NormalizeMarkdown(page.Markdown)
 	if len(page.Markdown) > MaxCandidateBytes {
@@ -712,19 +723,131 @@ func (s *Service) Confirm(ctx context.Context, verified ActorProject, reference 
 func failureResult(err error) Result {
 	var failure *ProviderFailure
 	if !errors.As(err, &failure) {
-		return Result{Status: "unavailable", Message: "The page could not be fetched. Paste Markdown or upload a saved page capture instead.", FailureStage: "fetch"}
+		diagnostic := FailureDiagnostic{Dependency: "unknown", Operation: "fetch", Category: FailureCategoryUnknown}
+		return Result{Status: "unavailable", Message: fetchFailureMessage(diagnostic), FailureStage: "fetch", FailureDiagnostic: &diagnostic}
 	}
 	if failure.Kind == FailureInvalidURL {
 		return Result{Status: "rejected", Message: failure.Error(), FailureStage: "validation"}
 	}
+	diagnostic := fetchFailureDiagnostic(err, failure)
+	result := Result{Status: "unavailable", Message: fetchFailureMessage(diagnostic), FailureStage: "fetch", FailureDiagnostic: &diagnostic}
 	if failure.Kind == FailureTooLarge {
-		return Result{Status: "rejected", Message: failure.Error(), FailureStage: "size"}
+		result.Status = "rejected"
+		result.FailureStage = "size"
 	}
-	result := Result{Status: "unavailable", Message: failure.Error() + ". Paste Markdown or upload a saved page capture instead.", FailureStage: "fetch"}
 	if failure.RetryAfter > 0 {
 		result.RetryAfterSeconds = int64(failure.RetryAfter.Round(time.Second).Seconds())
 	}
 	return result
+}
+
+func fetchFailureDiagnostic(err error, failure *ProviderFailure) FailureDiagnostic {
+	dependency := "unknown"
+	if failure.Provider == DeepSeekFetchProvider {
+		dependency = DeepSeekFetchProvider
+	}
+	category := failure.Category
+	if !knownFailureCategory(category) {
+		switch failure.Kind {
+		case FailureNotConfigured:
+			category = FailureCategoryNotConfigured
+		case FailureInvalidURL:
+			category = FailureCategoryInvalidURL
+		case FailureRateLimited:
+			category = FailureCategoryRateLimited
+		case FailureResponse:
+			category = FailureCategoryInvalidResponse
+		case FailureTooLarge:
+			category = FailureCategoryContentTooLarge
+		case FailureTransport:
+			switch {
+			case errors.Is(err, context.Canceled):
+				category = FailureCategoryTransportCancelled
+			case errors.Is(err, context.DeadlineExceeded):
+				category = FailureCategoryTransportTimeout
+			default:
+				var netErr net.Error
+				if errors.As(err, &netErr) && netErr.Timeout() {
+					category = FailureCategoryTransportTimeout
+				} else {
+					category = FailureCategoryTransportError
+				}
+			}
+		case FailureProvider:
+			if failure.StatusCode > 0 {
+				category = classifyProviderFailure(failure.StatusCode, "", "")
+			} else {
+				category = FailureCategoryUnknown
+			}
+		default:
+			category = FailureCategoryUnknown
+		}
+	}
+	diagnostic := FailureDiagnostic{Dependency: dependency, Operation: "fetch", Category: category}
+	if failure.StatusCode >= 100 && failure.StatusCode <= 599 {
+		diagnostic.UpstreamStatus = failure.StatusCode
+	}
+	return diagnostic
+}
+
+func knownFailureCategory(category FailureCategory) bool {
+	switch category {
+	case FailureCategoryNotConfigured, FailureCategoryInvalidURL, FailureCategoryAuthentication,
+		FailureCategoryBalance, FailureCategorySecurityPolicy, FailureCategoryContentUnavailable,
+		FailureCategoryRateLimited, FailureCategoryProviderTimeout, FailureCategoryProviderError,
+		FailureCategoryInvalidRequest, FailureCategoryRequestTooLarge, FailureCategoryUnexpectedStatus,
+		FailureCategoryTransportTimeout, FailureCategoryTransportCancelled, FailureCategoryTransportError,
+		FailureCategoryInvalidResponse, FailureCategoryContentTooLarge, FailureCategoryUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
+func fetchFailureMessage(diagnostic FailureDiagnostic) string {
+	name := "Fetch"
+	if diagnostic.Dependency == DeepSeekFetchProvider {
+		name = "DeepSeek Fetch"
+	}
+	message := name + " failed with an unknown cause"
+	switch diagnostic.Category {
+	case FailureCategoryNotConfigured:
+		message = name + " is not configured; no provider request was made"
+	case FailureCategoryAuthentication:
+		message = name + " rejected its API authentication"
+	case FailureCategoryBalance:
+		message = name + " account has insufficient balance"
+	case FailureCategorySecurityPolicy:
+		message = name + " rejected the request under its security policy"
+	case FailureCategoryContentUnavailable:
+		message = name + " could not retrieve usable page content"
+	case FailureCategoryRateLimited:
+		message = name + " rate limit was reached"
+	case FailureCategoryProviderTimeout:
+		message = name + " upstream request timed out"
+	case FailureCategoryProviderError:
+		message = name + " returned a server error"
+	case FailureCategoryInvalidRequest:
+		message = name + " rejected the request as invalid"
+	case FailureCategoryRequestTooLarge:
+		message = name + " rejected an oversized request"
+	case FailureCategoryUnexpectedStatus:
+		message = name + " returned an unexpected HTTP status"
+	case FailureCategoryTransportTimeout:
+		message = name + " transport timed out"
+	case FailureCategoryTransportCancelled:
+		message = name + " request was cancelled"
+	case FailureCategoryTransportError:
+		message = name + " transport failed"
+	case FailureCategoryInvalidResponse:
+		message = name + " returned a malformed response"
+	case FailureCategoryContentTooLarge:
+		message = name + " returned content exceeding the supported size"
+	}
+	if diagnostic.UpstreamStatus > 0 {
+		message += fmt.Sprintf(" (upstream HTTP %d)", diagnostic.UpstreamStatus)
+	}
+	return message + ". Paste Markdown or upload a saved page capture instead."
 }
 
 func fetchFailureClass(err error) string {
@@ -782,6 +905,38 @@ func recordIntakeEvent(ctx context.Context, stage, errorClass, outcome string) {
 			log.Printf("URL intake internal event: stage=%s error_class=%s outcome=%s request_id=%s", stage, errorClass, outcome, requestID)
 		}
 	}
+}
+
+func recordFetchFailure(ctx context.Context, err error, diagnostic *FailureDiagnostic) {
+	class := fetchFailureClass(err)
+	if class != "" {
+		observability.RecordURLIntakeEvent(ctx, "fetch", class, "failure")
+	}
+	requestID := observability.RequestIDFromContext(ctx)
+	if requestID == "" {
+		return
+	}
+	attributes := []any{"stage", "fetch", "outcome", "failure", "request_id", requestID}
+	if class != "" {
+		attributes = append(attributes, "error_class", class)
+	}
+	if diagnostic != nil {
+		attributes = append(attributes,
+			"dependency", diagnostic.Dependency,
+			"operation", diagnostic.Operation,
+			"category", diagnostic.Category,
+		)
+		if diagnostic.UpstreamStatus > 0 {
+			attributes = append(attributes, "upstream_status", diagnostic.UpstreamStatus)
+		}
+	}
+	if spanContext := trace.SpanContextFromContext(ctx); spanContext.IsValid() {
+		attributes = append(attributes,
+			"trace_id", spanContext.TraceID().String(),
+			"span_id", spanContext.SpanID().String(),
+		)
+	}
+	slog.InfoContext(ctx, "URL intake internal event", attributes...)
 }
 
 func validateTags(tags []string) error {

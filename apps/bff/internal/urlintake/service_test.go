@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"net/http"
 	"net/netip"
 	"strings"
 	"sync"
@@ -122,6 +123,23 @@ func TestServiceCreatesRefreshesAndNoOpsWithNormalizedTrackingIdentity(t *testin
 	files, err := markdownRawFiles(store)
 	if err != nil || len(files) != 1 {
 		t.Fatalf("raw files = %#v, %v; want one stable source", files, err)
+	}
+}
+
+func TestServiceReturnsNotConfiguredFetchDiagnosticWithoutProviderCall(t *testing.T) {
+	calls := 0
+	fetcher := NewDeepSeekFetcher("")
+	fetcher.Client = &http.Client{Transport: urlintakeRoundTripper(func(*http.Request) (*http.Response, error) {
+		calls++
+		return nil, errors.New("unexpected provider call")
+	})}
+	service, store := newTestService(t, fetcher, nil)
+	result, err := service.Prepare(context.Background(), ActorProject{ActorID: "actor-1", ProjectID: "project-1"}, ImportRequest{URL: "https://example.com/article"})
+	files, listErr := store.ListRawFiles(context.Background())
+	if err != nil || result.Status != "unavailable" || result.FailureStage != "fetch" || result.FailureDiagnostic == nil ||
+		result.FailureDiagnostic.Dependency != DeepSeekFetchProvider || result.FailureDiagnostic.Category != FailureCategoryNotConfigured ||
+		!strings.Contains(result.Message, "no provider request was made") || calls != 0 || listErr != nil || len(files) != 0 {
+		t.Fatalf("not-configured Fetch result=%#v err=%v calls=%d files=%#v listErr=%v", result, err, calls, files, listErr)
 	}
 }
 
@@ -752,6 +770,9 @@ func TestQualityFallbackAndNonFallbackStorageFailuresReachOTelCollector(t *testi
 	if err != nil || failedCandidate.Status != "unavailable" || failedCandidate.FailureStage != "candidate" {
 		t.Fatalf("candidate storage failure = %#v err=%v", failedCandidate, err)
 	}
+	recordFetchFailure(ctx, &ProviderFailure{Provider: DeepSeekFetchProvider, Kind: FailureTooLarge}, &FailureDiagnostic{
+		Dependency: DeepSeekFetchProvider, Operation: "fetch", Category: FailureCategoryContentTooLarge,
+	})
 
 	var data metricdata.ResourceMetrics
 	if err := reader.Collect(ctx, &data); err != nil {

@@ -3,6 +3,9 @@ package urlintake
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -132,6 +135,96 @@ func TestDeepSeekFetcherSurfacesRateLimitWithoutRetry(t *testing.T) {
 	}
 }
 
+func TestDeepSeekFetcherClassifiesProviderStatusWithoutRetainingErrorBody(t *testing.T) {
+	for _, test := range []struct {
+		status   int
+		body     string
+		category FailureCategory
+	}{
+		{http.StatusUnauthorized, `{"error":{"type":"authentication_error","code":"KEY_CANARY","message":"BODY_CANARY"}}`, FailureCategoryAuthentication},
+		{http.StatusPaymentRequired, `{"error":{"type":"billing_error","code":"BALANCE_CANARY"}}`, FailureCategoryBalance},
+		{http.StatusForbidden, `{"error":{"type":"security_error"}}`, FailureCategorySecurityPolicy},
+		{http.StatusNotFound, `{"error":{"type":"content_error"}}`, FailureCategoryContentUnavailable},
+		{http.StatusTooManyRequests, `{"error":{"type":"rate_limit_error"}}`, FailureCategoryRateLimited},
+		{http.StatusInternalServerError, `{"error":{"type":"server_error"}}`, FailureCategoryProviderError},
+		{http.StatusGatewayTimeout, `{"error":{"type":"timeout"}}`, FailureCategoryProviderTimeout},
+		{http.StatusBadRequest, `{"error":{"type":"invalid_request_error","code":"invalid_request_error"}}`, FailureCategoryInvalidRequest},
+		{http.StatusTeapot, `{"error":{"type":"UNKNOWN_CANARY"}}`, FailureCategoryUnexpectedStatus},
+	} {
+		t.Run(http.StatusText(test.status), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(test.status)
+				_, _ = io.WriteString(w, test.body)
+			}))
+			defer server.Close()
+			fetcher := NewDeepSeekFetcher("API_KEY_CANARY")
+			fetcher.Endpoint = server.URL
+			fetcher.Resolver = resolverStub{netip.MustParseAddr("93.184.216.34")}
+			_, err := fetcher.Fetch(context.Background(), "https://example.com/article")
+			var failure *ProviderFailure
+			if !errors.As(err, &failure) || failure.StatusCode != test.status || failure.Category != test.category {
+				t.Fatalf("Fetch() failure = %#v, want status=%d category=%s", err, test.status, test.category)
+			}
+			if strings.Contains(failure.Error(), "CANARY") || strings.Contains(failure.Error(), "BODY_CANARY") {
+				t.Fatalf("provider error body escaped safe error: %q", failure.Error())
+			}
+		})
+	}
+}
+
+type countingReadCloser struct {
+	reader io.Reader
+	read   int
+}
+
+func (body *countingReadCloser) Read(data []byte) (int, error) {
+	count, err := body.reader.Read(data)
+	body.read += count
+	return count, err
+}
+
+func (*countingReadCloser) Close() error { return nil }
+
+type urlintakeRoundTripper func(*http.Request) (*http.Response, error)
+
+func (roundTrip urlintakeRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	return roundTrip(request)
+}
+
+func TestDeepSeekFetcherBoundsProviderErrorBodyRead(t *testing.T) {
+	body := &countingReadCloser{reader: strings.NewReader(strings.Repeat("x", maxProviderErrorBytes*4))}
+	fetcher := NewDeepSeekFetcher("API_KEY_CANARY")
+	fetcher.Resolver = resolverStub{netip.MustParseAddr("93.184.216.34")}
+	fetcher.Client = &http.Client{Transport: urlintakeRoundTripper(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusBadRequest, Header: make(http.Header), Body: body, Request: request}, nil
+	})}
+	_, err := fetcher.Fetch(context.Background(), "https://example.com/article")
+	var failure *ProviderFailure
+	if !errors.As(err, &failure) || failure.Category != FailureCategoryUnexpectedStatus || body.read != maxProviderErrorBytes+1 {
+		t.Fatalf("provider error bytes read=%d err=%v, want a read capped at %d", body.read, err, maxProviderErrorBytes+1)
+	}
+}
+
+func TestFetchFailureDiagnosticPreservesWrappedCauseAndUnknowns(t *testing.T) {
+	cause := context.DeadlineExceeded
+	failure := &ProviderFailure{Provider: DeepSeekFetchProvider, Kind: FailureTransport, Cause: cause}
+	wrapped := fmt.Errorf("outer fetch context: %w", failure)
+	var got *ProviderFailure
+	if !errors.As(wrapped, &got) || got != failure || !errors.Is(wrapped, cause) {
+		t.Fatalf("wrapped provider failure lost errors.As/Is: %v", wrapped)
+	}
+	result := failureResult(wrapped)
+	if result.FailureDiagnostic == nil || result.FailureDiagnostic.Dependency != DeepSeekFetchProvider ||
+		result.FailureDiagnostic.Category != FailureCategoryTransportTimeout || result.FailureDiagnostic.UpstreamStatus != 0 {
+		t.Fatalf("timeout diagnostic = %#v", result.FailureDiagnostic)
+	}
+	unknown := failureResult(errors.New("PRIVATE_CAUSE_CANARY"))
+	if unknown.FailureDiagnostic == nil || unknown.FailureDiagnostic.Dependency != "unknown" ||
+		unknown.FailureDiagnostic.Category != FailureCategoryUnknown || strings.Contains(unknown.Message, "PRIVATE_CAUSE_CANARY") {
+		t.Fatalf("unknown failure diagnostic = %#v", unknown)
+	}
+}
+
 func TestDeepSeekFetcherBoundsRequestTimeout(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(100 * time.Millisecond)
@@ -146,6 +239,90 @@ func TestDeepSeekFetcherBoundsRequestTimeout(t *testing.T) {
 	failure, ok := err.(*ProviderFailure)
 	if !ok || failure.Kind != FailureTransport {
 		t.Fatalf("Fetch() error = %#v, want bounded transport failure", err)
+	}
+	if diagnostic := fetchFailureDiagnostic(err, failure); diagnostic.Category != FailureCategoryTransportTimeout {
+		t.Fatalf("timeout diagnostic = %#v", diagnostic)
+	}
+}
+
+func TestDeepSeekFetcherClassifiesMalformedAndOversizedResponses(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		body func() string
+		kind FailureKind
+	}{
+		{name: "malformed", body: func() string { return `{"title":` }, kind: FailureResponse},
+		{name: "oversized", body: func() string { return strings.Repeat("x", MaxCandidateBytes+64*1024+1) }, kind: FailureTooLarge},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = io.WriteString(w, test.body())
+			}))
+			defer server.Close()
+			fetcher := NewDeepSeekFetcher("API_KEY_CANARY")
+			fetcher.Endpoint = server.URL
+			fetcher.Resolver = resolverStub{netip.MustParseAddr("93.184.216.34")}
+			_, err := fetcher.Fetch(context.Background(), "https://example.com/article")
+			var failure *ProviderFailure
+			if !errors.As(err, &failure) || failure.Kind != test.kind {
+				t.Fatalf("Fetch() error = %#v, want kind=%s", err, test.kind)
+			}
+			diagnostic := fetchFailureDiagnostic(err, failure)
+			want := FailureCategoryInvalidResponse
+			if test.kind == FailureTooLarge {
+				want = FailureCategoryContentTooLarge
+			}
+			if diagnostic.Category != want || diagnostic.UpstreamStatus != http.StatusOK {
+				t.Fatalf("Fetch() diagnostic = %#v, want category=%s upstream_status=%d", diagnostic, want, http.StatusOK)
+			}
+		})
+	}
+}
+
+func TestDeepSeekFetcherNotConfiguredMakesNoProviderCall(t *testing.T) {
+	calls := 0
+	fetcher := NewDeepSeekFetcher("")
+	fetcher.Resolver = resolverStub{netip.MustParseAddr("93.184.216.34")}
+	fetcher.Client = &http.Client{Transport: urlintakeRoundTripper(func(*http.Request) (*http.Response, error) {
+		calls++
+		return nil, errors.New("unexpected provider call")
+	})}
+	_, err := fetcher.Fetch(context.Background(), "https://example.com/article")
+	var failure *ProviderFailure
+	if !errors.As(err, &failure) || failure.Kind != FailureNotConfigured || calls != 0 {
+		t.Fatalf("Fetch() error=%#v calls=%d, want not configured with no provider call", err, calls)
+	}
+	result := failureResult(err)
+	if result.FailureDiagnostic == nil || result.FailureDiagnostic.Category != FailureCategoryNotConfigured ||
+		!strings.Contains(result.Message, "no provider request was made") {
+		t.Fatalf("not-configured result = %#v", result)
+	}
+}
+
+func TestDeepSeekFetcherPreservesContextCancellation(t *testing.T) {
+	entered := make(chan struct{})
+	fetcher := NewDeepSeekFetcher("API_KEY_CANARY")
+	fetcher.Resolver = resolverStub{netip.MustParseAddr("93.184.216.34")}
+	fetcher.Client = &http.Client{Transport: urlintakeRoundTripper(func(request *http.Request) (*http.Response, error) {
+		close(entered)
+		<-request.Context().Done()
+		return nil, request.Context().Err()
+	})}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := fetcher.Fetch(ctx, "https://example.com/article")
+		done <- err
+	}()
+	<-entered
+	cancel()
+	err := <-done
+	var failure *ProviderFailure
+	if !errors.As(err, &failure) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("Fetch() error = %#v, want preserved context cancellation", err)
+	}
+	if diagnostic := fetchFailureDiagnostic(err, failure); diagnostic.Category != FailureCategoryTransportCancelled {
+		t.Fatalf("cancel diagnostic = %#v", diagnostic)
 	}
 }
 

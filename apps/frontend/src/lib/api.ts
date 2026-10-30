@@ -1392,6 +1392,31 @@ export type ScrapeCandidatePreview = {
   provider_truncated?: boolean;
 };
 
+export type ScrapeFailureDiagnostic = {
+  dependency: 'deepseek-fetch' | 'unknown';
+  operation: 'fetch';
+  category:
+    | 'not_configured'
+    | 'invalid_url'
+    | 'authentication'
+    | 'balance'
+    | 'security_policy'
+    | 'content_unavailable'
+    | 'rate_limited'
+    | 'provider_timeout'
+    | 'provider_error'
+    | 'invalid_request'
+    | 'request_too_large'
+    | 'unexpected_status'
+    | 'transport_timeout'
+    | 'transport_cancelled'
+    | 'transport_error'
+    | 'invalid_response'
+    | 'content_too_large'
+    | 'unknown';
+  upstream_status?: number;
+};
+
 export type ScrapeResult = {
   status: ScrapeStatus;
   message: string;
@@ -1401,6 +1426,7 @@ export type ScrapeResult = {
   expires_at?: string;
   retry_after_seconds?: number;
   failure_stage?: 'setup' | 'validation' | 'fetch' | 'size' | 'quality' | 'storage' | 'candidate' | 'commit';
+  failure_diagnostic?: ScrapeFailureDiagnostic;
   preview?: ScrapeCandidatePreview;
   storage?: { path: string; sha256: string; status: RawUploadStatus };
   processing_status?: 'not_started' | string;

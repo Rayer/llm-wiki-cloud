@@ -111,6 +111,26 @@ it('renders a public URL candidate, binds the edited title, and links to the exa
   expect(mocks.triggerPipeline).not.toHaveBeenCalled();
 });
 
+it('shows the bounded Fetch dependency diagnosis on an unavailable URL result', async () => {
+  mocks.scrapeUrl.mockResolvedValueOnce({
+    status: 'unavailable',
+    message: 'DeepSeek Fetch could not retrieve usable page content (upstream HTTP 404). Paste Markdown or upload a saved page capture instead.',
+    failure_stage: 'fetch',
+    failure_diagnostic: {
+      dependency: 'deepseek-fetch',
+      operation: 'fetch',
+      category: 'content_unavailable',
+      upstream_status: 404,
+    },
+  });
+  render(<PipelineClient />);
+  submitUrl();
+
+  expect(await screen.findByText(/DeepSeek Fetch could not retrieve usable page content/)).toBeDefined();
+  expect(screen.getByText('deepseek-fetch fetch: content_unavailable (upstream HTTP 404)')).toBeDefined();
+  expect(within(screen.getByRole('dialog')).getByText('Pipeline.urlManualCapture')).toBeDefined();
+});
+
 it('shows the localized unchecked-quality warning before save and after accepting the same candidate', async () => {
   const unchecked = {
     ...preview,

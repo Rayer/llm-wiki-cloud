@@ -25,14 +25,15 @@ type importURLStorage struct {
 }
 
 type importURLResponse struct {
-	Status           string            `json:"status"`
-	Title            string            `json:"title,omitempty"`
-	SourceURL        string            `json:"source_url,omitempty"`
-	Storage          *importURLStorage `json:"storage,omitempty"`
-	RawURL           string            `json:"raw_url,omitempty"`
-	ProcessingStatus string            `json:"processing_status"`
-	FailureStage     string            `json:"failure_stage,omitempty"`
-	Reason           string            `json:"reason,omitempty"`
+	Status            string                       `json:"status"`
+	Title             string                       `json:"title,omitempty"`
+	SourceURL         string                       `json:"source_url,omitempty"`
+	Storage           *importURLStorage            `json:"storage,omitempty"`
+	RawURL            string                       `json:"raw_url,omitempty"`
+	ProcessingStatus  string                       `json:"processing_status"`
+	FailureStage      string                       `json:"failure_stage,omitempty"`
+	Reason            string                       `json:"reason,omitempty"`
+	FailureDiagnostic *urlintake.FailureDiagnostic `json:"failure_diagnostic,omitempty"`
 }
 
 var importURLInputSchema = json.RawMessage(`{
@@ -59,7 +60,13 @@ var importURLOutputSchema = json.RawMessage(`{
 		"raw_url":{"type":"string","format":"uri"},
 		"processing_status":{"type":"string","enum":["not_started"]},
 		"failure_stage":{"type":"string","enum":["setup","validation","fetch","size","quality","storage","commit"]},
-		"reason":{"type":"string"}
+		"reason":{"type":"string"},
+		"failure_diagnostic":{"type":"object","properties":{
+			"dependency":{"type":"string","enum":["deepseek-fetch","unknown"]},
+			"operation":{"type":"string","enum":["fetch"]},
+			"category":{"type":"string","enum":["not_configured","invalid_url","authentication","balance","security_policy","content_unavailable","rate_limited","provider_timeout","provider_error","invalid_request","request_too_large","unexpected_status","transport_timeout","transport_cancelled","transport_error","invalid_response","content_too_large","unknown"]},
+			"upstream_status":{"type":"integer","minimum":100,"maximum":599}
+		},"required":["dependency","operation","category"],"additionalProperties":false}
 	},
 	"required":["status","processing_status"],
 	"additionalProperties":false
@@ -144,6 +151,7 @@ func (h *Handler) callMCPImportURL(ctx context.Context, _ *mcp.CallToolRequest, 
 	}
 
 	response.FailureStage = result.FailureStage
+	response.FailureDiagnostic = result.FailureDiagnostic
 	if response.FailureStage == "" {
 		switch response.Status {
 		case "rejected":

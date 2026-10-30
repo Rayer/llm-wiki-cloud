@@ -1,11 +1,14 @@
 package v1
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -341,8 +344,27 @@ func TestMCPImportURLOutputSchemaAndOriginAreConstrained(t *testing.T) {
 	if err := json.Unmarshal(importURLOutputSchema, &schema); err != nil {
 		t.Fatal(err)
 	}
-	if schema.Properties["raw_url"] == nil || schema.Properties["storage"] == nil || schema.Properties["failure_stage"] == nil || schema.Additional {
+	if schema.Properties["raw_url"] == nil || schema.Properties["storage"] == nil || schema.Properties["failure_stage"] == nil || schema.Properties["failure_diagnostic"] == nil || schema.Additional {
 		t.Fatalf("import_url output schema = %#v", schema)
+	}
+	var diagnosticSchema struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+		Required   []string                   `json:"required"`
+		Additional bool                       `json:"additionalProperties"`
+	}
+	if err := json.Unmarshal(schema.Properties["failure_diagnostic"], &diagnosticSchema); err != nil {
+		t.Fatal(err)
+	}
+	if len(diagnosticSchema.Properties) != 4 || len(diagnosticSchema.Required) != 3 || diagnosticSchema.Additional ||
+		diagnosticSchema.Properties["dependency"] == nil || diagnosticSchema.Properties["operation"] == nil ||
+		diagnosticSchema.Properties["category"] == nil || diagnosticSchema.Properties["upstream_status"] == nil {
+		t.Fatalf("import_url failure diagnostic schema = %#v", diagnosticSchema)
+	}
+	var categorySchema struct {
+		Enum []string `json:"enum"`
+	}
+	if err := json.Unmarshal(diagnosticSchema.Properties["category"], &categorySchema); err != nil || !slices.Contains(categorySchema.Enum, "content_unavailable") || !slices.Contains(categorySchema.Enum, "authentication") {
+		t.Fatalf("import_url diagnostic categories = %v err=%v", categorySchema.Enum, err)
 	}
 	var failureStage struct {
 		Enum []string `json:"enum"`
@@ -358,5 +380,71 @@ func TestMCPImportURLOutputSchemaAndOriginAreConstrained(t *testing.T) {
 	}
 	if trustedFrontendOrigin("https://user:password@attacker.example") != "" || trustedFrontendOrigin("https://frontend.example/path") != "" {
 		t.Fatal("invalid configured frontend origin was accepted")
+	}
+}
+
+func TestMCPImportURLReportsSafeFetchFailureAttribution(t *testing.T) {
+	previousLogger := slog.Default()
+	var logs bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+
+	root := localfs.New(t.TempDir())
+	service := urlintake.NewService(
+		mcpURLFetcherFunc(func(context.Context, string) (urlintake.Page, error) {
+			return urlintake.Page{}, &urlintake.ProviderFailure{
+				Provider: urlintake.DeepSeekFetchProvider, Kind: urlintake.FailureProvider, StatusCode: http.StatusUnauthorized,
+			}
+		}),
+		mcpURLEvaluatorFunc(func(context.Context, urlintake.QualityInput) (urlintake.QualityEvaluation, error) {
+			t.Fatal("Fetch failure must stop before quality evaluation")
+			return urlintake.QualityEvaluation{}, nil
+		}),
+		func(scope urlintake.ActorProject) (urlintake.ProjectStore, error) {
+			return root.WithScope(scope.ActorID, scope.ProjectID), nil
+		},
+		urlintake.DefaultQualityThresholds,
+	)
+	service.Resolver = mcpURLResolver{}
+	h := New(root, nil, nil, nil, nil, nil)
+	h.SetURLIntakeService(service)
+	h.SetMCPFrontendOrigin("https://wiki.trusted.example")
+	identity := mcpProjectKeyIdentity{
+		userID: "user", projectID: "project", keyID: "write-grant",
+		capabilities: []string{mcpQueryCapability, mcpRawWriteCapability},
+	}
+	response := serveMCPRequest(t, h, identity, mcpToolCallBody(1, "import_url", `{"url":"https://example.com/article?query-canary=private"}`))
+	result, _ := response["result"].(map[string]any)
+	payload := mcpStructuredResult(t, response)
+	metadata, _ := result["_meta"].(map[string]any)
+	diagnostic, _ := payload["failure_diagnostic"].(map[string]any)
+	if result["isError"] != true || metadata["request_id"] == "" || payload["status"] != "unavailable" || payload["failure_stage"] != "fetch" ||
+		!strings.Contains(payload["reason"].(string), "DeepSeek Fetch") ||
+		diagnostic["dependency"] != urlintake.DeepSeekFetchProvider || diagnostic["operation"] != "fetch" ||
+		diagnostic["category"] != "authentication" || diagnostic["upstream_status"] != float64(http.StatusUnauthorized) {
+		t.Fatalf("MCP fetch failure payload = %#v", response)
+	}
+	var fetchLog map[string]any
+	scanner := bufio.NewScanner(strings.NewReader(logs.String()))
+	for scanner.Scan() {
+		var entry map[string]any
+		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
+			t.Fatalf("decode structured MCP log: %v", err)
+		}
+		if entry["msg"] == "URL intake internal event" {
+			fetchLog = entry
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if fetchLog == nil || fetchLog["request_id"] != metadata["request_id"] || fetchLog["dependency"] != urlintake.DeepSeekFetchProvider ||
+		fetchLog["category"] != "authentication" || fetchLog["upstream_status"] != float64(http.StatusUnauthorized) ||
+		strings.Contains(logs.String(), "query-canary=private") {
+		t.Fatalf("MCP result metadata=%#v Fetch log=%#v", metadata, fetchLog)
+	}
+	files, err := root.WithScope(identity.userID, identity.projectID).ListRawFiles(context.Background())
+	if err != nil || len(files) != 0 {
+		t.Fatalf("Fetch failure changed raw content: files=%v err=%v", files, err)
 	}
 }

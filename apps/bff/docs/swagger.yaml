@@ -362,6 +362,8 @@ definitions:
         type: string
       expires_at:
         type: string
+      failure_diagnostic:
+        $ref: '#/definitions/urlintake.FailureDiagnostic'
       message:
         type: string
       preview:
@@ -623,6 +625,38 @@ definitions:
         type: string
       warning:
         type: string
+    type: object
+  urlintake.FailureCategory:
+    enum:
+    - not_configured
+    - invalid_url
+    - authentication
+    - balance
+    - security_policy
+    - content_unavailable
+    - rate_limited
+    - provider_timeout
+    - provider_error
+    - invalid_request
+    - request_too_large
+    - unexpected_status
+    - transport_timeout
+    - transport_cancelled
+    - transport_error
+    - invalid_response
+    - content_too_large
+    - unknown
+    type: string
+  urlintake.FailureDiagnostic:
+    properties:
+      category:
+        $ref: '#/definitions/urlintake.FailureCategory'
+      dependency:
+        type: string
+      operation:
+        type: string
+      upstream_status:
+        type: integer
     type: object
   urlintake.StorageOutcome:
     properties:

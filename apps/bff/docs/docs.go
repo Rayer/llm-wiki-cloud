@@ -3123,6 +3123,9 @@ const docTemplate = `{
                 "expires_at": {
                     "type": "string"
                 },
+                "failure_diagnostic": {
+                    "$ref": "#/definitions/urlintake.FailureDiagnostic"
+                },
                 "message": {
                     "type": "string"
                 },
@@ -3507,6 +3510,46 @@ const docTemplate = `{
                 },
                 "warning": {
                     "type": "string"
+                }
+            }
+        },
+        "urlintake.FailureCategory": {
+            "type": "string",
+            "enum": [
+                "not_configured",
+                "invalid_url",
+                "authentication",
+                "balance",
+                "security_policy",
+                "content_unavailable",
+                "rate_limited",
+                "provider_timeout",
+                "provider_error",
+                "invalid_request",
+                "request_too_large",
+                "unexpected_status",
+                "transport_timeout",
+                "transport_cancelled",
+                "transport_error",
+                "invalid_response",
+                "content_too_large",
+                "unknown"
+            ]
+        },
+        "urlintake.FailureDiagnostic": {
+            "type": "object",
+            "properties": {
+                "category": {
+                    "$ref": "#/definitions/urlintake.FailureCategory"
+                },
+                "dependency": {
+                    "type": "string"
+                },
+                "operation": {
+                    "type": "string"
+                },
+                "upstream_status": {
+                    "type": "integer"
                 }
             }
         },
