@@ -11,6 +11,7 @@ import {
   getAdminManagementCatalog,
   getAdminProjects,
   getAdminPipelineStatus,
+  getAdminPipelineAutomation,
   getAdminSettings,
   getAdminUsers,
   publishAnnouncement,
@@ -18,11 +19,13 @@ import {
   renameAdminProject,
   triggerAdminProjectPipeline,
   updateAdminSettings,
+  updateAdminPipelineAutomation,
   updateAdminUserManagementScope,
   updateAdminUserStatus,
   type AdminProject,
   type AdminUser,
   type AdminManagementScope,
+  type AdminPipelineAutomation,
 } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { useLocale } from '@/lib/i18n';
@@ -35,6 +38,11 @@ import { useNavigationBlocker } from './NavigationBlocker';
 type Tab = 'projects' | 'users' | 'settings' | 'shared-llm';
 type Notice = { tone: 'success' | 'error' | 'pending'; message: string } | null;
 const userReadbackFailure: Notice = { tone: 'error', message: 'Update succeeded, but current user state is unknown. Retry loading users before making another change.' };
+
+function adminAutomationCopy(t: (key: string) => string, key: string, fallback: string): string {
+  const translated = t(key);
+  return translated === key ? fallback : translated;
+}
 type Action =
   | { kind: 'rename-project'; project: AdminProject }
   | { kind: 'delete-project'; project: AdminProject }
@@ -63,6 +71,7 @@ export function AdminClient() {
   const [actionPending, setActionPending] = useState(false);
   const [cleanRebuild, setCleanRebuild] = useState(false);
   const [registrationEnabled, setRegistrationEnabled] = useState({ registration_enabled: false, email_registration_enabled: false, google_registration_enabled: false });
+  const [pipelineAutomation, setPipelineAutomation] = useState<AdminPipelineAutomation | null>(null);
   const [settingsLoading, setSettingsLoading] = useState(false);
   const [settingsError, setSettingsError] = useState('');
   const [settingsPending, setSettingsPending] = useState(false);
@@ -120,10 +129,12 @@ export function AdminClient() {
     setSettingsLoading(true);
     setSettingsError('');
     try {
-      const [settings, announcement] = await Promise.all([
+      const [settings, announcement, autoPipeline] = await Promise.all([
         isAuthAdmin ? getAdminSettings() : Promise.resolve(null),
         isLWCAdmin ? getAdminAnnouncement() : Promise.resolve(null),
+        isLWCAdmin ? getAdminPipelineAutomation() : Promise.resolve(null),
       ]);
+      if (autoPipeline) setPipelineAutomation(autoPipeline);
       if (settings) setRegistrationEnabled({ registration_enabled: settings.registration_enabled, email_registration_enabled: settings.email_registration_enabled === true, google_registration_enabled: settings.google_registration_enabled === true });
       const markdown = announcement ?? settings?.announcement_markdown ?? '';
       setAnnouncementMarkdown(markdown);
@@ -145,6 +156,22 @@ export function AdminClient() {
       setNotice({ tone: 'success', message: 'Registration settings updated.' });
     } catch (error) {
       setSettingsError(error instanceof Error ? error.message : 'Settings update failed.');
+    } finally {
+      setSettingsPending(false);
+    }
+  };
+
+  const handlePipelineAutomationToggle = async () => {
+    if (!pipelineAutomation || settingsPending) return;
+    setSettingsError('');
+    setSettingsPending(true);
+    try {
+      const updated = await updateAdminPipelineAutomation(!pipelineAutomation.allow_auto_pipeline, pipelineAutomation.revision);
+      setPipelineAutomation(updated);
+      setNotice({ tone: 'success', message: 'Auto-pipeline settings updated. Enabling it starts a backlog scan for Projects with saved pending source changes.' });
+    } catch (error) {
+      setSettingsError(error instanceof Error ? error.message : 'Auto-pipeline settings update failed.');
+      void getAdminPipelineAutomation().then(setPipelineAutomation).catch(() => undefined);
     } finally {
       setSettingsPending(false);
     }
@@ -435,6 +462,10 @@ export function AdminClient() {
           error={settingsError}
           canManageRegistration={isAuthAdmin}
           canManageAnnouncement={isLWCAdmin}
+          canManagePipelineAutomation={isLWCAdmin}
+          pipelineAutomation={pipelineAutomation}
+          pipelineAutomationLabel={adminAutomationCopy(t, 'Admin.autoPipelineEnabled', 'Allow automatic Pipeline runs')}
+          pipelineAutomationDescription={adminAutomationCopy(t, 'Admin.autoPipelineDescription', 'This global switch must be on with a Project switch for source commits to start incremental runs. Enabling scans existing Projects for pending saved sources. Manual runs and the daily schedule stay independent.')}
           masterLabel={t('Admin.registrationEnabled')}
           emailLabel={t('Admin.emailRegistrationEnabled')}
           googleLabel={t('Admin.googleRegistrationEnabled')}
@@ -444,6 +475,7 @@ export function AdminClient() {
           announcementDirty={announcementDirty}
           onAnnouncementChange={setAnnouncementMarkdown}
           onPublishAnnouncement={() => void publishCurrentAnnouncement()}
+          onTogglePipelineAutomation={() => void handlePipelineAutomationToggle()}
         />
       )}
 
@@ -561,6 +593,10 @@ function SettingsPanel({
   error,
   canManageRegistration,
   canManageAnnouncement,
+  canManagePipelineAutomation,
+  pipelineAutomation,
+  pipelineAutomationLabel,
+  pipelineAutomationDescription,
   masterLabel,
   emailLabel,
   googleLabel,
@@ -570,6 +606,7 @@ function SettingsPanel({
   announcementDirty,
   onAnnouncementChange,
   onPublishAnnouncement,
+  onTogglePipelineAutomation,
 }: {
   registrationEnabled: { registration_enabled: boolean; email_registration_enabled: boolean; google_registration_enabled: boolean };
   loading: boolean;
@@ -577,6 +614,10 @@ function SettingsPanel({
   error: string;
   canManageRegistration: boolean;
   canManageAnnouncement: boolean;
+  canManagePipelineAutomation: boolean;
+  pipelineAutomation: AdminPipelineAutomation | null;
+  pipelineAutomationLabel: string;
+  pipelineAutomationDescription: string;
   masterLabel: string;
   emailLabel: string;
   googleLabel: string;
@@ -586,6 +627,7 @@ function SettingsPanel({
   announcementDirty: boolean;
   onAnnouncementChange: (value: string) => void;
   onPublishAnnouncement: () => void;
+  onTogglePipelineAutomation: () => void;
 }) {
   return (
     <Surface variant="glass" className="p-5">
@@ -618,6 +660,28 @@ function SettingsPanel({
                 </label>
               ))}
             </div>
+          </div> : null}
+          {canManagePipelineAutomation ? <div className="border-t border-white/10 pt-5" data-testid="admin-pipeline-automation">
+            <h2 className="text-lg font-semibold text-white">{pipelineAutomationLabel}</h2>
+            <p className="mt-1 text-sm text-zinc-400">{pipelineAutomationDescription}</p>
+            {pipelineAutomation ? (
+              <>
+                <label className="mt-4 flex max-w-xl items-center justify-between gap-4 rounded-lg border border-white/10 bg-black/20 px-4 py-3">
+                  <span className="text-sm font-medium text-zinc-200">{pipelineAutomationLabel}</span>
+                  <input
+                    type="checkbox"
+                    checked={pipelineAutomation.allow_auto_pipeline}
+                    disabled={pending || Boolean(error)}
+                    onChange={onTogglePipelineAutomation}
+                    className="size-5 rounded border-white/20 bg-black/30 text-emerald-400 focus:ring-emerald-400"
+                    data-testid="admin-pipeline-automation-toggle"
+                  />
+                </label>
+                <p className="mt-2 text-xs text-zinc-500" role="status">
+                  Backlog scan: {pipelineAutomation.backlog_scan_status} · Revision {pipelineAutomation.revision}
+                </p>
+              </>
+            ) : <p className="mt-3 text-sm text-zinc-500">Auto-pipeline settings are unavailable.</p>}
           </div> : null}
           {canManageAnnouncement ? <div>
             <h2 className="text-lg font-semibold text-white">Announcement</h2>

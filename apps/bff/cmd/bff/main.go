@@ -576,6 +576,8 @@ func newProductionRouter(
 
 	v1.Use(auth.ProjectMiddleware())
 	{
+		v1.GET("/projects/:pid/pipeline/automation", hV1.GetProjectPipelineAutomation)
+		v1.PUT("/projects/:pid/pipeline/automation", hV1.PutProjectPipelineAutomation)
 		v1.GET("/projects/:pid/llm-binding", hV1.ProjectLLMBinding)
 		v1.PUT("/projects/:pid/llm-binding", hV1.SetProjectLLMBinding)
 		syncRaw := v1.Group("/sync/raw")
@@ -747,6 +749,8 @@ func registerAdminRoutes(r *gin.Engine, cfg config.Config, hV1 *handlerv1.Handle
 	productAdmin.Use(hV1.AccountAuth(cfg), handlerv1.ManagementScopeOnly(auth.ManagementScopeLWCAdmin))
 	productAdmin.GET("/settings/announcement", syssettings.AdminGetAnnouncementHandler(settingsStore))
 	productAdmin.POST("/settings/announcement/publish", syssettings.AdminPublishAnnouncementHandler(settingsStore))
+	productAdmin.GET("/settings/auto-pipeline", hV1.AdminGetPipelineAutomation)
+	productAdmin.PUT("/settings/auto-pipeline", hV1.AdminPutPipelineAutomation)
 	productAdmin.GET("/projects", hV1.AdminProjects)
 	productAdmin.PATCH("/projects/:id", hV1.AdminRenameProject)
 	productAdmin.DELETE("/projects/:id", hV1.AdminDeleteProject)

@@ -8,6 +8,8 @@ const mocks = vi.hoisted(() => ({
   isDemoSession: false,
   getPipelineStatus: vi.fn(),
   getRecompileAllCapability: vi.fn(),
+  getProjectPipelineAutomation: vi.fn(),
+  updateProjectPipelineAutomation: vi.fn(),
   scrapeUrl: vi.fn(),
   acceptScrapeCandidate: vi.fn(),
   rejectScrapeCandidate: vi.fn(),
@@ -19,6 +21,8 @@ vi.mock('@/lib/api', async () => ({
   ...await vi.importActual<typeof import('@/lib/api')>('@/lib/api'),
   getPipelineStatus: mocks.getPipelineStatus,
   getRecompileAllCapability: mocks.getRecompileAllCapability,
+  getProjectPipelineAutomation: mocks.getProjectPipelineAutomation,
+  updateProjectPipelineAutomation: mocks.updateProjectPipelineAutomation,
   scrapeUrl: mocks.scrapeUrl,
   acceptScrapeCandidate: mocks.acceptScrapeCandidate,
   rejectScrapeCandidate: mocks.rejectScrapeCandidate,
@@ -79,6 +83,16 @@ beforeEach(() => {
   mocks.isDemoSession = false;
   mocks.getPipelineStatus.mockImplementation(async (projectId: string) => ({ project_id: projectId, quota: null }));
   mocks.getRecompileAllCapability.mockResolvedValue({ allowed: false, compile_mode: 'full', quota: null });
+  mocks.getProjectPipelineAutomation.mockResolvedValue({
+    enabled: false, revision: 0, admin_allowed: false, effective_enabled: false,
+    blocked_reason: 'admin_disabled', backlog_scan_status: 'idle', pipeline_status: 'idle',
+    source_revision: 0, processed_revision: 0,
+  });
+  mocks.updateProjectPipelineAutomation.mockResolvedValue({
+    enabled: true, revision: 1, admin_allowed: false, effective_enabled: false,
+    blocked_reason: 'admin_disabled', backlog_scan_status: 'pending', pipeline_status: 'pending',
+    source_revision: 1, processed_revision: 0,
+  });
   mocks.scrapeUrl.mockResolvedValue(uncertain);
   mocks.acceptScrapeCandidate.mockResolvedValue(stored);
   mocks.rejectScrapeCandidate.mockResolvedValue({ status: 'rejected', message: 'Candidate declined.' });
@@ -90,6 +104,20 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+});
+
+it('saves the Project switch by revision and explains that Admin approval still gates processing', async () => {
+  render(<PipelineClient />);
+
+  const toggle = await screen.findByTestId('pipeline-automation-project-toggle') as HTMLInputElement;
+  expect(toggle.checked).toBe(false);
+  expect(screen.getByTestId('pipeline-automation-blocked').textContent).toContain('disabled by the Admin');
+  fireEvent.click(toggle);
+
+  await waitFor(() => expect(mocks.updateProjectPipelineAutomation).toHaveBeenCalledWith('project-a', true, 0));
+  await waitFor(() => expect(toggle.checked).toBe(true));
+  expect(screen.getByTestId('pipeline-automation-blocked').textContent).toContain('disabled by the Admin');
+  expect(screen.getByTestId('pipeline-automation-settings').textContent).toContain('Processing status: pending');
 });
 
 it('renders a public URL candidate, binds the edited title, and links to the exact saved raw file without running Pipeline', async () => {
@@ -105,7 +133,7 @@ it('renders a public URL candidate, binds the edited title, and links to the exa
   expect(await screen.findByText('saved')).toBeDefined();
   expect(screen.getByRole('link', { name: /Pipeline.urlRawArticle: raw\/Example-article\.md/ }).getAttribute('href'))
     .toBe('/raw?file=raw%2FExample-article.md');
-  expect(screen.getByText('Pipeline.urlProcessingSeparate')).toBeDefined();
+  expect(screen.getByText(/When both auto-pipeline switches are on/)).toBeDefined();
   await waitFor(() => expect(mocks.acceptScrapeCandidate).toHaveBeenCalledWith('opaque-candidate-id', 'opaque-candidate-revision', 'Edited title', 'project-a'));
   await waitFor(() => expect(mocks.scrapeUrl).toHaveBeenCalledWith('https://example.com/article', 'project-a'));
   expect(mocks.triggerPipeline).not.toHaveBeenCalled();

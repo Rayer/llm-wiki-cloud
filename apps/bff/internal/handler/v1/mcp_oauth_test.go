@@ -98,7 +98,7 @@ func TestMCPProjectOAuthRejectsConflictingProjectHeaderBeforeSDK(t *testing.T) {
 	if _, err := userRef.Set(ctx, auth.UserRecord{Email: userID + "@example.test", Status: auth.AccountActive, AuthVersion: 0}); err != nil {
 		t.Fatalf("create emulator account: %v", err)
 	}
-	if _, err := projectRef.Set(ctx, map[string]any{"user_id": userID, "project_id": projectID, "name": "OAuth fixture project"}); err != nil {
+	if _, err := projectRef.Set(ctx, map[string]any{"user_id": userID, "project_id": projectID, "name": "OAuth fixture project", "status": "ready"}); err != nil {
 		t.Fatalf("create emulator project: %v", err)
 	}
 
@@ -274,8 +274,8 @@ func TestMCPProjectOAuthRejectsConflictingProjectHeaderBeforeSDK(t *testing.T) {
 	for _, item := range writerTools {
 		writerNames[item.(map[string]any)["name"].(string)] = true
 	}
-	if len(writerNames) != 3 || !writerNames["query_project"] || !writerNames["add_raw"] || !writerNames["import_url"] {
-		t.Fatalf("OAuth raw-write discovery = %v, want query_project, add_raw, and import_url", writerNames)
+	if len(writerNames) != 4 || !writerNames["query_project"] || !writerNames["pipeline_status"] || !writerNames["add_raw"] || !writerNames["import_url"] {
+		t.Fatalf("OAuth raw-write discovery = %v, want query_project, pipeline_status, add_raw, and import_url", writerNames)
 	}
 
 	urlImportRequest := httptest.NewRequest(http.MethodPost, "/mcp/projects/"+projectID,

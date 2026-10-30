@@ -177,8 +177,18 @@ func (h *Handler) SyncRawUpload(c *gin.Context) {
 	}
 	observability.FinishDataSpan(inputSpan, "success")
 	writeCtx, writeSpan := observability.StartDataPhase(c.Request.Context(), "write")
+	ownerID, projectID := strings.TrimSpace(c.GetString("userID")), strings.TrimSpace(c.GetString("projectID"))
+	journal, sourceRef, err := h.prepareSourceCommitDigest(writeCtx, ownerID, projectID, "cli_sync", path, sha256)
+	if err != nil {
+		observability.FinishDataSpan(writeSpan, "failure")
+		observability.WriteDataJSON(c, http.StatusServiceUnavailable, gin.H{"error": "raw sync unavailable"})
+		return
+	}
 	generation, err := rawStore.WriteSyncRawFile(writeCtx, path, c.Request.Body, expectedGeneration, sha256)
 	if err != nil {
+		if journal != nil {
+			_, _ = journal.ReconcileSourceCommit(writeCtx, sourceRef)
+		}
 		outcome := observability.DataErrorOutcome(err)
 		if errors.Is(err, store.ErrRawSyncConflict) || errors.Is(err, store.ErrGenerationMismatch) {
 			outcome = "precondition_failed"
@@ -190,10 +200,23 @@ func (h *Handler) SyncRawUpload(c *gin.Context) {
 		writeRawSyncStorageError(c, err)
 		return
 	}
+	var conditionalWriter store.ConditionalWriter
+	if journal != nil {
+		conditionalWriter, _ = h.store.Scope(ownerID, projectID).(store.ConditionalWriter)
+	}
+	commitResult, confirmErr := confirmSourceCommit(writeCtx, journal, sourceRef, conditionalWriter, path, "created")
+	if confirmErr != nil || commitResult.State != "committed" {
+		observability.FinishDataSpan(writeSpan, "unknown")
+		observability.SetDataOperationOutcome(writeCtx, "unknown")
+		c.Header("Cache-Control", "no-store")
+		observability.WriteDataJSON(c, http.StatusAccepted, gin.H{"generation": generation, "sha256": sha256, "processing_status": "unknown", "commit_status": "saved"})
+		return
+	}
 	observability.FinishDataSpan(writeSpan, "committed")
 	observability.SetDataOperationOutcome(c.Request.Context(), "committed")
 	c.Header("Cache-Control", "no-store")
-	observability.WriteDataJSON(c, http.StatusOK, gin.H{"generation": generation, "sha256": sha256})
+	observability.WriteDataJSON(c, http.StatusOK, gin.H{"generation": generation, "sha256": sha256,
+		"processing_status": commitResult.ProcessingStatus, "source_revision": commitResult.SourceRevision})
 }
 
 func (h *Handler) rawSyncStore(c *gin.Context) (store.RawSyncStore, bool) {

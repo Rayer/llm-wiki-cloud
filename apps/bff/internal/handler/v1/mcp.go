@@ -175,6 +175,13 @@ func (h *Handler) mcpSDKHandler(identity mcpProjectKeyIdentity) http.Handler {
 		InputSchema:  queryProjectInputSchema,
 		OutputSchema: queryProjectOutputSchema,
 	}, h.callMCPQuery)
+	if hasMCPCapability(capabilities, mcpQueryCapability) {
+		mcp.AddTool[mcpPipelineStatusInput, any](server, &mcp.Tool{
+			Name: "pipeline_status", Title: "Get Project Pipeline status",
+			Description: mcpPipelineStatusToolDescription,
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true}, InputSchema: mcpPipelineStatusInputSchema, OutputSchema: mcpPipelineStatusOutputSchema,
+		}, h.callMCPPipelineStatus)
+	}
 	if hasMCPCapability(capabilities, mcpQueryCapability) && hasMCPCapability(capabilities, mcpRawWriteCapability) {
 		mcp.AddTool[addRawInput, any](server, &mcp.Tool{
 			Name:        "add_raw",

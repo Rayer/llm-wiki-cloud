@@ -76,7 +76,7 @@ func TestMCPAddRawToolListFollowsVerifiedCapabilities(t *testing.T) {
 					addRawDescription, _ = tool["description"].(string)
 				}
 			}
-			if names["query_project"] != true || names["add_raw"] != test.wantRaw || names["import_url"] != test.wantURLImport {
+			if names["query_project"] != true || names["pipeline_status"] != true || names["add_raw"] != test.wantRaw || names["import_url"] != test.wantURLImport {
 				t.Fatalf("listed tools = %v", names)
 			}
 			if !test.wantURLImport {
@@ -108,8 +108,8 @@ func TestMCPImportURLIsListedForWritersAndFailsClosedWithoutService(t *testing.T
 		name, _ := item.(map[string]any)["name"].(string)
 		names[name] = true
 	}
-	if len(names) != 3 || !names["query_project"] || !names["add_raw"] || !names["import_url"] {
-		t.Fatalf("raw-write discovery = %v, want query_project, add_raw, and import_url", names)
+	if len(names) != 4 || !names["query_project"] || !names["pipeline_status"] || !names["add_raw"] || !names["import_url"] {
+		t.Fatalf("raw-write discovery = %v, want query_project, pipeline_status, add_raw, and import_url", names)
 	}
 
 	response := serveMCPRequest(t, h, identity, mcpToolCallBody(2, "import_url", `{"url":"https://example.test/article"}`))
@@ -152,8 +152,8 @@ func TestMCPStreamableSDKClientRetainsRawWriteWithURLTool(t *testing.T) {
 	for _, tool := range discovered.Tools {
 		names[tool.Name] = true
 	}
-	if len(names) != 3 || !names["query_project"] || !names["add_raw"] || !names["import_url"] {
-		t.Fatalf("MCP SDK discovered tools = %v, want query_project, add_raw, and import_url", names)
+	if len(names) != 4 || !names["query_project"] || !names["pipeline_status"] || !names["add_raw"] || !names["import_url"] {
+		t.Fatalf("MCP SDK discovered tools = %v, want query_project, pipeline_status, add_raw, and import_url", names)
 	}
 	urlResult, urlErr := session.CallTool(ctx, &mcp.CallToolParams{
 		Name: "import_url", Arguments: map[string]any{"url": "https://example.test/article"},
