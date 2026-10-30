@@ -533,12 +533,12 @@ else:
             self.assertEqual(selected_auth_receipt["artifact"], auth_receipt["artifact"])
 
             real_node = shutil.which("node")
-            python311 = shutil.which("python3.11")
-            self.assertTrue(real_node and python311, "Node and Python 3.11 are required for the action-path fixture")
+            python = sys.executable
+            self.assertTrue(real_node and python, "Node and the current Python interpreter are required for the action-path fixture")
             action_bin = root / "action-bin"
             action_bin.mkdir()
             shutil.copy2(binary / "gcloud", action_bin / "gcloud")
-            (action_bin / "python3").symlink_to(python311)
+            (action_bin / "python3").symlink_to(python)
             action_download_log = root / "action-retained-download.log"
             action_node = action_bin / "node"
             action_node.write_text(
