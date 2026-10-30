@@ -4434,9 +4434,12 @@ func TestInitProjectReadyDefaults(t *testing.T) {
 		t.Fatalf("status URL = %q", resp.StatusURL)
 	}
 
-	data := initProjectData("a1b2c3d4e5f6", "Demo Project", "idem-1", time.Unix(1, 0))
+	data := initProjectData("a1b2c3d4e5f6", "Demo Project", "A project description", "idem-1", time.Unix(1, 0))
 	if data["status"] != "ready" {
 		t.Fatalf("project data status = %q, want ready", data["status"])
+	}
+	if data["description"] != "A project description" || data["description_revision"] != int64(1) {
+		t.Fatalf("project description metadata = %v / %v", data["description"], data["description_revision"])
 	}
 	if data["idempotency_key"] != "idem-1" {
 		t.Fatalf("idempotency key = %q", data["idempotency_key"])

@@ -4,6 +4,7 @@ import { FormEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, us
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth';
 import { useT } from '@/lib/i18n';
+import { isValidProjectDescription, normalizeProjectDescription, projectDescriptionCodePointCount, MAX_PROJECT_DESCRIPTION_LENGTH } from '@/lib/project-core';
 import { useWorkspace } from './WorkspaceProvider';
 import { useNavigationBlocker } from './NavigationBlocker';
 import { ProfileHowItWorks } from './ProfileHowItWorks';
@@ -18,11 +19,13 @@ export function NewProjectModal() {
   const { sessionEpoch } = useAuth();
   const { confirmNavigation } = useNavigationBlocker();
   const [name, setName] = useState('');
+  const [description, setDescription] = useState('');
   const [loadingScope, setLoadingScope] = useState<CreateScope | null>(null);
   const [error, setError] = useState('');
   const [helpOpen, setHelpOpen] = useState(false);
   const [createdProject, setCreatedProject] = useState<Project | null>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
+  const idempotencyKeyRef = useRef('');
   const ownerId = user?.id ?? '';
   const currentScope = useMemo<CreateScope>(
     () => ({ ownerId, sessionEpoch, open: newProjectOpen }),
@@ -49,6 +52,8 @@ export function NewProjectModal() {
     previousOwnerId.current = `${ownerId}:${sessionEpoch}`;
     // Account/session changes must not carry another identity's project draft forward.
     setName('');
+    setDescription('');
+    idempotencyKeyRef.current = '';
     setHelpOpen(false);
     setCreatedProject(null);
     setError('');
@@ -77,13 +82,19 @@ export function NewProjectModal() {
     event.preventDefault();
     const trimmedName = name.trim();
     if ((!trimmedName && !createdProject) || !confirmNavigation()) return;
+    const normalizedDescription = normalizeProjectDescription(description);
+    if (!createdProject && !isValidProjectDescription(normalizedDescription)) {
+      setError(t('ProjectDescription.invalid'));
+      return;
+    }
     const scope = currentScope;
     setLoadingScope(scope);
     setError('');
     let project = createdProject;
     try {
       if (!project) {
-        project = await addProject(trimmedName);
+        if (!idempotencyKeyRef.current) idempotencyKeyRef.current = crypto.randomUUID();
+        project = await addProject(trimmedName, normalizedDescription, idempotencyKeyRef.current);
         if (!operationIsCurrent(scope)) return;
         setCreatedProject(project);
       }
@@ -92,6 +103,8 @@ export function NewProjectModal() {
       if (!operationIsCurrent(scope)) return;
       closeNewProject();
       setName('');
+      setDescription('');
+      idempotencyKeyRef.current = '';
       setHelpOpen(false);
       setCreatedProject(null);
     } catch (submitError) {
@@ -146,12 +159,41 @@ export function NewProjectModal() {
               required={!createdProject}
               maxLength={80}
               value={name}
-              onChange={(event) => setName(event.target.value)}
-              disabled={Boolean(createdProject)}
+              onChange={(event) => {
+                setName(event.target.value);
+                idempotencyKeyRef.current = '';
+              }}
+              disabled={loading || Boolean(createdProject)}
               placeholder={t('NewProject.namePlaceholder')}
               className="mt-2 w-full rounded-lg border border-white/10 bg-black/30 px-4 py-3 text-white outline-none transition placeholder:text-zinc-400 focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
             />
           </label>
+          {!createdProject ? (
+            <div>
+              <label htmlFor="new-project-description" className="block text-sm font-medium text-zinc-300">
+                {t('ProjectDescription.label')}
+              </label>
+              <textarea
+                id="new-project-description"
+                rows={4}
+                value={description}
+                onChange={(event) => {
+                  setDescription(event.target.value);
+                  idempotencyKeyRef.current = '';
+                }}
+                disabled={loading}
+                className="mt-2 w-full resize-y rounded-lg border border-white/10 bg-black/30 px-4 py-3 text-white outline-none transition placeholder:text-zinc-400 focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400 disabled:opacity-60"
+              />
+              <p className="mt-2 text-sm leading-6 text-zinc-400">{t('ProjectDescription.help')}</p>
+              <p className="mt-1 text-xs leading-5 text-zinc-500">{t('ProjectDescription.example')}</p>
+              <p className="mt-1 text-xs text-zinc-500" aria-live="polite">
+                {t('ProjectDescription.counter', { count: projectDescriptionCodePointCount(description), max: MAX_PROJECT_DESCRIPTION_LENGTH })}
+              </p>
+              {!isValidProjectDescription(description) ? (
+                <p className="mt-1 text-sm text-amber-200" role="alert">{t('ProjectDescription.invalid')}</p>
+              ) : null}
+            </div>
+          ) : null}
           {!createdProject ? (
             <button
               type="button"
@@ -174,7 +216,7 @@ export function NewProjectModal() {
             </button>
             <button
               type="submit"
-              disabled={loading || (!name.trim() && !createdProject)}
+              disabled={loading || (!name.trim() && !createdProject) || (!createdProject && !isValidProjectDescription(description))}
               className="rounded-lg bg-emerald-300 px-4 py-2.5 text-sm font-semibold text-black transition hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {loading
