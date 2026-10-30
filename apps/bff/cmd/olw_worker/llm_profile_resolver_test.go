@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -102,9 +103,11 @@ func TestResolvePipelineLLMProfileResponsePreservesSharedSource(t *testing.T) {
 }
 
 func TestResolvePipelineLLMProfilesDecodesExactBaseLegacyWire(t *testing.T) {
+	legacyWire := strings.Replace(`{"source":"personal","profiles":[{"id":"legacy-profile","revision":3,"provider":"custom","protocol":"openai_chat_completions","endpoint":"https://fixture.example/v1","model":"legacy-model","api_key":"encoded-fixture-key"}]}`,
+		`"encoded-fixture-key"`, `"`+base64.StdEncoding.EncodeToString([]byte("synthetic-legacy-key"))+`"`, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"source":"personal","profiles":[{"id":"legacy-profile","revision":3,"provider":"custom","protocol":"openai_chat_completions","endpoint":"https://fixture.example/v1","model":"legacy-model","api_key":"c3ludGhldGljLWxlZ2FjeS1rZXk="}]}`))
+		_, _ = w.Write([]byte(legacyWire))
 	}))
 	defer server.Close()
 	cfg := workerConfig{
