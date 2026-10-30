@@ -360,7 +360,9 @@ func runCloudSuggestedQueries(ctx context.Context, cfg workerConfig, objects obj
 	committed := false
 	workspace := ""
 	defer func() {
+		released := true
 		if cleanupErr := lease.Release(ctx); cleanupErr != nil {
+			released = false
 			leaseOutcome = workerTraceOutcome(cleanupErr)
 			if result == nil {
 				if committed {
@@ -374,6 +376,11 @@ func runCloudSuggestedQueries(ctx context.Context, cfg workerConfig, objects obj
 					result = cleanupErr
 				}
 			}
+		}
+		if released {
+			reconcileCtx, cancelReconcile := cloudFailureRecordingContext(ctx)
+			reportContentContextReconcileFailure(reconcileCloudContentContext(reconcileCtx, cfg, objects))
+			cancelReconcile()
 		}
 		observability.FinishPipelineSpan(leaseSpan, leaseOutcome)
 	}()
@@ -535,7 +542,9 @@ func runCloudWorkerBatch(ctx context.Context, cfg workerConfig, commands [][]str
 	defer func() {
 		releaseCtx, cancelRelease := context.WithTimeout(context.WithoutCancel(ctx), cloudFailureRecordingTimeout)
 		defer cancelRelease()
+		released := true
 		if cleanupErr := lease.Release(releaseCtx); cleanupErr != nil {
+			released = false
 			if result == nil {
 				if committed {
 					failure := newWorkerFailure(nil, failureStageLeaseCleanup, failureClassIO, "", cleanupErr)
@@ -548,6 +557,11 @@ func runCloudWorkerBatch(ctx context.Context, cfg workerConfig, commands [][]str
 					result = cleanupErr
 				}
 			}
+		}
+		if released {
+			reconcileCtx, cancelReconcile := cloudFailureRecordingContext(ctx)
+			reportContentContextReconcileFailure(reconcileCloudContentContext(reconcileCtx, cfg, objects))
+			cancelReconcile()
 		}
 	}()
 	guidanceCtx, guidanceSpan := observability.StartWorkerSpan(ctx, "pipeline.worker.validate")
