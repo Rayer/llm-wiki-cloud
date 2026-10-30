@@ -34,7 +34,6 @@ import { useNavigationBlocker } from './NavigationBlocker';
 
 type Tab = 'projects' | 'users' | 'settings' | 'shared-llm';
 type Notice = { tone: 'success' | 'error' | 'pending'; message: string } | null;
-const userReadbackFailure: Notice = { tone: 'error', message: 'Update succeeded, but current user state is unknown. Retry loading users before making another change.' };
 type Action =
   | { kind: 'rename-project'; project: AdminProject }
   | { kind: 'delete-project'; project: AdminProject }
@@ -48,6 +47,8 @@ type Action =
 export function AdminClient() {
   const { hydrated, user } = useAuth();
   const { locale, t } = useLocale();
+  const translateRef = useRef(t);
+  useEffect(() => { translateRef.current = t; }, [t]);
   const [tab, setTab] = useState<Tab>('projects');
   const [projects, setProjects] = useState<AdminProject[]>([]);
   const [users, setUsers] = useState<AdminUser[]>([]);
@@ -89,7 +90,7 @@ export function AdminClient() {
         setAdminDenied(true);
         return;
       }
-      setProjectsError(error instanceof Error ? error.message : 'Unable to load projects.');
+      setProjectsError(error instanceof Error ? error.message : translateRef.current('Admin.projectsLoadFailed'));
     } finally {
       setProjectsLoading(false);
     }
@@ -109,7 +110,7 @@ export function AdminClient() {
         setAdminDenied(true);
         return false;
       }
-      setUsersError(error instanceof Error ? error.message : 'Unable to load users.');
+      setUsersError(error instanceof Error ? error.message : translateRef.current('Admin.usersLoadFailed'));
       return false;
     } finally {
       setUsersLoading(false);
@@ -129,7 +130,7 @@ export function AdminClient() {
       setAnnouncementMarkdown(markdown);
       setAnnouncementBaseline(markdown);
     } catch (error) {
-      setSettingsError(error instanceof Error ? error.message : 'Unable to load settings.');
+      setSettingsError(error instanceof Error ? error.message : translateRef.current('Admin.settingsLoadFailed'));
     } finally {
       setSettingsLoading(false);
     }
@@ -142,16 +143,16 @@ export function AdminClient() {
       const settings = await updateAdminSettings({ [method]: !registrationEnabled[method] });
       setRegistrationEnabled({ registration_enabled: settings.registration_enabled, email_registration_enabled: settings.email_registration_enabled === true, google_registration_enabled: settings.google_registration_enabled === true });
       clearPublicConfigCache();
-      setNotice({ tone: 'success', message: 'Registration settings updated.' });
+      setNotice({ tone: 'success', message: t('Admin.registrationUpdated') });
     } catch (error) {
-      setSettingsError(error instanceof Error ? error.message : 'Settings update failed.');
+      setSettingsError(error instanceof Error ? error.message : t('Admin.settingsUpdateFailed'));
     } finally {
       setSettingsPending(false);
     }
   };
 
   const publishCurrentAnnouncement = async () => {
-    if (!announcementDirty || (announcementMarkdown.trim() === '' && !window.confirm('Clear the public announcement?'))) return;
+    if (!announcementDirty || (announcementMarkdown.trim() === '' && !window.confirm(t('Admin.confirmClearAnnouncement')))) return;
     setSettingsError('');
     setSettingsPending(true);
     try {
@@ -162,9 +163,9 @@ export function AdminClient() {
       const markdown = settings.announcement_markdown;
       setAnnouncementMarkdown(markdown);
       setAnnouncementBaseline(markdown);
-      setNotice({ tone: 'success', message: 'Announcement published.' });
+      setNotice({ tone: 'success', message: t('Admin.announcementPublished') });
     } catch (error) {
-      setSettingsError(error instanceof Error ? error.message : 'Announcement publish failed.');
+      setSettingsError(error instanceof Error ? error.message : t('Admin.announcementPublishFailed'));
     } finally {
       setSettingsPending(false);
     }
@@ -190,10 +191,10 @@ export function AdminClient() {
     try {
       await renameAdminProject(action.project.id, name);
       await loadProjects();
-      setNotice({ tone: 'success', message: 'Project renamed.' });
+      setNotice({ tone: 'success', message: t('Admin.projectRenamed') });
       setAction(null);
     } catch (error) {
-      setActionError(error instanceof Error ? error.message : 'Rename failed.');
+      setActionError(error instanceof Error ? error.message : t('Admin.renameFailed'));
     } finally {
       setActionPending(false);
     }
@@ -206,10 +207,10 @@ export function AdminClient() {
     try {
       await updateAdminUserManagementScope(action.user.id, scope, scopeAction);
       const refreshed = await loadUsers();
-      setNotice(refreshed ? { tone: 'success', message: 'Management scope updated.' } : userReadbackFailure);
+      setNotice(refreshed ? { tone: 'success', message: t('Admin.scopeUpdated') } : { tone: 'error', message: t('Admin.userReadbackFailure') });
       setAction(null);
     } catch (error) {
-      setActionError(error instanceof Error ? error.message : 'Management scope update failed.');
+      setActionError(error instanceof Error ? error.message : t('Admin.scopeUpdateFailed'));
     } finally {
       setActionPending(false);
     }
@@ -223,17 +224,17 @@ export function AdminClient() {
       if (action.kind === 'delete-project') {
         await deleteAdminProject(action.project.id);
         await loadProjects();
-        setNotice({ tone: 'success', message: 'Project deleted.' });
+        setNotice({ tone: 'success', message: t('Admin.projectDeleted') });
       } else if (action.kind === 'rebuild-project') {
         await rebuildAdminProjectIndex(action.project.id);
         await loadProjects();
-        setNotice({ tone: 'success', message: 'Index rebuild started.' });
+        setNotice({ tone: 'success', message: t('Admin.indexRebuildStarted') });
       } else if (action.kind === 'trigger-project') {
         await triggerAdminProjectPipeline(action.project.id, { cleanRebuild });
         await loadProjects();
         setNotice({
           tone: 'success',
-          message: cleanRebuild ? 'Pipeline triggered (clean rebuild).' : 'Pipeline triggered.',
+          message: cleanRebuild ? t('Admin.pipelineTriggeredClean') : t('Admin.pipelineTriggered'),
         });
       } else if (action.kind === 'suggest-queries-project') {
         const accepted = await triggerAdminProjectPipeline(action.project.id, { stage: 'suggested-queries' });
@@ -241,7 +242,7 @@ export function AdminClient() {
         const executionId = accepted.execution_id;
         if (!executionId) throw new Error('Regeneration accepted without an execution ID.');
         setAction(null);
-        setNotice({ tone: 'pending', message: 'Query chips regeneration started; waiting for completion.' });
+        setNotice({ tone: 'pending', message: t('Admin.queryChipsStarted') });
         for (let attempt = 0; attempt < 30; attempt += 1) {
           if (attempt > 0) {
             await new Promise<void>((resolve) => {
@@ -274,24 +275,24 @@ export function AdminClient() {
           if (!mounted.current) return;
           const execution = status.last_execution;
           if (execution?.status === 'SUCCEEDED') {
-            setNotice({ tone: 'success', message: 'Query chips regeneration completed.' });
+            setNotice({ tone: 'success', message: t('Admin.queryChipsCompleted') });
             break;
           }
           if (execution?.status === 'FAILED' || execution?.status === 'CANCELLED') {
             const diagnostic = execution.diagnostic?.detail_code || execution.diagnostic?.error_class || 'generation failed';
-            setNotice({ tone: 'error', message: `Query chips regeneration failed: ${diagnostic.slice(0, 120)}.` });
+            setNotice({ tone: 'error', message: t('Admin.queryChipsFailed', { diagnostic: diagnostic.slice(0, 120) }) });
             break;
           }
-          if (attempt === 29) setNotice({ tone: 'error', message: 'Query chips regeneration is still pending.' });
+          if (attempt === 29) setNotice({ tone: 'error', message: t('Admin.queryChipsPending') });
         }
       } else if (action.kind === 'set-user-status') {
         await updateAdminUserStatus(action.user.id, action.status);
         const refreshed = await loadUsers();
-        setNotice(refreshed ? { tone: 'success', message: action.status === 'suspended' ? 'User suspended.' : 'User restored. They must sign in again.' } : userReadbackFailure);
+        setNotice(refreshed ? { tone: 'success', message: action.status === 'suspended' ? t('Admin.userSuspended') : t('Admin.userRestored') } : { tone: 'error', message: t('Admin.userReadbackFailure') });
       } else if (action.kind === 'delete-user') {
         await deleteAdminUser(action.user.id);
         const refreshed = await loadUsers();
-        setNotice(refreshed ? { tone: 'success', message: 'User deleted.' } : userReadbackFailure);
+        setNotice(refreshed ? { tone: 'success', message: t('Admin.userDeleted') } : { tone: 'error', message: t('Admin.userReadbackFailure') });
       }
       setAction(null);
     } catch (error) {
@@ -299,10 +300,10 @@ export function AdminClient() {
         if (action?.kind === 'suggest-queries-project') {
           setNotice({
             tone: 'error',
-            message: `Query chips regeneration failed: ${error instanceof Error ? error.message : 'status unavailable'}.`,
+            message: t('Admin.queryChipsFailed', { diagnostic: error instanceof Error ? error.message : t('Admin.statusUnavailable') }),
           });
         } else {
-          setActionError(error instanceof Error ? error.message : 'Action failed.');
+          setActionError(error instanceof Error ? error.message : t('Admin.actionFailed'));
         }
       }
     } finally {
@@ -349,16 +350,16 @@ export function AdminClient() {
   }, [announcementDirty, setBlocked]);
 
   if (!hydrated) {
-    return <div className="py-20 text-center text-sm text-zinc-500">Loading...</div>;
+    return <div className="py-20 text-center text-sm text-zinc-500">{t('Shell.loading')}</div>;
   }
 
   if (accessDenied || adminDenied) {
     return (
       <Surface variant="glass" className="mx-auto max-w-lg p-6 text-center">
         <ShieldAlert className="mx-auto size-8 text-amber-300" aria-hidden="true" />
-        <h1 className="mt-4 text-xl font-semibold text-white">Admin access required</h1>
+        <h1 className="mt-4 text-xl font-semibold text-white">{t('Admin.accessRequired')}</h1>
         <p className="mt-2 text-sm text-zinc-400">
-          Your account does not have permission to use this console.
+          {t('Admin.accessDenied')}
         </p>
       </Surface>
     );
@@ -368,9 +369,9 @@ export function AdminClient() {
     <div className="space-y-6">
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-semibold tracking-tight text-white sm:text-4xl">Admin</h1>
+          <h1 className="text-3xl font-semibold tracking-tight text-white sm:text-4xl">{t('Admin.title')}</h1>
           <p className="mt-2 max-w-2xl text-zinc-400">
-            Manage projects, users, and pipeline operations.
+            {t('Admin.subtitle')}
           </p>
         </div>
         <button
@@ -379,16 +380,16 @@ export function AdminClient() {
           className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 text-sm font-medium text-zinc-200 transition hover:bg-white/10"
         >
           <RefreshCw className="size-4" aria-hidden="true" />
-          Refresh
+          {t('Admin.refresh')}
         </button>
       </header>
 
       <Surface variant="glass" className="p-2">
         <div className="flex gap-1">
-          {isLWCAdmin ? <TabButton active={tab === 'projects'} onClick={() => setTab('projects')}>Projects</TabButton> : null}
-          {isLWCAdmin ? <TabButton active={tab === 'shared-llm'} onClick={() => setTab('shared-llm')}>Shared LLM</TabButton> : null}
-          {isAuthAdmin ? <TabButton active={tab === 'users'} onClick={() => setTab('users')}>Users</TabButton> : null}
-          {(isAuthAdmin || isLWCAdmin) ? <TabButton active={tab === 'settings'} onClick={() => setTab('settings')}>Settings</TabButton> : null}
+          {isLWCAdmin ? <TabButton active={tab === 'projects'} onClick={() => setTab('projects')}>{t('Admin.projects')}</TabButton> : null}
+          {isLWCAdmin ? <TabButton active={tab === 'shared-llm'} onClick={() => setTab('shared-llm')}>{t('Admin.sharedLlmTab')}</TabButton> : null}
+          {isAuthAdmin ? <TabButton active={tab === 'users'} onClick={() => setTab('users')}>{t('Admin.users')}</TabButton> : null}
+          {(isAuthAdmin || isLWCAdmin) ? <TabButton active={tab === 'settings'} onClick={() => setTab('settings')}>{t('Admin.settings')}</TabButton> : null}
         </div>
       </Surface>
 
@@ -469,10 +470,10 @@ export function AdminClient() {
       ) : null}
       {action?.kind === 'delete-project' ? (
         <ConfirmActionModal
-          title="Delete project"
-          description={`Delete ${action.project.name} (${action.project.id})? This cannot be undone.`}
-          submitLabel="Delete project"
-          pendingLabel="Deleting..."
+          title={t('Admin.deleteProject')}
+          description={t('Admin.confirmDeleteProject', { name: action.project.name, id: action.project.id })}
+          submitLabel={t('Admin.deleteProject')}
+          pendingLabel={t('Admin.deleting')}
           danger
           pending={actionPending}
           error={actionError}
@@ -482,10 +483,10 @@ export function AdminClient() {
       ) : null}
       {action?.kind === 'rebuild-project' ? (
         <ConfirmActionModal
-          title="Rebuild index"
-          description={`Rebuild the search index for ${action.project.name} (${action.project.id}).`}
-          submitLabel="Rebuild index"
-          pendingLabel="Starting..."
+          title={t('Admin.rebuildIndex')}
+          description={t('Admin.confirmRebuildIndex', { name: action.project.name, id: action.project.id })}
+          submitLabel={t('Admin.rebuildIndex')}
+          pendingLabel={t('Admin.starting')}
           pending={actionPending}
           error={actionError}
           onSubmit={() => void submitConfirmAction()}
@@ -494,13 +495,13 @@ export function AdminClient() {
       ) : null}
       {action?.kind === 'trigger-project' ? (
         <ConfirmActionModal
-          title="Trigger pipeline"
-          description={`Trigger the pipeline for ${action.project.name} (${action.project.id}).`}
-          submitLabel="Trigger pipeline"
-          pendingLabel="Triggering..."
+          title={t('Admin.triggerPipeline')}
+          description={t('Admin.confirmTriggerPipeline', { name: action.project.name, id: action.project.id })}
+          submitLabel={t('Admin.triggerPipeline')}
+          pendingLabel={t('Admin.triggering')}
           pending={actionPending}
           error={actionError}
-          checkboxLabel="Clean rebuild (discard current wiki/Synto state; keep raw). Full LLM recompile."
+          checkboxLabel={t('Admin.cleanRebuild')}
           checkboxChecked={cleanRebuild}
           onCheckboxChange={setCleanRebuild}
           onSubmit={() => void submitConfirmAction()}
@@ -512,10 +513,10 @@ export function AdminClient() {
       ) : null}
       {action?.kind === 'suggest-queries-project' ? (
         <ConfirmActionModal
-          title="Regenerate query chips"
-          description={`Regenerate suggested query chips only for ${action.project.name} (${action.project.id}). Does not re-run Synto or rebuild the index.`}
-          submitLabel="Regenerate chips"
-          pendingLabel="Triggering..."
+          title={t('Admin.regenerateQueryChips')}
+          description={t('Admin.confirmRegenerateQueryChips', { name: action.project.name, id: action.project.id })}
+          submitLabel={t('Admin.regenerateChips')}
+          pendingLabel={t('Admin.triggering')}
           pending={actionPending}
           error={actionError}
           onSubmit={() => void submitConfirmAction()}
@@ -524,12 +525,10 @@ export function AdminClient() {
       ) : null}
       {action?.kind === 'set-user-status' ? (
         <ConfirmActionModal
-          title={action.status === 'suspended' ? 'Suspend user' : 'Restore user'}
-          description={action.status === 'suspended'
-            ? `Suspend ${action.user.email || action.user.id}? Access ends immediately. Data is preserved and previously admitted Pipeline work will finish.`
-            : `Restore ${action.user.email || action.user.id}? Their role and data are preserved. They must sign in again; old sessions stay invalid.`}
-          submitLabel={action.status === 'suspended' ? 'Suspend' : 'Restore'}
-          pendingLabel="Updating..."
+          title={action.status === 'suspended' ? t('Admin.suspendUser') : t('Admin.restoreUser')}
+          description={t(action.status === 'suspended' ? 'Admin.confirmSuspendUser' : 'Admin.confirmRestoreUser', { identity: action.user.email || action.user.id })}
+          submitLabel={action.status === 'suspended' ? t('Admin.suspend') : t('Admin.restore')}
+          pendingLabel={t('Admin.updating')}
           danger={action.status === 'suspended'}
           pending={actionPending}
           error={actionError}
@@ -539,10 +538,10 @@ export function AdminClient() {
       ) : null}
       {action?.kind === 'delete-user' ? (
         <ConfirmActionModal
-          title="Delete user"
-          description={`Delete ${action.user.email || action.user.id}? This deletes their user record and projects.`}
-          submitLabel="Delete user"
-          pendingLabel="Deleting..."
+          title={t('Admin.deleteUser')}
+          description={t('Admin.confirmDeleteUser', { identity: action.user.email || action.user.id })}
+          submitLabel={t('Admin.deleteUser')}
+          pendingLabel={t('Admin.deleting')}
           danger
           pending={actionPending}
           error={actionError}
@@ -587,10 +586,11 @@ function SettingsPanel({
   onAnnouncementChange: (value: string) => void;
   onPublishAnnouncement: () => void;
 }) {
+  const { t } = useLocale();
   return (
     <Surface variant="glass" className="p-5">
       {loading ? (
-        <p className="text-sm text-zinc-500">Loading...</p>
+        <p className="text-sm text-zinc-500">{t('Shell.loading')}</p>
       ) : (
         <div className="space-y-6">
           {error ? (
@@ -601,7 +601,7 @@ function SettingsPanel({
                 onClick={onRetry}
                 className="text-sm font-medium text-zinc-300 transition hover:text-white"
               >
-                Retry
+                {t('Shell.retry')}
               </button>
             </div>
           ) : null}
@@ -620,10 +620,10 @@ function SettingsPanel({
             </div>
           </div> : null}
           {canManageAnnouncement ? <div>
-            <h2 className="text-lg font-semibold text-white">Announcement</h2>
-            <p className="mt-1 text-sm text-zinc-400">Edit the published announcement and preview it live.</p>
+            <h2 className="text-lg font-semibold text-white">{t('Admin.announcement')}</h2>
+            <p className="mt-1 text-sm text-zinc-400">{t('Admin.announcementHint')}</p>
             <textarea
-              aria-label="Announcement Markdown"
+              aria-label={t('Admin.announcementMarkdown')}
               value={announcementMarkdown}
               onChange={(event) => onAnnouncementChange(event.target.value)}
               disabled={pending}
@@ -631,9 +631,9 @@ function SettingsPanel({
               className="mt-3 w-full rounded-lg border border-white/10 bg-black/30 p-3 font-mono text-sm text-zinc-100 outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400 focus:border-emerald-300"
             />
             <div className="mt-3 flex flex-wrap gap-3">
-              <button type="button" disabled={pending || !announcementDirty} onClick={onPublishAnnouncement} className="rounded-lg border border-emerald-300/30 px-4 py-2 text-sm font-semibold text-emerald-200 disabled:opacity-50">Publish</button>
+              <button type="button" disabled={pending || !announcementDirty} onClick={onPublishAnnouncement} className="rounded-lg border border-emerald-300/30 px-4 py-2 text-sm font-semibold text-emerald-200 disabled:opacity-50">{t('Admin.publish')}</button>
             </div>
-            <h3 className="mt-5 text-sm font-semibold uppercase tracking-wide text-zinc-400">Preview</h3>
+            <h3 className="mt-5 text-sm font-semibold uppercase tracking-wide text-zinc-400">{t('Admin.preview')}</h3>
             <AnnouncementBoard markdown={announcementMarkdown} />
           </div> : null}
         </div>
@@ -711,25 +711,26 @@ function ProjectsTable({
   onRetry: () => void;
   onAction: (action: Action) => void;
 }) {
+  const { t } = useLocale();
   return (
     <Surface variant="glass" className="overflow-hidden">
       <TableStatus
         loading={loading}
         error={error}
         empty={!loading && projects.length === 0}
-        emptyLabel="No projects found."
+        emptyLabel={t('Admin.noProjectsFound')}
         onRetry={onRetry}
       />
       <div className="overflow-x-auto">
         <table className="w-full min-w-[900px] text-left text-sm">
           <thead className="border-b border-white/10 text-xs uppercase text-zinc-500">
             <tr>
-              <th className="px-4 py-3 font-medium">Project</th>
-              <th className="px-4 py-3 font-medium">Project ID</th>
-              <th className="px-4 py-3 font-medium">Owner</th>
-              <th className="px-4 py-3 font-medium">Concept count</th>
-              <th className="px-4 py-3 font-medium">Source count</th>
-              <th className="px-4 py-3 text-right font-medium">Actions</th>
+              <th className="px-4 py-3 font-medium">{t('Admin.project')}</th>
+              <th className="px-4 py-3 font-medium">{t('Admin.projectId')}</th>
+              <th className="px-4 py-3 font-medium">{t('Admin.owner')}</th>
+              <th className="px-4 py-3 font-medium">{t('Admin.conceptCount')}</th>
+              <th className="px-4 py-3 font-medium">{t('Admin.sourceCount')}</th>
+              <th className="px-4 py-3 text-right font-medium">{t('Admin.actions')}</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-white/8">
@@ -754,31 +755,31 @@ function ProjectsTable({
                   <td className="px-4 py-3">
                     <div className="flex justify-end gap-1">
                       <IconAction
-                        label="Rename"
+                        label={t('Admin.rename')}
                         icon={Pencil}
                         disabled={pending}
                         onClick={() => onAction({ kind: 'rename-project', project })}
                       />
                       <IconAction
-                        label="Rebuild index"
+                        label={t('Admin.rebuildIndex')}
                         icon={RotateCcw}
                         disabled={pending}
                         onClick={() => onAction({ kind: 'rebuild-project', project })}
                       />
                       <IconAction
-                        label="Trigger pipeline"
+                        label={t('Admin.triggerPipeline')}
                         icon={Play}
                         disabled={pending}
                         onClick={() => onAction({ kind: 'trigger-project', project })}
                       />
                       <IconAction
-                        label="Regenerate query chips"
+                        label={t('Admin.regenerateQueryChips')}
                         icon={MessageSquareText}
                         disabled={pending}
                         onClick={() => onAction({ kind: 'suggest-queries-project', project })}
                       />
                       <IconAction
-                        label="Delete"
+                        label={t('Admin.delete')}
                         icon={Trash2}
                         danger
                         disabled={pending}
@@ -821,8 +822,9 @@ function UsersTable({
   canManageStatus: boolean;
   canDeleteUser: boolean;
   managementCatalog: AdminManagementScope[];
-  locale: 'zh-TW' | 'en';
+  locale: 'zh-TW' | 'zh-CN' | 'en';
 }) {
+  const { t } = useLocale();
   const unknown = loading || !!error;
   return (
     <Surface variant="glass" className="overflow-hidden">
@@ -830,19 +832,19 @@ function UsersTable({
         loading={loading}
         error={error}
         empty={!loading && users.length === 0}
-        emptyLabel="No users found."
+        emptyLabel={t('Admin.noUsersFound')}
         onRetry={onRetry}
       />
       <div className="overflow-x-auto">
         <table className="w-full min-w-[900px] text-left text-sm">
           <thead className="border-b border-white/10 text-xs uppercase text-zinc-500">
             <tr>
-              <th className="px-4 py-3 font-medium">User</th>
-              <th className="px-4 py-3 font-medium">User ID</th>
-              <th className="px-4 py-3 font-medium">Management scopes</th>
-              <th className="px-4 py-3 font-medium">Status</th>
-              <th className="px-4 py-3 font-medium">Project count</th>
-              <th className="px-4 py-3 text-right font-medium">Actions</th>
+              <th className="px-4 py-3 font-medium">{t('Admin.user')}</th>
+              <th className="px-4 py-3 font-medium">{t('Admin.userId')}</th>
+              <th className="px-4 py-3 font-medium">{t('Admin.managementScopes')}</th>
+              <th className="px-4 py-3 font-medium">{t('Admin.status')}</th>
+              <th className="px-4 py-3 font-medium">{t('Admin.projectCount')}</th>
+              <th className="px-4 py-3 text-right font-medium">{t('Admin.actions')}</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-white/8">
@@ -859,31 +861,31 @@ function UsersTable({
                     {user.id || '—'}
                   </td>
                   <td className="px-4 py-3">
-                    {unknown ? 'Unknown' : <div className="flex flex-wrap gap-1">
+                    {unknown ? t('Admin.unknown') : <div className="flex flex-wrap gap-1">
                       {managementCatalog.map((scope) => user.scopeStates[scope.id]?.state === 'granted'
-                        ? <Badge key={scope.id} variant="accent">{scope.display_name[locale] || scope.id}</Badge>
+                        ? <Badge key={scope.id} variant="accent">{scope.display_name[locale === 'zh-TW' ? 'zh-TW' : 'en'] || scope.id}</Badge>
                         : null)}
-                      {!Object.values(user.scopeStates).some((scope) => scope?.state === 'granted') ? <span className="text-zinc-500">None</span> : null}
+                      {!Object.values(user.scopeStates).some((scope) => scope?.state === 'granted') ? <span className="text-zinc-500">{t('Admin.none')}</span> : null}
                     </div>}
                   </td>
-                  <td className="px-4 py-3"><Badge variant={user.status === 'active' ? 'muted' : 'accent'}>{unknown ? 'Unknown' : user.status}</Badge></td>
+                  <td className="px-4 py-3"><Badge variant={user.status === 'active' ? 'muted' : 'accent'}>{unknown ? t('Admin.unknown') : t(user.status === 'active' ? 'Admin.active' : 'Admin.suspended')}</Badge></td>
                   <td className="px-4 py-3 tabular-nums text-zinc-300">{user.projectCount}</td>
                   <td className="px-4 py-3">
                     <div className="flex justify-end gap-1">
                       {canManageScopes ? <IconAction
-                        label="Manage scopes"
+                        label={t('Admin.manageScopes')}
                         icon={ShieldAlert}
                         disabled={pending || unknown}
                         onClick={() => onAction({ kind: 'change-scope', user })}
                       /> : null}
                       {canManageStatus ? <IconAction
-                        label={user.status === 'suspended' ? 'Restore user' : 'Suspend user'}
+                        label={user.status === 'suspended' ? t('Admin.restoreUser') : t('Admin.suspendUser')}
                         icon={user.status === 'suspended' ? RotateCcw : ShieldAlert}
                         disabled={pending || unknown || (user.id === currentUserId && user.status !== 'suspended')}
                         onClick={() => onAction({ kind: 'set-user-status', user, status: user.status === 'suspended' ? 'active' : 'suspended' })}
                       /> : null}
                       {canDeleteUser ? <IconAction
-                        label="Delete user"
+                        label={t('Admin.deleteUser')}
                         icon={Trash2}
                         danger
                         disabled={pending || unknown}
@@ -914,8 +916,9 @@ function TableStatus({
   emptyLabel: string;
   onRetry: () => void;
 }) {
+  const { t } = useLocale();
   if (loading) {
-    return <p className="border-b border-white/10 px-4 py-3 text-sm text-zinc-500">Loading...</p>;
+    return <p className="border-b border-white/10 px-4 py-3 text-sm text-zinc-500">{t('Shell.loading')}</p>;
   }
 
   if (error) {
@@ -927,7 +930,7 @@ function TableStatus({
           onClick={onRetry}
           className="text-sm font-medium text-zinc-300 transition hover:text-white"
         >
-          Retry
+          {t('Shell.retry')}
         </button>
       </div>
     );
@@ -980,6 +983,7 @@ function ModalFrame({
   children: ReactNode;
   onClose: () => void;
 }) {
+  const { t } = useLocale();
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4 backdrop-blur-sm">
       <div
@@ -991,7 +995,7 @@ function ModalFrame({
         <h2 className="text-lg font-semibold text-white">{title}</h2>
         {children}
         <button type="button" onClick={onClose} className="sr-only">
-          Close
+          {t('Common.close')}
         </button>
       </div>
     </div>
@@ -1011,11 +1015,12 @@ function RenameProjectModal({
   onSubmit: (name: string) => void;
   onClose: () => void;
 }) {
+  const { t } = useLocale();
   const [name, setName] = useState(project.name);
   return (
-    <ModalFrame title="Rename project" onClose={onClose}>
+    <ModalFrame title={t('Admin.renameProject')} onClose={onClose}>
       <label className="mt-4 block text-sm text-zinc-400">
-        Project name
+        {t('Admin.projectName')}
         <input
           value={name}
           onChange={(event) => setName(event.target.value)}
@@ -1025,8 +1030,8 @@ function RenameProjectModal({
       {error ? <p className="mt-3 text-sm text-amber-300">{error}</p> : null}
       <ModalActions
         pending={pending}
-        submitLabel="Rename"
-        pendingLabel="Renaming..."
+        submitLabel={t('Admin.rename')}
+        pendingLabel={t('Admin.renaming')}
         disabled={!name.trim()}
         onSubmit={() => onSubmit(name.trim())}
         onClose={onClose}
@@ -1046,32 +1051,33 @@ function ScopeActionModal({
 }: {
   user: AdminUser;
   scopes: AdminManagementScope[];
-  locale: 'zh-TW' | 'en';
+  locale: 'zh-TW' | 'zh-CN' | 'en';
   pending: boolean;
   error: string;
   onSubmit: (scope: 'auth:admin' | 'lwc:admin', action: 'grant' | 'remove') => void;
   onClose: () => void;
 }) {
+  const { t } = useLocale();
   const [scope, setScope] = useState<'auth:admin' | 'lwc:admin'>('auth:admin');
   const granted = user.scopeStates[scope]?.state === 'granted';
   const selectedScope = scopes.find((entry) => entry.id === scope);
   return (
-    <ModalFrame title="Manage scopes" onClose={onClose}>
+    <ModalFrame title={t('Admin.manageScopes')} onClose={onClose}>
       <p className="mt-3 text-sm text-zinc-400">{user.email || user.id}</p>
       <select
         value={scope}
         onChange={(event) => setScope(event.target.value as 'auth:admin' | 'lwc:admin')}
         className="mt-4 min-h-11 w-full rounded-lg border border-white/10 bg-black/30 px-3 text-sm text-white outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400 focus:border-emerald-400"
       >
-        {scopes.map((entry) => <option key={entry.id} value={entry.id}>{entry.display_name[locale] || entry.id}</option>)}
+        {scopes.map((entry) => <option key={entry.id} value={entry.id}>{entry.display_name[locale === 'zh-TW' ? 'zh-TW' : 'en'] || entry.id}</option>)}
       </select>
-      {selectedScope ? <p className="mt-2 text-sm text-zinc-400">{selectedScope.description[locale] || selectedScope.description.en}</p> : null}
-      <p className="mt-2 text-sm text-zinc-400">Current state: {user.scopeStates[scope]?.state ?? 'not granted'}</p>
+      {selectedScope ? <p className="mt-2 text-sm text-zinc-400">{selectedScope.description[locale === 'zh-TW' ? 'zh-TW' : 'en'] || selectedScope.description.en}</p> : null}
+      <p className="mt-2 text-sm text-zinc-400">{t('Admin.currentScopeState')}: {t(user.scopeStates[scope]?.state === 'granted' ? 'Admin.granted' : 'Admin.notGranted')}</p>
       {error ? <p className="mt-3 text-sm text-amber-300">{error}</p> : null}
       <ModalActions
         pending={pending}
-        submitLabel={granted ? 'Remove scope' : 'Grant scope'}
-        pendingLabel="Updating..."
+        submitLabel={granted ? t('Admin.removeScope') : t('Admin.grantScope')}
+        pendingLabel={t('Admin.updating')}
         onSubmit={() => onSubmit(scope, granted ? 'remove' : 'grant')}
         onClose={onClose}
       />
@@ -1151,6 +1157,7 @@ function ModalActions({
   onSubmit: () => void;
   onClose: () => void;
 }) {
+  const { t } = useLocale();
   return (
     <div className="mt-5 flex justify-end gap-2">
       <button
@@ -1159,7 +1166,7 @@ function ModalActions({
         onClick={onClose}
         className="min-h-11 rounded-lg border border-white/10 px-4 text-sm text-zinc-300 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-60"
       >
-        Cancel
+        {t('Shell.cancel')}
       </button>
       <button
         type="button"

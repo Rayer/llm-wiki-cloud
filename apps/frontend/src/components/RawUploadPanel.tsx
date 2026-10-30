@@ -59,41 +59,34 @@ function folderCandidateError(file: File): string | undefined {
   return undefined;
 }
 
-function formatBytes(bytes: number): string {
-  return `${bytes.toLocaleString()} B`;
+function formatBytes(bytes: number, locale: 'zh-TW' | 'zh-CN' | 'en'): string {
+  return `${bytes.toLocaleString(locale === 'zh-TW' ? 'zh-TW' : locale === 'zh-CN' ? 'zh-CN' : 'en-US')} B`;
 }
 
-function uploadStatusLabel(status: UploadItemStatus): string {
+function uploadStatusLabel(status: UploadItemStatus, t: (key: string) => string): string {
   switch (status) {
     case 'queued':
-      return 'Queued';
+      return t('RawUpload.statusQueued');
     case 'uploading':
-      return 'Uploading';
+      return t('RawUpload.statusUploading');
     case 'created':
-      return 'Created';
+      return t('RawUpload.statusCreated');
     case 'already_exists':
-      return 'Already exists';
+      return t('RawUpload.statusAlreadyExists');
     case 'replaced':
-      return 'Replaced';
+      return t('RawUpload.statusReplaced');
     case 'failed':
-      return 'Failed';
+      return t('RawUpload.statusFailed');
   }
 }
 
-function summarizeUploads(items: UploadItem[]): string {
+function summarizeUploads(items: UploadItem[], t: (key: string, params?: Record<string, string | number>) => string): string {
   const created = items.filter((item) => item.status === 'created').length;
   const existing = items.filter((item) => item.status === 'already_exists').length;
   const replaced = items.filter((item) => item.status === 'replaced').length;
   const failed = items.filter((item) => item.status === 'failed').length;
   const pending = items.filter((item) => item.status === 'queued' || item.status === 'uploading').length;
-  const parts = [
-    `${created} created`,
-    `${existing} already exists`,
-  ];
-  if (replaced > 0) parts.push(`${replaced} replaced`);
-  parts.push(`${failed} failed`);
-  if (pending > 0) parts.push(`${pending} in progress`);
-  return parts.join(', ');
+  return t('RawUpload.summary', { created, existing, replaced, failed, pending });
 }
 
 export function RawUploadPanel({
@@ -103,7 +96,7 @@ export function RawUploadPanel({
   onBlocked,
   onQueueSettled,
 }: RawUploadPanelProps) {
-  const { t } = useT();
+  const { t, locale } = useT();
   const { isDemoSession, currentProject, refreshNavCounts } = useWorkspace();
   const fileRef = useRef<HTMLInputElement>(null);
   const folderRef = useRef<HTMLInputElement>(null);
@@ -350,7 +343,7 @@ export function RawUploadPanel({
   }, [canConfirmFolder, currentProject, enqueueFiles, selectedCandidates]);
 
   const uploading = uploadItems.some((item) => item.status === 'queued' || item.status === 'uploading');
-  const uploadSummary = useMemo(() => summarizeUploads(uploadItems), [uploadItems]);
+  const uploadSummary = useMemo(() => summarizeUploads(uploadItems, t), [uploadItems, t]);
 
   return (
     <section className="rounded-[var(--radius-md)] border border-white/10 bg-zinc-950/50 p-4" aria-labelledby={`${inputId}-title`}>
@@ -439,7 +432,7 @@ export function RawUploadPanel({
               </p>
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <p className="text-xs text-zinc-300">
-                  {t('RawUpload.selectionSummary', { count: selectedCandidates.length, bytes: formatBytes(selectedBytes) })}
+                  {t('RawUpload.selectionSummary', { count: selectedCandidates.length, bytes: formatBytes(selectedBytes, locale) })}
                 </p>
                 <div className="flex flex-wrap gap-2">
                   <button
@@ -486,7 +479,7 @@ export function RawUploadPanel({
                         <p className="truncate font-medium text-zinc-200" title={candidate.file.name}>{candidate.file.name}</p>
                         <p className="break-all text-zinc-400" title={candidate.relativePath}>{candidate.relativePath}</p>
                         <p className="mt-0.5 text-zinc-500">
-                          {formatBytes(candidate.file.size)} · {t('RawUpload.destination', { filename: candidate.file.name })}
+                          {formatBytes(candidate.file.size, locale)} · {t('RawUpload.destination', { filename: candidate.file.name })}
                         </p>
                         {candidate.error ? <p className="mt-0.5 text-amber-200">{t(candidate.error)}</p> : null}
                         {collision ? <p className="mt-0.5 text-amber-200">{t('RawUpload.collisionForFile')}</p> : null}
@@ -531,14 +524,14 @@ export function RawUploadPanel({
                   <div
                     className="mt-1 h-1.5 overflow-hidden rounded-full bg-white/10"
                     role="progressbar"
-                    aria-label={`${item.file.name}: ${uploadStatusLabel(item.status)} ${item.progress}%`}
+                    aria-label={t('RawUpload.fileProgress', { filename: item.file.name, status: uploadStatusLabel(item.status, t), progress: item.progress })}
                     aria-valuemin={0}
                     aria-valuemax={100}
                     aria-valuenow={item.progress}
                   >
                     <div className="h-full rounded-full bg-emerald-400 transition-[width]" style={{ width: `${item.progress}%` }} />
                   </div>
-                  <p className="mt-0.5 text-zinc-500">{uploadStatusLabel(item.status)} · {item.progress}%</p>
+                  <p className="mt-0.5 text-zinc-500">{uploadStatusLabel(item.status, t)} · {item.progress}%</p>
                   {item.error ? <p className="mt-0.5 text-red-300/90">{item.error}</p> : null}
                 </div>
                 <div className="flex shrink-0 items-center gap-1.5">
@@ -546,8 +539,8 @@ export function RawUploadPanel({
                     variant={item.status === 'failed' ? 'draft' : item.status === 'created' || item.status === 'already_exists' || item.status === 'replaced' ? 'accent' : 'muted'}
                   >
                     {item.status === 'uploading' ? (
-                      <span className="inline-flex items-center gap-1"><Loader2 className="size-3 animate-spin" />{uploadStatusLabel(item.status)}</span>
-                    ) : uploadStatusLabel(item.status)}
+                      <span className="inline-flex items-center gap-1"><Loader2 className="size-3 animate-spin" />{uploadStatusLabel(item.status, t)}</span>
+                    ) : uploadStatusLabel(item.status, t)}
                   </Badge>
                   {item.status === 'failed' ? (
                     <button
@@ -555,8 +548,8 @@ export function RawUploadPanel({
                       onClick={() => handleRetry(item.id)}
                       disabled={isDemoSession}
                       className="rounded p-1 text-zinc-400 transition hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
-                      aria-label={`Retry ${item.file.name}`}
-                      title="Retry"
+                      aria-label={t('RawUpload.retryFile', { filename: item.file.name })}
+                      title={t('Shell.retry')}
                     >
                       <RotateCcw className="size-3.5" />
                     </button>

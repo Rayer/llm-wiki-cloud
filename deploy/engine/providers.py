@@ -1014,7 +1014,7 @@ class Providers:
         diagnostic_enabled = self.p.get('environment') == 'development'
         commands = {stage: {'status': 'not-run', 'exit_code': None, 'timeout_class': None}
                     for stage in ('frontend-project-readback', 'frontend-npm-ci',
-                                  'frontend-vercel-pull', 'frontend-vercel-build')}
+                                  'frontend-i18n-prepare', 'frontend-vercel-pull', 'frontend-vercel-build')}
         readback = {'linked_root': 'missing'}
         build_output = None
         if diagnostic_enabled:
@@ -1042,6 +1042,34 @@ class Providers:
             env.pop('NOW_PROJECT_ID', None)
             target = 'production' if self.p['environment'] == 'production' else 'preview'
             command('frontend-npm-ci', ['npm', 'ci', '--ignore-scripts'], cwd=project_root, timeout=600)
+            i18n_env = dict(os.environ)
+            for name in ('VERCEL_TOKEN', 'VERCEL_PROJECT_ID', 'VERCEL_ORG_ID', 'VERCEL_TEAM_ID',
+                         'NOW_ORG_ID', 'NOW_PROJECT_ID'):
+                i18n_env.pop(name, None)
+            i18n_env.update({
+                'GOMAXPROCS': '2',
+                'GOFLAGS': '-p=2',
+            })
+            i18n_script = Path(__file__).resolve().with_name('frontend_i18n.py')
+            i18n_root = i18n_script.parents[2]
+            i18n_args = [
+                'python3', i18n_script,
+                '--root', i18n_root, '--environment', self.p['environment'],
+                '--source-sha', self.plan['source'], '--output', self.directory / 'frontend-i18n',
+                '--frontend-root', project_root, '--mode', 'auto',
+            ]
+            i18n_output = command('frontend-i18n-prepare', i18n_args,
+                                  env=i18n_env, cwd=i18n_root, timeout=1100)
+            try:
+                i18n_summary = json.loads([line for line in i18n_output.splitlines() if line.strip()][-1])
+                bundle_revision = i18n_summary['bundle_revision']
+                require(i18n_summary.get('source_revision') == self.plan['source'] and
+                        re.fullmatch(r'[a-f0-9]{64}', bundle_revision) is not None,
+                        'frontend-i18n-catalog-identity-invalid')
+            except (IndexError, KeyError, TypeError, ValueError):
+                raise Breakpoint('frontend-i18n-catalog-identity-invalid', 'failed', False,
+                                 'inspect-frontend-i18n-artifact') from None
+            env['LWC_I18N_PREPARED_BUNDLE_REVISION'] = bundle_revision
             pull_args = ['vercel', 'pull', '--yes', '--environment='+target, '--scope', cfg['team_slug'],
                          '--token', os.environ['VERCEL_TOKEN']]
             command('frontend-vercel-pull', pull_args, env=env, cwd=project_root, timeout=30)

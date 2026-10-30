@@ -1,4 +1,5 @@
 import type { Locale } from './i18n-core';
+import { translate } from './i18n';
 
 export type MCPGuideTarget = 'hermes' | 'codex' | 'grok-cli' | 'grok-bot' | 'claude-code' | 'openclaw' | 'openai-web';
 
@@ -41,13 +42,9 @@ export function buildMCPGuideSnippet(target: MCPGuideTarget, resourceURL: string
     case 'grok-cli':
       return `grok mcp add --transport http llm-wiki ${shellQuote(resourceURL)}`;
     case 'grok-bot':
-      return locale === 'zh-TW'
-        ? '請加入 MCP：' + resourceURL + '，用來處理你的【請填寫此 Project 要處理的資料用途】。'
-        : 'Please add MCP: ' + resourceURL + ' to handle [describe the data this Project should handle].';
+      return translate(locale, 'MCPOAuth.shortPromptGrokBot', { resourceURL });
     case 'openai-web':
-      return locale === 'zh-TW'
-        ? '我想連接一個 engineering wiki，用來存取【請填寫這個 Project 要處理的資料用途】：' + resourceURL
-        : 'I want to connect an engineering wiki to access [describe the data or purpose this Project should handle]: ' + resourceURL;
+      return translate(locale, 'MCPOAuth.shortPromptOpenAIWeb', { resourceURL });
     case 'claude-code':
       return `claude mcp add --transport http llm-wiki ${shellQuote(resourceURL)}`;
     case 'openclaw': {

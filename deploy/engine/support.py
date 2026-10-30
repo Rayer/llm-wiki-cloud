@@ -41,7 +41,7 @@ _CAUSE_TYPES = {
     subprocess.TimeoutExpired: ('TimeoutExpired', 'child-command-timeout'),
 }
 _CAUSE_STAGES = {
-    'frontend-project-readback', 'frontend-npm-ci',
+    'frontend-project-readback', 'frontend-npm-ci', 'frontend-i18n-prepare',
     'frontend-vercel-pull', 'frontend-vercel-build', 'frontend-vercel-deploy',
     'frontend-deployment-reconcile', 'auth-config-materialize', 'pipeline-config-object-read',
     'pipeline-config-object-delete', 'pipeline-config-prepare', 'bff-config-publish',

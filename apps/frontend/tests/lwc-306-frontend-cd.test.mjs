@@ -64,8 +64,9 @@ async function setup(environment = 'development', scenario = 'success') {
     },
   }));
   const bin = join(root, 'bin');
+  const realPython3 = (await execFileAsync('which', ['python3'])).stdout.trim();
   await execFileAsync('mkdir', ['-p', bin]);
-  for (const name of ['npm', 'vercel', 'curl']) {
+  for (const name of ['npm', 'vercel', 'curl', 'python3']) {
     const source = join(fixtureDir, `lwc-306-fake-${name}`);
     const target = join(bin, name);
     await execFileAsync('cp', [source, target]);
@@ -90,6 +91,7 @@ async function setup(environment = 'development', scenario = 'success') {
     VERCEL_PROJECT_ID: 'prj_frontendtest',
     VERCEL_TEAM_ID: 'team_frontendtest',
     VERCEL_API_BASE_URL: 'https://vercel.test',
+    REAL_PYTHON3: realPython3,
   };
   return { root, artifactDir, aliases, env };
 }
@@ -122,6 +124,7 @@ test('builds once with Vercel prebuilt ordering and keeps immutable ID separate 
   assert.match(calls[2], /build .*--scope/);
   assert.match(calls[3], /deploy .*--prebuilt.*--json/);
   assert.equal(calls.some((line) => line.includes('npm run build')), false);
+  assert.equal((await lines(join(fixture.root, 'i18n-calls'))).length, 1);
   const deployment = await json(join(fixture.artifactDir, 'frontend-deployment.json'));
   assert.equal(deployment.deployment_id, 'dpl_frontendnew');
   assert.equal(deployment.deployment_url, 'https://frontend-hash.vercel.app');
@@ -148,6 +151,7 @@ test('reuses a live-shaped existing candidate before any build mutation', async 
   assert.equal(calls.filter((line) => line.startsWith('vercel pull ')).length, 0);
   assert.equal(calls.filter((line) => line.startsWith('vercel build ')).length, 0);
   assert.equal(calls.filter((line) => line.startsWith('vercel deploy ')).length, 0);
+  assert.equal((await lines(join(fixture.root, 'i18n-calls'))).length, 0);
   assert.equal((await lines(join(fixture.root, 'alias-post-calls'))).length, 1);
   assert.equal((await json(join(fixture.artifactDir, 'frontend-deployment.json'))).deployment_id, 'dpl_frontendnew');
   assert.equal((await json(join(fixture.artifactDir, 'journal.json'))).components.frontend.state, 'accepted');

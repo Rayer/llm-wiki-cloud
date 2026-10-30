@@ -124,6 +124,18 @@ class Acceptance(unittest.TestCase):
         self.env=patch.dict(os.environ,{**offline_env,'PATH':str(bin)+os.pathsep+os.environ['PATH'],'LWC_TEST_STATE':str(self.root/'provider.json'),
             'VERCEL_PROJECT_ID':'prj_test','VERCEL_TEAM_ID':'team_test','VERCEL_TOKEN':'test-only','GITHUB_REPOSITORY':'test/repo'},clear=True)
         self.env.start();self.addCleanup(self.env.stop)
+        real_run=providers.run
+        def run_with_i18n_fixture(args,*positional,**kwargs):
+            if kwargs.get('stage')=='frontend-i18n-prepare':
+                script=Path(providers.__file__).resolve().with_name('frontend_i18n.py')
+                root=script.parents[2]
+                self.assertEqual(Path(args[1]),script)
+                self.assertEqual(Path(args[args.index('--root')+1]),root)
+                source=args[args.index('--source-sha')+1]
+                return json.dumps({'source_revision':source,'bundle_revision':'a'*64})
+            return real_run(args,*positional,**kwargs)
+        self.i18n_run=patch.object(providers,'run',run_with_i18n_fixture)
+        self.i18n_run.start();self.addCleanup(self.i18n_run.stop)
         self.sleep=patch('providers.time.sleep');self.sleep.start();self.addCleanup(self.sleep.stop)
         def test_pipeline_config(provider):
             import hashlib

@@ -8,6 +8,7 @@ export const metadata: Metadata = {
 export default function TermsPage() {
   return (
     <>
+      <p className="text-xs text-zinc-400"><span lang="zh-Hant">繁體中文</span> · <a href="/en/terms" lang="en" className="text-emerald-200 underline underline-offset-4">English</a></p>
       <h1>服務條款</h1>
       <p className="text-sm text-zinc-400">本條款自公開發布時生效。</p>
       <p>LLM Wiki Cloud 是由 Rayer Tung 經營的個人興趣專案。使用服務時，請遵守以下條款。</p>

@@ -8,6 +8,7 @@ import { RegisterModal } from './RegisterModal';
 import { useWorkspace } from './WorkspaceProvider';
 import { startGoogleLogin } from '@/lib/google-auth';
 import { LegalLinks } from './LegalLinks';
+import { LocaleControl } from './LocaleControl';
 
 export function LoginModal() {
   const { loginOpen, signIn, signInAsDemo } = useWorkspace();
@@ -157,6 +158,7 @@ export function LoginModal() {
         </section>
 
         <div className="p-6 sm:p-9 lg:p-12">
+          <LocaleControl />
           <div className="font-mono text-[11px] uppercase tracking-[0.22em] text-emerald-300/90">
             {t('Login.brand')}
           </div>

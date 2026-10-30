@@ -39,9 +39,31 @@ for (const [route, title, disclosure] of [
     }
   }
   assert.equal(doc.querySelector('[role="dialog"]'), null);
-  for (const target of ['/', '/privacy', '/terms']) {
+  for (const target of ['/', '/privacy', '/terms', '/en/privacy', '/en/terms']) {
     assert.ok(doc.querySelector(`a[href="${target}"]`));
   }
   console.log(`${route}: substantive static HTML, metadata and native links verified without JavaScript`);
+  dom.window.close();
+}
+
+for (const [route, title, section] of [
+  ['/en/privacy', 'Privacy Policy', 'Project content and AI processing'],
+  ['/en/terms', 'Terms of Service', 'Content you submit'],
+]) {
+  assert.ok(manifest.routes[route], `${route} must be prerendered`);
+  assert.equal(manifest.routes[route].initialRevalidateSeconds, false);
+  const html = await readFile(new URL(`../.next/server/app${route}.html`, import.meta.url), 'utf8');
+  const dom = new JSDOM(html);
+  const doc = dom.window.document;
+  assert.equal(doc.querySelector('[lang="en"] h1')?.textContent, title);
+  assert.ok(doc.querySelector('main [lang="en"]')?.textContent.includes(section));
+  assert.ok(doc.querySelector('main')?.textContent.includes('This policy takes effect') || route.endsWith('/terms'));
+  assert.equal(doc.querySelector('a[href="mailto:rayershih@gmail.com"]')?.textContent, 'rayershih@gmail.com');
+  assert.equal(doc.querySelector('[role="dialog"]'), null);
+  assert.ok(doc.querySelector('a[href="/privacy"]'));
+  assert.ok(doc.querySelector('a[href="/terms"]'));
+  assert.ok(doc.querySelector('a[href="/en/privacy"]'));
+  assert.ok(doc.querySelector('a[href="/en/terms"]'));
+  console.log(`${route}: fixed English policy body and static HTML verified without JavaScript`);
   dom.window.close();
 }

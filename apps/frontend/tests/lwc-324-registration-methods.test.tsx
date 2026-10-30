@@ -18,7 +18,12 @@ vi.mock('@/lib/api', async () => ({
 }));
 vi.mock('@/lib/google-auth', () => ({ startGoogleLogin: mocks.startGoogleLogin }));
 vi.mock('@/lib/auth', () => ({ useAuth: () => ({ hydrated: true, user: { role: 'admin', management_scopes: ['auth:admin', 'lwc:admin'] } }) }));
-vi.mock('@/lib/i18n', () => ({ useLocale: () => ({ locale: 'en', t: (key: string) => key }), useT: () => ({ t: (key: string) => key }) }));
+vi.mock('@/lib/i18n', async () => {
+ const actual = await vi.importActual<typeof import('@/lib/i18n')>('@/lib/i18n');
+ const { i18nLaneTestTranslate } = await vi.importActual<typeof import('./i18n-lane-test-helper')>('./i18n-lane-test-helper');
+ const t = (key: string, params?: Record<string, string | number>) => i18nLaneTestTranslate(actual.translate, key, params);
+ return { useLocale: () => ({ locale: 'en', t }), useT: () => ({ t }) };
+});
 vi.mock('@/components/WorkspaceProvider', () => ({ useWorkspace: () => ({ loginOpen: mocks.loginOpen, signIn: mocks.signIn, signInAsDemo: mocks.signInAsDemo }) }));
 vi.mock('@/components/RegisterModal', () => ({ RegisterModal: () => <div role="dialog" aria-label="email registration" /> }));
 import { LoginModal } from '@/components/LoginModal';
