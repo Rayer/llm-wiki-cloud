@@ -371,6 +371,24 @@ func TestRawSyncOverwriteReconcilesWhileGCSStagingIsPaused(t *testing.T) {
 	if err := json.Unmarshal(first.Body.Bytes(), &initial); err != nil || initial.Generation == "" {
 		t.Fatalf("initial raw sync response=%s decode=%v", first.Body.String(), err)
 	}
+	journal := h.sourceCommitJournal()
+	laggedBody := []byte("# Storage committed before journal confirmation\n")
+	laggedDigest := sha256.Sum256(laggedBody)
+	laggedRef, err := journal.PrepareSourceCommit(ctx, sourceautomation.VerifiedProject{OwnerID: owner, ProjectID: projectID}, sourceautomation.PrepareRequest{
+		OperationID: "prior-storage-confirm-delayed", Entrypoint: "cli_sync", RawPath: "notes/overwrite.md",
+		ExpectedSHA256: hex.EncodeToString(laggedDigest[:]), ExpectedStorageGeneration: initial.Generation,
+	})
+	if err != nil {
+		t.Fatalf("prepare delayed-confirm raw sync: %v", err)
+	}
+	rawStore, ok := root.Scope(owner, projectID).(storage.RawSyncStore)
+	if !ok {
+		t.Fatal("GCS scope does not expose the raw sync writer contract")
+	}
+	laggedGeneration, err := rawStore.WriteSyncRawFile(ctx, "notes/overwrite.md", bytes.NewReader(laggedBody), initial.Generation, hex.EncodeToString(laggedDigest[:]))
+	if err != nil || laggedGeneration == "" {
+		t.Fatalf("write raw before delayed journal confirmation: generation=%q err=%v", laggedGeneration, err)
+	}
 
 	newBody := bytes.Repeat([]byte("new staged raw content\n"), 80_000)
 	newDigest := sha256.Sum256(newBody)
@@ -379,7 +397,7 @@ func TestRawSyncOverwriteReconcilesWhileGCSStagingIsPaused(t *testing.T) {
 	reader := &pausedSyncBody{prefix: newBody[:1<<20], rest: newBody[1<<20:], paused: paused, release: release}
 	secondDone := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		secondDone <- upload(reader, hex.EncodeToString(newDigest[:]), initial.Generation)
+		secondDone <- upload(reader, hex.EncodeToString(newDigest[:]), laggedGeneration)
 	}()
 	select {
 	case <-paused:
@@ -392,7 +410,7 @@ func TestRawSyncOverwriteReconcilesWhileGCSStagingIsPaused(t *testing.T) {
 		t.Fatal("GCS scope does not expose the conditional raw read contract")
 	}
 	stored, generation, err := conditionalWriter.ReadFileWithGeneration(ctx, "raw/notes/overwrite.md")
-	if err != nil || string(stored) != string(oldBody) || fmt.Sprint(generation) != initial.Generation {
+	if err != nil || string(stored) != string(laggedBody) || fmt.Sprint(generation) != laggedGeneration {
 		t.Fatalf("destination changed before staged write completed: bytes=%d generation=%d err=%v", len(stored), generation, err)
 	}
 	events, err := projectRef.Collection("pipeline_source_events").Documents(ctx).GetAll()
@@ -408,6 +426,10 @@ func TestRawSyncOverwriteReconcilesWhileGCSStagingIsPaused(t *testing.T) {
 	}
 	if overwriteEvent == "" {
 		t.Fatalf("prepared overwrite event was not stored: %v", events)
+	}
+	priorCommit, err := journal.ConfirmSourceCommit(ctx, laggedRef, sourceautomation.ConfirmRequest{Generation: laggedGeneration, Status: "replaced"})
+	if err != nil || priorCommit.State != "committed" || priorCommit.SourceRevision != 2 {
+		t.Fatalf("confirm prior storage write after next writer prepared: result=%+v err=%v", priorCommit, err)
 	}
 	reconcileWork := profileruntime.Work{UserID: owner, ProjectID: projectID, Kind: "source_commit_reconcile", ID: overwriteEvent}
 	reconcileRef := scopedfirestore.Collection(client.Raw(), profileruntime.WorkCollection).Doc(profileruntime.WorkID(reconcileWork))
@@ -456,21 +478,21 @@ func TestRawSyncOverwriteReconcilesWhileGCSStagingIsPaused(t *testing.T) {
 		Generation     string `json:"generation"`
 		SourceRevision int64  `json:"source_revision"`
 	}
-	if err := json.Unmarshal(second.Body.Bytes(), &overwritten); err != nil || overwritten.Generation == "" || overwritten.SourceRevision != 2 {
+	if err := json.Unmarshal(second.Body.Bytes(), &overwritten); err != nil || overwritten.Generation == "" || overwritten.SourceRevision != 3 {
 		t.Fatalf("overwrite response=%s decode=%v", second.Body.String(), err)
 	}
 	projectSnapshot, err := projectRef.Get(ctx)
-	if err != nil || projectSnapshot.Data()["pipeline_source_revision"] != int64(2) {
+	if err != nil || projectSnapshot.Data()["pipeline_source_revision"] != int64(3) {
 		t.Fatalf("overwrite source revision=%v err=%v", projectSnapshot, err)
 	}
-	automationWork := profileruntime.Work{UserID: owner, ProjectID: projectID, Kind: "pipeline_automation", Revision: 2, ID: "source-2"}
+	automationWork := profileruntime.Work{UserID: owner, ProjectID: projectID, Kind: "pipeline_automation", Revision: 3, ID: "source-3"}
 	automationRef := scopedfirestore.Collection(client.Raw(), profileruntime.WorkCollection).Doc(profileruntime.WorkID(automationWork))
 	automationSnapshot, err := automationRef.Get(ctx)
 	if err != nil || !automationSnapshot.Exists() {
-		t.Fatalf("source revision 2 did not enqueue one automation wake: snapshot=%v err=%v", automationSnapshot, err)
+		t.Fatalf("source revision 3 did not enqueue one automation wake: snapshot=%v err=%v", automationSnapshot, err)
 	}
 	if err := dispatcher.execute(ctx, h.profileRepository.(*firestoreProfileRepository), automationWork); err != nil {
-		t.Fatalf("consume source revision 2 automation wake: %v", err)
+		t.Fatalf("consume source revision 3 automation wake: %v", err)
 	}
 	works, err := scopedfirestore.Collection(client.Raw(), profileruntime.WorkCollection).Documents(ctx).GetAll()
 	if err != nil {
@@ -486,7 +508,7 @@ func TestRawSyncOverwriteReconcilesWhileGCSStagingIsPaused(t *testing.T) {
 		if queued.UserID != owner || queued.ProjectID != projectID {
 			continue
 		}
-		if queued.Kind == "pipeline_automation" && queued.ID == "source-2" {
+		if queued.Kind == "pipeline_automation" && queued.ID == "source-3" {
 			automationWakes++
 		}
 		if queued.Kind == "pipeline" {
@@ -494,7 +516,7 @@ func TestRawSyncOverwriteReconcilesWhileGCSStagingIsPaused(t *testing.T) {
 		}
 	}
 	if automationWakes != 1 || pipelineWork == nil {
-		t.Fatalf("consumer rebuild missing or duplicated: wakes=%d pipeline=%+v", automationWakes, pipelineWork)
+		t.Fatalf("consumer rebuild for source-3 missing or duplicated: wakes=%d pipeline=%+v", automationWakes, pipelineWork)
 	}
 	if err := dispatcher.execute(ctx, h.profileRepository.(*firestoreProfileRepository), *pipelineWork); err != nil {
 		t.Fatalf("consume rebuilt pipeline intent: %v", err)
@@ -503,11 +525,11 @@ func TestRawSyncOverwriteReconcilesWhileGCSStagingIsPaused(t *testing.T) {
 		t.Fatalf("overwritten source started %d pipeline runs with reservation %q", local.starts, local.reservationID)
 	}
 
-	journal := h.sourceCommitJournal()
 	supersededBody := []byte("# Prepared content that will be superseded\n")
 	supersededDigest := sha256.Sum256(supersededBody)
 	supersededRef, err := journal.PrepareSourceCommit(ctx, sourceautomation.VerifiedProject{OwnerID: owner, ProjectID: projectID}, sourceautomation.PrepareRequest{
-		OperationID: "later-version-negative", Entrypoint: "cli_sync", RawPath: "notes/overwrite.md", ExpectedSHA256: hex.EncodeToString(supersededDigest[:]),
+		OperationID: "later-version-negative", Entrypoint: "cli_sync", RawPath: "notes/overwrite.md",
+		ExpectedSHA256: hex.EncodeToString(supersededDigest[:]), ExpectedStorageGeneration: overwritten.Generation,
 	})
 	if err != nil {
 		t.Fatalf("prepare superseded content: %v", err)
@@ -517,6 +539,12 @@ func TestRawSyncOverwriteReconcilesWhileGCSStagingIsPaused(t *testing.T) {
 	later := upload(strings.NewReader(string(laterBody)), hex.EncodeToString(laterDigest[:]), overwritten.Generation)
 	if later.Code != http.StatusOK {
 		t.Fatalf("later raw sync status=%d body=%s", later.Code, later.Body.String())
+	}
+	var laterCommit struct {
+		Generation string `json:"generation"`
+	}
+	if err := json.Unmarshal(later.Body.Bytes(), &laterCommit); err != nil || laterCommit.Generation == "" {
+		t.Fatalf("later raw sync response=%s decode=%v", later.Body.String(), err)
 	}
 	result, err := journal.ReconcileSourceCommit(ctx, supersededRef)
 	if err != nil || result.State != "aborted" {
@@ -530,7 +558,8 @@ func TestRawSyncOverwriteReconcilesWhileGCSStagingIsPaused(t *testing.T) {
 	failedBody := []byte("# Failed staged content\n")
 	failedDigest := sha256.Sum256(failedBody)
 	failedRef, err := journal.PrepareSourceCommit(ctx, sourceautomation.VerifiedProject{OwnerID: owner, ProjectID: projectID}, sourceautomation.PrepareRequest{
-		OperationID: "failed-writer-negative", Entrypoint: "cli_sync", RawPath: "notes/overwrite.md", ExpectedSHA256: hex.EncodeToString(failedDigest[:]),
+		OperationID: "failed-writer-negative", Entrypoint: "cli_sync", RawPath: "notes/overwrite.md",
+		ExpectedSHA256: hex.EncodeToString(failedDigest[:]), ExpectedStorageGeneration: laterCommit.Generation,
 	})
 	if err != nil {
 		t.Fatalf("prepare failed content: %v", err)
@@ -546,13 +575,13 @@ func TestRawSyncOverwriteReconcilesWhileGCSStagingIsPaused(t *testing.T) {
 		t.Fatalf("expire failed writer without committing it: result=%+v err=%v", result, err)
 	}
 	projectSnapshot, err = projectRef.Get(ctx)
-	if err != nil || projectSnapshot.Data()["pipeline_source_revision"] != int64(3) {
+	if err != nil || projectSnapshot.Data()["pipeline_source_revision"] != int64(4) {
 		t.Fatalf("negative cases changed source revision: project=%v err=%v", projectSnapshot, err)
 	}
-	failedWake := profileruntime.Work{UserID: owner, ProjectID: projectID, Kind: "pipeline_automation", Revision: 4, ID: "source-4"}
+	failedWake := profileruntime.Work{UserID: owner, ProjectID: projectID, Kind: "pipeline_automation", Revision: 5, ID: "source-5"}
 	failedWakeRef := scopedfirestore.Collection(client.Raw(), profileruntime.WorkCollection).Doc(profileruntime.WorkID(failedWake))
 	if snapshot, err := failedWakeRef.Get(ctx); err == nil && snapshot.Exists() {
-		t.Fatalf("aborted source commits emitted a revision-4 wake: %v", snapshot.Data())
+		t.Fatalf("aborted source commits emitted a revision-5 wake: %v", snapshot.Data())
 	} else if err != nil && status.Code(err) != codes.NotFound {
 		t.Fatalf("read aborted source wake: %v", err)
 	}

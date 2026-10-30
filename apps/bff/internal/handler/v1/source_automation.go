@@ -19,16 +19,17 @@ func (h *Handler) sourceCommitJournal() sourceautomation.Journal {
 
 func (h *Handler) prepareSourceCommit(ctx context.Context, ownerID, projectID, entrypoint, path string, data []byte) (sourceautomation.Journal, sourceautomation.Ref, error) {
 	digest := sha256.Sum256(data)
-	return h.prepareSourceCommitDigest(ctx, ownerID, projectID, entrypoint, path, hex.EncodeToString(digest[:]))
+	return h.prepareSourceCommitDigest(ctx, ownerID, projectID, entrypoint, path, hex.EncodeToString(digest[:]), "")
 }
 
-func (h *Handler) prepareSourceCommitDigest(ctx context.Context, ownerID, projectID, entrypoint, path, digest string) (sourceautomation.Journal, sourceautomation.Ref, error) {
+func (h *Handler) prepareSourceCommitDigest(ctx context.Context, ownerID, projectID, entrypoint, path, digest, expectedStorageGeneration string) (sourceautomation.Journal, sourceautomation.Ref, error) {
 	journal := h.sourceCommitJournal()
 	if journal == nil {
 		return nil, sourceautomation.Ref{}, nil
 	}
 	ref, err := journal.PrepareSourceCommit(ctx, sourceautomation.VerifiedProject{OwnerID: ownerID, ProjectID: projectID}, sourceautomation.PrepareRequest{
 		Entrypoint: entrypoint, RawPath: path, ExpectedSHA256: digest,
+		ExpectedStorageGeneration: expectedStorageGeneration,
 	})
 	return journal, ref, err
 }
