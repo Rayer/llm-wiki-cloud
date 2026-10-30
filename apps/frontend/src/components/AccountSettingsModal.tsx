@@ -76,7 +76,7 @@ function AccountSettingsModalContent({
   authSessionRef: MutableRefObject<AuthSessionSnapshot>;
   user: NonNullable<ReturnType<typeof useAuth>['user']>;
 }) {
-  const { t } = useLocale();
+  const { t, locale } = useLocale();
   const { projects = [] } = useWorkspace();
   const userID = user.id;
   const [activeSettingsTab, setActiveSettingsTab] = useState<AccountSettingsTab>(() => focusBYOK ? 'provider' : 'account');
@@ -538,7 +538,7 @@ function AccountSettingsModalContent({
                     <div className="min-w-0 text-sm">
                       <p className="font-medium text-white">{session.client_name || 'CLI'} <span className="text-zinc-500">· {statusLabel}</span></p>
                       <p className="mt-1 break-all font-mono text-xs text-zinc-500">{session.id}</p>
-                      <p className="mt-1 text-xs text-zinc-500">{new Date(session.created_at).toLocaleString()}</p>
+                      <p className="mt-1 text-xs text-zinc-500">{new Date(session.created_at).toLocaleString(locale === 'zh-TW' ? 'zh-TW' : locale === 'zh-CN' ? 'zh-CN' : 'en-US')}</p>
                     </div>
                     {session.status === 'active' ? (
                       <button type="button" disabled={Boolean(busyControl)} onClick={() => void handleRevokeSession(session)} className="min-h-11 shrink-0 rounded-lg border border-red-300/20 px-3 py-2 text-sm text-red-200 hover:bg-red-300/10 disabled:opacity-50">

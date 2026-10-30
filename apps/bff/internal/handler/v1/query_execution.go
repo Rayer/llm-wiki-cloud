@@ -37,9 +37,10 @@ func (h *Handler) executeQuery(ctx context.Context, reader storage.Store, profil
 		return handler.QueryResponse{}, nil, queryFailureFor("runtime", errors.New("query executor is not configured"), reader)
 	}
 	var selectedClient llm.ProjectChatClient
+	var selectedRoles llm.ProjectRoleClients
 	selectedSource := ""
 	if len(scope) == 2 {
-		client, source, err := h.projectLLMClient(ctx, scope[0], scope[1])
+		roles, source, err := h.projectLLMRoleClients(ctx, scope[0], scope[1])
 		if err != nil {
 			if errors.Is(err, errProfileProjectNotFound) {
 				return handler.QueryResponse{}, nil, queryFailureFor("profile_resolution", err, reader)
@@ -48,15 +49,13 @@ func (h *Handler) executeQuery(ctx context.Context, reader storage.Store, profil
 				message: "The selected LLM source is unavailable. Check Project settings or its BYOK profile.",
 				code:    "llm_source_unavailable", stage: "profile_resolution", cause: err}
 		}
-		selectedClient = client
+		selectedRoles = roles
+		selectedClient = roles.Fast
 		selectedSource = source
 		if selectedClient != nil {
-			ctx = llm.WithProjectChatClient(ctx, selectedClient)
-			defer func() {
-				if closer, ok := selectedClient.(interface{ Close() }); ok {
-					closer.Close()
-				}
-			}()
+			ctx = llm.WithProjectRoleClients(ctx, selectedRoles)
+			ctx = llm.WithProjectChatClient(ctx, selectedRoles.Fast)
+			defer closeProjectRoleClients(selectedRoles)
 		}
 	}
 	request.Profile = profile
@@ -76,6 +75,14 @@ func (h *Handler) executeQuery(ctx context.Context, reader storage.Store, profil
 			attribute.String("llm.provider", identity.ExpansionProvider),
 			attribute.String("llm.protocol", identity.LLMProtocol),
 			attribute.String("llm.model", identity.ExpansionModel),
+			attribute.String("llm.model.fast", identity.ExpansionModel),
+			attribute.String("llm.model.heavy", identity.SynthesisModel),
+			attribute.String("llm.model.fast.returned", identity.ExpansionReturnedModel),
+			attribute.String("llm.model.heavy.returned", identity.SynthesisReturnedModel),
+			attribute.String("llm.profile.fast.id", identity.LLMFastProfileID),
+			attribute.Int64("llm.profile.fast.revision", identity.LLMFastProfileRevision),
+			attribute.String("llm.profile.heavy.id", identity.LLMHeavyProfileID),
+			attribute.Int64("llm.profile.heavy.revision", identity.LLMHeavyProfileRevision),
 		)
 	}
 	finishQueryStage(span, nil)
@@ -87,6 +94,15 @@ func (h *Handler) executeQuery(ctx context.Context, reader storage.Store, profil
 		}
 	}
 	return response, result.RuntimeConfigIdentity, nil
+}
+
+func closeProjectRoleClients(clients llm.ProjectRoleClients) {
+	if closer, ok := clients.Fast.(interface{ Close() }); ok {
+		closer.Close()
+	}
+	if closer, ok := clients.Heavy.(interface{ Close() }); ok {
+		closer.Close()
+	}
 }
 
 func queryAIOperationSource(source string) string {

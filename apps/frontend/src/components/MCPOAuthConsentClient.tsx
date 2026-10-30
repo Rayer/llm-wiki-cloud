@@ -15,7 +15,7 @@ import {
 const transactionPattern = /^lwc_mcp_tx_[A-Za-z0-9_-]{43}$/;
 
 export function MCPOAuthConsentClient({ transactionId }: { transactionId: string }) {
-  const { t } = useT();
+  const { t, locale } = useT();
   const { accessToken, user, isDemoSession } = useAuth();
   const authRef = useRef({ accessToken, userId: user?.id, isDemoSession });
   const translatorRef = useRef(t);
@@ -189,7 +189,7 @@ export function MCPOAuthConsentClient({ transactionId }: { transactionId: string
               <div key={scope.name} className="sm:col-span-2"><dt className="font-mono text-xs text-emerald-200">{scope.name}</dt><dd className="mt-1 text-sm leading-6 text-zinc-300">{scope.description}</dd></div>
             )) : legacyProjectScopeDescription ? <p className="sm:col-span-2 text-sm leading-6 text-zinc-300">{legacyProjectScopeDescription}</p> : null}
             <div className="sm:col-span-2"><dt className="text-xs uppercase tracking-wide text-zinc-500">{t('MCPOAuth.resource')}</dt><dd className="mt-1 break-all font-mono text-xs leading-5 text-zinc-200">{visibleDetails.resource}</dd></div>
-            <div className="sm:col-span-2"><dt className="text-xs uppercase tracking-wide text-zinc-500">{t('MCPOAuth.expires')}</dt><dd className="mt-1 text-sm text-zinc-300">{new Date(visibleDetails.expires_at).toLocaleString()}</dd></div>
+            <div className="sm:col-span-2"><dt className="text-xs uppercase tracking-wide text-zinc-500">{t('MCPOAuth.expires')}</dt><dd className="mt-1 text-sm text-zinc-300">{new Date(visibleDetails.expires_at).toLocaleString(locale === 'zh-TW' ? 'zh-TW' : locale === 'zh-CN' ? 'zh-CN' : 'en-US')}</dd></div>
           </dl>
           <p className="mt-3 text-xs leading-5 text-zinc-500">{t('MCPOAuth.clientUnverified')}</p>
           {terminal ? (

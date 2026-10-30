@@ -31,7 +31,7 @@ const mocks = vi.hoisted(() => ({
   getPipelineStatus: vi.fn(),
   refreshNavCounts: vi.fn(async () => undefined),
   uploadRawFile: vi.fn(),
-  translate: (key: string) => key,
+  translate: (key: string, params?: Record<string, string | number>) => { void params; return key; },
 }));
 
 vi.mock('@/lib/api', async () => {
@@ -43,9 +43,12 @@ vi.mock('@/lib/api', async () => {
   };
 });
 
-vi.mock('@/lib/i18n', () => ({
-  useT: () => ({ t: mocks.translate }),
-}));
+vi.mock('@/lib/i18n', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/i18n')>('@/lib/i18n');
+  const { i18nLaneTestTranslate } = await vi.importActual<typeof import('./i18n-lane-test-helper')>('./i18n-lane-test-helper');
+  mocks.translate = (key, params) => i18nLaneTestTranslate(actual.translate, key, params);
+  return { useT: () => ({ t: mocks.translate }) };
+});
 
 vi.mock('@/components/WorkspaceProvider', () => ({
   useWorkspace: () => ({

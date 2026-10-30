@@ -68,11 +68,22 @@ jobs:
         working-directory: apps/frontend
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: apps/bff/go.mod
+          cache-dependency-path: apps/bff/go.sum
       - uses: actions/setup-node@cdca7365b2dadb8aad0a33bc7601856ffabcc48e # v4.3.0
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: apps/frontend/package-lock.json
+      - name: Install pinned Pkl CLI
+        run: |
+          pkl="$GITHUB_WORKSPACE/.build/tools/pkl"
+          bash ../../scripts/ensure-pkl.sh "$pkl"
+          echo "PKL_BIN=$pkl" >> "$GITHUB_ENV"
+          echo "PKL_CACHE_DIR=$RUNNER_TEMP/pkl-cache" >> "$GITHUB_ENV"
+          dirname "$pkl" >> "$GITHUB_PATH"
       - run: npm ci
       - run: npm run lint
 
@@ -84,11 +95,22 @@ jobs:
         working-directory: apps/frontend
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: apps/bff/go.mod
+          cache-dependency-path: apps/bff/go.sum
       - uses: actions/setup-node@cdca7365b2dadb8aad0a33bc7601856ffabcc48e # v4.3.0
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: apps/frontend/package-lock.json
+      - name: Install pinned Pkl CLI
+        run: |
+          pkl="$GITHUB_WORKSPACE/.build/tools/pkl"
+          bash ../../scripts/ensure-pkl.sh "$pkl"
+          echo "PKL_BIN=$pkl" >> "$GITHUB_ENV"
+          echo "PKL_CACHE_DIR=$RUNNER_TEMP/pkl-cache" >> "$GITHUB_ENV"
+          dirname "$pkl" >> "$GITHUB_PATH"
       - run: npm ci
       - run: npm run typecheck
 
@@ -100,11 +122,22 @@ jobs:
         working-directory: apps/frontend
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: apps/bff/go.mod
+          cache-dependency-path: apps/bff/go.sum
       - uses: actions/setup-node@cdca7365b2dadb8aad0a33bc7601856ffabcc48e # v4.3.0
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: apps/frontend/package-lock.json
+      - name: Install pinned Pkl CLI
+        run: |
+          pkl="$GITHUB_WORKSPACE/.build/tools/pkl"
+          bash ../../scripts/ensure-pkl.sh "$pkl"
+          echo "PKL_BIN=$pkl" >> "$GITHUB_ENV"
+          echo "PKL_CACHE_DIR=$RUNNER_TEMP/pkl-cache" >> "$GITHUB_ENV"
+          dirname "$pkl" >> "$GITHUB_PATH"
       - run: npm ci
       - run: npm test
       - name: Validate Frontend receipt and artifact handoff contracts
@@ -121,11 +154,22 @@ jobs:
         working-directory: apps/frontend
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: apps/bff/go.mod
+          cache-dependency-path: apps/bff/go.sum
       - uses: actions/setup-node@cdca7365b2dadb8aad0a33bc7601856ffabcc48e # v4.3.0
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: apps/frontend/package-lock.json
+      - name: Install pinned Pkl CLI
+        run: |
+          pkl="$GITHUB_WORKSPACE/.build/tools/pkl"
+          bash ../../scripts/ensure-pkl.sh "$pkl"
+          echo "PKL_BIN=$pkl" >> "$GITHUB_ENV"
+          echo "PKL_CACHE_DIR=$RUNNER_TEMP/pkl-cache" >> "$GITHUB_ENV"
+          dirname "$pkl" >> "$GITHUB_PATH"
       - run: npm ci
       - run: npm run build
 

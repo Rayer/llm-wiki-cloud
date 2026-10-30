@@ -11,6 +11,7 @@ import { parseMarkdownImage } from '../lib/markdown-images';
 import { resolveWikilink, type WikilinkSection } from '../lib/wikilinks';
 import { Surface } from './ui/Surface';
 import { NavigationLink } from './NavigationBlocker';
+import { useT } from '@/lib/i18n';
 
 // Track current markdown section for wikilink routing
 let currentWikilinkSection: WikilinkSection = 'concepts';
@@ -22,6 +23,7 @@ export function MarkdownView({
   content?: string;
   existingConceptSlugs?: Set<string>;
 }) {
+  const { t } = useT();
   const [deadLinkSlug, setDeadLinkSlug] = useState<string | null>(null);
 
   useEffect(() => {
@@ -36,7 +38,7 @@ export function MarkdownView({
   if (!content) {
     return (
       <div className="rounded-md border border-white/10 bg-[#111111] p-6 text-zinc-400">
-        No markdown content was returned for this entry.
+        {t('Common.noMarkdownContent')}
       </div>
     );
   }
@@ -63,7 +65,7 @@ export function MarkdownView({
               type="button"
               onClick={() => setDeadLinkSlug(null)}
               className="absolute right-4 top-4 rounded-md p-1 text-zinc-400 transition hover:bg-white/10 hover:text-white"
-              aria-label="Close"
+              aria-label={t('Common.close')}
             >
               <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />

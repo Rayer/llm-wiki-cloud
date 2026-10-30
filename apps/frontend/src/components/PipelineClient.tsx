@@ -1231,7 +1231,7 @@ export function PipelineClient() {
 function formatScheduledTime(value: string, timezone: string, locale: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString(locale === 'zh-TW' ? 'zh-TW' : 'en-US', {
+  return date.toLocaleString(locale === 'zh-TW' ? 'zh-TW' : locale === 'zh-CN' ? 'zh-CN' : 'en-US', {
     timeZone: timezone || 'UTC', dateStyle: 'medium', timeStyle: 'short',
   });
 }

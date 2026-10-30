@@ -196,20 +196,20 @@ export function StatusClient() {
     <div className="space-y-6">
       <header>
         <h1 className="text-3xl font-semibold tracking-tight text-white sm:text-4xl">
-          Pipeline status
+          {t('Status.title')}
         </h1>
         <p className="mt-2 max-w-2xl text-zinc-400">
-          Current corpus counts and latest pipeline execution.
+          {t('Status.description')}
         </p>
       </header>
 
-      {loading ? <LoadingState label="Loading status" /> : null}
+      {loading ? <LoadingState label={t('Status.loading')} /> : null}
       {error ? <ErrorState message={error} /> : null}
       {pollingExhausted ? (
         <div role="status" className="space-y-2 text-sm text-amber-300">
-          <p>Automatic status refresh paused after repeated checks. The displayed status may be out of date.</p>
+          <p>{t('Status.pollingPaused')}</p>
           <button type="button" className="font-medium underline" onClick={() => retryStatusRefresh.current?.()}>
-            Retry status refresh
+            {t('Status.retryRefresh')}
           </button>
         </div>
       ) : null}
@@ -316,7 +316,7 @@ export function StatusClient() {
 function formatScheduledTime(value: string, timezone: string, locale: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString(locale === 'zh-TW' ? 'zh-TW' : 'en-US', {
+  return date.toLocaleString(locale === 'zh-TW' ? 'zh-TW' : locale === 'zh-CN' ? 'zh-CN' : 'en-US', {
     timeZone: timezone || 'UTC', dateStyle: 'medium', timeStyle: 'short',
   });
 }
@@ -425,6 +425,7 @@ function PipelineLogPanel({
   showFullLog: boolean;
   onToggleFull: () => void;
 }) {
+  const { t } = useT();
   const availability = getPipelineLogAvailability(execution);
   const isLoading = logState.phase === 'loading';
   const isLarge = logState.text.length > LOG_PREVIEW_BYTES;
@@ -436,7 +437,7 @@ function PipelineLogPanel({
   return (
     <Surface variant="glass" className="p-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-sm font-semibold text-white">Pipeline log</h2>
+        <h2 className="text-sm font-semibold text-white">{t('Status.pipelineLog')}</h2>
         {canOpen ? (
           <button
             type="button"
@@ -445,7 +446,7 @@ function PipelineLogPanel({
             aria-busy={isLoading}
             className="text-sm font-medium text-emerald-200 transition hover:text-white"
           >
-            {isLoading ? 'Loading pipeline log...' : 'Open pipeline log'}
+            {isLoading ? t('Status.loadingPipelineLog') : t('Status.openPipelineLog')}
           </button>
         ) : isLarge ? (
           <button
@@ -453,18 +454,18 @@ function PipelineLogPanel({
             onClick={onToggleFull}
             className="text-sm font-medium text-zinc-400 transition hover:text-white"
           >
-            {showFullLog ? 'Show latest lines' : 'Show full log'}
+            {showFullLog ? t('Status.showLatestLines') : t('Status.showFullLog')}
           </button>
         ) : null}
       </div>
 
-      {isLoading ? <p className="mt-4 text-sm text-zinc-500" role="status" aria-live="polite">Loading log...</p> : null}
+      {isLoading ? <p className="mt-4 text-sm text-zinc-500" role="status" aria-live="polite">{t('Status.loadingLog')}</p> : null}
       {logState.phase === 'error' ? <p className="mt-4 text-sm text-amber-300" role="alert">{logState.error}</p> : null}
       {!isLoading && logState.phase !== 'error' && !availability.canOpen && availability.message ? (
         <p className="mt-4 text-sm text-zinc-500">{availability.message}</p>
       ) : null}
       {!isLoading && logState.phase === 'loaded-empty' ? (
-        <p className="mt-4 text-sm text-zinc-500" role="status" aria-live="polite">Pipeline log is empty.</p>
+        <p className="mt-4 text-sm text-zinc-500" role="status" aria-live="polite">{t('Status.emptyPipelineLog')}</p>
       ) : null}
       {logState.text ? (
         <pre className="mt-4 max-h-96 overflow-x-auto overflow-y-auto rounded-md border border-white/10 bg-black/60 p-4 font-mono text-xs leading-5 text-zinc-300">
@@ -493,22 +494,37 @@ function PipelineTimeline({ execution }: { execution?: PipelineExecution | null 
   const failureReason = execution?.failure_reason || execution?.diagnostic?.message;
 
   const { completedSteps, failedStep, stageLabel } = getPipelineTimelineState(execution);
+  const stageTranslationKeys: Record<string, string> = {
+    'Input materialization': 'Status.stageInputMaterialization',
+    'Synto migration': 'Status.stageSyntoMigration',
+    'Synto config normalization': 'Status.stageSyntoConfigNormalization',
+    'Synto config validation': 'Status.stageSyntoConfigValidation',
+    'Synto run': 'Status.stageSyntoRun',
+    'Synto index export': 'Status.stageSyntoIndexExport',
+    'Source reconciliation': 'Status.stageSourceReconciliation',
+    'Concept reconciliation': 'Status.stageConceptReconciliation',
+    Postprocess: 'Status.stagePostprocess',
+    'Generation publish': 'Status.stageGenerationPublish',
+    'Receipt recording': 'Status.stageReceiptRecording',
+    'Lease cleanup': 'Status.stageLeaseCleanup',
+  };
+  const localizedStageLabel = stageTranslationKeys[stageLabel] ? t(stageTranslationKeys[stageLabel]) : stageLabel;
 
   return (
     <Surface variant="glass" className="p-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-sm font-semibold text-white">Pipeline timeline</h2>
+        <h2 className="text-sm font-semibold text-white">{t('Status.pipelineTimeline')}</h2>
         {execStatus ? (
           <Badge variant={isFailed ? 'draft' : isSuccess ? 'published' : 'accent'}>
             {execStatus}
           </Badge>
         ) : (
-          <Badge variant="muted">Idle</Badge>
+          <Badge variant="muted">{t('Status.idle')}</Badge>
         )}
       </div>
 
       {!execution ? (
-        <p className="mt-4 text-sm text-zinc-500">No pipeline runs recorded yet.</p>
+        <p className="mt-4 text-sm text-zinc-500">{t('Status.noPipelineRuns')}</p>
       ) : (
         <>
           <ol className="mt-6 grid gap-3 sm:grid-cols-4">
@@ -564,32 +580,32 @@ function PipelineTimeline({ execution }: { execution?: PipelineExecution | null 
                 </dd>
               </div>
               <div>
-                <dt className="uppercase tracking-wider">Failed stage</dt>
+                <dt className="uppercase tracking-wider">{t('Status.failedStage')}</dt>
                 <dd className="mt-1 text-zinc-300">
-                  {stageLabel === 'stage unavailable' ? 'Failed — stage unavailable' : stageLabel}
+                  {stageLabel === 'stage unavailable' ? t('Status.failedStageUnavailable') : localizedStageLabel}
                 </dd>
               </div>
               {execution.diagnostic?.error_class ? (
                 <div>
-                  <dt className="uppercase tracking-wider">Error class</dt>
+                  <dt className="uppercase tracking-wider">{t('Status.errorClass')}</dt>
                   <dd className="mt-1 text-zinc-300">{execution.diagnostic.error_class}</dd>
                 </div>
               ) : null}
               {execution.diagnostic?.detail_code ? (
                 <div>
-                  <dt className="uppercase tracking-wider">Detail code</dt>
+                  <dt className="uppercase tracking-wider">{t('Status.detailCode')}</dt>
                   <dd className="mt-1 text-zinc-300">{execution.diagnostic.detail_code}</dd>
                 </div>
               ) : null}
               {execution.diagnostic?.child_command ? (
                 <div>
-                  <dt className="uppercase tracking-wider">Child command</dt>
+                  <dt className="uppercase tracking-wider">{t('Status.childCommand')}</dt>
                   <dd className="mt-1 break-words font-mono text-zinc-300">{execution.diagnostic.child_command}</dd>
                 </div>
               ) : null}
               {execution.diagnostic?.exit_code != null ? (
                 <div>
-                  <dt className="uppercase tracking-wider">Exit code</dt>
+                  <dt className="uppercase tracking-wider">{t('Status.exitCode')}</dt>
                   <dd className="mt-1 text-zinc-300">{String(execution.diagnostic.exit_code)}</dd>
                 </div>
               ) : null}
@@ -599,19 +615,19 @@ function PipelineTimeline({ execution }: { execution?: PipelineExecution | null 
           <dl className="mt-5 grid gap-3 text-xs text-zinc-500 sm:grid-cols-3">
             {execution.started_at ? (
               <div>
-                <dt className="uppercase tracking-wider">Started</dt>
+                <dt className="uppercase tracking-wider">{t('Status.started')}</dt>
                 <dd className="mt-1 text-zinc-300">{String(execution.started_at)}</dd>
               </div>
             ) : null}
             {execution.finished_at ? (
               <div>
-                <dt className="uppercase tracking-wider">Finished</dt>
+                <dt className="uppercase tracking-wider">{t('Status.finished')}</dt>
                 <dd className="mt-1 text-zinc-300">{String(execution.finished_at)}</dd>
               </div>
             ) : null}
             {execution.duration != null ? (
               <div>
-                <dt className="uppercase tracking-wider">Duration</dt>
+                <dt className="uppercase tracking-wider">{t('Status.duration')}</dt>
                 <dd className="mt-1 text-zinc-300">{String(execution.duration)}</dd>
               </div>
             ) : null}

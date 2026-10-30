@@ -29,7 +29,11 @@ vi.mock('@/lib/api', () => ({
   updateAdminSettings: vi.fn(), updateAdminUserRole: vi.fn(), updateAdminUserStatus: vi.fn(),
 }));
 vi.mock('@/lib/auth', () => ({ useAuth: () => ({ hydrated: true, user: { role: 'admin', management_scopes: ['auth:admin', 'lwc:admin'] } }) }));
-vi.mock('@/lib/i18n', () => ({ useLocale: () => ({ locale: 'en', t: (key: string) => key }) }));
+vi.mock('@/lib/i18n', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/i18n')>('@/lib/i18n');
+  const { i18nLaneTestTranslate } = await vi.importActual<typeof import('./i18n-lane-test-helper')>('./i18n-lane-test-helper');
+  return { useLocale: () => ({ locale: 'en', t: (key: string, params?: Record<string, string | number>) => i18nLaneTestTranslate(actual.translate, key, params) }) };
+});
 vi.mock('@/components/AnnouncementBoard', () => ({ AnnouncementBoard: () => null }));
 vi.mock('@/components/NavigationBlocker', () => ({ useNavigationBlocker: () => ({ setBlocked: vi.fn() }) }));
 
@@ -84,7 +88,7 @@ describe('admin query-chip regeneration', () => {
 
       expect(mocks.getAdminPipelineStatus).toHaveBeenCalledTimes(2);
       expect(mocks.getAdminPipelineStatus).toHaveBeenNthCalledWith(2, 'owner_project', 'exec-chip', expect.any(AbortSignal));
-      expect(screen.getByText('Query chips regeneration completed.')).toBeDefined();
+      expect(screen.getByText('Query chip regeneration completed.')).toBeDefined();
       expect(screen.queryByText(/triggered/)).toBeNull();
     } finally {
       releaseRunningStatus();
@@ -141,7 +145,7 @@ describe('admin query-chip regeneration', () => {
 
       expect(mocks.getAdminPipelineStatus).toHaveBeenCalledTimes(2);
       expect(mocks.getAdminPipelineStatus).toHaveBeenNthCalledWith(2, 'owner_project', 'exec-chip', expect.any(AbortSignal));
-      expect(screen.getByText(/Query chips regeneration failed: entity_mapping_article_source_missing/)).toBeDefined();
+      expect(screen.getByText(/Query chip regeneration failed: entity_mapping_article_source_missing/)).toBeDefined();
       expect(screen.queryByText('Query chips regeneration completed.')).toBeNull();
     } finally {
       releaseRunningStatus();
@@ -163,7 +167,7 @@ describe('admin query-chip regeneration', () => {
     fireEvent.click(query.getByRole('button', { name: 'Regenerate query chips' }));
     fireEvent.click(query.getByRole('button', { name: 'Regenerate chips' }));
 
-    expect(await query.findByText('Query chips regeneration failed: status offline.')).toBeDefined();
+    expect(await query.findByText('Query chip regeneration failed: status offline.')).toBeDefined();
     expect(query.queryByText('Query chips regeneration started; waiting for completion.')).toBeNull();
   });
 

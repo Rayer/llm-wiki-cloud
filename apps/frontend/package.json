@@ -5,7 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "next dev",
+    "prebuild": "node scripts/prepare-i18n.mjs",
     "build": "next build --webpack",
+    "pretypecheck": "node scripts/prepare-i18n.mjs",
+    "prelint": "node scripts/prepare-i18n.mjs",
+    "pretest:component": "node scripts/prepare-i18n.mjs",
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",

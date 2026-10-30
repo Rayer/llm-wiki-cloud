@@ -1,2 +1,5 @@
 /.build/
+apps/frontend/.build/
+apps/frontend/src/generated/i18n/
+apps/frontend/public/i18n/
 __pycache__/

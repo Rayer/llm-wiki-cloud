@@ -7,8 +7,9 @@ import { getRuntimeConfig } from '@/lib/runtime-config';
 import { Badge } from '@/components/ui/Badge';
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;
+type ProjectKeysLocale = 'zh-TW' | 'zh-CN' | 'en';
 
-function projectKeyUsageLabel(key: ProjectKey, t: Translate): string {
+function projectKeyUsageLabel(key: ProjectKey, t: Translate, locale: ProjectKeysLocale): string {
   if (key.last_used_status === 'unavailable') return t('ProjectSettings.usageUnavailable');
   if (key.last_used_status === 'no_record') {
     return key.last_used_at ? t('ProjectSettings.usageUnavailable') : t('ProjectSettings.noUsageRecord');
@@ -23,17 +24,19 @@ function projectKeyUsageLabel(key: ProjectKey, t: Translate): string {
   }
   const lastUsedAt = new Date(key.last_used_at);
   if (Number.isNaN(lastUsedAt.getTime())) return t('ProjectSettings.usageUnavailable');
-  return t('ProjectSettings.lastUsed', { time: lastUsedAt.toLocaleString() });
+  return t('ProjectSettings.lastUsed', { time: lastUsedAt.toLocaleString(locale === 'zh-TW' ? 'zh-TW' : locale === 'zh-CN' ? 'zh-CN' : 'en-US') });
 }
 
 export function ProjectKeysSection({
   currentProject,
   accessToken,
   t,
+  locale = 'en',
 }: {
   currentProject: Project | null;
   accessToken: string | null;
   t: Translate;
+  locale?: ProjectKeysLocale;
 }) {
   const [projectKeys, setProjectKeys] = useState<ProjectKey[]>([]);
   const [projectKeysStale, setProjectKeysStale] = useState(true);
@@ -226,8 +229,8 @@ export function ProjectKeysSection({
               <div className="min-w-0 text-sm">
                 <p className="font-medium text-white">{key.name} <span className="text-zinc-500">· {t(key.state === 'active' ? 'AccountSettings.projectKeyActive' : 'AccountSettings.projectKeyRevokedState')}</span></p>
                 <p className="mt-1 break-all font-mono text-xs text-zinc-500">{key.key_id}</p>
-                <p className="mt-1 text-xs text-zinc-500">{t('AccountSettings.projectKeyQueryOnly')} · {new Date(key.created_at).toLocaleString()}</p>
-                <p className="mt-1 text-xs text-zinc-500">{projectKeyUsageLabel(key, t)}</p>
+                <p className="mt-1 text-xs text-zinc-500">{t('AccountSettings.projectKeyQueryOnly')} · {new Date(key.created_at).toLocaleString(locale === 'zh-TW' ? 'zh-TW' : locale === 'zh-CN' ? 'zh-CN' : 'en-US')}</p>
+                  <p className="mt-1 text-xs text-zinc-500">{projectKeyUsageLabel(key, t, locale)}</p>
               </div>
               {key.state === 'active' ? (
                 <button type="button" disabled={projectKeyBusy} onClick={() => void handleRevokeProjectKey(key)} className="min-h-11 shrink-0 rounded-lg border border-red-300/20 px-3 py-2 text-sm text-red-200 hover:bg-red-300/10 disabled:opacity-50">

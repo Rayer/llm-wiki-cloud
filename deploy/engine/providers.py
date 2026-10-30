@@ -18,6 +18,7 @@ import tomllib
 
 from support import (ROOT, Breakpoint, InputShapeError, digest, read, require, run,
                      release_source_mode, safe_error_message, structured_cause, write)
+import gat4_ci_artifact
 sys.path.insert(0, str(ROOT / 'deploy/components'))
 import auth_config
 import frontend_build_config
@@ -729,7 +730,11 @@ class Providers:
 
     def valid_image(self, c, image):
         prefix = self.p['gcp']['artifact_registry'] + '/' + self.profiles[c]['image']
-        require(re.fullmatch(re.escape(prefix) + r'@sha256:[0-9a-f]{64}', image), 'artifact-config-incompatible')
+        prefixes = [prefix]
+        if c == 'auth' and release_source_mode(self.plan) == 'independent':
+            prefixes = [gat4_ci_artifact.IMAGE_PREFIX, gat4_ci_artifact.RETAINED_IMAGE_PREFIX]
+        require(any(re.fullmatch(re.escape(candidate) + r'@sha256:[0-9a-f]{64}', image)
+                    for candidate in prefixes), 'artifact-config-incompatible')
         actual = run(['gcloud', 'artifacts', 'docker', 'images', 'describe', image,
                       '--project', self.p['gcp']['project_id'], '--format=value(image_summary.digest)', '--quiet'],
                      stage='digest-validate')
@@ -813,10 +818,63 @@ class Providers:
             raise Breakpoint('independent-auth-source-module-invalid') from None
         require('module github.com/rayer/gateauth' in module and
                 (source_root / 'Dockerfile').is_file() and
-                (source_root / 'cloudbuild.yaml').is_file() and
+                (source_root / 'cloudbuild.json').is_file() and
                 (source_root / 'VERSION').is_file(),
                 'independent-auth-source-module-invalid')
         return source, source_root
+
+    def prepare_independent_auth(self):
+        source = self.plan.get('auth_source')
+        require(isinstance(source, dict) and
+                set(source) == {'repository_id', 'revision', 'tree_sha256',
+                                'artifact_id', 'run_id', 'run_attempt'},
+                'independent-auth-source-required')
+        try:
+            repository_id = int(source['repository_id'].removeprefix('github:'))
+            manifest = gat4_ci_artifact.load_package(
+                os.environ.get('GATEAUTH_CI_PACKAGE_PATH', ''),
+                os.environ.get('GATEAUTH_CI_ENVELOPE_PATH', ''),
+                {
+                    'repository_id': repository_id,
+                    'revision': source['revision'],
+                    'tree_sha256': source['tree_sha256'],
+                    'artifact_id': str(source['artifact_id']),
+                    'run_id': source['run_id'],
+                    'run_attempt': source['run_attempt'],
+                },
+                self.p['gcp']['project_id'],
+                gat4_ci_artifact.IMAGE_PREFIX,
+            )
+        except (gat4_ci_artifact.ArtifactError, AttributeError, OSError, TypeError, ValueError):
+            raise Breakpoint('independent-auth-artifact-incompatible', stage='auth-artifact-verify') from None
+
+        build = manifest['build']
+        require(build['project_id'] == self.p['gcp']['project_id'] and
+                build['location'] == CLOUD_BUILD_LOCATION and
+                build['project_number'] == self.gcp_project_number(),
+                'independent-auth-build-project-mismatch')
+        build_id = build['build_id']
+        try:
+            raw = json.loads(run([
+                'gcloud', 'builds', 'describe', build_id,
+                '--project', build['project_id'], '--region', build['location'],
+                '--format=json', '--quiet',
+            ], timeout=BUILD_READ_TIMEOUT_SECONDS, stage='auth-build-readback'))
+        except (Breakpoint, TypeError, ValueError) as exc:
+            if isinstance(exc, Breakpoint):
+                raise
+            raise Breakpoint('independent-auth-build-readback-invalid', stage='auth-build-readback') from None
+
+        record, reason = self._build_record('auth', raw, status='SUCCESS',
+                                             poll_outcome='succeeded', expected_id=build_id)
+        require(reason is None and raw.get('status') == 'SUCCESS',
+                'independent-auth-build-identity-mismatch')
+        try:
+            gat4_ci_artifact.validate_cloud_build(raw, manifest)
+        except gat4_ci_artifact.ArtifactError:
+            raise Breakpoint('independent-auth-build-input-mismatch', stage='auth-build-readback') from None
+        record.update(status='SUCCESS', last_observed_status='SUCCESS', poll_outcome='succeeded')
+        return {'image': manifest['artifact']['image']}, record
 
     def _build_source_environment(self, c):
         if c != 'auth':
@@ -956,7 +1014,7 @@ class Providers:
         diagnostic_enabled = self.p.get('environment') == 'development'
         commands = {stage: {'status': 'not-run', 'exit_code': None, 'timeout_class': None}
                     for stage in ('frontend-project-readback', 'frontend-npm-ci',
-                                  'frontend-vercel-pull', 'frontend-vercel-build')}
+                                  'frontend-i18n-prepare', 'frontend-vercel-pull', 'frontend-vercel-build')}
         readback = {'linked_root': 'missing'}
         build_output = None
         if diagnostic_enabled:
@@ -984,6 +1042,34 @@ class Providers:
             env.pop('NOW_PROJECT_ID', None)
             target = 'production' if self.p['environment'] == 'production' else 'preview'
             command('frontend-npm-ci', ['npm', 'ci', '--ignore-scripts'], cwd=project_root, timeout=600)
+            i18n_env = dict(os.environ)
+            for name in ('VERCEL_TOKEN', 'VERCEL_PROJECT_ID', 'VERCEL_ORG_ID', 'VERCEL_TEAM_ID',
+                         'NOW_ORG_ID', 'NOW_PROJECT_ID'):
+                i18n_env.pop(name, None)
+            i18n_env.update({
+                'GOMAXPROCS': '2',
+                'GOFLAGS': '-p=2',
+            })
+            i18n_script = Path(__file__).resolve().with_name('frontend_i18n.py')
+            i18n_root = i18n_script.parents[2]
+            i18n_args = [
+                'python3', i18n_script,
+                '--root', i18n_root, '--environment', self.p['environment'],
+                '--source-sha', self.plan['source'], '--output', self.directory / 'frontend-i18n',
+                '--frontend-root', project_root, '--mode', 'auto',
+            ]
+            i18n_output = command('frontend-i18n-prepare', i18n_args,
+                                  env=i18n_env, cwd=i18n_root, timeout=1100)
+            try:
+                i18n_summary = json.loads([line for line in i18n_output.splitlines() if line.strip()][-1])
+                bundle_revision = i18n_summary['bundle_revision']
+                require(i18n_summary.get('source_revision') == self.plan['source'] and
+                        re.fullmatch(r'[a-f0-9]{64}', bundle_revision) is not None,
+                        'frontend-i18n-catalog-identity-invalid')
+            except (IndexError, KeyError, TypeError, ValueError):
+                raise Breakpoint('frontend-i18n-catalog-identity-invalid', 'failed', False,
+                                 'inspect-frontend-i18n-artifact') from None
+            env['LWC_I18N_PREPARED_BUNDLE_REVISION'] = bundle_revision
             pull_args = ['vercel', 'pull', '--yes', '--environment='+target, '--scope', cfg['team_slug'],
                          '--token', os.environ['VERCEL_TOKEN']]
             command('frontend-vercel-pull', pull_args, env=env, cwd=project_root, timeout=30)

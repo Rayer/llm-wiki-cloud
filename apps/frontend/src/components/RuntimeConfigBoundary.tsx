@@ -1,9 +1,13 @@
 'use client';
 
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { loadRuntimeConfig } from '@/lib/runtime-config';
+import { useT } from '@/lib/i18n';
 
 export function RuntimeConfigBoundary({ children }: { children: ReactNode }) {
+  const { t } = useT();
+  const translateRef = useRef(t);
+  useEffect(() => { translateRef.current = t; }, [t]);
   const [attempt, setAttempt] = useState(0);
   const [status, setStatus] = useState<{ ready: boolean; error: string | null }>({ ready: false, error: null });
 
@@ -15,7 +19,7 @@ export function RuntimeConfigBoundary({ children }: { children: ReactNode }) {
       if (active) {
         setStatus({
           ready: false,
-          error: error instanceof Error ? error.message : 'Runtime config load failed.',
+          error: error instanceof Error ? error.message : translateRef.current('RuntimeConfig.loadFailed'),
         });
       }
     });
@@ -30,15 +34,15 @@ export function RuntimeConfigBoundary({ children }: { children: ReactNode }) {
           <button type="button" onClick={() => {
             setStatus({ ready: false, error: null });
             setAttempt((value) => value + 1);
-          }}>Retry</button>
-          <button type="button" onClick={() => window.location.reload()}>Reload</button>
+          }}>{t('Shell.retry')}</button>
+          <button type="button" onClick={() => window.location.reload()}>{t('RuntimeConfig.reload')}</button>
         </div>
       </main>
     );
   }
 
   if (!status.ready) {
-    return <main role="status" aria-live="polite" aria-busy="true" className="p-6">Loading runtime configuration…</main>;
+    return <main role="status" aria-live="polite" aria-busy="true" className="p-6">{t('RuntimeConfig.loading')}</main>;
   }
 
   return children;

@@ -14,7 +14,7 @@ export default function ConceptDetailPage({
   return (
     <DetailClient
       slug={slug}
-      label="Concepts"
+      labelKey="Entry.plural"
       backHref="/concepts"
       load={getConcept}
       entryType="concept"

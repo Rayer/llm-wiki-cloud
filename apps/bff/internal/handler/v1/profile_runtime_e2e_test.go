@@ -347,6 +347,9 @@ func TestProfileRuntimeConnectedManualThenCompileTagging(t *testing.T) {
 		f.dispatcher.Handler.store = nil
 		f.request(t, "POST", "synthetic-valid-token", 200, 1)
 		exhausted := f.work(t, recoveryWorkRef)
+		if exhausted.ProfileSnapshot.Source != "bootstrap" || len(exhausted.ProfileSnapshot.Profiles) != 0 || !validProfileOperationSnapshot(exhausted.ProfileSnapshot) {
+			t.Fatalf("compile failure did not preserve a valid explicit bootstrap snapshot: %+v", exhausted.ProfileSnapshot)
+		}
 		exhaustedProfile, err := f.repo.GetProfile(f.ctx, f.user, f.project)
 		if err != nil {
 			t.Fatal(err)
@@ -368,6 +371,9 @@ func TestProfileRuntimeConnectedManualThenCompileTagging(t *testing.T) {
 		firstRetryWork := f.work(t, recoveryWorkRef)
 		if !firstRetryWork.Pending || firstRetryWork.Status != "pending" || firstRetryWork.Attempts != 0 || firstRetryWork.ID != manifest.GenerationID {
 			t.Fatalf("compile retry did not requeue exact receipt work: %+v", firstRetryWork)
+		}
+		if firstRetryWork.ProfileSnapshot.Source != "bootstrap" || len(firstRetryWork.ProfileSnapshot.Profiles) != 0 || !validProfileOperationSnapshot(firstRetryWork.ProfileSnapshot) {
+			t.Fatalf("requeued compile retry did not retain its valid explicit bootstrap snapshot: %+v", firstRetryWork.ProfileSnapshot)
 		}
 		retriedAgain, err := f.repo.RetryProfileDerivation(f.ctx, f.user, f.project, final.Revision)
 		secondRetryWork := f.work(t, recoveryWorkRef)

@@ -9,6 +9,8 @@ import {
   projectDescriptionCodePointCount,
   selectDefaultProject,
 } from '../src/lib/project-core.ts';
+import { configureApiAuth } from '../src/lib/api.ts';
+import { getProjectContentContext } from '../src/lib/projects.ts';
 
 test('normalizeProjects accepts array and wrapped API responses', () => {
   assert.deepEqual(
@@ -75,4 +77,50 @@ test('description length uses normalized Unicode code points and rejects unsuppo
   assert.equal(isValidProjectDescription('😀'.repeat(1001)), false);
   assert.equal(isValidProjectDescription('bad\0text'), false);
   assert.equal(isValidProjectDescription('\ud800'), false);
+});
+
+test('Project content context accepts a proven bootstrap summary without a fabricated profile id', async () => {
+  const originalFetch = globalThis.fetch;
+  const payload = {
+    project_id: 'project-1', status: 'ready', current_generation: 'generation-1',
+    current_concepts_sha256: 'a'.repeat(64), stale: false,
+    summary: {
+      text: 'Published topics', source_generation: 'generation-1', concepts_sha256: 'a'.repeat(64),
+      generated_at: '2026-10-30T00:00:00Z', prompt_revision: 'project-summary-v1', profile_source: 'bootstrap',
+      role: 'fast', requested_model: 'deepseek-flash', returned_model: 'deepseek-v2',
+      input_digest: 'b'.repeat(64), selection_version: 'selection-v1',
+    },
+    error_class: null,
+  };
+  configureApiAuth({ getAccessToken: () => 'test-token', refreshAccessToken: async () => null, onUnauthorized: () => undefined });
+  globalThis.fetch = async () => new Response(JSON.stringify(payload), { status: 200 });
+  try {
+    const result = await getProjectContentContext('project-1');
+    assert.equal(result.summary?.profile_source, 'bootstrap');
+    assert.equal(result.summary?.profile_id, undefined);
+    assert.equal(result.summary?.profile_revision, undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('Project content context rejects an incomplete or fabricated profile identity', async () => {
+  const originalFetch = globalThis.fetch;
+  const payload = {
+    project_id: 'project-1', status: 'ready', current_generation: 'generation-1',
+    current_concepts_sha256: 'a'.repeat(64), stale: false,
+    summary: {
+      text: 'Published topics', source_generation: 'generation-1', concepts_sha256: 'a'.repeat(64),
+      generated_at: '2026-10-30T00:00:00Z', prompt_revision: 'project-summary-v1', profile_source: 'bootstrap',
+      profile_id: 'platform', role: 'fast', requested_model: 'deepseek-flash', returned_model: 'deepseek-v2',
+      input_digest: 'b'.repeat(64), selection_version: 'selection-v1',
+    },
+  };
+  configureApiAuth({ getAccessToken: () => 'test-token', refreshAccessToken: async () => null, onUnauthorized: () => undefined });
+  globalThis.fetch = async () => new Response(JSON.stringify(payload), { status: 200 });
+  try {
+    await assert.rejects(getProjectContentContext('project-1'), /response is invalid/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

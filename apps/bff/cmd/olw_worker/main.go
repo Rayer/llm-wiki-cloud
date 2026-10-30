@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/rayer/llm-wiki-bff/internal/annotation"
+	"github.com/rayer/llm-wiki-bff/internal/auth"
 	conceptcache "github.com/rayer/llm-wiki-bff/internal/cache"
 	"github.com/rayer/llm-wiki-bff/internal/generation"
 	"github.com/rayer/llm-wiki-bff/internal/llm"
@@ -54,12 +55,14 @@ type workerConfig struct {
 	PipelineBindingsPath         string
 	ProfileResolverURL           string
 	ProfileResolverAudience      string
+	PipelineProfileSource        string
 	ProfileCandidates            []pipelineLLMProfile
 	ActiveLLMProfile             *pipelineLLMProfile
 	SharedProfilePool            bool
 	BootstrapLLMSource           bool
 	QuotaMarkerPath              string
 	ProfileCallSuccessMarkerPath string
+	ProfileCallAttemptMarkerPath string
 	SuppressOutput               bool
 	SuggestedQueries             bool
 	// CleanRebuild skips materializing prior generation outputs (wiki/.synto/
@@ -395,24 +398,27 @@ func runWorkerBatch(ctx context.Context, cfg workerConfig, rawCommands string) (
 		if cfg.ProfileResolverURL == "" {
 			return errors.New("Pipeline profile resolver is unavailable")
 		}
-		profiles, shared, resolveErr := resolvePipelineLLMProfiles(ctx, cfg)
+		profileResponse, resolveErr := resolvePipelineLLMProfileResponseWithCredentials(ctx, cfg, true)
 		if resolveErr != nil {
 			return errors.New("Project LLM source is unavailable to Pipeline")
 		}
-		cfg.ProfileCandidates, cfg.SharedProfilePool = profiles, shared
-		cfg.BootstrapLLMSource = len(profiles) == 0 && !shared
+		cfg.PipelineProfileSource = profileResponse.Source
+		cfg.ProfileCandidates = profileResponse.Profiles
+		cfg.SharedProfilePool = profileResponse.Source == "shared"
+		cfg.BootstrapLLMSource = profileResponse.Source == "bootstrap"
 		defer func() {
 			for i := range cfg.ProfileCandidates {
 				clear(cfg.ProfileCandidates[i].APIKey)
 			}
 		}()
-		if shared && len(profiles) > 1 {
+		if cfg.SharedProfilePool && len(cfg.ProfileCandidates) > 1 {
 			markerDir, markerErr := os.MkdirTemp("", "lwc-profile-pool-markers-*")
 			if markerErr != nil {
 				return errors.New("Pipeline quota marker is unavailable")
 			}
 			cfg.QuotaMarkerPath = filepath.Join(markerDir, "quota")
 			cfg.ProfileCallSuccessMarkerPath = filepath.Join(markerDir, "profile-call-success")
+			cfg.ProfileCallAttemptMarkerPath = filepath.Join(markerDir, "profile-call-attempt")
 			defer os.RemoveAll(markerDir)
 		}
 	}
@@ -694,6 +700,18 @@ func runWorkerBatchWorkspace(ctx context.Context, cfg workerConfig, commands [][
 	}
 	workspace := ""
 	terminalAttempted := false
+	if auth.ValidPathSegment(cfg.UserID) && auth.ValidPathSegment(cfg.ProjectID) {
+		defer func() {
+			if !workspacePublished {
+				return
+			}
+			runCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), contentContextRunTimeout)
+			defer cancel()
+			if err := runLocalContentContext(runCtx, cfg, vault); err != nil {
+				reportContentContextReconcileFailure(err)
+			}
+		}()
+	}
 	recordTerminal := func(failure error, published bool) {
 		if failure == nil || terminalAttempted {
 			return
@@ -702,9 +720,11 @@ func runWorkerBatchWorkspace(ctx context.Context, cfg workerConfig, commands [][
 		_ = recordLocalWorkerFailureLog(workspace, vault, cfg, failure, published)
 	}
 	defer func() {
-		if err := localWorkspaceBatchHooks.releaseVaultLease(lease); err != nil && runErr == nil {
-			runErr = newWorkerFailure(nil, failureStageLeaseCleanup, failureClassIO, "", err)
-			recordTerminal(runErr, true)
+		if lease != nil {
+			if err := localWorkspaceBatchHooks.releaseVaultLease(lease); err != nil && runErr == nil {
+				runErr = newWorkerFailure(nil, failureStageLeaseCleanup, failureClassIO, "", err)
+				recordTerminal(runErr, true)
+			}
 		}
 	}()
 	defer func() {
@@ -714,6 +734,26 @@ func runWorkerBatchWorkspace(ctx context.Context, cfg workerConfig, commands [][
 	}()
 	if err := localWorkspaceBatchHooks.recoverInterruptedPublish(vault); err != nil {
 		return preserveWorkerFailure(err, failureStageGenerationPublish, failureClassIO)
+	}
+	if recoveryNeeded, recoveryErr := localContentContextRecoveryNeeded(ctx, cfg, vault); recoveryErr != nil {
+		reportContentContextReconcileFailure(recoveryErr)
+	} else if recoveryNeeded {
+		if err := localWorkspaceBatchHooks.releaseVaultLease(lease); err != nil {
+			return preserveWorkerFailure(err, failureStageLeaseCleanup, failureClassIO)
+		}
+		lease = nil
+		recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), contentContextRunTimeout)
+		if err := runLocalContentContext(recoveryCtx, cfg, vault); err != nil {
+			reportContentContextReconcileFailure(err)
+		}
+		cancel()
+		lease, err = localWorkspaceBatchHooks.acquireVaultLease(vault, cfg.ExecutionID)
+		if err != nil {
+			return err
+		}
+		if err := revalidateCommittedLocalContentContext(vault, cfg); err != nil {
+			reportContentContextReconcileFailure(err)
+		}
 	}
 	snapshots, err := localWorkspaceBatchHooks.snapshotSources(vault)
 	if err != nil {
@@ -763,6 +803,11 @@ func runWorkerBatchWorkspace(ctx context.Context, cfg workerConfig, commands [][
 			return errors.Join(failure, preserveWorkerFailure(recordErr, failureStageReceiptRecording, failureClassRecordingFailure))
 		}
 		return failure
+	}
+	if auth.ValidPathSegment(cfg.UserID) && auth.ValidPathSegment(cfg.ProjectID) {
+		if err := prepareLocalContentContextDescriptor(workspace, vault, cfg); err != nil {
+			warnContentContextFailure("publication_descriptor_unavailable")
+		}
 	}
 	publicationOutcome = "unknown"
 	_, publishSpan := observability.StartWorkerSpan(ctx, "pipeline.worker.publish")
@@ -1060,14 +1105,39 @@ func prepareOLWEnvironment(cfg workerConfig) ([]string, error) {
 		env = append(env, "SYNTO_API_KEY="+cfg.APIKey, "DEEPSEEK_API_KEY="+cfg.APIKey)
 	}
 	if cfg.ActiveLLMProfile != nil {
-		profile, err := json.Marshal(struct {
-			ID       string       `json:"id"`
-			Revision int64        `json:"revision"`
-			Provider string       `json:"provider"`
-			Protocol llm.Protocol `json:"protocol"`
-			Endpoint string       `json:"endpoint"`
-			Model    string       `json:"model"`
-		}{cfg.ActiveLLMProfile.ID, cfg.ActiveLLMProfile.Revision, cfg.ActiveLLMProfile.Provider, cfg.ActiveLLMProfile.Protocol, cfg.ActiveLLMProfile.Endpoint, cfg.ActiveLLMProfile.Model})
+		models := normalizePipelineLLMModels(*cfg.ActiveLLMProfile)
+		var profile []byte
+		var err error
+		if cfg.ActiveLLMProfile.SchemaVersion == 0 && cfg.ActiveLLMProfile.SnapshotDigest == "" && cfg.ActiveLLMProfile.RoleMapVersion == 0 {
+			legacyModel := strings.TrimSpace(cfg.ActiveLLMProfile.Model)
+			if legacyModel == "" || models.Fast != legacyModel || models.Heavy != legacyModel {
+				return nil, errors.New("legacy Pipeline profile cannot represent distinct role models")
+			}
+			profile, err = json.Marshal(struct {
+				ID       string       `json:"id"`
+				Revision int64        `json:"revision"`
+				Provider string       `json:"provider"`
+				Protocol llm.Protocol `json:"protocol"`
+				Endpoint string       `json:"endpoint"`
+				Model    string       `json:"model"`
+			}{cfg.ActiveLLMProfile.ID, cfg.ActiveLLMProfile.Revision, cfg.ActiveLLMProfile.Provider,
+				cfg.ActiveLLMProfile.Protocol, cfg.ActiveLLMProfile.Endpoint, legacyModel})
+		} else if cfg.ActiveLLMProfile.SchemaVersion == 2 && validProfileSnapshotDigest(cfg.ActiveLLMProfile.SnapshotDigest) && cfg.ActiveLLMProfile.RoleMapVersion == 1 {
+			profile, err = json.Marshal(struct {
+				SchemaVersion  int               `json:"schema_version"`
+				SnapshotDigest string            `json:"snapshot_digest"`
+				RoleMapVersion int               `json:"role_map_version"`
+				ID             string            `json:"id"`
+				Revision       int64             `json:"revision"`
+				Provider       string            `json:"provider"`
+				Protocol       llm.Protocol      `json:"protocol"`
+				Endpoint       string            `json:"endpoint"`
+				Models         pipelineLLMModels `json:"models"`
+			}{2, cfg.ActiveLLMProfile.SnapshotDigest, cfg.ActiveLLMProfile.RoleMapVersion, cfg.ActiveLLMProfile.ID, cfg.ActiveLLMProfile.Revision, cfg.ActiveLLMProfile.Provider,
+				cfg.ActiveLLMProfile.Protocol, cfg.ActiveLLMProfile.Endpoint, models})
+		} else {
+			return nil, errors.New("Pipeline profile wire version is invalid")
+		}
 		if err != nil {
 			return nil, errors.New("serialize Pipeline profile selection")
 		}
@@ -1079,6 +1149,9 @@ func prepareOLWEnvironment(cfg workerConfig) ([]string, error) {
 	}
 	if cfg.ProfileCallSuccessMarkerPath != "" {
 		env = append(env, "LWC_PROFILE_CALL_SUCCESS_MARKER_PATH="+cfg.ProfileCallSuccessMarkerPath)
+	}
+	if cfg.ProfileCallAttemptMarkerPath != "" {
+		env = append(env, "LWC_PROFILE_CALL_ATTEMPT_MARKER_PATH="+cfg.ProfileCallAttemptMarkerPath)
 	}
 	env = append(env, profileFixtureEnvironment()...)
 	return env, nil
@@ -1139,8 +1212,8 @@ func allowlistedSyntoEnvironment(extra []string) []string {
 		}
 		switch key {
 		case "XDG_CONFIG_HOME", "SYNTO_API_KEY", "DEEPSEEK_API_KEY", "LWC_PROFILE_SCHEMA_PATH", "LWC_PROFILE_GUIDANCE",
-			"LWC_PROFILE_CONFIG", "LWC_PROFILE_API_KEY", "LWC_PROFILE_QUOTA_MARKER_PATH", "LWC_PROFILE_CALL_SUCCESS_MARKER_PATH",
-			"LWC_PROFILE_FIXTURE_TRANSPORT", "LWC_PROFILE_FIXTURE_RECEIPT_FILE", "LWC_PROFILE_FIXTURE_QUOTA_MODEL", "LWC_PROFILE_FIXTURE_QUOTA_AFTER":
+			"LWC_PROFILE_CONFIG", "LWC_PROFILE_API_KEY", "LWC_PROFILE_QUOTA_MARKER_PATH", "LWC_PROFILE_CALL_SUCCESS_MARKER_PATH", "LWC_PROFILE_CALL_ATTEMPT_MARKER_PATH",
+			"LWC_PROFILE_FIXTURE_TRANSPORT", "LWC_PROFILE_FIXTURE_RECEIPT_FILE", "LWC_PROFILE_FIXTURE_QUOTA_MODEL", "LWC_PROFILE_FIXTURE_QUOTA_AFTER", "LWC_PROFILE_FIXTURE_REQUIRE_AUTH", "LWC_PROFILE_FIXTURE_HEALTH_ROLE":
 			env = append(env, item)
 		}
 	}
@@ -1517,8 +1590,9 @@ var suggestedQueryProvider = func(cfg workerConfig) suggestedqueries.Provider {
 		return unavailableSuggestedQueryProvider{}
 	}
 	profile := cfg.ActiveLLMProfile
+	models := normalizePipelineLLMModels(*profile)
 	client, err := llm.NewProfileClient(llm.ProfileConfig{ID: profile.ID, Revision: profile.Revision, Provider: profile.Provider,
-		Protocol: profile.Protocol, Endpoint: profile.Endpoint, Model: profile.Model}, string(profile.APIKey), llm.ProfileClientOptions{})
+		Role: llm.ProfileRoleFast, Protocol: profile.Protocol, Endpoint: profile.Endpoint, Model: models.Fast}, string(profile.APIKey), llm.ProfileClientOptions{})
 	if err != nil {
 		return unavailableSuggestedQueryProvider{}
 	}
@@ -1581,18 +1655,16 @@ type suggestedQueryProfileClient interface {
 }
 
 var newSuggestedQueryProfileClient = func(profile pipelineLLMProfile) (suggestedQueryProfileClient, error) {
+	models := normalizePipelineLLMModels(profile)
 	return llm.NewProfileClient(llm.ProfileConfig{ID: profile.ID, Revision: profile.Revision, Provider: profile.Provider,
-		Protocol: profile.Protocol, Endpoint: profile.Endpoint, Model: profile.Model}, string(profile.APIKey), llm.ProfileClientOptions{Timeout: 10 * time.Second})
+		Role: llm.ProfileRoleFast, Protocol: profile.Protocol, Endpoint: profile.Endpoint, Model: models.Fast}, string(profile.APIKey), llm.ProfileClientOptions{Timeout: 10 * time.Second})
 }
-
-var suggestedQueryProfileResolver = resolvePipelineLLMProfiles
 
 type resolvedSuggestedQueryPool struct {
 	mu        sync.Mutex
 	cfg       workerConfig
 	profiles  []pipelineLLMProfile
 	attempted map[string]struct{}
-	resolver  func(context.Context, workerConfig) ([]pipelineLLMProfile, bool, error)
 	factory   func(pipelineLLMProfile) (suggestedQueryProfileClient, error)
 	model     llm.ModelIdentity
 	profile   llm.ProfileIdentity
@@ -1612,7 +1684,7 @@ func newStandaloneSuggestedQueryProvider(ctx context.Context, cfg workerConfig) 
 		}
 		return &resolvedSuggestedQueryPool{
 			cfg: cfg, profiles: cfg.ProfileCandidates, attempted: make(map[string]struct{}),
-			resolver: suggestedQueryProfileResolver, factory: newSuggestedQueryProfileClient,
+			factory: newSuggestedQueryProfileClient,
 		}, nil
 	}
 	if cfg.BootstrapLLMSource || cfg.ActiveLLMProfile != nil {
@@ -1629,10 +1701,11 @@ func (p *resolvedSuggestedQueryPool) Chat(ctx context.Context, systemPrompt, use
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	var lastQuota error
+	candidates := p.profiles
 	for attempt := 0; attempt < maxPipelineProfileAttempts; attempt++ {
 		selected := -1
-		for index := range p.profiles {
-			if _, tried := p.attempted[p.profiles[index].ID]; !tried {
+		for index := range candidates {
+			if _, tried := p.attempted[candidates[index].ID]; !tried {
 				selected = index
 				break
 			}
@@ -1643,7 +1716,7 @@ func (p *resolvedSuggestedQueryPool) Chat(ctx context.Context, systemPrompt, use
 			}
 			return "", errors.New("shared suggested-query profile pool is unavailable")
 		}
-		profile := p.profiles[selected]
+		profile := candidates[selected]
 		client, err := p.factory(profile)
 		if err != nil {
 			return "", err
@@ -1660,17 +1733,10 @@ func (p *resolvedSuggestedQueryPool) Chat(ctx context.Context, systemPrompt, use
 		}
 		lastQuota = callErr
 		p.attempted[profile.ID] = struct{}{}
-		fresh, shared, resolveErr := p.resolver(ctx, p.cfg)
-		if resolveErr != nil {
-			clearPipelineProfileKeys(fresh)
-			return "", errors.Join(callErr, errors.New("shared suggested-query fallback could not revalidate the Project source"))
+		candidates, err = revalidatePipelineProfileCandidates(ctx, p.cfg, p.profiles)
+		if err != nil {
+			return "", errors.Join(callErr, errors.New("shared suggested-query fallback stopped because current eligibility was not proven"), err)
 		}
-		if !shared {
-			clearPipelineProfileKeys(fresh)
-			return "", errors.Join(callErr, errors.New("Project LLM source changed during shared suggested-query fallback"))
-		}
-		clearPipelineProfileKeys(p.profiles)
-		p.profiles = fresh
 	}
 	return "", errors.New("shared suggested-query profile attempt limit reached")
 }
@@ -1685,7 +1751,7 @@ func (p *resolvedSuggestedQueryPool) ModelIdentity() (llm.ModelIdentity, bool) {
 		return llm.ModelIdentity{}, false
 	}
 	profile := p.profiles[0]
-	return llm.ModelIdentity{Provider: profile.Provider, Model: profile.Model}, true
+	return llm.ModelIdentity{Provider: profile.Provider, Model: normalizePipelineLLMModels(profile).Fast}, true
 }
 
 func (p *resolvedSuggestedQueryPool) ProfileIdentity() llm.ProfileIdentity {
@@ -1698,7 +1764,7 @@ func (p *resolvedSuggestedQueryPool) ProfileIdentity() llm.ProfileIdentity {
 		return llm.ProfileIdentity{}
 	}
 	profile := p.profiles[0]
-	return llm.ProfileIdentity{ID: profile.ID, Revision: profile.Revision, Provider: profile.Provider, Protocol: string(profile.Protocol), Model: profile.Model}
+	return llm.ProfileIdentity{ID: profile.ID, Revision: profile.Revision, Role: string(llm.ProfileRoleFast), Provider: profile.Provider, Protocol: string(profile.Protocol), Model: normalizePipelineLLMModels(profile).Fast}
 }
 
 func (p *resolvedSuggestedQueryPool) GenerationMetadata() suggestedqueries.GenerationMetadata {

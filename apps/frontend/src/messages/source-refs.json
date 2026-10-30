@@ -1,0 +1,612 @@
+{
+  "schema_version": 1,
+  "base_locale": "en",
+  "entries": {
+    "AccountSettings.confirmRevokeProjectKey": {
+      "kind": "literal",
+      "params": [
+        "name"
+      ]
+    },
+    "AccountSettings.projectKeyBoundProject": {
+      "kind": "literal",
+      "params": [
+        "id",
+        "name"
+      ]
+    },
+    "AccountSettings.projectKeyUnknownOutcome": {
+      "kind": "literal",
+      "params": [
+        "keyId"
+      ]
+    },
+    "AccountSettings.projectKeyUnknownOutcomeNoId": {
+      "kind": "literal",
+      "params": [
+        "name"
+      ]
+    },
+    "Admin.confirmDeleteProject": {
+      "kind": "literal",
+      "params": [
+        "id",
+        "name"
+      ]
+    },
+    "Admin.confirmDeleteUser": {
+      "kind": "literal",
+      "params": [
+        "identity"
+      ]
+    },
+    "Admin.confirmRebuildIndex": {
+      "kind": "literal",
+      "params": [
+        "id",
+        "name"
+      ]
+    },
+    "Admin.confirmRegenerateQueryChips": {
+      "kind": "literal",
+      "params": [
+        "id",
+        "name"
+      ]
+    },
+    "Admin.confirmRestoreUser": {
+      "kind": "literal",
+      "params": [
+        "identity"
+      ]
+    },
+    "Admin.confirmSuspendUser": {
+      "kind": "literal",
+      "params": [
+        "identity"
+      ]
+    },
+    "Admin.confirmTriggerPipeline": {
+      "kind": "literal",
+      "params": [
+        "id",
+        "name"
+      ]
+    },
+    "Admin.queryChipsFailed": {
+      "kind": "literal",
+      "params": [
+        "diagnostic"
+      ]
+    },
+    "Admin.sharedProfiles.confirmDelete": {
+      "kind": "literal",
+      "params": [
+        "name"
+      ]
+    },
+    "Admin.sharedProfiles.discoveryPartial": {
+      "kind": "literal",
+      "context": "admin shared profiles editor: Message when model discovery returns a partial list; {count} is the number of models shown.",
+      "params": [
+        "count"
+      ]
+    },
+    "Admin.sharedProfiles.discoveryStale": {
+      "kind": "literal",
+      "context": "admin shared profiles editor: Warning that a previously displayed model list may be outdated."
+    },
+    "Admin.sharedProfiles.discoverySuccess": {
+      "kind": "literal",
+      "params": [
+        "count"
+      ]
+    },
+    "Admin.sharedProfiles.operationDiscoveryUnsupported": {
+      "kind": "literal",
+      "context": "admin shared profiles editor: Provider error text when model discovery is not supported by the endpoint.",
+      "protected_literals": [
+        "Test Message"
+      ]
+    },
+    "Admin.sharedProfiles.operationModelNotFound": {
+      "kind": "literal",
+      "context": "admin shared profiles editor: Provider error text when the provider cannot find the requested model."
+    },
+    "Admin.sharedProfiles.operationParameterUnsupported": {
+      "kind": "literal",
+      "context": "admin shared profiles editor: Provider error text when a request parameter is not supported."
+    },
+    "Admin.sharedProfiles.operationPermissionError": {
+      "kind": "literal",
+      "context": "admin shared profiles editor: Provider error text when the credential lacks permission for the operation."
+    },
+    "Admin.sharedProfiles.unavailableReference": {
+      "kind": "literal",
+      "params": [
+        "reference"
+      ]
+    },
+    "Annotation.updated": {
+      "kind": "literal",
+      "params": [
+        "date"
+      ]
+    },
+    "BYOK.confirmDelete": {
+      "kind": "literal",
+      "params": [
+        "name"
+      ]
+    },
+    "BYOK.discoveryPartial": {
+      "kind": "literal",
+      "context": "BYOK editor: Message when model discovery returns a partial list; {count} is the number of models shown.",
+      "params": [
+        "count"
+      ]
+    },
+    "BYOK.discoveryStale": {
+      "kind": "literal",
+      "context": "BYOK editor: Warning that a previously displayed model list may be outdated."
+    },
+    "BYOK.discoverySuccess": {
+      "kind": "literal",
+      "params": [
+        "count"
+      ]
+    },
+    "BYOK.operationDiscoveryUnsupported": {
+      "kind": "literal",
+      "context": "BYOK editor: Provider error text when model discovery is not supported by the endpoint.",
+      "protected_literals": [
+        "Test Message"
+      ]
+    },
+    "BYOK.operationModelNotFound": {
+      "kind": "literal",
+      "context": "BYOK editor: Provider error text when the provider cannot find the requested model."
+    },
+    "BYOK.operationParameterUnsupported": {
+      "kind": "literal",
+      "context": "BYOK editor: Provider error text when a request parameter is not supported."
+    },
+    "BYOK.operationPermissionError": {
+      "kind": "literal",
+      "context": "BYOK editor: Provider error text when the credential lacks permission for the operation."
+    },
+    "CLILane.projectContext": {
+      "kind": "literal",
+      "params": [
+        "project"
+      ]
+    },
+    "CLILane.releaseVersion": {
+      "kind": "literal",
+      "params": [
+        "version"
+      ]
+    },
+    "CLIPairing.signedInAs": {
+      "kind": "literal",
+      "params": [
+        "email"
+      ]
+    },
+    "Demo.openCitation": {
+      "kind": "literal",
+      "params": [
+        "citation"
+      ]
+    },
+    "Demo.sourcesCount": {
+      "kind": "literal",
+      "params": [
+        "count"
+      ]
+    },
+    "Detail.backTo": {
+      "kind": "literal",
+      "params": [
+        "label"
+      ]
+    },
+    "Export.blockedCooldown": {
+      "kind": "literal",
+      "params": [
+        "time"
+      ]
+    },
+    "Export.nextAllowed": {
+      "kind": "literal",
+      "params": [
+        "time"
+      ]
+    },
+    "List.noSearchMatches": {
+      "kind": "literal",
+      "params": [
+        "query",
+        "title"
+      ]
+    },
+    "List.searchPlaceholder": {
+      "kind": "literal",
+      "params": [
+        "title"
+      ]
+    },
+    "LLMSource.projectName": {
+      "kind": "literal",
+      "params": [
+        "name"
+      ]
+    },
+    "MCPOAuth.sharedInstructions": {
+      "kind": "cac",
+      "ref": "mcp.instructions",
+      "source_locale": "en",
+      "context": "Shared MCP operating and safety instructions displayed and copied from the Agent & MCP guide."
+    },
+    "MCPOAuth.shortPromptGrokBot": {
+      "kind": "literal",
+      "context": "Short natural-language MCP setup prompt for Grok Bot.",
+      "params": [
+        "resourceURL"
+      ],
+      "protected_literals": [
+        "MCP"
+      ]
+    },
+    "MCPOAuth.shortPromptOpenAIWeb": {
+      "kind": "literal",
+      "context": "Short natural-language MCP connection prompt for ChatGPT web.",
+      "params": [
+        "resourceURL"
+      ]
+    },
+    "NewProject.navigationFailed": {
+      "kind": "literal",
+      "params": [
+        "error"
+      ]
+    },
+    "Pipeline.quotaLine": {
+      "kind": "literal",
+      "params": [
+        "cooldown",
+        "limit",
+        "newFiles",
+        "runs"
+      ]
+    },
+    "Profile.active": {
+      "kind": "literal",
+      "params": [
+        "candidateId"
+      ]
+    },
+    "Profile.activeNotice": {
+      "kind": "literal",
+      "params": [
+        "candidateId"
+      ]
+    },
+    "Profile.artifactVersions": {
+      "kind": "literal",
+      "params": [
+        "model",
+        "prompt",
+        "schema"
+      ]
+    },
+    "Profile.bootstrapConfirmedAt": {
+      "kind": "literal",
+      "params": [
+        "time"
+      ]
+    },
+    "Profile.bootstrapReadError": {
+      "kind": "literal",
+      "params": [
+        "error"
+      ]
+    },
+    "Profile.errors.confirmation": {
+      "kind": "literal",
+      "params": [
+        "error"
+      ]
+    },
+    "Profile.errors.guidanceConfirm": {
+      "kind": "literal",
+      "params": [
+        "error"
+      ]
+    },
+    "Profile.errors.load": {
+      "kind": "literal",
+      "params": [
+        "error"
+      ]
+    },
+    "Profile.errors.previewRetry": {
+      "kind": "literal",
+      "params": [
+        "error"
+      ]
+    },
+    "Profile.errors.saveUnconfirmed": {
+      "kind": "literal",
+      "params": [
+        "error"
+      ]
+    },
+    "Profile.errors.taggingRetry": {
+      "kind": "literal",
+      "params": [
+        "error"
+      ]
+    },
+    "Profile.guidanceReadError": {
+      "kind": "literal",
+      "params": [
+        "error"
+      ]
+    },
+    "Profile.itemsIncomplete": {
+      "kind": "literal",
+      "params": [
+        "count"
+      ]
+    },
+    "Profile.localUx.guide.next": {
+      "kind": "literal",
+      "params": [
+        "stage"
+      ]
+    },
+    "Profile.localUx.guide.position": {
+      "kind": "literal",
+      "params": [
+        "count",
+        "index"
+      ]
+    },
+    "Profile.moveRequirementDown": {
+      "kind": "literal",
+      "params": [
+        "index"
+      ]
+    },
+    "Profile.moveRequirementUp": {
+      "kind": "literal",
+      "params": [
+        "index"
+      ]
+    },
+    "Profile.removeRequirement": {
+      "kind": "literal",
+      "params": [
+        "index"
+      ]
+    },
+    "Profile.requirement": {
+      "kind": "literal",
+      "params": [
+        "index"
+      ]
+    },
+    "Profile.taggingWork": {
+      "kind": "literal",
+      "params": [
+        "status"
+      ]
+    },
+    "ProjectDescription.counter": {
+      "kind": "literal",
+      "params": [
+        "count",
+        "max"
+      ]
+    },
+    "ProjectDescription.latestFailed": {
+      "kind": "literal",
+      "params": [
+        "error"
+      ]
+    },
+    "ProjectDescription.loadFailed": {
+      "kind": "literal",
+      "params": [
+        "error"
+      ]
+    },
+    "ProjectDescription.saveFailed": {
+      "kind": "literal",
+      "params": [
+        "error"
+      ]
+    },
+    "ProjectRename.length": {
+      "kind": "literal",
+      "params": [
+        "maxLength"
+      ]
+    },
+    "ProjectSettings.hermesConfigSnippet": {
+      "kind": "literal",
+      "params": [
+        "mcpUrl",
+        "secretRef"
+      ],
+      "protected_literals": [
+        "mcp_servers:\n  llm-wiki:\n    url: \"",
+        "\"\n    transport: streamable-http\n    headers:\n      Authorization: \"Bearer ",
+        "\""
+      ]
+    },
+    "ProjectSettings.lastUsed": {
+      "kind": "literal",
+      "params": [
+        "time"
+      ]
+    },
+    "QueryResults.expansionKeywords": {
+      "kind": "literal",
+      "params": [
+        "keywords"
+      ]
+    },
+    "Raw.downloadAria": {
+      "kind": "literal",
+      "params": [
+        "file"
+      ]
+    },
+    "Raw.linkedProject": {
+      "kind": "literal",
+      "params": [
+        "project"
+      ]
+    },
+    "Raw.previewAria": {
+      "kind": "literal",
+      "params": [
+        "file"
+      ]
+    },
+    "RawUpload.destination": {
+      "kind": "literal",
+      "params": [
+        "filename"
+      ]
+    },
+    "RawUpload.fileProgress": {
+      "kind": "literal",
+      "params": [
+        "filename",
+        "progress",
+        "status"
+      ]
+    },
+    "RawUpload.importIntoProject": {
+      "kind": "literal",
+      "params": [
+        "id",
+        "project"
+      ]
+    },
+    "RawUpload.projectLabel": {
+      "kind": "literal",
+      "params": [
+        "id",
+        "project"
+      ]
+    },
+    "RawUpload.retryFile": {
+      "kind": "literal",
+      "params": [
+        "filename"
+      ]
+    },
+    "RawUpload.selectCandidate": {
+      "kind": "literal",
+      "params": [
+        "path"
+      ]
+    },
+    "RawUpload.selectionSummary": {
+      "kind": "literal",
+      "params": [
+        "bytes",
+        "count"
+      ]
+    },
+    "RawUpload.summary": {
+      "kind": "literal",
+      "params": [
+        "created",
+        "existing",
+        "failed",
+        "pending",
+        "replaced"
+      ]
+    },
+    "RawUpload.uploadSummary": {
+      "kind": "literal",
+      "params": [
+        "accepted",
+        "created",
+        "existing",
+        "failed",
+        "pending",
+        "replaced"
+      ]
+    },
+    "Source.previewRawAria": {
+      "kind": "literal",
+      "params": [
+        "path"
+      ]
+    },
+    "States.loadingDetail": {
+      "kind": "literal",
+      "context": "Accessible loading state for a source or knowledge entry.",
+      "params": [
+        "label"
+      ]
+    },
+    "Admin.autoPipelineBacklogStatus": {
+      "kind": "literal",
+      "params": [
+        "revision",
+        "status"
+      ]
+    },
+    "RawUpload.documentStatus": {
+      "kind": "literal",
+      "params": [
+        "conversion",
+        "id",
+        "source"
+      ]
+    },
+    "Source.documentImport.confirmDelete": {
+      "kind": "literal",
+      "params": [
+        "filename"
+      ]
+    },
+    "Source.documentImport.diagnostic": {
+      "kind": "literal",
+      "params": [
+        "id"
+      ]
+    },
+    "Source.documentImport.failedCount": {
+      "kind": "literal",
+      "params": [
+        "count"
+      ]
+    },
+    "Source.documentImport.failureCount": {
+      "kind": "literal",
+      "params": [
+        "count"
+      ]
+    },
+    "Source.documentImport.navBadge": {
+      "kind": "literal",
+      "params": [
+        "count"
+      ]
+    },
+    "Source.documentImport.pipelineState": {
+      "kind": "literal",
+      "params": [
+        "state"
+      ]
+    }
+  }
+}

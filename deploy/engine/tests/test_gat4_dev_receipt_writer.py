@@ -30,6 +30,7 @@ def read_fixture(name: str) -> dict:
 
 class DevReceiptWriterTests(unittest.TestCase):
     registry = "us-central1-docker.pkg.dev/fixture-project/llm-wiki-cloud"
+    independent_auth_repository = "asia-east1-docker.pkg.dev/llm-wiki-cloud/gateauth-ci-images/gateauth"
     auth_digest = "sha256:" + "c" * 64
 
     @classmethod
@@ -43,7 +44,10 @@ class DevReceiptWriterTests(unittest.TestCase):
         expected_auth = read_fixture(
             "legacy-auth-receipt.fixture.json" if legacy else "independent-auth-receipt.fixture.json"
         )
-        image = image or f"{self.registry}/llm-wiki-auth@{self.auth_digest}"
+        if image is None:
+            repository = (f"{self.registry}/llm-wiki-auth" if legacy else
+                          self.independent_auth_repository)
+            image = f"{repository}@{self.auth_digest}"
         expected_auth["artifact"]["image"] = image
         if not legacy:
             if metadata is None:
@@ -87,6 +91,8 @@ class DevReceiptWriterTests(unittest.TestCase):
             }
             for component in selected_components:
                 (image_dir / f"{component}-image-{source_sha}.txt").write_text(component_images[component] + "\n")
+            if not legacy:
+                (image_dir / f"auth-image-{source_sha}.txt").write_text(image + "\n")
             metadata_path = temp / "source-metadata.json"
             if metadata is not None and metadata_file_set:
                 metadata_path.write_text(json.dumps(metadata))
@@ -195,6 +201,13 @@ class DevReceiptWriterTests(unittest.TestCase):
         self.assertEqual(receipt["components"], ["bff"])
         self.assertEqual(receipt["images"]["auth"], auth["artifact"]["image"])
         self.assertIn("bff", receipt["images"])
+        self.assertTrue(artifact.validate_receipt_pair(auth, receipt, "independent"))
+
+    def test_independent_reuse_preserves_existing_shared_registry_identity(self):
+        retained = f"asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/llm-wiki-auth@{self.auth_digest}"
+        completed, receipt, auth = self.run_writer(mode="independent", image=retained)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(receipt["images"]["auth"], retained)
         self.assertTrue(artifact.validate_receipt_pair(auth, receipt, "independent"))
 
     def test_independent_rejects_missing_metadata_for_explicit_mode(self):

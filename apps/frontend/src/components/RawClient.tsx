@@ -37,11 +37,11 @@ function formatBytes(bytes: number) {
   return `${value >= 10 || unit === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unit]}`;
 }
 
-function formatUpdated(value: string) {
+function formatUpdated(value: string, locale: 'zh-TW' | 'zh-CN' | 'en') {
   if (!value) return '—';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '—';
-  return new Intl.DateTimeFormat(undefined, {
+  return new Intl.DateTimeFormat(locale === 'zh-TW' ? 'zh-TW' : locale === 'zh-CN' ? 'zh-CN' : 'en-US', {
     year: 'numeric',
     month: 'short',
     day: '2-digit',
@@ -68,7 +68,7 @@ export function RawClient() {
 }
 
 function RawClientSession() {
-  const { t } = useT();
+  const { t, locale } = useT();
   const { currentProject, projects, token } = useWorkspace();
   const currentProjectId = currentProject?.id;
   const searchParams = useSearchParams();
@@ -334,11 +334,11 @@ function RawClientSession() {
             <table className="min-w-full text-left text-sm">
               <thead className="border-b border-white/10 bg-white/[0.03] text-xs uppercase tracking-wider text-zinc-500">
                 <tr>
-                  <th className="px-4 py-3 font-semibold">Name</th>
-                  <th className="px-4 py-3 font-semibold">Size</th>
-                  <th className="px-4 py-3 font-semibold">Updated</th>
-                  <th className="px-4 py-3 font-semibold">SHA256</th>
-                  <th className="px-4 py-3 font-semibold">Ingested</th>
+                  <th className="px-4 py-3 font-semibold">{t('Raw.name')}</th>
+                  <th className="px-4 py-3 font-semibold">{t('Raw.size')}</th>
+                  <th className="px-4 py-3 font-semibold">{t('Raw.updated')}</th>
+                  <th className="px-4 py-3 font-semibold">{t('Raw.sha256')}</th>
+                  <th className="px-4 py-3 font-semibold">{t('Raw.ingested')}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/8">
@@ -369,7 +369,7 @@ function RawClientSession() {
                         {formatBytes(file.size)}
                       </td>
                       <td className="whitespace-nowrap px-4 py-3 text-zinc-400">
-                        {formatUpdated(file.updated)}
+                        {formatUpdated(file.updated, locale)}
                       </td>
                       <td className="px-4 py-3">
                         <code

@@ -16,7 +16,8 @@ import { latestConceptProvenance } from '@/lib/concept-provenance';
 
 type DetailClientProps = {
   slug: string;
-  label: string;
+  labelKey?: 'Source.plural' | 'Entry.plural';
+  label?: string;
   backHref: string;
   load: (slug: string) => Promise<WikiEntry>;
   entryType?: 'source' | 'concept';
@@ -26,8 +27,9 @@ export function DetailClient(props: DetailClientProps) {
   return <DetailClientSession key={`${props.entryType ?? ''}:${props.slug}`} {...props} />;
 }
 
-function DetailClientSession({ slug, label, backHref, load, entryType }: DetailClientProps) {
+function DetailClientSession({ slug, labelKey, label: labelOverride, backHref, load, entryType }: DetailClientProps) {
   const { t } = useT();
+  const label = labelOverride ?? t(labelKey ?? (entryType === 'source' ? 'Source.plural' : 'Entry.plural'));
   const [entry, setEntry] = useState<WikiEntry | null>(null);
   const [existingConceptSlugs, setExistingConceptSlugs] = useState<Set<string> | undefined>();
   const [reloadVersion, setReloadVersion] = useState(0);
@@ -73,7 +75,7 @@ function DetailClientSession({ slug, label, backHref, load, entryType }: DetailC
     };
   }, [entryType, load, reloadVersion, slug]);
 
-  if (loading) return <LoadingState label={`Loading ${label}`} />;
+  if (loading) return <LoadingState label={t('States.loadingDetail', { label })} />;
   if (currentError) {
     return (
       <ErrorState
@@ -89,7 +91,7 @@ function DetailClientSession({ slug, label, backHref, load, entryType }: DetailC
       />
     );
   }
-  if (!entry) return <ErrorState message="Entry not found." />;
+  if (!entry) return <ErrorState message={t('Detail.entryNotFound')} />;
 
   // LWC-139: prominent raw link on source pages (source_file / sources[0] / slug fallback)
   const primaryRawFile =

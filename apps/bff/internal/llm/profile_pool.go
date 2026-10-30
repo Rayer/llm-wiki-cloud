@@ -38,6 +38,9 @@ func (c *ProfilePoolClient) Complete(ctx context.Context, systemPrompt, userMess
 	if c == nil {
 		return CompletionResult{}, &ProfileCallError{Kind: ProviderFailure}
 	}
+	// A profile pool traversal belongs to this provider call. Earlier successful
+	// expansion requests are independent work and do not suppress quota fallback
+	// for later synthesis. Worker batch reruns use separate Synto markers.
 	for _, profile := range c.profiles {
 		configuration := profile.ProfileConfig()
 		c.mu.Lock()
@@ -102,7 +105,7 @@ func (c *ProfilePoolClient) ProfileIdentity() ProfileIdentity {
 	if selected.ID == "" {
 		selected = c.profiles[0].ProfileConfig()
 	}
-	return ProfileIdentity{ID: selected.ID, Revision: selected.Revision, Provider: selected.Provider, Protocol: string(selected.Protocol), Model: selected.Model}
+	return ProfileIdentity{ID: selected.ID, Revision: selected.Revision, Role: string(selected.Role), Provider: selected.Provider, Protocol: string(selected.Protocol), Model: selected.Model}
 }
 
 func (c *ProfilePoolClient) LastMetadata() (CompletionMetadata, bool) {

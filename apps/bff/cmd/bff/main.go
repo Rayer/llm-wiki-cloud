@@ -558,6 +558,8 @@ func newProductionRouter(
 		personalLLMProfiles := v1.Group("/llm/profiles")
 		personalLLMProfiles.Use(hV1.TrialDemoAccessGuard())
 		personalLLMProfiles.POST("", hV1.CreateUserLLMProfile)
+		personalLLMProfiles.POST("/discover-models", hV1.DiscoverUserLLMProfileModels)
+		personalLLMProfiles.POST("/test-message", hV1.TestUserLLMProfileMessage)
 		personalLLMProfiles.PUT("/:profileID", hV1.UpdateUserLLMProfile)
 		personalLLMProfiles.DELETE("/:profileID", hV1.DeleteUserLLMProfile)
 		v1.GET("/projects/:pid/status", hV1.ProjectStatus)
@@ -578,6 +580,7 @@ func newProductionRouter(
 	{
 		v1.GET("/projects/:pid/pipeline/automation", hV1.GetProjectPipelineAutomation)
 		v1.PUT("/projects/:pid/pipeline/automation", hV1.PutProjectPipelineAutomation)
+		v1.GET("/projects/:pid/content-context", hV1.GetContentContext)
 		v1.GET("/projects/:pid/llm-binding", hV1.ProjectLLMBinding)
 		v1.PUT("/projects/:pid/llm-binding", hV1.SetProjectLLMBinding)
 		syncRaw := v1.Group("/sync/raw")
@@ -761,6 +764,8 @@ func registerAdminRoutes(r *gin.Engine, cfg config.Config, hV1 *handlerv1.Handle
 	productAdmin.POST("/projects/:id/rebuild-index", hV1.AdminRebuildIndex)
 	productAdmin.GET("/llm/profiles", hV1.AdminLLMProfiles)
 	productAdmin.POST("/llm/profiles", hV1.CreateAdminLLMProfile)
+	productAdmin.POST("/llm/profiles/discover-models", hV1.DiscoverAdminLLMProfileModels)
+	productAdmin.POST("/llm/profiles/test-message", hV1.TestAdminLLMProfileMessage)
 	productAdmin.PUT("/llm/profiles/:profileID", hV1.UpdateAdminLLMProfile)
 	productAdmin.DELETE("/llm/profiles/:profileID", hV1.DeleteAdminLLMProfile)
 
