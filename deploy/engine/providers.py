@@ -1415,7 +1415,9 @@ class Providers:
             return json.loads(raw)
         except Breakpoint as exc:
             message = ((exc.cause or {}).get('message') or '').lower()
-            if any(marker in message for marker in ('not_found', 'not found', 'does not exist')):
+            if (exc.reason == 'command-failed' and exc.status == 'failed' and
+                    any(marker in message for marker in
+                        ('not_found', 'not found', 'does not exist', 'cannot find job ['))):
                 return None
             raise
 

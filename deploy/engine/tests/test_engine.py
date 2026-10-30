@@ -1300,11 +1300,49 @@ class Acceptance(unittest.TestCase):
         e.provider.rollback('documentimport', prior)
         self.assertTrue(e.provider.observe('documentimport', prior, {}, prior=True))
 
-    def test_documentimport_absent_snapshot_creates_job_with_etag_preserving_invoker_and_rolls_back(self):
+    def test_documentimport_job_describe_only_classifies_command_absence(self):
+        e = self.make(('documentimport',), name='documentimport-job-describe-classification')
+        raw = {'metadata': {'name': self.normalized['document_import_job']['job_name']}}
+        with patch.object(providers, 'run', return_value=json.dumps(raw)):
+            self.assertEqual(e.provider.document_import_job_if_exists(), raw)
+
+        def failure(message, reason='command-failed', status='failed'):
+            return Breakpoint(reason, status, False, 'reconcile-before-replay',
+                              stage='document-import-job-describe', exit_code=1,
+                              cause={'code': 'child-command-failed',
+                                     'stage': 'document-import-job-describe', 'message': message})
+
+        native = failure('ERROR: (gcloud.run.jobs.describe) Cannot find job [document-import-job-dev].\n')
+        with patch.object(providers, 'run', side_effect=native):
+            self.assertIsNone(e.provider.document_import_job_if_exists())
+
+        legacy = failure('ERROR: (gcloud.run.jobs.describe) NOT_FOUND: Job does not exist.\n')
+        with patch.object(providers, 'run', side_effect=legacy):
+            self.assertIsNone(e.provider.document_import_job_if_exists())
+
+        failures = (
+            failure('ERROR: 403 Permission denied; resource not found.\n', 'permission-denied'),
+            failure('transport timeout while checking resource not found\n', 'provider-timeout', 'unknown'),
+            failure('ERROR: (gcloud.run.jobs.describe) transient API failure\n'),
+        )
+        for error in failures:
+            with self.subTest(reason=error.reason, message=error.cause['message']):
+                with patch.object(providers, 'run', side_effect=error):
+                    with self.assertRaises(Breakpoint) as caught:
+                        e.provider.document_import_job_if_exists()
+                self.assertIs(caught.exception, error)
+
+        with patch.object(providers, 'run', return_value='not-json'):
+            with self.assertRaises(json.JSONDecodeError):
+                e.provider.document_import_job_if_exists()
+
+    def test_documentimport_native_not_found_snapshot_creates_job_with_etag_preserving_invoker_and_rolls_back(self):
         e = self.ready(self.make(('documentimport',), name='documentimport-create'))
         name = self.normalized['document_import_job']['job_name']
         self.provider['resources'].pop(name)
         self.provider['iam_policies'].pop(name)
+        self.provider['document_import_job_describe_stderr'] = (
+            'ERROR: (gcloud.run.jobs.describe) Cannot find job [document-import-job-dev].\n')
         self.provider['document_import_create_policy'] = {
             'etag':'etag-7','bindings':[{'role':'roles/run.invoker','members':['user:fixture@example.test']}]}
         self.flush()
