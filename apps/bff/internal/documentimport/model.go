@@ -91,6 +91,18 @@ type PipelineRef struct {
 	Reason            string `json:"reason,omitempty" firestore:"reason,omitempty"`
 }
 
+func PipelineAssociationPending(ref *PipelineRef) bool {
+	if ref == nil || ref.IntentID != "" || ref.SourceRevision <= 0 {
+		return false
+	}
+	switch ref.Status {
+	case "pending", "preparing", "running", "unknown":
+		return true
+	default:
+		return false
+	}
+}
+
 // Record is the single durable identity for one document submission. Storage
 // and execution fields are persisted but never exposed by the HTTP/MCP reader.
 type Record struct {

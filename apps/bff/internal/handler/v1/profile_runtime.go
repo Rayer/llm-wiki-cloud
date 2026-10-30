@@ -38,6 +38,7 @@ type profileRuntimeLease struct {
 
 var errProfileRuntimeLease = errors.New("profile execution lease is not current")
 var errProfileRuntimeWaiting = errors.New("profile compile waiting for manual work")
+var errDocumentImportJobAccepted = errors.New("document import Job accepted")
 
 func validateProfileRuntimeLease(ctx context.Context, tx *firestore.Transaction, userID, projectID string, now time.Time) error {
 	lease, ok := ctx.Value(profileRuntimeLeaseKey{}).(profileRuntimeLease)
@@ -205,7 +206,7 @@ func (d *ProfileDispatcher) Dispatch(ctx context.Context, limit int) (processed 
 		executeCtx, executeSpan := observability.StartProfileSpan(runctx, "profile.execute")
 		executeErr := d.execute(executeCtx, repo, work)
 		executeOutcome := "success"
-		if executeErr != nil {
+		if executeErr != nil && !errors.Is(executeErr, errDocumentImportJobAccepted) {
 			executeOutcome = "failure"
 		}
 		observability.SetProfileOutcome(attemptSpan, "profile.execution.outcome", executeOutcome)
@@ -336,6 +337,40 @@ func (d *ProfileDispatcher) finish(ctx context.Context, repo *firestoreProfileRe
 					}
 				}
 			}
+		} else if errors.Is(cause, errDocumentImportJobAccepted) {
+			if w.Kind != "document_import" {
+				return errors.New("document import Job outcome attached to non-document work")
+			}
+			documentRef := scopedfirestore.Collection(repo.client, "projects").Doc(projectDocID(w.UserID, w.ProjectID)).Collection("document_imports").Doc(w.DocumentID)
+			documentSnapshot, readErr := tx.Get(documentRef)
+			if readErr != nil && status.Code(readErr) != codes.NotFound {
+				return readErr
+			}
+			if readErr == nil {
+				var record documentimport.Record
+				if err := documentSnapshot.DataTo(&record); err != nil {
+					return err
+				}
+				if documentImportPipelineAssociationRecoverable(record) {
+					w.Pending = true
+					w.Status = "pipeline_association_wait"
+					w.Due = repo.now().Add(time.Minute)
+				} else if documentImportWorkRecoverable(record, w.ID) {
+					w.Pending = true
+					w.Status = "job_accepted"
+					w.Due = repo.now().Add(profileruntime.LeaseDuration)
+					if record.LeaseUntil.After(repo.now()) {
+						w.Status = "waiting_worker"
+						w.Due = record.LeaseUntil
+					}
+				} else {
+					w.Pending = false
+					w.Status = "complete"
+				}
+			} else {
+				w.Pending = false
+				w.Status = "complete"
+			}
 		} else if cause == nil {
 			if w.Kind == "document_import" {
 				documentRef := scopedfirestore.Collection(repo.client, "projects").Doc(projectDocID(w.UserID, w.ProjectID)).Collection("document_imports").Doc(w.DocumentID)
@@ -349,7 +384,11 @@ func (d *ProfileDispatcher) finish(ctx context.Context, repo *firestoreProfileRe
 						return err
 					}
 				}
-				if err == nil && documentImportWorkRecoverable(record, w.ID) {
+				if err == nil && documentImportPipelineAssociationRecoverable(record) {
+					w.Pending = true
+					w.Status = "pipeline_association_wait"
+					w.Due = repo.now().Add(time.Minute)
+				} else if err == nil && documentImportWorkRecoverable(record, w.ID) {
 					w.Pending = true
 					w.Status = "retry_wait"
 					w.Due = repo.now().Add(profileruntime.LeaseDuration)
@@ -665,7 +704,7 @@ func (h *Handler) documentPipelinePublication(ctx context.Context, owner *pipeli
 }
 
 func (d *ProfileDispatcher) executeDocumentImport(ctx context.Context, repo *firestoreProfileRepository, w profileruntime.Work) error {
-	if d.Handler.documentImports == nil || d.Handler.documentImports.Repository == nil || d.Handler.documentImports.Starter == nil {
+	if d.Handler.documentImports == nil || d.Handler.documentImports.Repository == nil {
 		return errors.New("document import dispatcher is unavailable")
 	}
 	record, err := d.Handler.documentImports.Repository.Get(ctx, w.UserID, w.ProjectID, w.DocumentID)
@@ -675,8 +714,38 @@ func (d *ProfileDispatcher) executeDocumentImport(ctx context.Context, repo *fir
 	if record.AttemptID != w.ID {
 		return errors.New("document import dispatch identity changed")
 	}
+	if record.DeletionState == documentimport.DeletionInProgress {
+		if d.Handler.store == nil {
+			return errors.New("document import cleanup storage is unavailable")
+		}
+		objects, ok := d.Handler.store.Scope(w.UserID, w.ProjectID).(documentimport.ObjectStore)
+		if !ok {
+			return errors.New("document import cleanup storage is unavailable")
+		}
+		finished, cleanupErr := d.Handler.documentImports.FinishDelete(ctx, objects, record)
+		if cleanupErr != nil && finished.DeletionState == documentimport.DeletionFailed {
+			return nil
+		}
+		return cleanupErr
+	}
+	if documentImportPipelineAssociationRecoverable(record) {
+		if err := d.associateDocumentImportsWithPipeline(ctx, repo, w.UserID, w.ProjectID); err != nil {
+			return err
+		}
+		updated, err := d.Handler.documentImports.Repository.Get(ctx, w.UserID, w.ProjectID, w.DocumentID)
+		if err != nil {
+			return err
+		}
+		if documentImportPipelineAssociationRecoverable(updated) {
+			return errProfileRuntimeWaiting
+		}
+		return nil
+	}
 	if !documentImportWorkRecoverable(record, w.ID) {
 		return nil
+	}
+	if d.Handler.documentImports.Starter == nil {
+		return errors.New("document import Job starter is unavailable")
 	}
 	if record.LeaseUntil.After(repo.now()) {
 		return errProfileRuntimeWaiting
@@ -686,7 +755,10 @@ func (d *ProfileDispatcher) executeDocumentImport(ctx context.Context, repo *fir
 		_ = d.Handler.documentImports.Repository.SetDispatchState(ctx, w.UserID, w.ProjectID, w.DocumentID, "unknown", "")
 		return err
 	}
-	return d.Handler.documentImports.Repository.SetDispatchState(ctx, w.UserID, w.ProjectID, w.DocumentID, "started", executionID)
+	if err := d.Handler.documentImports.Repository.SetDispatchState(ctx, w.UserID, w.ProjectID, w.DocumentID, "started", executionID); err != nil {
+		return err
+	}
+	return errDocumentImportJobAccepted
 }
 
 func documentImportWorkRecoverable(record documentimport.Record, attemptID string) bool {
@@ -697,6 +769,12 @@ func documentImportWorkRecoverable(record documentimport.Record, attemptID strin
 		return record.SourceState != documentimport.SourceSaved && record.SourceState != documentimport.SourceFailed
 	}
 	return record.ConversionState == documentimport.ConversionAccepted || record.ConversionState == documentimport.ConversionQueued || record.ConversionState == documentimport.ConversionConverting
+}
+
+func documentImportPipelineAssociationRecoverable(record documentimport.Record) bool {
+	return record.AttemptID != "" && record.ConversionState == documentimport.ConversionSucceeded &&
+		record.SourceState == documentimport.SourceSaved && record.DeletionState == documentimport.DeletionPresent &&
+		documentimport.PipelineAssociationPending(record.PipelineRef)
 }
 func prepareProfileRuntimeAttempt(ctx context.Context, repo *firestoreProfileRepository, w profileruntime.Work) error {
 	return repo.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {

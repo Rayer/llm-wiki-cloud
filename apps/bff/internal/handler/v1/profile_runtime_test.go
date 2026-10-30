@@ -1068,6 +1068,74 @@ func TestDocumentImportDispatcherRecoversAcceptedAndExpiredWorkerLeases(t *testi
 	}
 }
 
+func TestDocumentImportJobAcceptedBeforeWorkerClaimSettlesAttemptBudget(t *testing.T) {
+	f := newRuntimeFixture(t)
+	docRepo := f.dispatcher.Handler.documentImports.Repository
+	projectRef := f.repo.client.Collection("projects").Doc(projectDocID(f.user, f.project))
+	if _, err := projectRef.Set(f.ctx, map[string]any{"user_id": f.user, "project_id": f.project, "status": "ready"}, firestore.MergeAll); err != nil {
+		t.Fatal(err)
+	}
+	record, _, err := docRepo.Begin(f.ctx, documentimport.Record{
+		OwnerID: f.user, ProjectID: f.project, ClientSubmissionID: "document-claim-before-finish01",
+		OriginalFilename: "fixture.txt", Bytes: 1, SHA256: strings.Repeat("a", 64),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = docRepo.CompleteAcceptance(f.ctx, f.user, f.project, record.DocumentID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.clock = time.Now().UTC().Add(time.Second)
+	work := profileruntime.Work{UserID: f.user, ProjectID: f.project, Kind: "document_import", Revision: record.Revision,
+		ID: record.AttemptID, DocumentID: record.DocumentID, Due: f.clock, Pending: true, Status: "pending"}
+	workRef := f.repo.client.Collection(profileruntime.WorkCollection).Doc(profileruntime.WorkID(work))
+	starts := 0
+	f.dispatcher.Handler.SetDocumentImportStarter(documentImportStarterFunc(func(_ context.Context, userID, projectID, documentID, attemptID string) (string, error) {
+		starts++
+		_, _, claimed, err := docRepo.Claim(f.ctx, userID, projectID, documentID, attemptID, 5*time.Minute)
+		if err != nil || !claimed {
+			return "", fmt.Errorf("worker claim inside accepted Job Start: claimed=%t err=%v", claimed, err)
+		}
+		return fmt.Sprintf("execution-%d", starts), nil
+	}))
+	setDue := func() {
+		t.Helper()
+		f.clock = time.Now().UTC().Add(time.Second)
+		if _, err := workRef.Update(f.ctx, []firestore.Update{{Path: "due", Value: f.clock}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	expireWorker := func() {
+		t.Helper()
+		documentRef := f.repo.client.Collection("projects").Doc(projectDocID(f.user, f.project)).Collection("document_imports").Doc(record.DocumentID)
+		if _, err := documentRef.Update(f.ctx, []firestore.Update{{Path: "lease_until", Value: time.Now().UTC().Add(-time.Second)}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for attempt := 1; attempt <= profileruntime.MaxAttempts; attempt++ {
+		setDue()
+		if _, err := f.dispatcher.Dispatch(f.ctx, 8); err != nil {
+			t.Fatalf("dispatch accepted Job %d: %v", attempt, err)
+		}
+		got := f.work(t, workRef)
+		if !got.Pending || got.Attempts != attempt || got.Status != "waiting_worker" || starts != attempt {
+			t.Fatalf("accepted Job %d followed by immediate worker claim: work=%+v starts=%d", attempt, got, starts)
+		}
+		expireWorker()
+	}
+	setDue()
+	if _, err := f.dispatcher.Dispatch(f.ctx, 8); err != nil {
+		t.Fatalf("dispatch exhausted document work: %v", err)
+	}
+	got := f.work(t, workRef)
+	record, err = docRepo.Get(f.ctx, f.user, f.project, record.DocumentID)
+	if err != nil || got.Pending || got.Attempts != profileruntime.MaxAttempts || got.Status != "exhausted" || starts != profileruntime.MaxAttempts ||
+		record.ConversionState != documentimport.ConversionFailed || record.AttemptCount != profileruntime.MaxAttempts {
+		t.Fatalf("accepted-start crash exhaustion work=%+v record=%+v starts=%d err=%v", got, record, starts, err)
+	}
+}
+
 func TestProfileRuntimeConfirmationReschedulesFailedTagsOnce(t *testing.T) {
 	f := newRuntimeFixture(t)
 	state, workRef := f.save(t, 0, "write clearly")

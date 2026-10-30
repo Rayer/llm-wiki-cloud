@@ -1,18 +1,15 @@
 package v1
 
 import (
-	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"mime"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/rayer/llm-wiki-bff/internal/documentimport"
@@ -238,24 +235,7 @@ func (h *Handler) DeleteDocumentImport(c *gin.Context) {
 		c.Status(http.StatusNoContent)
 		return
 	}
-	objects, err := h.documentImportObjects(c)
-	if err != nil {
-		observability.WriteDataJSON(c, http.StatusServiceUnavailable, handler.ErrorResponse{Error: "document delete is unavailable"})
-		return
-	}
-	internalRecord, err := h.documentImports.Repository.Get(c.Request.Context(), userID, projectID, c.Param("id"))
-	if err != nil {
-		observability.WriteDataJSON(c, http.StatusServiceUnavailable, handler.ErrorResponse{Error: "document delete is unavailable"})
-		return
-	}
-	go func(service *documentimport.Service, store documentimport.ObjectStore, record documentimport.Record) {
-		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-		defer cancel()
-		if _, err := service.FinishDelete(ctx, store, record); err != nil {
-			log.Printf("document import deletion cleanup failed")
-		}
-	}(h.documentImports, objects, internalRecord)
-	observability.WriteDataJSON(c, http.StatusAccepted, documentimport.PublicRecord(internalRecord))
+	observability.WriteDataJSON(c, http.StatusAccepted, documentimport.PublicRecord(record))
 }
 
 func (h *Handler) documentImportScope(c *gin.Context) (string, string, bool) {

@@ -267,11 +267,32 @@ func (r *FirestoreRepository) FailDispatchInTransaction(ctx context.Context, tx 
 	if err := recordSnap.DataTo(&record); err != nil {
 		return err
 	}
-	if record.AttemptID != attemptID || record.DeletionState != DeletionPresent {
+	if record.AttemptID != attemptID {
 		return ErrStateConflict
 	}
 	state := readProjectState(projectSnap.Data())
+	if record.DeletionState == DeletionInProgress {
+		record.DeletionState = DeletionFailed
+		record.DispatchState = "exhausted"
+		record.LeaseToken = ""
+		record.LeaseUntil = time.Time{}
+		record.UpdatedAt = time.Now().UTC()
+		record.Revision++
+		state.Revision++
+		if err := tx.Set(recordRef, record); err != nil {
+			return err
+		}
+		return tx.Set(project, map[string]any{
+			"document_import_failed_count":            state.FailedCount,
+			"document_import_latest_failure_sequence": state.LatestFailureSequence,
+			"document_import_revision":                state.Revision,
+		}, cloudfirestore.MergeAll)
+	}
+	if record.DeletionState != DeletionPresent {
+		return ErrStateConflict
+	}
 	failure := &Failure{Stage: "dispatch", Class: "worker_unavailable", SafeMessageKey: "worker_unavailable", DiagnosticID: diagnosticID()}
+	associationFailure := false
 	switch record.ConversionState {
 	case ConversionAccepted, ConversionQueued, ConversionConverting:
 		state.FailedCount++
@@ -279,16 +300,26 @@ func (r *FirestoreRepository) FailDispatchInTransaction(ctx context.Context, tx 
 		record.FailureSequence = state.LatestFailureSequence
 		record.ConversionState = ConversionFailed
 	case ConversionSucceeded:
-		if record.SourceState != SourceSaving && record.SourceState != SourceUnknown {
-			return ErrStateConflict
+		if record.SourceState == SourceSaved && PipelineAssociationPending(record.PipelineRef) {
+			record.PipelineRef.Status = "unknown"
+			record.PipelineRef.Reason = "association_recovery_exhausted"
+			associationFailure = true
+		} else {
+			if record.SourceState != SourceSaving && record.SourceState != SourceUnknown {
+				return ErrStateConflict
+			}
+			failure.Stage = FailureStageSourceSave
+			record.SourceState = SourceUnknown
 		}
-		failure.Stage = FailureStageSourceSave
-		record.SourceState = SourceUnknown
 	default:
 		return ErrStateConflict
 	}
 	state.Revision++
-	record.Failure = failure
+	if associationFailure {
+		record.Failure = nil
+	} else {
+		record.Failure = failure
+	}
 	record.DispatchState = "exhausted"
 	record.LeaseToken = ""
 	record.LeaseUntil = time.Time{}
@@ -468,20 +499,47 @@ func (r *FirestoreRepository) SetSourceOutcome(ctx context.Context, ownerID, pro
 				return err
 			}
 		} else if state == SourceSaved {
-			workSnap, workErr := tx.Get(workRef)
-			if workErr == nil {
-				var work profileruntime.Work
-				if err := workSnap.DataTo(&work); err != nil {
-					return err
-				}
-				if work.Pending && work.Token == "" {
-					work.Pending, work.Status, work.LeaseUntil = false, "complete", time.Time{}
+			if PipelineAssociationPending(record.PipelineRef) {
+				workSnap, workErr := tx.Get(workRef)
+				if workErr == nil {
+					var work profileruntime.Work
+					if err := workSnap.DataTo(&work); err != nil {
+						return err
+					}
+					work.Attempts = 0
+					if !work.Pending || work.Token == "" || !work.LeaseUntil.After(time.Now().UTC()) {
+						work.Pending, work.Status, work.Token, work.LeaseUntil = true, "pipeline_association_wait", "", time.Time{}
+						work.Due = record.UpdatedAt.Add(time.Minute)
+					}
 					if err := tx.Set(workRef, work); err != nil {
 						return err
 					}
+				} else if status.Code(workErr) == codes.NotFound {
+					if err := profileruntime.Enqueue(tx, r.client, profileruntime.Work{
+						UserID: ownerID, ProjectID: projectID, Kind: "document_import", Revision: record.Revision,
+						ID: record.AttemptID, DocumentID: record.DocumentID, Due: record.UpdatedAt.Add(time.Minute),
+					}); err != nil {
+						return err
+					}
+				} else {
+					return workErr
 				}
-			} else if status.Code(workErr) != codes.NotFound {
-				return workErr
+			} else {
+				workSnap, workErr := tx.Get(workRef)
+				if workErr == nil {
+					var work profileruntime.Work
+					if err := workSnap.DataTo(&work); err != nil {
+						return err
+					}
+					if work.Pending && work.Token == "" {
+						work.Pending, work.Status, work.LeaseUntil = false, "complete", time.Time{}
+						if err := tx.Set(workRef, work); err != nil {
+							return err
+						}
+					}
+				} else if status.Code(workErr) != codes.NotFound {
+					return workErr
+				}
 			}
 		}
 		if err := tx.Set(recordRef, record); err != nil {
@@ -695,6 +753,12 @@ func (r *FirestoreRepository) MarkDeleting(ctx context.Context, ownerID, project
 		state := readProjectState(projectSnap.Data())
 		state.Revision++
 		if err := tx.Set(recordRef, record); err != nil {
+			return err
+		}
+		if err := profileruntime.Enqueue(tx, r.client, profileruntime.Work{
+			UserID: ownerID, ProjectID: projectID, Kind: "document_import", Revision: record.Revision,
+			ID: record.AttemptID, DocumentID: record.DocumentID, Due: record.UpdatedAt,
+		}); err != nil {
 			return err
 		}
 		return tx.Set(project, map[string]any{"document_import_revision": state.Revision}, cloudfirestore.MergeAll)
