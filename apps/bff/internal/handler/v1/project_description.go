@@ -128,7 +128,13 @@ func decodeProjectDescriptionJSON(body io.Reader, destination *projectDescriptio
 	if _, err := decoder.Token(); err != nil {
 		return err
 	}
-	return decodeStrictJSON(bytes.NewReader(data), destination)
+	if err := decodeStrictJSON(bytes.NewReader(data), destination); err != nil {
+		return err
+	}
+	if destination.Description == nil || destination.Revision == nil {
+		return errors.New("description and revision are required")
+	}
+	return nil
 }
 
 func hasUnpairedJSONSurrogate(data []byte) bool {
