@@ -391,7 +391,7 @@ describe('LWC-221 auth redirect behavior', () => {
       body: [{ id: 'old-project', name: 'Old Project' }],
     });
 
-    expect(workspaceRef.current?.projects).toEqual([{ id: 'new-project', name: 'New Project' }]);
+    expect(workspaceRef.current?.projects).toEqual([{ id: 'new-project', name: 'New Project', description: '', descriptionRevision: 0 }]);
     expect(workspaceRef.current?.currentProject?.id).toBe('new-project');
   });
 
@@ -411,7 +411,7 @@ describe('LWC-221 auth redirect behavior', () => {
     await waitUntil(() => workspaceRef.current?.currentProject?.id === 'new-project');
     await resolveDeferred(olderProjects, { status: 500, body: { error: 'old failure' } });
 
-    expect(workspaceRef.current?.projects).toEqual([{ id: 'new-project', name: 'New Project' }]);
+    expect(workspaceRef.current?.projects).toEqual([{ id: 'new-project', name: 'New Project', description: '', descriptionRevision: 0 }]);
     expect(workspaceRef.current?.projectsError).toBe('');
   });
 
@@ -544,7 +544,7 @@ describe('LWC-221 auth redirect behavior', () => {
 
     await resolveDeferred(oldProjects, { status: 200, body: [{ id: 'old-project', name: 'Old Project' }] });
 
-    expect(workspaceRef.current?.projects).toEqual([{ id: 'new-project', name: 'New Project' }]);
+    expect(workspaceRef.current?.projects).toEqual([{ id: 'new-project', name: 'New Project', description: '', descriptionRevision: 0 }]);
     expect(workspaceRef.current?.currentProject?.id).toBe('new-project');
     expect(window.localStorage.getItem('llm-wiki-last-project')).toBe('new-project');
   });
@@ -570,7 +570,7 @@ describe('LWC-221 auth redirect behavior', () => {
     await resolveDeferred(oldProjects, { status: 500, body: { error: 'old failure' } });
 
     expect(workspaceRef.current?.projectsError).toBe('');
-    expect(workspaceRef.current?.projects).toEqual([{ id: 'new-project', name: 'New Project' }]);
+    expect(workspaceRef.current?.projects).toEqual([{ id: 'new-project', name: 'New Project', description: '', descriptionRevision: 0 }]);
     expect(window.localStorage.getItem('llm-wiki-last-project')).toBe('new-project');
   });
 

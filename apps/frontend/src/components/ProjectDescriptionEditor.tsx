@@ -30,7 +30,6 @@ export function ProjectDescriptionEditor({ projectId }: { projectId: string }) {
   const { updateProjectDescription } = useWorkspace();
   const { setBlocked } = useNavigationBlocker();
   const tRef = useRef(t);
-  tRef.current = t;
   const [saved, setSaved] = useState<ProjectDescription | null>(null);
   const [draft, setDraft] = useState('');
   const [loadState, setLoadState] = useState<'loading' | 'ready' | 'failed'>('loading');
@@ -51,6 +50,10 @@ export function ProjectDescriptionEditor({ projectId }: { projectId: string }) {
     [projectId, sessionEpoch, user?.id],
   );
   const currentScopeRef = useRef<RequestScope | null>(null);
+
+  useLayoutEffect(() => {
+    tRef.current = t;
+  }, [t]);
 
   useLayoutEffect(() => {
     currentScopeRef.current = currentScope;
@@ -96,8 +99,14 @@ export function ProjectDescriptionEditor({ projectId }: { projectId: string }) {
   }, [currentScope, requestIsCurrent]);
 
   useEffect(() => {
-    void load();
-    return () => { sequenceRef.current += 1; };
+    let active = true;
+    queueMicrotask(() => {
+      if (active) void load();
+    });
+    return () => {
+      active = false;
+      sequenceRef.current += 1;
+    };
   }, [load]);
 
   useEffect(() => {
@@ -111,8 +120,9 @@ export function ProjectDescriptionEditor({ projectId }: { projectId: string }) {
   const valid = isValidProjectDescription(draft);
 
   useEffect(() => {
-    setBlocked(dirty || saving, blockerOwnerRef.current);
-    return () => setBlocked(false, blockerOwnerRef.current);
+    const owner = blockerOwnerRef.current;
+    setBlocked(dirty || saving, owner);
+    return () => setBlocked(false, owner);
   }, [dirty, saving, setBlocked]);
 
   const refreshLatest = useCallback(async () => {
