@@ -13,6 +13,31 @@ import {
 export const LAST_PROJECT_KEY = 'llm-wiki-last-project';
 export const MAX_PROJECT_NAME_LENGTH = 64;
 
+export type ProjectContentSummary = {
+  text: string;
+  source_generation: string;
+  concepts_sha256: string;
+  generated_at: string;
+  prompt_revision: string;
+  profile_id: string;
+  profile_revision: number;
+  role: string;
+  requested_model: string;
+  returned_model: string;
+  input_digest: string;
+  selection_version: string;
+};
+
+export type ProjectContentContext = {
+  project_id: string;
+  status: string;
+  current_generation: string | null;
+  current_concepts_sha256: string | null;
+  summary: ProjectContentSummary | null;
+  stale: boolean;
+  error_class?: string | null;
+};
+
 function apiError(payload: unknown, fallback: string): string {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return fallback;
   const record = payload as Record<string, unknown>;
@@ -135,6 +160,53 @@ export async function renameProject(projectId: string, name: string): Promise<st
     throw new Error('Rename response did not include a project name.');
   }
   return nextName;
+}
+
+export async function getProjectContentContext(projectId: string): Promise<ProjectContentContext> {
+  const targetProjectId = safeProjectRouteSegment(projectId);
+  const response = await apiFetch(
+    `/api/v1/projects/${encodeURIComponent(targetProjectId)}/content-context`,
+    { projectId: targetProjectId },
+  );
+  const payload: unknown = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(apiError(payload, `Unable to load Project content context (${response.status})`));
+  }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw new Error('Project content context response is invalid.');
+  }
+
+  const record = payload as Record<string, unknown>;
+  const summary = record.summary;
+  const validSummary = summary === null || (
+    typeof summary === 'object'
+    && !Array.isArray(summary)
+    && typeof (summary as Record<string, unknown>).text === 'string'
+    && typeof (summary as Record<string, unknown>).source_generation === 'string'
+    && typeof (summary as Record<string, unknown>).concepts_sha256 === 'string'
+    && typeof (summary as Record<string, unknown>).generated_at === 'string'
+    && typeof (summary as Record<string, unknown>).prompt_revision === 'string'
+    && typeof (summary as Record<string, unknown>).profile_id === 'string'
+    && typeof (summary as Record<string, unknown>).profile_revision === 'number'
+    && typeof (summary as Record<string, unknown>).role === 'string'
+    && typeof (summary as Record<string, unknown>).requested_model === 'string'
+    && typeof (summary as Record<string, unknown>).returned_model === 'string'
+    && typeof (summary as Record<string, unknown>).input_digest === 'string'
+    && typeof (summary as Record<string, unknown>).selection_version === 'string'
+  );
+  if (
+    record.project_id !== targetProjectId
+    || typeof record.status !== 'string'
+    || (record.current_generation !== null && typeof record.current_generation !== 'string')
+    || (record.current_concepts_sha256 !== null && typeof record.current_concepts_sha256 !== 'string')
+    || !validSummary
+    || typeof record.stale !== 'boolean'
+    || (record.error_class !== undefined && record.error_class !== null && typeof record.error_class !== 'string')
+  ) {
+    throw new Error('Project content context response is invalid.');
+  }
+
+  return record as ProjectContentContext;
 }
 
 export {

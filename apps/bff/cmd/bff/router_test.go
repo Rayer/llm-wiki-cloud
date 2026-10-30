@@ -76,6 +76,7 @@ func TestBFFDoesNotOwnIdentityRoutes(t *testing.T) {
 		{http.MethodGet, "/api/v1/exports"},
 		{http.MethodGet, "/api/v1/exports/:exportID/status"},
 		{http.MethodPost, "/api/v1/exports/:exportID/download"},
+		{http.MethodGet, "/api/v1/projects/:pid/content-context"},
 		{http.MethodGet, "/api/v1/projects/:pid/profile"},
 		{http.MethodPut, "/api/v1/projects/:pid/profile"},
 		{http.MethodPost, "/api/v1/projects/:pid/profile/candidates/:candidateID/confirm"},
@@ -86,6 +87,9 @@ func TestBFFDoesNotOwnIdentityRoutes(t *testing.T) {
 		if !hasRoute(router, route.method, route.path) {
 			t.Fatalf("BFF production router is missing %s %s", route.method, route.path)
 		}
+	}
+	if got := serveGet(router, "/api/v1/projects/project-a/content-context").Code; got != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated content-context status=%d, want %d", got, http.StatusUnauthorized)
 	}
 	if got := serveGet(router, "/api/v1/query/config").Code; got != http.StatusServiceUnavailable {
 		t.Fatalf("legacy public query config status=%d, want %d", got, http.StatusServiceUnavailable)
