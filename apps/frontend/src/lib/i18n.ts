@@ -2,25 +2,21 @@
 
 import { useCallback, useMemo, useSyncExternalStore } from 'react';
 import catalog from '@/generated/i18n/catalog';
-import { translationMemoKey, type Locale } from './i18n-core';
+import { configuredLocaleOptions, normalizeLocalePreference, translationMemoKey, type Locale, type LocaleToken } from './i18n-core';
 
 type TranslationParams = Record<string, string | number>;
-type LocaleToken = 'zh_tw' | 'zh' | 'en';
-
 const localeStorageKey = 'locale';
 const localeChangeEvent = 'locale-change';
 const localeTokens: Record<Locale, LocaleToken> = { 'zh-TW': 'zh_tw', 'zh-CN': 'zh', en: 'en' };
-const tokenLocales: Record<LocaleToken, Locale> = { zh_tw: 'zh-TW', zh: 'zh-CN', en: 'en' };
-const defaultLocale: Locale = tokenLocales[catalog.default_locale as LocaleToken] ?? 'zh-TW';
-const normalizedLocales: Record<string, Locale> = {
-  'zh-TW': 'zh-TW', zh_tw: 'zh-TW', 'zh-Hant': 'zh-TW',
-  'zh-CN': 'zh-CN', zh: 'zh-CN', zh_cn: 'zh-CN',
-  en: 'en', 'en-US': 'en',
-};
+const localeOptions = configuredLocaleOptions(catalog.target_locales, catalog.locale_metadata);
+const targetLocales = localeOptions.map(({ token }) => token);
+const defaultLocale = normalizeLocalePreference(undefined, targetLocales, catalog.default_locale);
+let memoryLocale: Locale | null = null;
 
 function getLocale(): Locale {
+  if (memoryLocale) return memoryLocale;
   try {
-    return normalizedLocales[localStorage.getItem(localeStorageKey) ?? ''] ?? defaultLocale;
+    return normalizeLocalePreference(localStorage.getItem(localeStorageKey), targetLocales, catalog.default_locale);
   } catch {
     return defaultLocale;
   }
@@ -28,7 +24,10 @@ function getLocale(): Locale {
 
 function subscribe(onStoreChange: () => void) {
   const onStorage = (event: StorageEvent) => {
-    if (event.key === localeStorageKey || event.key === null) onStoreChange();
+    if (event.key === localeStorageKey || event.key === null) {
+      memoryLocale = null;
+      onStoreChange();
+    }
   };
   window.addEventListener('storage', onStorage);
   window.addEventListener(localeChangeEvent, onStoreChange);
@@ -47,6 +46,11 @@ function lookup(map: Record<string, unknown>, key: string): unknown {
   return node;
 }
 
+function lookupBase(map: Record<string, unknown>, key: string): unknown {
+  const flatValue = map[key];
+  return typeof flatValue === 'string' ? flatValue : lookup(map, key);
+}
+
 function interpolate(text: string, params?: TranslationParams): string {
   if (!params) return text;
   return text.replace(/\{(\w+)\}/g, (match, name: string) =>
@@ -55,14 +59,20 @@ function interpolate(text: string, params?: TranslationParams): string {
 }
 
 export function translate(locale: Locale, key: string, params?: TranslationParams): string {
+  return translateFromCatalog(catalog as unknown as TranslationCatalog, locale, key, params);
+}
+
+type TranslationCatalog = { base: Record<string, unknown>; locales: Record<string, unknown> };
+
+export function translateFromCatalog(source: TranslationCatalog, locale: Locale, key: string, params?: TranslationParams): string {
   const token = localeTokens[locale];
-  const localized = lookup(catalog.locales[token] as Record<string, unknown>, key);
-  const base = lookup(catalog.base as Record<string, unknown>, key);
+  const localized = lookup(source.locales[token] as Record<string, unknown>, key);
+  const base = lookupBase(source.base, key);
   if (typeof localized !== 'string' && typeof base !== 'string') {
     const message = `Missing i18n source key: ${key}`;
     if (process.env.NODE_ENV === 'test') throw new Error(message);
     if (process.env.NODE_ENV !== 'production') console.warn(message);
-    const generic = lookup(catalog.base as Record<string, unknown>, 'I18n.missingKey');
+    const generic = lookupBase(source.base, 'I18n.missingKey');
     return typeof generic === 'string' ? generic : 'Text unavailable';
   }
   const value = typeof localized === 'string' ? localized : base as string;
@@ -74,16 +84,18 @@ export const catalogRevision = catalog.bundle_revision;
 export const catalogStatus = catalog.manifest.translation;
 
 export function localeHasFallback(locale: Locale): boolean {
-  return (catalog.manifest.translation.fallback_counts[localeTokens[locale]] ?? 0) > 0;
+  return targetLocales.includes(localeTokens[locale]) && (catalog.manifest.translation.fallback_counts[localeTokens[locale]] ?? 0) > 0;
 }
 
 export function useT() {
   const locale = useSyncExternalStore(subscribe, getLocale, () => defaultLocale);
   const setLocale = useCallback((next: Locale) => {
+    const selected = targetLocales.includes(localeTokens[next]) ? next : defaultLocale;
     try {
-      localStorage.setItem(localeStorageKey, next);
+      localStorage.setItem(localeStorageKey, selected);
+      memoryLocale = null;
     } catch {
-      // Translation still switches for this tab when storage is unavailable.
+      memoryLocale = selected;
     }
     window.dispatchEvent(new Event(localeChangeEvent));
   }, []);
@@ -94,7 +106,7 @@ export function useT() {
     [memoLocale],
   );
 
-  return { locale, t, setLocale, hasFallback: localeHasFallback(locale), catalogRevision };
+  return { locale, t, setLocale, hasFallback: localeHasFallback(locale), catalogRevision, localeOptions };
 }
 
 export const useLocale = useT;

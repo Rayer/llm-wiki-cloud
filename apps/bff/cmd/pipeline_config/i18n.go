@@ -108,12 +108,13 @@ type i18nOrigin struct {
 }
 
 type i18nBuildConfig struct {
-	SchemaVersion   int        `json:"schema_version"`
-	Environment     string     `json:"environment"`
-	Target          string     `json:"target"`
-	SourceRevision  string     `json:"source_revision"`
-	CatalogRevision string     `json:"catalog_revision"`
-	I18n            i18nConfig `json:"i18n"`
+	SchemaVersion    int        `json:"schema_version"`
+	Environment      string     `json:"environment"`
+	Target           string     `json:"target"`
+	SourceRevision   string     `json:"source_revision"`
+	CatalogRevision  string     `json:"catalog_revision"`
+	SnapshotRevision string     `json:"snapshot_revision"`
+	I18n             i18nConfig `json:"i18n"`
 }
 
 type i18nSourceFile struct {
@@ -126,6 +127,7 @@ type i18nSourceManifest struct {
 	Environment         string           `json:"environment"`
 	SourceRevision      string           `json:"source_revision"`
 	CatalogRevision     string           `json:"catalog_revision"`
+	SnapshotRevision    string           `json:"snapshot_revision"`
 	ConfigDigest        string           `json:"config_digest"`
 	CACProjectionDigest string           `json:"cac_projection_digest"`
 	EntryCount          int              `json:"entry_count"`
@@ -154,6 +156,18 @@ type i18nRevisionInput struct {
 	Entries             []i18nEntry `json:"entries"`
 	RegistryDigest      string      `json:"registry_digest"`
 	CACProjectionDigest string      `json:"cac_projection_digest"`
+}
+
+type i18nSnapshotInput struct {
+	SchemaVersion       int              `json:"schema_version"`
+	Environment         string           `json:"environment"`
+	SourceRevision      string           `json:"source_revision"`
+	CatalogRevision     string           `json:"catalog_revision"`
+	ConfigDigest        string           `json:"config_digest"`
+	CACProjectionDigest string           `json:"cac_projection_digest"`
+	EntryCount          int              `json:"entry_count"`
+	KeySetDigest        string           `json:"key_set_digest"`
+	Files               []i18nSourceFile `json:"files"`
 }
 
 type i18nPublicConfig struct {
@@ -305,9 +319,21 @@ func prepareI18nTarget(root, output string, source []byte, environment, sourceSH
 			{Path: "deploy/cac/ssot.pkl#i18n-cac-projection", SHA256: cacDigest},
 		},
 	}
+	snapshotBytes, err := json.Marshal(i18nSnapshotInput{
+		SchemaVersion: manifest.SchemaVersion, Environment: manifest.Environment,
+		SourceRevision: manifest.SourceRevision, CatalogRevision: manifest.CatalogRevision,
+		ConfigDigest: manifest.ConfigDigest, CACProjectionDigest: manifest.CACProjectionDigest,
+		EntryCount: manifest.EntryCount, KeySetDigest: manifest.KeySetDigest, Files: manifest.Files,
+	})
+	if err != nil {
+		return errors.New("i18n source snapshot identity cannot be encoded")
+	}
+	snapshotRevision := digestI18n(snapshotBytes)
+	manifest.SnapshotRevision = snapshotRevision
 	buildConfig := i18nBuildConfig{
 		SchemaVersion: 1, Environment: environment, Target: "i18n",
-		SourceRevision: sourceSHA, CatalogRevision: catalogRevision, I18n: projection.I18n,
+		SourceRevision: sourceSHA, CatalogRevision: catalogRevision, SnapshotRevision: snapshotRevision,
+		I18n: projection.I18n,
 	}
 	input := i18nTranslationInput{
 		SchemaVersion: 1, SourceRevision: sourceSHA, CatalogRevision: catalogRevision,
@@ -323,7 +349,7 @@ func prepareI18nTarget(root, output string, source []byte, environment, sourceSH
 		"base.json":              base,
 		"source-manifest.json":   manifest,
 	}
-	if err := writeI18nDirectory(output, catalogRevision, files); err != nil {
+	if err := writeI18nDirectory(output, snapshotRevision, files); err != nil {
 		return err
 	}
 	fmt.Printf("prepared i18n source entries=%d locales=%d catalog_revision=%s environment=%s\n",

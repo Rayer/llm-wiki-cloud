@@ -2,6 +2,7 @@
 
 import hashlib
 import importlib.util
+import io
 import json
 from pathlib import Path
 import subprocess
@@ -102,6 +103,122 @@ class FrontendI18nCatalog(unittest.TestCase):
         self.assertEqual(result[0], {entry["key"]: entry["text"]})
         self.assertEqual(result[1][entry["key"]], "fallback")
         self.assertEqual(result[2:], (1, 1, 0))
+
+    def test_http_200_empty_choices_and_null_message_are_catalog_errors(self):
+        entry = {"key": "Login.title", "text": "Sign In", "source_locale": "en", "context": "Login title",
+                 "params": [], "protected_literals": []}
+
+        class Response:
+            def __init__(self, body):
+                self.body = body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def read(self, _limit):
+                return self.body
+
+        for envelope in ({"choices": []}, {"choices": [{"message": None}]}):
+            with self.subTest(envelope=envelope):
+                response = Response(json.dumps(envelope).encode("utf-8"))
+                translation = {"endpoint": "https://provider.invalid/v1/chat/completions", "model": "fixture-model",
+                               "max_output_tokens": 128, "request_timeout_seconds": 5}
+                with patch.object(prepare_i18n.urllib.request, "build_opener") as opener:
+                    opener.return_value.open.return_value = response
+                    result = prepare_i18n.translate_locale(
+                        [entry], "zh_tw", {entry["key"]: entry["text"]}, {}, {}, translation,
+                        "fixture-test", "test-key", None, "ready", time.monotonic() + 10,
+                    )
+                self.assertEqual(opener.return_value.open.call_count, 2)
+                self.assertEqual(result[0], {entry["key"]: entry["text"]})
+                self.assertEqual(result[1][entry["key"]], "fallback")
+                self.assertEqual(result[2:], (1, 1, 0))
+
+    def test_expired_total_deadline_publishes_a_complete_degraded_catalog(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            source_dir = workspace / "source"
+            frontend = workspace / "frontend"
+            output = workspace / "catalog"
+            source_dir.mkdir()
+            frontend.mkdir()
+            entry = {
+                "key": "Login.title", "text": "Sign In", "source_locale": "en",
+                "context": "Visible sign-in title", "params": [], "protected_literals": [],
+                "origin": {"kind": "literal", "path": "apps/frontend/src/messages/en.json"},
+            }
+            entry["source_digest"] = prepare_i18n.entry_digest(entry)
+            i18n = {
+                "schema_version": 1, "base_locale": "en", "target_locales": ["zh_tw", "en"],
+                "default_locale": "zh_tw", "locale_metadata": [
+                    {"token": "zh_tw", "ui_locale": "zh-TW", "intl_locale": "zh-TW", "label": "繁體中文"},
+                    {"token": "en", "ui_locale": "en", "intl_locale": "en-US", "label": "English"},
+                ],
+                "translation": {
+                    "provider": "custom", "protocol": "openai_chat_completions",
+                    "endpoint": "https://provider.invalid/v1/chat/completions", "model": "fixture-model",
+                    "request_timeout_seconds": 5, "max_output_tokens": 128,
+                    "secret": {"source": "environment", "target": "TEST_LLM_KEY"},
+                },
+                "prompt_version": "fixture-prompt-v1",
+            }
+            source_revision, catalog_revision = "a" * 40, "b" * 64
+            files = [{"path": "deploy/cac/ssot.pkl#i18n-cac-projection", "sha256": "c" * 64}]
+            source_manifest = {
+                "schema_version": 1, "environment": "local", "source_revision": source_revision,
+                "catalog_revision": catalog_revision, "config_digest": prepare_i18n.configured_public_digest(i18n),
+                "cac_projection_digest": "c" * 64, "entry_count": 1,
+                "key_set_digest": prepare_i18n.sha256(prepare_i18n.canonical_json([entry["key"]])),
+                "files": files,
+            }
+            snapshot_identity = {key: source_manifest[key] for key in (
+                "schema_version", "environment", "source_revision", "catalog_revision", "config_digest",
+                "cac_projection_digest", "entry_count", "key_set_digest", "files",
+            )}
+            snapshot_revision = prepare_i18n.sha256(prepare_i18n.canonical_json(snapshot_identity))
+            source_manifest["snapshot_revision"] = snapshot_revision
+            config = {
+                "schema_version": 1, "environment": "local", "target": "i18n",
+                "source_revision": source_revision, "catalog_revision": catalog_revision,
+                "snapshot_revision": snapshot_revision, "i18n": i18n,
+            }
+            source = {
+                "schema_version": 1, "source_revision": source_revision,
+                "catalog_revision": catalog_revision, "base_locale": "en", "entries": [entry],
+            }
+            for name, value in (("config.json", config), ("input.json", source),
+                                ("source-manifest.json", source_manifest), ("base.json", {"Login.title": "Sign In"})):
+                (source_dir / name).write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
+            seed_map = workspace / "seed.json"
+            seed_map.write_text('{"Login":{"title":"登入"}}', encoding="utf-8")
+            seed_provenance = workspace / "seed-provenance.json"
+            seed_provenance.write_text('{"schema_version":1}', encoding="utf-8")
+            args = type("Args", (), {
+                "config": str(source_dir / "config.json"), "input": str(source_dir / "input.json"),
+                "source_manifest": str(source_dir / "source-manifest.json"), "base": str(source_dir / "base.json"),
+                "seed_map": str(seed_map), "seed_provenance": str(seed_provenance), "fixture": None,
+                "api_key_stdin": True, "provider_status": "ready", "cache": None,
+                "output": str(output), "frontend_root": str(frontend), "repository_root": str(workspace),
+            })()
+            with patch.object(prepare_i18n.sys, "stdin", io.StringIO("test-key")), \
+                    patch.object(prepare_i18n.time, "monotonic", side_effect=[0, prepare_i18n.MAX_STAGE_SECONDS + 1]), \
+                    patch.object(prepare_i18n, "safe_provider_call") as provider_call:
+                prepare_i18n.prepare_catalog(args)
+
+            provider_call.assert_not_called()
+            revision = (output / "CURRENT").read_text(encoding="ascii").strip()
+            data = json.loads((output / "revisions" / revision / "catalog-data.json").read_text(encoding="utf-8"))
+            self.assertEqual(data["base"]["Login.title"], "Sign In")
+            self.assertEqual(data["locales"]["zh_tw"]["Login"]["title"], "Sign In")
+            self.assertEqual(data["manifest"]["translation"]["status"], "degraded")
+            self.assertEqual(data["manifest"]["translation"]["failed_chunks"], 1)
+            self.assertEqual(data["manifest"]["translation"]["fallback_counts"]["zh_tw"], 1)
+            self.assertTrue((frontend / "src/generated/i18n/catalog.ts").is_file())
+            self.assertTrue((frontend / "public/i18n/catalogs" / f"{revision}.manifest.json").is_file())
 
 
 if __name__ == "__main__":

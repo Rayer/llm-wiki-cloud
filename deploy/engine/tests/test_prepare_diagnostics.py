@@ -366,7 +366,7 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
                 self.assertEqual(timeout, 1100)
                 self.assertEqual(env.get('GOMAXPROCS'), '2')
                 self.assertEqual(env.get('GOFLAGS'), '-p=2')
-                self.assertEqual(env.get('TMPDIR'), '/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch')
+                self.assertEqual(env.get('TMPDIR'), str(work))
                 for secret_name in ('VERCEL_TOKEN', 'VERCEL_PROJECT_ID', 'VERCEL_ORG_ID',
                                     'VERCEL_TEAM_ID', 'NOW_ORG_ID', 'NOW_PROJECT_ID'):
                     self.assertNotIn(secret_name, env)
@@ -507,6 +507,7 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
                                 claiming_workspace=False, archive_failure=False,
                                 prebuilt_runtime=False):
         with tempfile.TemporaryDirectory() as work:
+            expected_tmpdir = os.environ.get('TMPDIR', str(work))
             instance, directory, fake_root, auth_receipt_bytes = self.make_engine(
                 work, claiming_workspace=claiming_workspace)
             fake_profiles = fake_root / 'deploy/engine/profiles.json'
@@ -534,7 +535,7 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
                 if operation == 'frontend-i18n-prepare':
                     self.assertEqual(Path(cwd), fake_root)
                     self.assertEqual(timeout, 1100)
-                    self.assertEqual(env['TMPDIR'], '/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch')
+                    self.assertEqual(env['TMPDIR'], expected_tmpdir)
                     self.assertEqual(env['GOMAXPROCS'], '2')
                     self.assertEqual(env['GOFLAGS'], '-p=2')
                     for secret_name in ('VERCEL_TOKEN', 'VERCEL_PROJECT_ID', 'VERCEL_ORG_ID',
@@ -608,7 +609,7 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
                 raise AssertionError('unexpected operation in Engine.main valid-response fixture')
 
             env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'HOME': str(work),
-                   'TMPDIR': os.environ.get('TMPDIR', str(work)), 'VERCEL_TOKEN': self.token,
+                   'TMPDIR': expected_tmpdir, 'VERCEL_TOKEN': self.token,
                    'VERCEL_TEAM_ID': self.team, 'VERCEL_PROJECT_ID': self.project}
             argv = ['engine.py', 'prepare', '--directory', str(directory),
                     '--environment', 'development', '--source', instance.plan['source'],
@@ -1313,7 +1314,7 @@ else:
             for secret_name in ('VERCEL_TOKEN', 'VERCEL_PROJECT_ID', 'VERCEL_ORG_ID',
                                 'VERCEL_TEAM_ID', 'NOW_ORG_ID', 'NOW_PROJECT_ID'):
                 self.assertNotIn(secret_name, i18n[4])
-            self.assertEqual(i18n[4]['TMPDIR'], '/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch')
+            self.assertEqual(i18n[4]['TMPDIR'], inherited['TMPDIR'])
             self.assertEqual(i18n[4]['GOMAXPROCS'], '2')
             self.assertEqual(i18n[4]['GOFLAGS'], '-p=2')
             for row in (pull, build):

@@ -85,6 +85,10 @@ def prepare(environment, output, frontend_root, *, source_sha="", mode="auto", f
     run_stage(producer, cwd=root / "apps/bff", env=child_env, timeout=600, stage="i18n source assembly")
     revision = current_revision(source_output, source=True)
     revision_dir = source_output / "i18n/revisions" / revision
+    try:
+        source_catalog_revision = json.loads((revision_dir / "pipeline.json").read_text(encoding="utf-8"))["catalog_revision"]
+    except (OSError, KeyError, json.JSONDecodeError):
+        raise I18nPrepareError("i18n source catalog identity is invalid") from None
     translator = [
         "go", "run", "./cmd/pipeline_config", "translate-i18n",
         "--config", str(revision_dir / "pipeline.json"),
@@ -107,7 +111,7 @@ def prepare(environment, output, frontend_root, *, source_sha="", mode="auto", f
     except (IndexError, json.JSONDecodeError):
         raise I18nPrepareError("i18n catalog identity is invalid") from None
     bundle_revision = summary.get("bundle_revision")
-    if summary.get("catalog_revision") != revision or not isinstance(bundle_revision, str) or \
+    if summary.get("catalog_revision") != source_catalog_revision or not isinstance(bundle_revision, str) or \
             not CATALOG_SHA.fullmatch(bundle_revision):
         raise I18nPrepareError("i18n catalog identity does not match its source revision")
     if current_revision(catalog_output) != bundle_revision:
@@ -123,7 +127,8 @@ def prepare(environment, output, frontend_root, *, source_sha="", mode="auto", f
         raise I18nPrepareError("i18n frontend catalog package is incomplete")
     if public_manifest.is_symlink() or not public_manifest.is_file():
         raise I18nPrepareError("i18n public manifest is unavailable")
-    summary.update({"source_revision": source_sha or "git-head", "source_catalog_revision": revision})
+    summary.update({"source_revision": source_sha or "git-head", "source_catalog_revision": source_catalog_revision,
+                    "source_snapshot_revision": revision})
     return summary
 
 

@@ -34,9 +34,10 @@ func TestPrepareI18nTargetAssemblesStablePublicSources(t *testing.T) {
 	projection := i18nProjection{
 		SchemaVersion: 1, Environment: "local", Target: "i18n",
 		I18n: i18nConfig{
-			SchemaVersion: 1, BaseLocale: "en", TargetLocales: []string{"zh_tw", "en"}, DefaultLocale: "zh_tw",
+			SchemaVersion: 1, BaseLocale: "en", TargetLocales: []string{"zh_tw", "zh", "en"}, DefaultLocale: "zh_tw",
 			LocaleMetadata: []i18nLocale{
 				{Token: "zh_tw", UILocale: "zh-TW", IntlLocale: "zh-TW", Label: "繁體中文"},
+				{Token: "zh", UILocale: "zh-CN", IntlLocale: "zh-CN", Label: "简体中文"},
 				{Token: "en", UILocale: "en", IntlLocale: "en-US", Label: "English"},
 			},
 			Translation: i18nTranslation{
@@ -107,6 +108,50 @@ func TestPrepareI18nTargetAssemblesStablePublicSources(t *testing.T) {
 			t.Fatalf("%s changed across an identical assembly: %v", name, err)
 		}
 	}
+	if currentAfterRepeat, err := currentI18nDirectory(output); err != nil || currentAfterRepeat != artifactDir {
+		t.Fatalf("identical source did not reuse its immutable snapshot: %v", err)
+	}
+	if err := prepareI18nTarget(root, output, projectionBytes, "local", strings.Repeat("c", 40)); err != nil {
+		t.Fatalf("same content at a later source revision failed: %v", err)
+	}
+	commitSnapshot, err := currentI18nDirectory(output)
+	if err != nil || commitSnapshot == artifactDir {
+		t.Fatalf("source revision did not get a distinct snapshot: %v", err)
+	}
+	var commitConfig i18nBuildConfig
+	if err := readJSON(filepath.Join(commitSnapshot, "pipeline.json"), &commitConfig); err != nil ||
+		commitConfig.CatalogRevision != input.CatalogRevision || commitConfig.SourceRevision != strings.Repeat("c", 40) {
+		t.Fatalf("same content snapshot lost its content identity or source trace: %#v %v", commitConfig, err)
+	}
+	updatedProjection := projection
+	updatedProjection.I18n.TargetLocales = []string{"zh_tw", "en"}
+	updatedProjection.I18n.LocaleMetadata = []i18nLocale{
+		projection.I18n.LocaleMetadata[0], projection.I18n.LocaleMetadata[2],
+	}
+	updatedProjection.I18n.Translation.Model = "test-model-next"
+	updatedBytes, err := json.Marshal(updatedProjection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareI18nTarget(root, output, updatedBytes, "local", strings.Repeat("d", 40)); err != nil {
+		t.Fatalf("changed target and model failed with unchanged content: %v", err)
+	}
+	updatedSnapshot, err := currentI18nDirectory(output)
+	if err != nil || updatedSnapshot == commitSnapshot {
+		t.Fatalf("changed config did not get a distinct immutable snapshot: %v", err)
+	}
+	var updatedConfig i18nBuildConfig
+	if err := readJSON(filepath.Join(updatedSnapshot, "pipeline.json"), &updatedConfig); err != nil ||
+		updatedConfig.CatalogRevision != input.CatalogRevision || updatedConfig.SnapshotRevision == commitConfig.SnapshotRevision ||
+		updatedConfig.I18n.Translation.Model != "test-model-next" {
+		t.Fatalf("changed config snapshot lost its identity: %#v %v", updatedConfig, err)
+	}
+	for name, expected := range first {
+		actual, err := os.ReadFile(filepath.Join(artifactDir, name))
+		if err != nil || !reflect.DeepEqual(actual, expected) {
+			t.Fatalf("later snapshots changed the original %s artifact: %v", name, err)
+		}
+	}
 
 	badRegistry := strings.Replace(registry, `"mcp.instructions"`, `"private.secret.path"`, 1)
 	if err := os.WriteFile(filepath.Join(messagesDir, "source-refs.json"), []byte(badRegistry), 0o644); err != nil {
@@ -116,7 +161,7 @@ func TestPrepareI18nTargetAssemblesStablePublicSources(t *testing.T) {
 		t.Fatal("undeclared CaC reference unexpectedly assembled")
 	}
 	currentAfterFailure, err := currentI18nDirectory(output)
-	if err != nil || currentAfterFailure != artifactDir {
+	if err != nil || currentAfterFailure != updatedSnapshot {
 		t.Fatalf("failed assembly moved the current revision pointer: %v", err)
 	}
 	actual, err := os.ReadFile(filepath.Join(artifactDir, "base.json"))

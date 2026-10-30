@@ -1,7 +1,9 @@
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { translate, localeHasFallback, catalogRevision } from '@/lib/i18n';
+import catalog from '@/generated/i18n/catalog';
+import { translate, translateFromCatalog, localeHasFallback, catalogRevision } from '@/lib/i18n';
 import type { Locale } from '@/lib/i18n-core';
+import { configuredLocaleOptions, normalizeLocalePreference } from '@/lib/i18n-core';
 import { LocaleControl } from '@/components/LocaleControl';
 import { AgentMcpTabs } from '@/components/AgentMcpTabs';
 
@@ -20,6 +22,7 @@ function renderAgent(locale: Locale, identity = `project-a:${locale}:${revision}
 
 beforeEach(() => {
   localStorage.clear();
+  window.dispatchEvent(new StorageEvent('storage', { key: null }));
   Object.defineProperty(navigator, 'clipboard', {
     configurable: true,
     value: { writeText: vi.fn().mockResolvedValue(undefined) },
@@ -45,6 +48,27 @@ describe('LWC-447 runtime catalogs and locale UI', () => {
     expect(translate('zh-TW', 'MCPOAuth.sharedInstructions')).not.toContain('@cac:');
   });
 
+  it('falls back to the producer base map when a locale key or locale pack is missing', () => {
+    const producerCatalog = structuredClone(catalog) as unknown as {
+      base: Record<string, unknown>;
+      locales: Record<string, Record<string, unknown>>;
+    };
+    delete (producerCatalog.locales.zh_tw.Demo as Record<string, unknown>).sourcesCount;
+    expect(translateFromCatalog(producerCatalog, 'zh-TW', 'Demo.sourcesCount', { count: 3 })).toBe('Sources: 3');
+    producerCatalog.locales.zh_tw = {};
+    expect(translateFromCatalog(producerCatalog, 'zh-TW', 'Demo.sourcesCount', { count: 4 })).toBe('Sources: 4');
+  });
+
+  it('derives selector locales from the manifest and ignores a removed zh-CN preference', () => {
+    const options = configuredLocaleOptions(['zh_tw', 'en'], [
+      { token: 'zh_tw', label: '繁體中文' },
+      { token: 'zh', label: '简体中文' },
+      { token: 'en', label: 'English' },
+    ]);
+    expect(options.map(({ token }) => token)).toEqual(['zh_tw', 'en']);
+    expect(normalizeLocalePreference('zh-CN', options.map(({ token }) => token), 'zh_tw')).toBe('zh-TW');
+  });
+
   it('keeps committed BYOK and shared-profile copy in the catalog with explicit Simplified fallback', () => {
     for (const key of committedProviderKeys) {
       const params = key.endsWith('.discoveryPartial') ? { count: 4 } : undefined;
@@ -63,6 +87,10 @@ describe('LWC-447 runtime catalogs and locale UI', () => {
     render(<LocaleControl />);
     const select = screen.getByRole('combobox', { name: translate('zh-TW', 'Shell.language') }) as HTMLSelectElement;
     expect(select.value).toBe('zh-TW');
+    const localeByToken = { zh_tw: 'zh-TW', zh: 'zh-CN', en: 'en' } as const;
+    expect(Array.from(select.options, ({ value }) => value)).toEqual(
+      catalog.target_locales.map((token) => localeByToken[token as keyof typeof localeByToken]),
+    );
     fireEvent.change(select, { target: { value: 'zh-CN' } });
     expect(localStorage.getItem('locale')).toBe('zh-CN');
     expect(screen.getByRole('status').textContent).toContain(translate('en', 'Shell.translationFallback'));
@@ -74,6 +102,15 @@ describe('LWC-447 runtime catalogs and locale UI', () => {
     localStorage.setItem('locale', 'zh_tw');
     act(() => window.dispatchEvent(new StorageEvent('storage', { key: 'locale' })));
     expect(select.value).toBe('zh-TW');
+  });
+
+  it('switches locale for this tab when localStorage cannot be written', () => {
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new DOMException('blocked', 'SecurityError'); });
+    render(<LocaleControl />);
+    const select = screen.getByRole('combobox', { name: translate('zh-TW', 'Shell.language') }) as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: 'en' } });
+    expect(select.value).toBe('en');
+    expect(screen.queryByRole('status')).toBeNull();
   });
 
   it('renders and copies exactly the selected-locale CaC shared instructions, and fences stale locale copies', async () => {

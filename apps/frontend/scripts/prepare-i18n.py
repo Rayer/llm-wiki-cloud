@@ -162,8 +162,22 @@ def validate_source(config, source, source_manifest, base):
         raise CatalogError("source_identity_mismatch")
     if source_manifest.get("schema_version") != 1 or source_manifest.get("source_revision") != config["source_revision"] or \
             source_manifest.get("catalog_revision") != config["catalog_revision"] or \
+            source_manifest.get("snapshot_revision") != config.get("snapshot_revision") or \
             source_manifest.get("config_digest") != configured_public_digest(i18n):
         raise CatalogError("source_manifest_mismatch")
+    snapshot_identity = {
+        "schema_version": source_manifest["schema_version"],
+        "environment": source_manifest["environment"],
+        "source_revision": source_manifest["source_revision"],
+        "catalog_revision": source_manifest["catalog_revision"],
+        "config_digest": source_manifest["config_digest"],
+        "cac_projection_digest": source_manifest["cac_projection_digest"],
+        "entry_count": source_manifest["entry_count"],
+        "key_set_digest": source_manifest["key_set_digest"],
+        "files": source_manifest["files"],
+    }
+    if sha256(canonical_json(snapshot_identity)) != config.get("snapshot_revision"):
+        raise CatalogError("source_snapshot_identity_mismatch")
     entries = source.get("entries")
     if not isinstance(entries, list) or not entries or len(entries) > MAX_ENTRIES:
         raise CatalogError("source_entry_count_invalid")
@@ -354,9 +368,15 @@ def safe_provider_call(endpoint, model, api_key, chunk, locale, max_tokens, time
     if len(raw) > MAX_RESPONSE_BYTES:
         raise CatalogError("provider_response_oversized")
     envelope = json.loads(raw.decode("utf-8"), object_pairs_hook=reject_duplicate_pairs)
-    content = envelope.get("choices", [{}])[0].get("message", {}).get("content") if isinstance(envelope, dict) else None
-    if not isinstance(content, str):
+    if not isinstance(envelope, dict):
         raise CatalogError("provider_response_invalid")
+    choices = envelope.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        raise CatalogError("provider_response_invalid")
+    message = choices[0].get("message")
+    if not isinstance(message, dict) or not isinstance(message.get("content"), str):
+        raise CatalogError("provider_response_invalid")
+    content = message["content"]
     result = json.loads(content, object_pairs_hook=reject_duplicate_pairs)
     if not isinstance(result, dict) or set(result) != {"translations"} or not isinstance(result["translations"], dict):
         raise CatalogError("provider_schema_invalid")
@@ -469,21 +489,51 @@ def translate_locale(entries, token, base, seed, fixture, translation, prompt_ve
                     return index, None, "provider_response_invalid"
             return index, None, "provider_unavailable"
 
+        def use_fallback(chunk):
+            for entry in chunk:
+                result[entry["key"]], statuses[entry["key"]] = base[entry["key"]], "fallback"
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-            futures = [pool.submit(translate_chunk, index, chunk) for index, chunk in enumerate(chunks)]
-            for future in concurrent.futures.as_completed(futures):
-                index, values, status = future.result()
-                if values is None:
-                    failed_chunks += 1
-                    for entry in chunks[index]:
-                        result[entry["key"]], statuses[entry["key"]] = base[entry["key"]], "fallback"
-                    continue
-                for entry in chunks[index]:
-                    key = entry["key"]
-                    value = values[key]
-                    cache_path = cache_root / (cache_key(entry, token, translation, prompt_version) + ".json") if cache_root else None
-                    write_cache(cache_path, value)
-                    result[key], statuses[key] = value, "translated"
+            remaining = iter(enumerate(chunks))
+            active = {}
+
+            def schedule_ready_chunks():
+                nonlocal failed_chunks
+                while len(active) < 2:
+                    try:
+                        index, chunk = next(remaining)
+                    except StopIteration:
+                        return
+                    if time.monotonic() >= deadline:
+                        use_fallback(chunk)
+                        failed_chunks += 1
+                        for _, skipped in remaining:
+                            use_fallback(skipped)
+                            failed_chunks += 1
+                        return
+                    active[pool.submit(translate_chunk, index, chunk)] = index
+
+            schedule_ready_chunks()
+            while active:
+                done, _ = concurrent.futures.wait(active, return_when=concurrent.futures.FIRST_COMPLETED)
+                for future in done:
+                    index = active.pop(future)
+                    try:
+                        _, values, _ = future.result()
+                    except Exception:
+                        values = None
+                    chunk = chunks[index]
+                    if values is None:
+                        failed_chunks += 1
+                        use_fallback(chunk)
+                        continue
+                    for entry in chunk:
+                        key = entry["key"]
+                        value = values[key]
+                        cache_path = cache_root / (cache_key(entry, token, translation, prompt_version) + ".json") if cache_root else None
+                        write_cache(cache_path, value)
+                        result[key], statuses[key] = value, "translated"
+                schedule_ready_chunks()
     return result, statuses, failed_chunks, len(pending), invalid_fixture_entries
 
 
@@ -615,8 +665,6 @@ def prepare_catalog(args):
         failed_chunks += failures
         attempted_entries += attempted
         invalid_fixture_entries += invalid_fixture
-    if time.monotonic() - start > MAX_STAGE_SECONDS:
-        raise CatalogError("translation_stage_deadline_exceeded")
     locale_bytes = {
         token: json.dumps(locale, ensure_ascii=False, indent=2).encode("utf-8") + b"\n"
         for token, locale in locales.items()

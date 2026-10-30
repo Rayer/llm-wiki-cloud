@@ -99,7 +99,7 @@ func runTranslateI18n(ctx context.Context, options i18nTranslationOptions, newRe
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&config); err != nil || config.SchemaVersion != 1 || config.Target != "i18n" ||
 		!i18nSourceSHA.MatchString(config.SourceRevision) || !regexpI18nDigest.MatchString(config.CatalogRevision) ||
-		filepath.Base(artifactDir) != config.CatalogRevision {
+		!regexpI18nDigest.MatchString(config.SnapshotRevision) || filepath.Base(artifactDir) != config.SnapshotRevision {
 		return errors.New("i18n pipeline config identity is invalid")
 	}
 	if err := validateI18nConfig(config.I18n, config.Environment); err != nil {
