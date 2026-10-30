@@ -8,36 +8,12 @@ import (
 
 type ProfileEligibilityCheck func(context.Context, ProfileConfig) error
 
-type ProfileOperationState struct {
-	mu     sync.Mutex
-	worked bool
-}
-
-func (s *ProfileOperationState) hasWorked() bool {
-	if s == nil {
-		return false
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.worked
-}
-
-func (s *ProfileOperationState) markWorked() {
-	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	s.worked = true
-	s.mu.Unlock()
-}
-
 // ProfilePoolClient performs a bounded, ordered pool traversal. It advances
 // only after an explicit quota-exhaustion response; other provider failures
 // stop the operation. The pool is created per operation, never shared.
 type ProfilePoolClient struct {
 	profiles   []*ProfileClient
 	check      ProfileEligibilityCheck
-	state      *ProfileOperationState
 	mu         sync.Mutex
 	exhausted  map[string]struct{}
 	last       ProfileConfig
@@ -46,10 +22,6 @@ type ProfilePoolClient struct {
 }
 
 func NewProfilePoolClient(profiles []*ProfileClient, check ProfileEligibilityCheck) (*ProfilePoolClient, error) {
-	return NewProfilePoolClientWithState(profiles, check, &ProfileOperationState{})
-}
-
-func NewProfilePoolClientWithState(profiles []*ProfileClient, check ProfileEligibilityCheck, state *ProfileOperationState) (*ProfilePoolClient, error) {
 	if len(profiles) == 0 {
 		return nil, errors.New("shared LLM pool is unavailable")
 	}
@@ -59,17 +31,16 @@ func NewProfilePoolClientWithState(profiles []*ProfileClient, check ProfileEligi
 			return nil, errors.New("shared LLM pool contains an invalid profile")
 		}
 	}
-	if state == nil {
-		state = &ProfileOperationState{}
-	}
-	return &ProfilePoolClient{profiles: copyOfProfiles, check: check, state: state, exhausted: make(map[string]struct{})}, nil
+	return &ProfilePoolClient{profiles: copyOfProfiles, check: check, exhausted: make(map[string]struct{})}, nil
 }
 
 func (c *ProfilePoolClient) Complete(ctx context.Context, systemPrompt, userMessage string) (CompletionResult, error) {
 	if c == nil {
 		return CompletionResult{}, &ProfileCallError{Kind: ProviderFailure}
 	}
-	allowFallback := !c.state.hasWorked()
+	// A profile pool traversal belongs to this provider call. Earlier successful
+	// expansion requests are independent work and do not suppress quota fallback
+	// for later synthesis. Worker batch reruns use separate Synto markers.
 	for _, profile := range c.profiles {
 		configuration := profile.ProfileConfig()
 		c.mu.Lock()
@@ -86,9 +57,6 @@ func (c *ProfilePoolClient) Complete(ctx context.Context, systemPrompt, userMess
 		result, err := profile.Complete(ctx, systemPrompt, userMessage)
 		if err != nil {
 			if IsQuotaExhausted(err) {
-				if !allowFallback {
-					return CompletionResult{}, err
-				}
 				c.mu.Lock()
 				c.exhausted[configuration.ID] = struct{}{}
 				c.mu.Unlock()
@@ -99,7 +67,6 @@ func (c *ProfilePoolClient) Complete(ctx context.Context, systemPrompt, userMess
 		c.mu.Lock()
 		c.last, c.lastModel, c.lastResult = configuration, result.Metadata.ReturnedModel, result.Metadata
 		c.mu.Unlock()
-		c.state.markWorked()
 		return result, nil
 	}
 	return CompletionResult{}, &ProfileCallError{Kind: ProviderQuotaExhausted, StatusCode: 429}

@@ -60,14 +60,13 @@ func TestQueryRuntimeUsesProjectProfileFixtureTransport(t *testing.T) {
 		fastProfile.Close()
 		t.Fatal(err)
 	}
-	state := &llm.ProfileOperationState{}
-	fastPool, err := llm.NewProfilePoolClientWithState([]*llm.ProfileClient{fastProfile}, nil, state)
+	fastPool, err := llm.NewProfilePoolClient([]*llm.ProfileClient{fastProfile}, nil)
 	if err != nil {
 		fastProfile.Close()
 		heavyProfile.Close()
 		t.Fatal(err)
 	}
-	heavyPool, err := llm.NewProfilePoolClientWithState([]*llm.ProfileClient{heavyProfile}, nil, state)
+	heavyPool, err := llm.NewProfilePoolClient([]*llm.ProfileClient{heavyProfile}, nil)
 	if err != nil {
 		fastPool.Close()
 		heavyProfile.Close()

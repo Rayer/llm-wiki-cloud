@@ -1019,7 +1019,6 @@ func (h *Handler) profileRoleClientsForRecords(ctx context.Context, owner, sourc
 	if source != "shared" {
 		return llm.ProjectRoleClients{}, errLLMProfileUnavailable
 	}
-	state := &llm.ProfileOperationState{}
 	build := func(role llm.ProfileRole) ([]*llm.ProfileClient, error) {
 		clients := make([]*llm.ProfileClient, 0, len(profiles))
 		for _, profile := range profiles {
@@ -1056,7 +1055,7 @@ func (h *Handler) profileRoleClientsForRecords(ctx context.Context, owner, sourc
 		}
 		return nil
 	}
-	fast, err := llm.NewProfilePoolClientWithState(fastClients, check, state)
+	fast, err := llm.NewProfilePoolClient(fastClients, check)
 	if err != nil {
 		for _, client := range fastClients {
 			client.Close()
@@ -1066,7 +1065,7 @@ func (h *Handler) profileRoleClientsForRecords(ctx context.Context, owner, sourc
 		}
 		return llm.ProjectRoleClients{}, errLLMSharedPoolUnavailable
 	}
-	heavy, err := llm.NewProfilePoolClientWithState(heavyClients, check, state)
+	heavy, err := llm.NewProfilePoolClient(heavyClients, check)
 	if err != nil {
 		fast.Close()
 		for _, client := range heavyClients {

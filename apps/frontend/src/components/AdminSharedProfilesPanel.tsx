@@ -31,14 +31,25 @@ export function AdminSharedProfilesPanel() {
   const [available, setAvailable] = useState(true);
   const [priority, setPriority] = useState(100);
   const [discovered, setDiscovered] = useState<Record<Role, string[]>>({ fast: [], heavy: [] });
+  const [discoveryStale, setDiscoveryStale] = useState<Record<Role, boolean>>({ fast: false, heavy: false });
   const [operations, setOperations] = useState<Record<Role, OperationState>>({ fast: emptyOperation(), heavy: emptyOperation() });
   const draftVersion = useRef(0);
   const operationID = useRef<Record<Role, number>>({ fast: 0, heavy: 0 });
+  const modelVersion = useRef<Record<Role, number>>({ fast: 0, heavy: 0 });
 
   function invalidateOperationResults() {
     draftVersion.current += 1;
     setDiscovered({ fast: [], heavy: [] });
+    setDiscoveryStale({ fast: false, heavy: false });
     setOperations({ fast: emptyOperation(), heavy: emptyOperation() });
+  }
+
+  function invalidateRoleTestResult(role: Role) {
+    modelVersion.current[role] += 1;
+    setOperations((current) => {
+      if (current[role].busy === 'discover') return current;
+      return { ...current, [role]: emptyOperation() };
+    });
   }
 
   const load = useCallback(async () => {
@@ -79,6 +90,10 @@ export function AdminSharedProfilesPanel() {
       provider_timeout: 'Admin.sharedProfiles.operationTimeoutError',
       provider_billing: 'Admin.sharedProfiles.operationBillingError',
       provider_response_invalid: 'Admin.sharedProfiles.operationResponseError',
+      provider_discovery_unsupported: 'Admin.sharedProfiles.operationDiscoveryUnsupported',
+      provider_model_not_found: 'Admin.sharedProfiles.operationModelNotFound',
+      provider_parameter_unsupported: 'Admin.sharedProfiles.operationParameterUnsupported',
+      provider_permission_denied: 'Admin.sharedProfiles.operationPermissionError',
       credential_unavailable: 'Admin.sharedProfiles.operationCredentialError',
       profile_changed: 'Admin.sharedProfiles.operationProfileChanged',
     };
@@ -88,6 +103,7 @@ export function AdminSharedProfilesPanel() {
     return {
       ...(editing ? { profile_id: editing.id, revision: editing.revision } : {}),
       provider, protocol, endpoint: endpoint.trim(), models: { fast: fastModel.trim(), heavy: heavyModel.trim() }, role,
+      credential_mode: apiKey.trim() ? 'replacement' : credentialReference || editing?.secret_configured ? 'saved' : 'none',
       ...(apiKey.trim() ? { api_key: apiKey } : {}), ...(credentialReference ? { credential_reference: credentialReference } : {}),
     };
   }
@@ -95,20 +111,31 @@ export function AdminSharedProfilesPanel() {
     if (busy || operations[role].busy) return;
     const version = draftVersion.current;
     const requestID = ++operationID.current[role];
+    const requestedModelVersion = modelVersion.current[role];
+    const isStale = () => version !== draftVersion.current || requestID !== operationID.current[role]
+      || (operation === 'test' && requestedModelVersion !== modelVersion.current[role]);
     setOperations((current) => ({ ...current, [role]: { busy: operation, error: '', notice: '', testText: '' } }));
     try {
       if (operation === 'discover') {
         const result = await discoverAdminLLMProfileModels(operationInput(role));
-        if (version !== draftVersion.current || requestID !== operationID.current[role]) return;
+        if (isStale()) return;
+        if (result.status === 'unsupported') {
+          setDiscoveryStale((current) => ({ ...current, [role]: true }));
+          setOperations((current) => ({ ...current, [role]: { busy: null, error: '', notice: t('Admin.sharedProfiles.operationDiscoveryUnsupported'), testText: '' } }));
+          return;
+        }
         setDiscovered((current) => ({ ...current, [role]: result.models }));
-        setOperations((current) => ({ ...current, [role]: { busy: null, error: '', notice: t('Admin.sharedProfiles.discoverySuccess', { count: result.models.length }), testText: '' } }));
+        setDiscoveryStale((current) => ({ ...current, [role]: false }));
+        const notice = result.partial ? t('Admin.sharedProfiles.discoveryPartial', { count: result.models.length }) : t('Admin.sharedProfiles.discoverySuccess', { count: result.models.length });
+        setOperations((current) => ({ ...current, [role]: { busy: null, error: '', notice, testText: '' } }));
       } else {
         const result = await testAdminLLMProfileMessage(operationInput(role));
-        if (version !== draftVersion.current || requestID !== operationID.current[role]) return;
+        if (isStale()) return;
         setOperations((current) => ({ ...current, [role]: { busy: null, error: '', notice: t('Admin.sharedProfiles.testSuccess'), testText: result.text } }));
       }
     } catch (operationFailure: unknown) {
-      if (version !== draftVersion.current || requestID !== operationID.current[role]) return;
+      if (isStale()) return;
+      if (operation === 'discover') setDiscoveryStale((current) => ({ ...current, [role]: true }));
       setOperations((current) => ({ ...current, [role]: { busy: null, error: operationError(operationFailure), notice: '', testText: '' } }));
     }
   }
@@ -142,9 +169,10 @@ export function AdminSharedProfilesPanel() {
     const modelListID = `admin-${role}-models`;
     return <div className="space-y-2 rounded-md border border-white/10 bg-black/20 p-3">
       <label className="block text-sm text-zinc-300">{t(role === 'fast' ? 'BYOK.fastModel' : 'BYOK.heavyModel')}
-        <input required maxLength={200} list={modelListID} value={model} onChange={(event) => { invalidateOperationResults(); setModel(event.target.value); }} className="mt-1 min-h-11 w-full rounded-md border border-white/10 bg-black/30 px-3 text-white" />
+        <input required maxLength={200} list={modelListID} value={model} onChange={(event) => { invalidateRoleTestResult(role); setModel(event.target.value); }} className="mt-1 min-h-11 w-full rounded-md border border-white/10 bg-black/30 px-3 text-white" />
         <datalist id={modelListID}>{discovered[role].map((item) => <option key={item} value={item} />)}</datalist>
       </label>
+      {discoveryStale[role] && discovered[role].length > 0 ? <p className="text-xs text-amber-200">{t('Admin.sharedProfiles.discoveryStale')}</p> : null}
       <div className="flex flex-wrap gap-2">
         <button type="button" disabled={busy || op.busy !== null} onClick={() => void runOperation(role, 'discover')} className="min-h-10 rounded-md border border-white/15 px-3 text-sm text-zinc-200 disabled:opacity-50">{op.busy === 'discover' ? t('BYOK.discovering') : t('BYOK.discoverModels')}</button>
         <button type="button" disabled={busy || op.busy !== null || !model.trim()} onClick={() => void runOperation(role, 'test')} className="min-h-10 rounded-md border border-emerald-300/30 px-3 text-sm text-emerald-100 disabled:opacity-50">{op.busy === 'test' ? t('BYOK.testing') : t('BYOK.testMessage')}</button>
@@ -169,7 +197,7 @@ export function AdminSharedProfilesPanel() {
     <form onSubmit={(event) => void save(event)} className="space-y-3 rounded-lg border border-white/10 bg-black/20 p-4">
       <h3 className="font-semibold text-white">{editing ? t('Admin.sharedProfiles.editTitle') : t('Admin.sharedProfiles.addTitle')}</h3>
       <div className="grid gap-3 sm:grid-cols-2">
-        <label className="text-sm text-zinc-300">{t('BYOK.name')}<input required maxLength={100} value={name} onChange={(event) => { invalidateOperationResults(); setName(event.target.value); }} className="mt-1 min-h-11 w-full rounded-md border border-white/10 bg-black/30 px-3 text-white" /></label>
+        <label className="text-sm text-zinc-300">{t('BYOK.name')}<input required maxLength={100} value={name} onChange={(event) => setName(event.target.value)} className="mt-1 min-h-11 w-full rounded-md border border-white/10 bg-black/30 px-3 text-white" /></label>
         <label className="text-sm text-zinc-300">{t('BYOK.provider')}<select value={provider} onChange={(event) => chooseProvider(event.target.value as LLMProfile['provider'])} className="mt-1 min-h-11 w-full rounded-md border border-white/10 bg-zinc-900 px-3 text-white"><option value="openai">OpenAI</option><option value="xai">xAI</option><option value="anthropic">Anthropic</option><option value="custom">{t('BYOK.custom')}</option></select></label>
         <label className="text-sm text-zinc-300">{t('BYOK.protocol')}<select disabled={provider !== 'custom'} value={protocol} onChange={(event) => { invalidateOperationResults(); setProtocol(event.target.value as LLMProfile['protocol']); }} className="mt-1 min-h-11 w-full rounded-md border border-white/10 bg-zinc-900 px-3 text-white"><option value="openai_chat_completions">OpenAI Chat Completions</option><option value="anthropic_messages">Anthropic Messages</option></select></label>
         <label className="text-sm text-zinc-300">{t('BYOK.endpoint')}<input type="url" required value={endpoint} onChange={(event) => { invalidateOperationResults(); setEndpoint(event.target.value); }} readOnly={provider !== 'custom'} className="mt-1 min-h-11 w-full rounded-md border border-white/10 bg-black/30 px-3 text-white" /></label>
