@@ -24,17 +24,17 @@ const (
 )
 
 var (
-	ErrInvalidFilename     = errors.New("invalid filename")
-	ErrUnsupportedFile     = errors.New("unsupported file type")
-	ErrEmptyFile           = errors.New("empty file")
-	ErrFileTooLarge        = errors.New("file too large")
-	ErrInvalidContent      = errors.New("file content does not match its extension")
-	ErrInvalidSubmissionID = errors.New("invalid client submission id")
+	ErrInvalidFilename      = errors.New("invalid filename")
+	ErrUnsupportedFile      = errors.New("unsupported file type")
+	ErrEmptyFile            = errors.New("empty file")
+	ErrFileTooLarge         = errors.New("file too large")
+	ErrInvalidContent       = errors.New("file content does not match its extension")
+	ErrInvalidSubmissionID  = errors.New("invalid client submission id")
 	ErrArchiveResourceLimit = errors.New("office archive exceeds safe processing limits")
-	ErrNoReadableText      = errors.New("no readable text")
-	ErrConflict            = errors.New("document import conflict")
-	ErrNotFound            = errors.New("document import not found")
-	ErrStateConflict       = errors.New("document import state conflict")
+	ErrNoReadableText       = errors.New("no readable text")
+	ErrConflict             = errors.New("document import conflict")
+	ErrNotFound             = errors.New("document import not found")
+	ErrStateConflict        = errors.New("document import state conflict")
 )
 
 type ConversionState string
@@ -241,18 +241,23 @@ func validateSignature(ext string, data []byte) error {
 			return ErrInvalidContent
 		}
 		var contentType string
+		foundContentTypes := false
 		if len(zipReader.File) > 2000 {
 			return ErrArchiveResourceLimit
 		}
 		var uncompressed uint64
 		for _, entry := range zipReader.File {
-			uncompressed += entry.UncompressedSize64
-			if uncompressed > 64<<20 {
+			if uncompressed > 64<<20 || entry.UncompressedSize64 > (64<<20)-uncompressed {
 				return ErrArchiveResourceLimit
 			}
-			if entry.Name != "[Content_Types].xml" || entry.UncompressedSize64 > 1<<20 {
+			uncompressed += entry.UncompressedSize64
+			if entry.Name != "[Content_Types].xml" {
 				continue
 			}
+			if foundContentTypes || entry.UncompressedSize64 > 1<<20 {
+				return ErrInvalidContent
+			}
+			foundContentTypes = true
 			reader, err := entry.Open()
 			if err != nil {
 				return ErrInvalidContent
@@ -263,14 +268,13 @@ func validateSignature(ext string, data []byte) error {
 				return ErrInvalidContent
 			}
 			contentType = string(body)
-			break
 		}
 		want := map[string]string{
 			".docx": "wordprocessingml.document.main+xml",
 			".pptx": "presentationml.presentation.main+xml",
 			".xlsx": "spreadsheetml.sheet.main+xml",
 		}[ext]
-		if !strings.Contains(contentType, want) {
+		if !foundContentTypes || !strings.Contains(contentType, want) {
 			return ErrInvalidContent
 		}
 	}

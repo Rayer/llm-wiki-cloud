@@ -232,27 +232,6 @@ func (r *FirestoreRepository) SetDispatchState(ctx context.Context, ownerID, pro
 		if record.ConversionState == ConversionReceiving || record.DeletionState != DeletionPresent {
 			return ErrStateConflict
 		}
-		var workRef *cloudfirestore.DocumentRef
-		var completedWork *profileruntime.Work
-		if state == "started" && record.AttemptID != "" {
-			work := profileruntime.Work{UserID: ownerID, ProjectID: projectID, Kind: "document_import", ID: record.AttemptID}
-			workRef = scopedfirestore.Collection(r.client, profileruntime.WorkCollection).Doc(profileruntime.WorkID(work))
-			workSnap, workErr := tx.Get(workRef)
-			if workErr == nil {
-				var queued profileruntime.Work
-				if err := workSnap.DataTo(&queued); err != nil {
-					return err
-				}
-				if queued.Pending && queued.Token == "" {
-					queued.Pending = false
-					queued.Status = "complete"
-					queued.LeaseUntil = time.Time{}
-					completedWork = &queued
-				}
-			} else if status.Code(workErr) != codes.NotFound {
-				return workErr
-			}
-		}
 		record.DispatchState = state
 		if executionID != "" {
 			record.JobExecutionID = executionID
@@ -262,11 +241,6 @@ func (r *FirestoreRepository) SetDispatchState(ctx context.Context, ownerID, pro
 		projectRevision := readProjectState(projectSnap.Data()).Revision + 1
 		if err := tx.Set(recordRef, record); err != nil {
 			return err
-		}
-		if completedWork != nil {
-			if err := tx.Set(workRef, *completedWork); err != nil {
-				return err
-			}
 		}
 		return tx.Set(project, map[string]any{"document_import_revision": projectRevision}, cloudfirestore.MergeAll)
 	})
@@ -771,25 +745,34 @@ func (r *FirestoreRepository) List(ctx context.Context, ownerID, projectID, filt
 	}
 	if phase == "failed" {
 		start := current
-		failed, more, err := r.queryPage(ctx, ownerID, projectID, "failed", start, limit+1)
+		failed, failedMore, err := r.queryPage(ctx, ownerID, projectID, "failed", start, limit+1)
 		if err != nil {
 			return ListResult{}, err
 		}
-		items = append(items, failed...)
-		if more {
-			items = items[:limit]
+		if failedMore || len(failed) > limit {
+			items = failed[:limit]
 			next = makeCursor(projectID, filter, state.Revision, "failed", items[len(items)-1])
-		} else if filter == "all" && len(items) < limit {
-			nonfailed, nonfailedMore, err := r.queryPage(ctx, ownerID, projectID, "nonfailed", nil, limit-len(items)+1)
-			if err != nil {
-				return ListResult{}, err
-			}
-			items = append(items, nonfailed...)
-			if len(items) > limit {
-				items = items[:limit]
-				next = makeCursor(projectID, filter, state.Revision, "nonfailed", items[len(items)-1])
-			} else if nonfailedMore {
-				next = makeCursor(projectID, filter, state.Revision, "nonfailed", items[len(items)-1])
+		} else {
+			items = failed
+			if filter == "all" {
+				remaining := limit - len(items)
+				nonfailed, nonfailedMore, err := r.queryPage(ctx, ownerID, projectID, "nonfailed", nil, remaining+1)
+				if err != nil {
+					return ListResult{}, err
+				}
+				if remaining == 0 {
+					if len(nonfailed) > 0 || nonfailedMore {
+						next = makeCursor(projectID, filter, state.Revision, "failed", items[len(items)-1])
+					}
+				} else if len(nonfailed) > remaining {
+					items = append(items, nonfailed[:remaining]...)
+					next = makeCursor(projectID, filter, state.Revision, "nonfailed", items[len(items)-1])
+				} else {
+					items = append(items, nonfailed...)
+					if nonfailedMore && len(items) > 0 {
+						next = makeCursor(projectID, filter, state.Revision, "nonfailed", items[len(items)-1])
+					}
+				}
 			}
 		}
 	} else {
@@ -801,10 +784,11 @@ func (r *FirestoreRepository) List(ctx context.Context, ownerID, projectID, filt
 		if err != nil {
 			return ListResult{}, err
 		}
-		items = page
-		if more {
-			items = items[:limit]
+		if more || len(page) > limit {
+			items = page[:limit]
 			next = makeCursor(projectID, filter, state.Revision, phase, items[len(items)-1])
+		} else {
+			items = page
 		}
 	}
 	for i := range items {

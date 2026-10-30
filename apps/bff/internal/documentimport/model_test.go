@@ -55,6 +55,47 @@ func TestValidateUploadAcceptsOnlyDeclaredFormatsAndChecksSignatures(t *testing.
 	}
 }
 
+func TestValidateUploadScansEntireOfficeArchiveBeforeAccepting(t *testing.T) {
+	large := bytes.Repeat([]byte("x"), (64<<20)+1)
+	contentTypes := []byte(`<Types><Override ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>`)
+	for _, tc := range []struct {
+		name    string
+		entries []zipEntry
+	}{
+		{name: "content types first", entries: []zipEntry{{"[Content_Types].xml", contentTypes}, {"large.bin", large}}},
+		{name: "content types middle", entries: []zipEntry{{"small-before.bin", []byte("before")}, {"[Content_Types].xml", contentTypes}, {"large.bin", large}}},
+		{name: "content types last", entries: []zipEntry{{"large.bin", large}, {"small-before.bin", []byte("before")}, {"[Content_Types].xml", contentTypes}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data := officeArchiveFixture(t, tc.entries...)
+			if len(data) > MaxOriginalBytes {
+				t.Fatalf("fixture compressed size = %d, want <= %d", len(data), MaxOriginalBytes)
+			}
+			if _, _, err := ValidateUpload("report.docx", data); !errors.Is(err, ErrArchiveResourceLimit) {
+				t.Fatalf("ValidateUpload() error = %v, want %v", err, ErrArchiveResourceLimit)
+			}
+		})
+	}
+}
+
+func TestValidateUploadAcceptsContentTypesAtAnyArchivePosition(t *testing.T) {
+	contentTypes := []byte(`<Types><Override ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>`)
+	for _, tc := range []struct {
+		name    string
+		entries []zipEntry
+	}{
+		{name: "first", entries: []zipEntry{{"[Content_Types].xml", contentTypes}, {"document.xml", []byte("body")}}},
+		{name: "middle", entries: []zipEntry{{"before.xml", []byte("before")}, {"[Content_Types].xml", contentTypes}, {"document.xml", []byte("body")}}},
+		{name: "last", entries: []zipEntry{{"document.xml", []byte("body")}, {"before.xml", []byte("before")}, {"[Content_Types].xml", contentTypes}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, _, err := ValidateUpload("report.docx", officeArchiveFixture(t, tc.entries...)); err != nil {
+				t.Fatalf("ValidateUpload() error = %v", err)
+			}
+		})
+	}
+}
+
 func TestPublicRecordHidesStorageAndDispatchDetails(t *testing.T) {
 	record := PublicRecord(Record{
 		DocumentID: "document-1", OriginalObjectPath: ".lwc/document-imports/document-1/original",
@@ -78,7 +119,7 @@ func TestPublicRecordHidesStorageAndDispatchDetails(t *testing.T) {
 
 func TestValidateSubmissionIDRequiresBoundedOpaqueValue(t *testing.T) {
 	for _, tc := range []struct {
-		name string
+		name  string
 		value string
 		valid bool
 	}{
@@ -101,14 +142,26 @@ func TestValidateSubmissionIDRequiresBoundedOpaqueValue(t *testing.T) {
 
 func officeFixture(t *testing.T, contentType string) []byte {
 	t.Helper()
+	return officeArchiveFixture(t, zipEntry{"[Content_Types].xml", []byte(`<Types><Override ContentType="` + contentType + `"/></Types>`)})
+}
+
+type zipEntry struct {
+	name string
+	data []byte
+}
+
+func officeArchiveFixture(t *testing.T, entries ...zipEntry) []byte {
+	t.Helper()
 	var output bytes.Buffer
 	w := zip.NewWriter(&output)
-	file, err := w.Create("[Content_Types].xml")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := file.Write([]byte(`<Types><Override ContentType="` + contentType + `"/></Types>`)); err != nil {
-		t.Fatal(err)
+	for _, entry := range entries {
+		file, err := w.Create(entry.name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := file.Write(entry.data); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := w.Close(); err != nil {
 		t.Fatal(err)

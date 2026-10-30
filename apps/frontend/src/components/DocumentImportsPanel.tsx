@@ -14,7 +14,8 @@ type LoadError = { message: string; requestId?: string; diagnosticId?: string };
 
 const FILTERS: ImportFilter[] = ['all', 'pending', 'succeeded', 'failed'];
 const pendingState = (record: DocumentImportRecord) => ['accepted', 'queued', 'converting'].includes(record.conversion_state)
-  || record.source_state === 'saving' || record.source_state === 'unknown';
+  || record.source_state === 'saving' || record.source_state === 'unknown' || record.deletion_state === 'deleting'
+  || ['pending', 'preparing', 'running', 'unknown'].includes(record.pipeline_ref?.status ?? '');
 
 function recordError(cause: unknown): LoadError {
   return {
@@ -39,6 +40,7 @@ export function DocumentImportsPanel({ projectId, sourcePaths }: Props) {
   const [feedback, setFeedback] = useState<Record<string, string>>({});
   const targetRowRef = useRef<HTMLLIElement | null>(null);
   const focusedDocumentIdRef = useRef('');
+  const observedDeletionsRef = useRef<{ scope: string; states: Map<string, string> }>({ scope: '', states: new Map() });
 
   const load = useCallback(async (cursor?: string, append = false) => {
     try {
@@ -103,9 +105,22 @@ export function DocumentImportsPanel({ projectId, sourcePaths }: Props) {
     return () => window.clearInterval(timer);
   }, [hasPending, load]);
 
+  useEffect(() => {
+    const scope = `${projectId}:${filter}`;
+    const states = new Map(records.map((record) => [record.document_id, record.deletion_state]));
+    const previous = observedDeletionsRef.current;
+    if (previous.scope !== scope) {
+      observedDeletionsRef.current = { scope, states };
+      return;
+    }
+    const completedDeletion = [...previous.states].some(([id, state]) => state === 'deleting' && states.get(id) !== 'deleting');
+    observedDeletionsRef.current = { scope, states };
+    if (completedDeletion) void refreshNavCounts();
+  }, [filter, projectId, records, refreshNavCounts]);
+
   const visibleRecords = useMemo(() => records.filter((record) => {
     if (record.deletion_state === 'deleted') return false;
-    if (filter === 'all' && record.source_state === 'saved' && record.source_ref && sourcePaths.includes(record.source_ref.raw_path)) return false;
+    if (filter === 'all' && record.source_state === 'saved' && record.source_ref && sourcePaths.includes(record.source_ref.raw_path) && !record.pipeline_ref?.status) return false;
     return true;
   }), [filter, records, sourcePaths]);
 
@@ -136,6 +151,7 @@ export function DocumentImportsPanel({ projectId, sourcePaths }: Props) {
   };
 
   const remove = async (record: DocumentImportRecord) => {
+    if (record.deletion_state === 'deleting' || record.deletion_state === 'deleted') return;
     if (!window.confirm(t('Source.documentImport.confirmDelete', { filename: record.original_filename }))) return;
     setBusy((current) => ({ ...current, [record.document_id]: 'delete' }));
     setFeedback((current) => ({ ...current, [record.document_id]: '' }));
@@ -199,7 +215,7 @@ export function DocumentImportsPanel({ projectId, sourcePaths }: Props) {
                       {busyAction === 'download' ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : <Download className="size-4" aria-hidden="true" />}{t('Source.documentImport.downloadOriginal')}
                     </button>
                     {(conversionFailed || (record.source_state === 'failed' && !record.source_ref)) ? (
-                      <button type="button" onClick={() => void remove(record)} disabled={Boolean(busyAction)} className="inline-flex min-h-10 items-center gap-2 rounded-md border border-red-400/30 px-3 py-2 text-sm text-red-100 hover:bg-red-400/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-red-300 disabled:opacity-50">
+                      <button type="button" onClick={() => void remove(record)} disabled={Boolean(busyAction) || record.deletion_state === 'deleting' || record.deletion_state === 'deleted'} className="inline-flex min-h-10 items-center gap-2 rounded-md border border-red-400/30 px-3 py-2 text-sm text-red-100 hover:bg-red-400/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-red-300 disabled:opacity-50">
                         {busyAction === 'delete' ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : <Trash2 className="size-4" aria-hidden="true" />}{t('Source.documentImport.delete')}
                       </button>
                     ) : null}
