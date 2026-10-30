@@ -734,6 +734,175 @@ func TestRunTimeoutMustBeExplicit(t *testing.T) {
 	}
 }
 
+func TestRealPklDevBFFMaterializeUsesInjectedLoopbackSDKWithoutADC(t *testing.T) {
+	realPKL := strings.TrimSpace(os.Getenv("PKL_BIN"))
+	if realPKL == "" {
+		var err error
+		realPKL, err = exec.LookPath("pkl")
+		if err != nil {
+			t.Fatalf("Pkl is required for real DEV BFF prepare acceptance: %v", err)
+		}
+	}
+	repoRoot, err := filepath.Abs(filepath.Join("..", "..", "..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LWC_REPOSITORY_ROOT", repoRoot)
+	t.Setenv("PKL_BIN", realPKL)
+	t.Setenv("PKL_CACHE_DIR", "")
+	t.Setenv("LWC_PIPELINE_RUN_TIMEOUT_SECONDS", "")
+	t.Setenv("LWC_PIPELINE_LOCAL_SECRET_VERSION_RESOURCE", "")
+	t.Setenv("LLM_API_KEY", "TEST_ONLY_LOCAL_LLM_KEY")
+	t.Setenv("DEEPSEEK_API_KEY", "")
+	t.Setenv("TYPESAFE_JEV_API_KEY", "TEST_ONLY_LEGACY_JEV_DECOY")
+	t.Setenv("TYPESAFE_API_KEY", "TEST_ONLY_LOCAL_TYPESAFE_API_KEY")
+	t.Setenv("GCP_PROJECT", "llm-wiki-cloud")
+	t.Setenv("BUCKET", "llm-wiki-cloud-local")
+	t.Setenv("FIRESTORE_DATABASE_ID", "llm-wiki-cloud-local")
+	t.Setenv("ALLOWED_HOSTS", "localhost,127.0.0.1")
+	t.Setenv("ALLOWED_ORIGINS", "http://localhost:13000")
+	t.Setenv("AUTH_SERVICE_URL", "http://localhost:18081")
+	t.Setenv("DEV_JWT", "false")
+	t.Setenv("LOCAL_DATA_DIR", "")
+	t.Setenv("JWT_SECRET", "")
+	t.Setenv("PIPELINE_COOLDOWN_SECONDS", "")
+	t.Setenv("BFF_PORT", "18080")
+	t.Setenv("AUTH_PORT", "18081")
+	t.Setenv("FRONTEND_PORT", "13000")
+	// An accidental default ADC lookup must fail locally; the materializer receives
+	// its only reader through the existing injected SDK boundary below.
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "/dev/null")
+	t.Setenv("CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE", "/dev/null")
+	t.Setenv("GCE_METADATA_HOST", "127.0.0.1:9")
+
+	var mu sync.Mutex
+	accesses := []string{}
+	projectLookups := 0
+	deniedResource := ""
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/v1/") && strings.HasSuffix(r.URL.Path, ":access") {
+			resource := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/"), ":access")
+			mu.Lock()
+			accesses = append(accesses, resource)
+			denied := resource == deniedResource
+			mu.Unlock()
+			if denied {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusForbidden)
+				_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{
+					"code": http.StatusForbidden, "message": "TEST_ONLY_BFF_DENIED_MESSAGE",
+					"details": []any{map[string]string{"message": "TEST_ONLY_BFF_RAW_BODY_MARKER"}},
+				}})
+				return
+			}
+			resolved := resource
+			if strings.HasSuffix(resource, "/latest") {
+				resolved = strings.TrimSuffix(resource, "/latest") + "/11"
+				resolved = strings.Replace(resolved, "projects/llm-wiki-cloud/",
+					"projects/580854833715/", 1)
+			}
+			value := "TEST_ONLY_SYNTHETIC_BFF_SECRET"
+			if strings.Contains(resource, "byok-credential-encryption-key") {
+				value = strings.Repeat("a", 64)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"name":    resolved,
+				"payload": map[string]string{"data": base64.StdEncoding.EncodeToString([]byte(value))},
+			})
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/v3/projects/") {
+			mu.Lock()
+			projectLookups++
+			mu.Unlock()
+			if r.URL.Path != "/v3/projects/llm-wiki-cloud" {
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"name":"projects/580854833715","projectId":"llm-wiki-cloud","state":"ACTIVE"}`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+	if !strings.HasPrefix(server.URL, "http://127.0.0.1:") {
+		t.Fatalf("synthetic SDK endpoint is not numeric loopback: %s", server.URL)
+	}
+	secretService, err := secretmanager.NewService(context.Background(), option.WithEndpoint(server.URL+"/"),
+		option.WithHTTPClient(server.Client()), option.WithoutAuthentication())
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectService, err := cloudresourcemanager.NewService(context.Background(), option.WithEndpoint(server.URL+"/"),
+		option.WithHTTPClient(server.Client()), option.WithoutAuthentication())
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := googleSecretReader{service: secretService, projects: projectService}
+
+	runtimeDir := filepath.Join(t.TempDir(), "runtime")
+	if err := os.Mkdir(runtimeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := runPrepareTargetMode(context.Background(), "bff", "dev", runtimeDir, false,
+		func(context.Context) (secretReader, error) { return reader, nil }); err != nil {
+		t.Fatalf("actual DEV BFF materialization failed through loopback SDK: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(runtimeDir, "bff.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	generated, err := runtimeconfig.DecodeBFFFile(data)
+	if err != nil {
+		t.Fatalf("actual DEV BFF materialization output failed schema validation: %v", err)
+	}
+	if generated.DeepSeekAPIKey != "TEST_ONLY_SYNTHETIC_BFF_SECRET" ||
+		generated.TypeSafeAPIKey != "TEST_ONLY_SYNTHETIC_BFF_SECRET" ||
+		generated.BYOKCredentialEncryptionKey != strings.Repeat("a", 64) {
+		t.Fatal("actual DEV BFF materializer did not use synthetic SDK payloads")
+	}
+	info, err := os.Stat(filepath.Join(runtimeDir, "bff.json"))
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("actual DEV BFF runtime config mode = %v, err=%v", info, err)
+	}
+	deniedRuntimeDir := filepath.Join(t.TempDir(), "denied-runtime")
+	if err := os.Mkdir(deniedRuntimeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	deniedResource = "projects/llm-wiki-cloud/secrets/deepseek-apikey/versions/latest"
+	mu.Unlock()
+	err = runPrepareTargetMode(context.Background(), "bff", "dev", deniedRuntimeDir, false,
+		func(context.Context) (secretReader, error) { return reader, nil })
+	if err == nil || !strings.Contains(err.Error(), "Google API HTTP 403") ||
+		!strings.Contains(err.Error(), "TEST_ONLY_BFF_DENIED_MESSAGE") ||
+		strings.Contains(err.Error(), "TEST_ONLY_BFF_RAW_BODY_MARKER") {
+		t.Fatalf("actual DEV BFF materializer did not safely classify synthetic SDK denial: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(deniedRuntimeDir, "bff.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed actual BFF materialization wrote a runtime config: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	wantAccesses := []string{
+		"projects/llm-wiki-cloud/secrets/deepseek-apikey/versions/latest",
+		"projects/llm-wiki-cloud/secrets/typesafe-jev-api-key-dev/versions/1",
+		"projects/llm-wiki-cloud/secrets/byok-credential-encryption-key-dev/versions/1",
+		"projects/llm-wiki-cloud/secrets/deepseek-apikey/versions/latest",
+	}
+	if len(accesses) != len(wantAccesses) || projectLookups != 1 {
+		t.Fatalf("actual DEV BFF SDK path requested %d secret versions and %d project identities",
+			len(accesses), projectLookups)
+	}
+	for i, resource := range wantAccesses {
+		if accesses[i] != resource {
+			t.Fatalf("actual DEV BFF SDK request %d did not match the source reference", i)
+		}
+	}
+}
+
 func TestRunPrepareBFFTargetDoesNotReadPipelineInputs(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "deploy", "cac"), 0o700); err != nil {

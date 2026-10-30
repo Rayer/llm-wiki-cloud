@@ -298,19 +298,55 @@ class Acceptance(unittest.TestCase):
         go.unlink(missing_ok=True)
         go.write_text(
             f'#!{sys.executable}\n'
-            'import os, shutil, sys\n'
+            'import json, os, shutil, sys, time\n'
             'args=sys.argv[1:]\n'
             "if args[:3] != ['run', './cmd/pipeline_config', 'prepare']:\n"
             '    sys.exit(99)\n'
+            "stage = 'descriptor' if '--descriptor' in args else 'materialize'\n"
+            "trace = os.environ.get('LWC_TEST_BFF_PREPARE_TRACE')\n"
+            "if trace:\n"
+            "    with open(trace, 'a') as stream: stream.write(stage + '\\n')\n"
+            "if os.environ.get('LWC_TEST_BFF_PREPARE_TIMEOUT_STAGE') == stage:\n"
+            '    deadline = time.monotonic() + 2\n'
+            '    while time.monotonic() < deadline: pass\n'
+            "if os.environ.get('LWC_TEST_BFF_PREPARE_FAIL_STAGE') == stage:\n"
+            "    sys.stderr.write(os.environ.get('LWC_TEST_BFF_PREPARE_STDERR', 'TEST_ONLY_BFF_PREPARE_ERROR\\n'))\n"
+            "    sys.exit(int(os.environ.get('LWC_TEST_BFF_PREPARE_EXIT', '23')))\n"
             "output = __import__('pathlib').Path(args[args.index('--output') + 1])\n"
             "if '--descriptor' in args:\n"
-            "    shutil.copyfile(os.environ['LWC_TEST_BFF_DESCRIPTOR'], output / 'bff-inputs.json')\n"
+            "    parse_case = os.environ.get('LWC_TEST_BFF_DESCRIPTOR_CASE')\n"
+            "    destination = output / 'bff-inputs.json'\n"
+            "    if parse_case == 'malformed':\n"
+            "        destination.write_text('{TEST_ONLY_INVALID_DESCRIPTOR')\n"
+            "    else:\n"
+            "        shutil.copyfile(os.environ['LWC_TEST_BFF_DESCRIPTOR'], destination)\n"
+            "        if parse_case == 'mismatch':\n"
+            "            descriptor = json.loads(destination.read_text())\n"
+            "            descriptor['test_only_mismatch'] = True\n"
+            "            destination.write_text(json.dumps(descriptor))\n"
             'else:\n'
             "    config = output / 'bff.json'\n"
             "    config.write_bytes(open(os.environ['LWC_TEST_BFF_CONFIG'], 'rb').read())\n"
             '    config.chmod(0o600)\n'
         )
         go.chmod(0o755)
+
+    def install_bff_prepare_timeout_shim(self):
+        sitecustomize = self.bin/'sitecustomize.py'
+        sitecustomize.write_text(
+            'import os, subprocess, time\n'
+            '_run = subprocess.run\n'
+            "if os.environ.get('LWC_TEST_BFF_PREPARE_FAST_POLLS') == '1':\n"
+            '    time.sleep = lambda _: None\n'
+            'def _bounded_run(args, *positional, **kwargs):\n'
+            "    values = [str(value) for value in args]\n"
+            "    target = os.environ.get('LWC_TEST_BFF_PREPARE_TIMEOUT_STAGE')\n"
+            "    stage = 'descriptor' if '--descriptor' in values else 'materialize'\n"
+            "    if (target == stage and values[:3] == ['go', 'run', './cmd/pipeline_config']):\n"
+            '        kwargs[\'timeout\'] = 0.05\n'
+            '    return _run(args, *positional, **kwargs)\n'
+            'subprocess.run = _bounded_run\n'
+        )
 
     @staticmethod
     def auth_sdk_http_error_body():
@@ -2306,15 +2342,18 @@ class Acceptance(unittest.TestCase):
         descriptor.write_text(json.dumps(e.plan['normalized']['bff']['runtime_inputs']))
         config=self.root/'bff-runtime-config.json'
         config.write_text('{"schema_version":2,"target":"bff","synthetic":"TEST_ONLY_BFF_PAYLOAD"}')
+        trace=self.root/'bff-prepare-trace'
         self.install_bff_prepare_go_helper()
         self.configure(bff_version_response_project='580854833715')
 
         action,release,_,_=self.invoke_runtime_action(
             e,None,operation='release',target='development',
             extra_env={'LWC_TEST_BFF_DESCRIPTOR':str(descriptor),
-                       'LWC_TEST_BFF_CONFIG':str(config)})
+                       'LWC_TEST_BFF_CONFIG':str(config),
+                       'LWC_TEST_BFF_PREPARE_TRACE':str(trace)})
 
         self.assertEqual(action.returncode,0,action.stdout+action.stderr)
+        self.assertEqual(trace.read_text().splitlines(),['descriptor','materialize'])
         result=json.loads(action.stdout.strip().splitlines()[-1])
         retained=read(release/'result.json')
         state=read(release/'state.json')
@@ -2377,6 +2416,106 @@ class Acceptance(unittest.TestCase):
                          {'status':'unconfirmed'})
         self.assertEqual(self.current()['bff_version_adds'],1)
         self.assertNotIn('TEST_ONLY_BFF_PAYLOAD',json.dumps(result))
+
+    def test_runtime_action_preserves_bff_descriptor_and_materializer_child_causes_with_rollback(self):
+        token='TEST_ONLY_BFF_PREPARE_TOKEN'
+        stderr=('TEST_ONLY_BFF_PREPARE_DIAGNOSTIC\n'
+                'Authorization: Bearer '+token+'\nGITHUB_TOKEN='+token+'\n--token='+token+'\n')
+        scenarios=(
+            ('descriptor-exit','exit-descriptor','bff-config-descriptor','command-failed'),
+            ('materialize-exit','exit-materialize','bff-config-materialize','command-failed'),
+            ('descriptor-timeout','timeout-descriptor','bff-config-descriptor','provider-timeout'),
+            ('materialize-timeout','timeout-materialize','bff-config-materialize','provider-timeout'),
+            ('descriptor-malformed','malformed','bff-config-descriptor','bff-config-descriptor-unreadable'),
+            ('descriptor-mismatch','mismatch','bff-config-descriptor','bff-config-source-descriptor-mismatch'),
+        )
+        for name, mode, expected_stage, expected_reason in scenarios:
+            with self.subTest(name=name):
+                e=self.ready(self.make(('documentimport','bff'),name='bff-cause-'+name))
+                job_name=self.normalized['document_import_job']['job_name']
+                self.provider=self.current()
+                self.provider['resources'].pop(job_name,None)
+                self.provider.get('iam_policies',{}).pop(job_name,None)
+                self.provider['document_import_create_policy']={'etag':'ACAB'}
+                self.flush()
+                descriptor=self.root/(name+'-inputs.json')
+                descriptor.write_text(json.dumps(e.plan['normalized']['bff']['runtime_inputs']))
+                config=self.root/(name+'-runtime.json')
+                config.write_text('{"schema_version":2,"target":"bff",'
+                                  '"synthetic":"TEST_ONLY_BFF_CONFIG_PAYLOAD"}')
+                trace=self.root/(name+'-trace')
+                self.install_bff_prepare_go_helper()
+                self.install_bff_prepare_timeout_shim()
+                before_creates=len(self.calls('create'))
+                before_deletes=len(self.calls('delete'))
+                before_policy_sets=len(self.calls('set-iam-policy'))
+                extra_env={
+                    'LWC_TEST_BFF_DESCRIPTOR':str(descriptor),
+                    'LWC_TEST_BFF_CONFIG':str(config),
+                    'LWC_TEST_BFF_PREPARE_TRACE':str(trace),
+                    'LWC_TEST_BFF_PREPARE_FAST_POLLS':'1',
+                    'GITHUB_TOKEN':token,
+                    'PYTHONPATH':str(self.bin)+os.pathsep+os.environ.get('PYTHONPATH',''),
+                }
+                if mode.startswith('exit-'):
+                    extra_env.update(LWC_TEST_BFF_PREPARE_FAIL_STAGE=mode.removeprefix('exit-'),
+                                     LWC_TEST_BFF_PREPARE_STDERR=stderr)
+                elif mode.startswith('timeout-'):
+                    timeout_stage=mode.removeprefix('timeout-')
+                    extra_env['LWC_TEST_BFF_PREPARE_TIMEOUT_STAGE']=timeout_stage
+                else:
+                    extra_env['LWC_TEST_BFF_DESCRIPTOR_CASE']=mode
+
+                action,release,_,_=self.invoke_runtime_action(
+                    e,None,operation='release',target='development',extra_env=extra_env)
+
+                self.assertEqual(action.returncode,1,action.stdout+action.stderr)
+                result=json.loads(action.stdout.strip().splitlines()[-1])
+                state=read(release/'state.json')
+                self.assertEqual((result['status'],result['stage'],result['reason']),
+                                 ('failed','failed_rolled_back','basic-sanity-mismatch'))
+                self.assertEqual(result['component'],'bff')
+                self.assertEqual(state['status'],'failed_rolled_back')
+                self.assertEqual(state['components']['documentimport']['status'],'rolled_back')
+                self.assertEqual(state['components']['documentimport']['prior'],{'absent':True})
+                self.assertEqual(state['components']['bff']['status'],'rolled_back')
+                expected_trace=['descriptor'] if mode in (
+                    'exit-descriptor','timeout-descriptor','malformed','mismatch') else ['descriptor','materialize']
+                self.assertEqual(trace.read_text().splitlines(),expected_trace)
+                self.assertEqual([cause['phase'] for cause in result['causes']],['deploy','poll'])
+                primary=result['causes'][0]
+                self.assertEqual((primary['reason'],primary['status'],primary['stage']),
+                                 (expected_reason,'failed',expected_stage))
+                self.assertEqual(result['causes'][1]['reason'],'basic-sanity-mismatch')
+                if 'exit' in mode:
+                    self.assertEqual(primary['exit_code'],23)
+                    self.assertNotIn('timeout_class',primary)
+                    cause=primary['cause']
+                    self.assertEqual((cause['exception_type'],cause['stage'],cause['code']),
+                                     ('ChildProcessError',expected_stage,'child-command-failed'))
+                    self.assertIn('TEST_ONLY_BFF_PREPARE_DIAGNOSTIC',cause['message'])
+                    self.assertIn('[REDACTED]',cause['message'])
+                    self.assertNotIn(token,cause['message'])
+                elif 'timeout' in mode:
+                    self.assertIsNone(primary.get('exit_code'))
+                    self.assertEqual(primary['timeout_class'],'subprocess-timeout')
+                    cause=primary['cause']
+                    self.assertEqual((cause['exception_type'],cause['stage'],cause['code']),
+                                     ('TimeoutExpired',expected_stage,'child-command-timeout'))
+                    self.assertIsNone(cause['message'])
+                    self.assertTrue(cause['message_omitted'])
+                else:
+                    self.assertNotIn('exit_code',primary)
+                    self.assertNotIn('timeout_class',primary)
+                    self.assertNotIn('cause',primary)
+                serialized=action.stdout+json.dumps(result)
+                self.assertNotIn(token,serialized)
+                self.assertNotIn('TEST_ONLY_BFF_CONFIG_PAYLOAD',serialized)
+                self.assertNotIn(job_name,self.current()['resources'])
+                self.assertEqual(len(self.calls('create'))-before_creates,1)
+                self.assertEqual(len(self.calls('delete'))-before_deletes,1)
+                self.assertEqual(len(self.calls('set-iam-policy'))-before_policy_sets,1)
+                self.assertEqual(len(self.calls('execute')),0)
 
     def test_bff_config_adapter_unavailable_file_fails_before_publication(self):
         e=self.ready(self.make(('bff',),name='bff-config-missing-file'))

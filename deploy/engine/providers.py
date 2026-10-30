@@ -119,23 +119,27 @@ class Providers:
             command_base = ['go', 'run', './cmd/pipeline_config', 'prepare', '--target', 'bff',
                             '--environment', target]
             run(command_base + ['--descriptor', '--output', str(descriptor_dir)],
-                cwd=ROOT / 'apps/bff', env=env, timeout=180, stage='bff-config-prepare')
+                cwd=ROOT / 'apps/bff', env=env, timeout=180, stage='bff-config-descriptor')
             try:
                 descriptor = json.loads((descriptor_dir / 'bff-inputs.json').read_text())
             except (OSError, TypeError, ValueError):
                 raise Breakpoint('bff-config-descriptor-unreadable', 'failed', False,
-                                 'inspect-bff-config-prepare', stage='bff-config-prepare') from None
-            require(descriptor == inputs, 'bff-config-source-descriptor-mismatch')
+                                 'inspect-bff-config-prepare', stage='bff-config-descriptor') from None
+            if descriptor != inputs:
+                raise Breakpoint('bff-config-source-descriptor-mismatch', 'failed', False,
+                                 'inspect-bff-config-prepare', stage='bff-config-descriptor')
             run(command_base + ['--output', str(runtime_dir)], cwd=ROOT / 'apps/bff',
-                env=env, timeout=180, stage='bff-config-prepare')
+                env=env, timeout=180, stage='bff-config-materialize')
             config_path = runtime_dir / 'bff.json'
             try:
                 info = config_path.lstat()
-                require(stat.S_ISREG(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o600 and
-                        0 < info.st_size <= 64 * 1024, 'bff-config-file-invalid')
+                if not (stat.S_ISREG(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o600 and
+                        0 < info.st_size <= 64 * 1024):
+                    raise Breakpoint('bff-config-file-invalid', 'failed', False,
+                                     'inspect-bff-config-prepare', stage='bff-config-materialize')
             except OSError:
                 raise Breakpoint('bff-config-file-unavailable', 'failed', False,
-                                 'inspect-bff-config-prepare', stage='bff-config-prepare') from None
+                                 'inspect-bff-config-prepare', stage='bff-config-materialize') from None
             try:
                 generated_config = json.loads(config_path.read_text())
             except (OSError, TypeError, ValueError):
