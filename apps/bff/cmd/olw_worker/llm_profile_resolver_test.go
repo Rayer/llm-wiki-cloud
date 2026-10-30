@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -48,19 +49,89 @@ func TestResolvePipelineLLMProfilesSendsReservationIdentity(t *testing.T) {
 	}
 }
 
-func TestResolvePipelineLLMProfilesDecodesExactBaseLegacyWire(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+func TestResolvePipelineLLMProfileResponsePreservesEnvelope(t *testing.T) {
+	const digest = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	var received pipelineLLMProfileResolverRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			t.Errorf("decode resolver request: %v", err)
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"source":"personal","profiles":[{"id":"legacy-profile","revision":3,"provider":"custom","protocol":"openai_chat_completions","endpoint":"https://fixture.example/v1","model":"legacy-model","api_key":"c3ludGhldGljLWxlZ2FjeS1rZXk="}]}`))
+		_, _ = w.Write([]byte(`{"schema_version":2,"snapshot_digest":"` + digest + `","role_map_version":1,"source":"bootstrap","profiles":[]}`))
 	}))
 	defer server.Close()
-	profiles, shared, err := resolvePipelineLLMProfiles(context.Background(), workerConfig{
+	cfg := workerConfig{
+		LocalCloudScope: "test-scope", ProfileResolverURL: server.URL + "/internal/pipeline/llm-profile",
+		PipelineReservationID: "reservation-envelope", UserID: "user-fixture", ProjectID: "project-fixture",
+	}
+
+	response, err := resolvePipelineLLMProfileResponseWithCredentials(context.Background(), cfg, false)
+	if err != nil {
+		t.Fatalf("resolvePipelineLLMProfileResponseWithCredentials() error = %v", err)
+	}
+	if received != (pipelineLLMProfileResolverRequest{ReservationID: "reservation-envelope", UserID: "user-fixture", ProjectID: "project-fixture", IncludeCredentials: false}) {
+		t.Fatalf("resolver request = %+v, want same reservation and identity-only mode", received)
+	}
+	if response.SchemaVersion != 2 || response.SnapshotDigest != digest || response.RoleMapVersion != 1 || response.Source != "bootstrap" || len(response.Profiles) != 0 {
+		t.Fatalf("typed resolver envelope=(version:%d digest:%q role_map:%d source:%q profiles:%d), want actual bootstrap envelope without a synthetic Profile",
+			response.SchemaVersion, response.SnapshotDigest, response.RoleMapVersion, response.Source, len(response.Profiles))
+	}
+}
+
+func TestResolvePipelineLLMProfileResponsePreservesSharedSource(t *testing.T) {
+	const digest = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"schema_version":2,"snapshot_digest":"` + digest + `","role_map_version":1,"source":"shared","profiles":[{"schema_version":2,"snapshot_digest":"` + digest + `","role_map_version":1,"id":"shared-fixture","revision":6,"provider":"custom","protocol":"openai_chat_completions","endpoint":"https://fixture.example/v1","models":{"fast":"fast-model","heavy":"heavy-model"}}]}`))
+	}))
+	defer server.Close()
+	response, err := resolvePipelineLLMProfileResponseWithCredentials(context.Background(), workerConfig{
+		LocalCloudScope: "test-scope", ProfileResolverURL: server.URL + "/internal/pipeline/llm-profile",
+		PipelineReservationID: "reservation-shared", UserID: "user-fixture", ProjectID: "project-fixture",
+	}, false)
+	if err != nil {
+		t.Fatalf("resolve shared Pipeline profile response: %v", err)
+	}
+	if response.Source != "shared" || response.SchemaVersion != 2 || response.SnapshotDigest != digest || response.RoleMapVersion != 1 || len(response.Profiles) != 1 {
+		t.Fatalf("shared resolver envelope=(source:%q version:%d digest:%q role_map:%d profiles:%d), want actual shared identity",
+			response.Source, response.SchemaVersion, response.SnapshotDigest, response.RoleMapVersion, len(response.Profiles))
+	}
+	if profile := response.Profiles[0]; profile.ID != "shared-fixture" || profile.Models != (pipelineLLMModels{Fast: "fast-model", Heavy: "heavy-model"}) || len(profile.APIKey) != 0 {
+		t.Fatalf("shared Profile=(id:%q models:%+v key_present:%t), want profile identity without credentials",
+			profile.ID, profile.Models, len(profile.APIKey) > 0)
+	}
+}
+
+func TestResolvePipelineLLMProfilesDecodesExactBaseLegacyWire(t *testing.T) {
+	legacyWire := strings.Replace(`{"source":"personal","profiles":[{"id":"legacy-profile","revision":3,"provider":"custom","protocol":"openai_chat_completions","endpoint":"https://fixture.example/v1","model":"legacy-model","api_key":"encoded-fixture-key"}]}`,
+		`"encoded-fixture-key"`, `"`+base64.StdEncoding.EncodeToString([]byte("synthetic-legacy-key"))+`"`, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(legacyWire))
+	}))
+	defer server.Close()
+	cfg := workerConfig{
 		LocalCloudScope: "test-scope", ProfileResolverURL: server.URL + "/internal/pipeline/llm-profile",
 		PipelineReservationID: "reservation-legacy", UserID: "user-fixture", ProjectID: "project-fixture",
-	})
+	}
+	response, err := resolvePipelineLLMProfileResponseWithCredentials(context.Background(), cfg, true)
+	if err != nil || response.Source != "personal" || response.SchemaVersion != 0 || response.SnapshotDigest != "" || response.RoleMapVersion != 0 || len(response.Profiles) != 1 {
+		t.Fatalf("legacy typed resolver envelope=(source:%q version:%d digest_present:%t role_map:%d profiles:%d) err=%v; want exact-base source with no invented metadata",
+			response.Source, response.SchemaVersion, response.SnapshotDigest != "", response.RoleMapVersion, len(response.Profiles), err)
+	}
+	legacyProfile := response.Profiles[0]
+	if legacyProfile.SchemaVersion != 0 || legacyProfile.SnapshotDigest != "" || legacyProfile.RoleMapVersion != 0 || legacyProfile.Model != "legacy-model" ||
+		legacyProfile.Models != (pipelineLLMModels{Fast: "legacy-model", Heavy: "legacy-model"}) || string(legacyProfile.APIKey) != "synthetic-legacy-key" {
+		t.Fatalf("legacy typed profile metadata=(version:%d digest_present:%t role_map:%d model:%q models:%+v key_present:%t), want exact base role normalization",
+			legacyProfile.SchemaVersion, legacyProfile.SnapshotDigest != "", legacyProfile.RoleMapVersion, legacyProfile.Model, legacyProfile.Models, len(legacyProfile.APIKey) > 0)
+	}
+	clearPipelineProfileKeys(response.Profiles)
+
+	profiles, shared, err := resolvePipelineLLMProfiles(context.Background(), cfg)
 	if err != nil || shared || len(profiles) != 1 {
 		t.Fatalf("legacy resolver result count=%d shared=%t err=%v", len(profiles), shared, err)
 	}
+	defer clearPipelineProfileKeys(profiles)
 	profile := profiles[0]
 	if profile.SchemaVersion != 0 || profile.SnapshotDigest != "" || profile.RoleMapVersion != 0 || profile.Model != "legacy-model" ||
 		profile.Models != (pipelineLLMModels{Fast: "legacy-model", Heavy: "legacy-model"}) || string(profile.APIKey) != "synthetic-legacy-key" {

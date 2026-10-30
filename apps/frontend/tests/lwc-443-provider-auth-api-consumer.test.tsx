@@ -12,7 +12,7 @@ function jsonResponse(payload: unknown, status = 200): Response {
 
 describe('actual LLM profile apiFetch consumer', () => {
   let refresh = vi.fn(async (): Promise<null> => null);
-  let unauthorized = vi.fn((_failedToken: string, _failedEpoch: number): void => {});
+  let unauthorized = vi.fn((): void => {});
 
   beforeEach(() => {
     localStorage.setItem('locale', 'en');
@@ -20,7 +20,7 @@ describe('actual LLM profile apiFetch consumer', () => {
     clearPublicConfigCache();
     setRuntimeConfigForTests({ schema_version: 1, api_url: apiURL, auth_url: 'https://auth.example.test' });
     refresh = vi.fn(async (): Promise<null> => null);
-    unauthorized = vi.fn((_failedToken: string, _failedEpoch: number): void => {});
+    unauthorized = vi.fn((): void => {});
     configureApiAuth({
       getAccessToken: () => 'fixture-session-token',
       getSessionEpoch: () => 1,
