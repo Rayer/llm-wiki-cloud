@@ -1350,7 +1350,7 @@
     "statusFailed": "失敗",
     "summary": "新增 {created} 個 · 已存在 {existing} 個 · 取代 {replaced} 個 · 失敗 {failed} 個 · 處理中 {pending} 個",
     "fileProgress": "{filename}：{status} {progress}%",
-    "retryFile": "重試上傳 {filename}",
+    "retryFile": "重試 {filename}",
     "documentStatus": "文件 {id} · {conversion} · 來源{source}",
     "duplicateFilenameInBatch": "已選取相同目的檔名的檔案。",
     "retry": "重試",

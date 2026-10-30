@@ -1350,7 +1350,7 @@
     "statusFailed": "Failed",
     "summary": "{created} created · {existing} already exists · {replaced} replaced · {failed} failed · {pending} in progress",
     "fileProgress": "{filename}: {status} {progress}%",
-    "retryFile": "Retry upload of {filename}",
+    "retryFile": "Retry {filename}",
     "documentStatus": "Document {id} · {conversion} · source {source}",
     "duplicateFilenameInBatch": "A file with this destination name is already selected.",
     "retry": "Retry",
