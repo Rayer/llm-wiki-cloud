@@ -197,9 +197,10 @@ func (h *Handler) ListProjects(c *gin.Context) {
 			}
 		}
 		resp = append(resp, handler.ProjectResponse{
-			ID:        project.ID,
-			Name:      name,
-			CreatedAt: project.CreatedAt,
+			ID:          project.ID,
+			Name:        name,
+			CreatedAt:   project.CreatedAt,
+			Description: "",
 		})
 	}
 
@@ -310,6 +311,9 @@ func (h *Handler) listFirestoreProjects(ctx context.Context, userID string) ([]h
 		if !ok || uid != userID {
 			continue
 		}
+		if _, _, err := projectDescriptionValues(doc.Data()); err != nil {
+			return nil, fmt.Errorf("read project description: %w", err)
+		}
 		resp = append(resp, project)
 	}
 	return resp, nil
@@ -321,9 +325,11 @@ func projectResponseFromFirestoreDoc(docID string, data map[string]interface{}) 
 			return handler.ProjectResponse{}, "", false
 		}
 		return handler.ProjectResponse{
-			ID:        record.projectID,
-			Name:      record.name,
-			CreatedAt: firestoreCreatedAt(data["created_at"]),
+			ID:                  record.projectID,
+			Name:                record.name,
+			CreatedAt:           firestoreCreatedAt(data["created_at"]),
+			Description:         projectDescriptionValue(data),
+			DescriptionRevision: projectDescriptionRevision(data),
 		}, record.userID, true
 	}
 
@@ -355,10 +361,22 @@ func projectResponseFromFirestoreDoc(docID string, data map[string]interface{}) 
 	}
 
 	return handler.ProjectResponse{
-		ID:        projectID,
-		Name:      name,
-		CreatedAt: firestoreCreatedAt(data["created_at"]),
+		ID:                  projectID,
+		Name:                name,
+		CreatedAt:           firestoreCreatedAt(data["created_at"]),
+		Description:         projectDescriptionValue(data),
+		DescriptionRevision: projectDescriptionRevision(data),
 	}, userID, true
+}
+
+func projectDescriptionValue(data map[string]interface{}) string {
+	value, _ := data["description"].(string)
+	return value
+}
+
+func projectDescriptionRevision(data map[string]interface{}) int64 {
+	_, revision, _ := projectDescriptionValues(data)
+	return revision
 }
 
 // isIdempotencyCacheDoc reports whether a Firestore projects collection document is

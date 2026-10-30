@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -196,6 +197,108 @@ func TestProfileClientUsesOpenAIChatCompletionsProtocol(t *testing.T) {
 	}
 }
 
+func TestProfileModelDiscoveryUsesAuthenticatedReadOnlyAdapter(t *testing.T) {
+	var calls int
+	transport := profileRoundTripper(func(request *http.Request) (*http.Response, error) {
+		calls++
+		if request.Method != http.MethodGet || request.URL.String() != "https://fixture.example/v1/models" || request.Header.Get("Authorization") != "Bearer synthetic-key" {
+			t.Fatalf("discovery request method=%q url=%q authorization=%q", request.Method, request.URL, request.Header.Get("Authorization"))
+		}
+		return profileResponse(http.StatusOK, `{"object":"list","data":[{"id":"fast-a"},{"id":"heavy-b"},{"id":"fast-a"}]}`), nil
+	})
+	client, err := newProfileClient(ProfileConfig{ID: "p-discovery", Revision: 4, Role: ProfileRoleFast, Provider: "custom", Protocol: ProtocolOpenAIChatCompletions,
+		Endpoint: "https://fixture.example/v1", Model: "lwc-discovery-only"}, "synthetic-key", ProfileClientOptions{}, false, transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	models, err := client.DiscoverModels(context.Background())
+	if err != nil || strings.Join(models.Models, ",") != "fast-a,heavy-b" || models.Partial || calls != 1 {
+		t.Fatalf("models=%v calls=%d err=%v", models, calls, err)
+	}
+	client.discoveryOnly = true
+	if _, err := client.Complete(context.Background(), "system", "message"); err == nil || calls != 1 {
+		t.Fatalf("discovery-only client allowed generation: calls=%d err=%v", calls, err)
+	}
+}
+
+func TestProfileModelDiscoveryReportsBoundedPartialList(t *testing.T) {
+	items := make([]map[string]string, maxProfileDiscoveredModels+1)
+	for index := range items {
+		items[index] = map[string]string{"id": fmt.Sprintf("model-%04d", len(items)-index)}
+	}
+	body, err := json.Marshal(map[string]any{"object": "list", "data": items})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := newProfileClient(ProfileConfig{ID: "p-discovery-partial", Revision: 1, Provider: "custom", Protocol: ProtocolOpenAIChatCompletions,
+		Endpoint: "https://fixture.example/v1", Model: "lwc-discovery-only"}, "synthetic-key", ProfileClientOptions{}, false,
+		profileRoundTripper(func(*http.Request) (*http.Response, error) { return profileResponse(http.StatusOK, string(body)), nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	result, err := client.DiscoverModels(context.Background())
+	if err != nil || !result.Partial || len(result.Models) != maxProfileDiscoveredModels || result.Models[0] != "model-0002" || result.Models[len(result.Models)-1] != "model-1001" {
+		t.Fatalf("discovery result len=%d partial=%t err=%v, want 1000 sorted IDs and partial=true", len(result.Models), result.Partial, err)
+	}
+	completeBody, err := json.Marshal(map[string]any{"object": "list", "has_more": false, "data": items[:maxProfileDiscoveredModels]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	completeClient, err := newProfileClient(ProfileConfig{ID: "p-discovery-limit", Revision: 1, Provider: "custom", Protocol: ProtocolOpenAIChatCompletions,
+		Endpoint: "https://fixture.example/v1", Model: "lwc-discovery-only"}, "synthetic-key", ProfileClientOptions{}, false,
+		profileRoundTripper(func(*http.Request) (*http.Response, error) {
+			return profileResponse(http.StatusOK, string(completeBody)), nil
+		}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer completeClient.Close()
+	complete, err := completeClient.DiscoverModels(context.Background())
+	if err != nil || complete.Partial || len(complete.Models) != maxProfileDiscoveredModels {
+		t.Fatalf("exact-limit discovery result len=%d partial=%t err=%v, want complete 1000-model list", len(complete.Models), complete.Partial, err)
+	}
+}
+
+func TestProfileModelDiscoveryClassifiesErrorsWithoutProviderBody(t *testing.T) {
+	client, err := newProfileClient(ProfileConfig{ID: "p-discovery-error", Revision: 1, Provider: "custom", Protocol: ProtocolOpenAIChatCompletions,
+		Endpoint: "https://fixture.example/v1", Model: "lwc-discovery-only"}, "synthetic-key", ProfileClientOptions{}, false,
+		profileRoundTripper(func(*http.Request) (*http.Response, error) {
+			return profileResponse(http.StatusUnauthorized, `{"error":{"message":"synthetic-secret-detail"}}`), nil
+		}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	_, err = client.DiscoverModels(context.Background())
+	var callErr *ProfileCallError
+	if !errors.As(err, &callErr) || callErr.Kind != ProviderAuthentication || strings.Contains(err.Error(), "synthetic-secret-detail") {
+		t.Fatalf("discovery error=%v, want safe authentication category", err)
+	}
+}
+
+func TestProfileModelDiscoveryClassifiesUnsupportedEndpoints(t *testing.T) {
+	for _, statusCode := range []int{http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusNotImplemented} {
+		t.Run(http.StatusText(statusCode), func(t *testing.T) {
+			client, err := newProfileClient(ProfileConfig{ID: "p-discovery-unsupported", Revision: 1, Provider: "custom", Protocol: ProtocolOpenAIChatCompletions,
+				Endpoint: "https://fixture.example/v1", Model: "lwc-discovery-only"}, "synthetic-key", ProfileClientOptions{}, false,
+				profileRoundTripper(func(*http.Request) (*http.Response, error) {
+					return profileResponse(statusCode, `{"error":{"message":"synthetic unsupported route"}}`), nil
+				}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.Close()
+			_, err = client.DiscoverModels(context.Background())
+			var callErr *ProfileCallError
+			if !errors.As(err, &callErr) || callErr.Kind != ProviderDiscoveryUnsupported || callErr.StatusCode != statusCode {
+				t.Fatalf("discovery error=%v, want unsupported category for HTTP %d", err, statusCode)
+			}
+		})
+	}
+}
+
 func TestProfileClientUsesProviderSpecificCompletionTokenLimit(t *testing.T) {
 	for _, test := range []struct {
 		name        string
@@ -358,10 +461,12 @@ func TestProfileClientKeepsOpenAIParameterAndModelErrorsSafe(t *testing.T) {
 		name      string
 		status    int
 		body      string
+		want      ProviderErrorKind
 		forbidden []string
 	}{
-		{name: "unsupported token field", status: http.StatusBadRequest, body: `{"error":{"code":"unsupported_parameter","param":"max_tokens"}}`, forbidden: []string{"unsupported_parameter", "max_tokens"}},
-		{name: "model not found", status: http.StatusNotFound, body: `{"error":{"code":"model_not_found"}}`, forbidden: []string{"model_not_found"}},
+		{name: "unsupported token field", status: http.StatusBadRequest, body: `{"error":{"code":"unsupported_parameter","param":"max_tokens"}}`, want: ProviderParameterUnsupported, forbidden: []string{"max_tokens"}},
+		{name: "model not found", status: http.StatusNotFound, body: `{"error":{"code":"model_not_found"}}`, want: ProviderModelNotFound},
+		{name: "permission denied", status: http.StatusForbidden, body: `{"error":{"code":"permission_denied"}}`, want: ProviderPermissionDenied},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			transport := profileRoundTripper(func(*http.Request) (*http.Response, error) {
@@ -375,8 +480,8 @@ func TestProfileClientKeepsOpenAIParameterAndModelErrorsSafe(t *testing.T) {
 			defer client.Close()
 			_, err = client.Complete(context.Background(), "rules", "question")
 			var callErr *ProfileCallError
-			if !errors.As(err, &callErr) || callErr.Kind != ProviderFailure || callErr.StatusCode != test.status || IsQuotaExhausted(err) {
-				t.Fatalf("Complete() error = %v, want safe provider failure for HTTP %d", err, test.status)
+			if !errors.As(err, &callErr) || callErr.Kind != test.want || callErr.StatusCode != test.status || IsQuotaExhausted(err) {
+				t.Fatalf("Complete() error = %v, want safe %s for HTTP %d", err, test.want, test.status)
 			}
 			for _, detail := range append(test.forbidden, "synthetic-key", "rules", "question") {
 				if strings.Contains(err.Error(), detail) {

@@ -26,6 +26,7 @@ const createdProfile: LLMProfile = {
   provider: 'custom',
   protocol: 'openai_chat_completions',
   endpoint: 'https://fixture.example/v1',
+  models: { fast: 'fixture-model', heavy: 'fixture-model' },
   model: 'fixture-model',
   revision: 1,
   secret_configured: true,

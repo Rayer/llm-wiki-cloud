@@ -3,7 +3,35 @@
 export type Project = {
   id: string;
   name: string;
+  description?: string;
+  descriptionRevision?: number;
 };
+
+export const MAX_PROJECT_DESCRIPTION_LENGTH = 1000;
+
+export function normalizeProjectDescription(value: string): string {
+  return value.replace(/\r\n?/g, '\n');
+}
+
+export function projectDescriptionCodePointCount(value: string): number {
+  return Array.from(normalizeProjectDescription(value)).length;
+}
+
+export function isValidProjectDescription(value: string): boolean {
+  const normalized = normalizeProjectDescription(value);
+  if (normalized.includes('\0') || projectDescriptionCodePointCount(normalized) > MAX_PROJECT_DESCRIPTION_LENGTH) return false;
+  for (let index = 0; index < normalized.length; index += 1) {
+    const code = normalized.charCodeAt(index);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = normalized.charCodeAt(index + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return false;
+      index += 1;
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      return false;
+    }
+  }
+  return true;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -16,15 +44,26 @@ function firstString(record: Record<string, unknown>, keys: string[]): string | 
   }
 }
 
+function projectDescriptionFields(record: Record<string, unknown>) {
+  return {
+    description: typeof record.description === 'string' ? record.description : '',
+    descriptionRevision: typeof record.description_revision === 'number'
+      && Number.isSafeInteger(record.description_revision)
+      && record.description_revision >= 0
+      ? record.description_revision
+      : 0,
+  };
+}
+
 function projectFromRecord(record: Record<string, unknown>): Project | null {
   const id = firstString(record, ['id', 'project_id', 'projectId', 'slug']);
   const name = firstString(record, ['name', 'project_name', 'projectName', 'title', 'id']);
-  return id && name ? { id, name } : null;
+  return id && name ? { id, name, ...projectDescriptionFields(record) } : null;
 }
 
 export function normalizeProject(payload: unknown): Project | null {
   if (typeof payload === 'string' && payload.trim()) {
-    return { id: payload.trim(), name: payload.trim() };
+    return { id: payload.trim(), name: payload.trim(), description: '', descriptionRevision: 0 };
   }
   if (!isRecord(payload)) return null;
 
@@ -36,7 +75,7 @@ export function normalizeProject(payload: unknown): Project | null {
   if (direct) return direct;
 
   const projectId = firstString(payload, ['project']);
-  return projectId ? { id: projectId, name: projectId } : null;
+  return projectId ? { id: projectId, name: projectId, ...projectDescriptionFields(payload) } : null;
 }
 
 export function normalizeProjects(payload: unknown): Project[] {

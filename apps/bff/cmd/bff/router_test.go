@@ -76,6 +76,8 @@ func TestBFFDoesNotOwnIdentityRoutes(t *testing.T) {
 		{http.MethodGet, "/api/v1/exports"},
 		{http.MethodGet, "/api/v1/exports/:exportID/status"},
 		{http.MethodPost, "/api/v1/exports/:exportID/download"},
+		{http.MethodGet, "/api/v1/projects/:pid/description"},
+		{http.MethodPut, "/api/v1/projects/:pid/description"},
 		{http.MethodGet, "/api/v1/projects/:pid/profile"},
 		{http.MethodPut, "/api/v1/projects/:pid/profile"},
 		{http.MethodPost, "/api/v1/projects/:pid/profile/candidates/:candidateID/confirm"},
@@ -277,6 +279,8 @@ func TestTrialDemoRestrictionCoversProfileAndExportForExactUserIDs(t *testing.T)
 
 	for _, route := range []struct{ method, path string }{
 		{http.MethodPost, "/api/v1/llm/profiles"},
+		{http.MethodPost, "/api/v1/llm/profiles/discover-models"},
+		{http.MethodPost, "/api/v1/llm/profiles/test-message"},
 		{http.MethodPut, "/api/v1/llm/profiles/profile-a"},
 		{http.MethodDelete, "/api/v1/llm/profiles/profile-a"},
 		{http.MethodGet, "/api/v1/projects/project-a/profile"},

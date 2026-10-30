@@ -255,6 +255,7 @@ func TestPrepareOLWEnvironmentPassesProfileOutcomeMarkers(t *testing.T) {
 	cfg := workerConfig{
 		QuotaMarkerPath:              filepath.Join(t.TempDir(), "quota.marker"),
 		ProfileCallSuccessMarkerPath: filepath.Join(t.TempDir(), "profile-call-success.marker"),
+		ProfileCallAttemptMarkerPath: filepath.Join(t.TempDir(), "profile-call-attempt.marker"),
 	}
 	env, err := prepareOLWEnvironment(cfg)
 	if err != nil {
@@ -262,8 +263,24 @@ func TestPrepareOLWEnvironmentPassesProfileOutcomeMarkers(t *testing.T) {
 	}
 	values := envMap(env)
 	if values["LWC_PROFILE_QUOTA_MARKER_PATH"] != cfg.QuotaMarkerPath ||
-		values["LWC_PROFILE_CALL_SUCCESS_MARKER_PATH"] != cfg.ProfileCallSuccessMarkerPath {
+		values["LWC_PROFILE_CALL_SUCCESS_MARKER_PATH"] != cfg.ProfileCallSuccessMarkerPath ||
+		values["LWC_PROFILE_CALL_ATTEMPT_MARKER_PATH"] != cfg.ProfileCallAttemptMarkerPath {
 		t.Fatalf("profile outcome marker environment = %#v", values)
+	}
+}
+
+func TestPrepareOLWEnvironmentSerializesExactBaseLegacyProfile(t *testing.T) {
+	profile := pipelineLLMProfile{ID: "legacy-profile", Revision: 3, Provider: "custom", Protocol: "openai_chat_completions",
+		Endpoint: "https://fixture.example/v1", Model: "legacy-model", APIKey: []byte("synthetic-legacy-key")}
+	env, err := prepareOLWEnvironment(workerConfig{ActiveLLMProfile: &profile})
+	if err != nil {
+		t.Fatalf("prepareOLWEnvironment() error = %v", err)
+	}
+	defer cleanupOLWEnvironment(env)
+	values := envMap(env)
+	if values["LWC_PROFILE_CONFIG"] != `{"id":"legacy-profile","revision":3,"provider":"custom","protocol":"openai_chat_completions","endpoint":"https://fixture.example/v1","model":"legacy-model"}` ||
+		values["LWC_PROFILE_API_KEY"] != "synthetic-legacy-key" {
+		t.Fatalf("legacy environment did not preserve exact base wire shape (config_present:%t key_present:%t)", values["LWC_PROFILE_CONFIG"] != "", values["LWC_PROFILE_API_KEY"] != "")
 	}
 }
 

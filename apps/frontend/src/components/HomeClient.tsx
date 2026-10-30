@@ -852,6 +852,25 @@ export function HomeClient() {
           {t('Demo.heading')}
         </h1>
 
+        {token && currentProject && user?.id && !isDemoSession ? (
+          <section className="relative mt-6 max-w-4xl rounded-xl border border-white/10 bg-zinc-900/45 p-4 backdrop-blur-sm sm:flex sm:items-start sm:justify-between sm:gap-6 sm:p-5" aria-labelledby="home-project-description-heading">
+            <div className="min-w-0">
+              <h2 id="home-project-description-heading" className="text-sm font-semibold text-zinc-200">
+                {t('ProjectDescription.mainTitle')}
+              </h2>
+              <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-zinc-300">
+                {currentProject.description ? currentProject.description : t('ProjectDescription.empty')}
+              </p>
+            </div>
+            <NavigationLink
+              href="/profile#project-description"
+              className="mt-3 inline-flex min-h-11 shrink-0 items-center rounded-lg border border-white/10 px-3 text-sm font-medium text-emerald-200 transition hover:bg-white/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 sm:mt-0"
+            >
+              {currentProject.description ? t('ProjectDescription.edit') : t('ProjectDescription.add')}
+            </NavigationLink>
+          </section>
+        ) : null}
+
         <form onSubmit={onSubmit} className="relative mt-10 w-full max-w-4xl overflow-hidden rounded-[var(--radius-lg)] border border-white/15 bg-zinc-900/65 shadow-xl shadow-black/20 backdrop-blur-sm focus-within:border-emerald-300/70">
           <div className="flex items-center gap-3 px-4 py-3 sm:px-5">
             <input

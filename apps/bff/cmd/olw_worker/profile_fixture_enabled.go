@@ -20,6 +20,12 @@ func profileFixtureEnvironment() []string {
 	if after := os.Getenv("LWC_BYOK_PROFILE_FIXTURE_QUOTA_AFTER"); after != "" {
 		env = append(env, "LWC_PROFILE_FIXTURE_QUOTA_AFTER="+after)
 	}
+	if os.Getenv("LWC_BYOK_PROFILE_FIXTURE_REQUIRE_AUTH") == "1" {
+		env = append(env, "LWC_PROFILE_FIXTURE_REQUIRE_AUTH=1")
+	}
+	if role := os.Getenv("LWC_BYOK_PROFILE_FIXTURE_HEALTH_ROLE"); role == "fast" || role == "heavy" {
+		env = append(env, "LWC_PROFILE_FIXTURE_HEALTH_ROLE="+role)
+	}
 	return env
 }
 
@@ -85,7 +91,15 @@ def _lwc_fixture_response(request):
     except Exception:
         selected = {}
     model = body.get("model") or selected.get("model") or "fixture-embedding-model"
+    if (_lwc_fixture_os.environ.get("LWC_PROFILE_FIXTURE_REQUIRE_AUTH") == "1"
+            and not request.headers.get("authorization") and not request.headers.get("x-api-key")):
+        _lwc_fixture_record("openai_unauthenticated", model, request.url.path)
+        return _lwc_fixture_httpx.Response(401, json={"error": {"code": "invalid_api_key", "message": "fixture requires auth"}})
     if request.url.host == "fixture.example" and request.url.path.endswith("/models"):
+        health_role = _lwc_fixture_os.environ.get("LWC_PROFILE_FIXTURE_HEALTH_ROLE", "")
+        models = selected.get("models", {}) if isinstance(selected, dict) else {}
+        if health_role in ("fast", "heavy") and isinstance(models, dict):
+            model = models.get(health_role) or model
         _lwc_fixture_record("openai_models_healthcheck", model, request.url.path)
         return _lwc_fixture_httpx.Response(200, json={"object": "list", "data": []})
     if request.url.path.endswith("/embeddings"):

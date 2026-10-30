@@ -100,40 +100,101 @@ Config.resolve_role = _resolve_flash
 _profile_raw = os.environ.get("LWC_PROFILE_CONFIG", "")
 if _profile_raw:
     _profile = json.loads(_profile_raw)
-    if not isinstance(_profile, dict) or set(_profile) != {"id", "revision", "provider", "protocol", "endpoint", "model"}:
+    _profile_keys_legacy = {"id", "revision", "provider", "protocol", "endpoint", "model"}
+    _profile_keys_v1 = {"schema_version", "snapshot_digest", "role_map_version", "id", "revision", "provider", "protocol", "endpoint", "model"}
+    _profile_keys_v2 = {"schema_version", "snapshot_digest", "role_map_version", "id", "revision", "provider", "protocol", "endpoint", "models"}
+    if not isinstance(_profile, dict):
+        raise RuntimeError("invalid resolved Project LLM profile")
+    _profile_legacy = "schema_version" not in _profile and set(_profile) == _profile_keys_legacy
+    if _profile_legacy:
+        # Exact legacy producer payload from the base worker: one model, with
+        # no synthetic snapshot or role-map metadata.
+        legacy_model = _profile["model"]
+        if not isinstance(legacy_model, str) or not legacy_model.strip():
+            raise RuntimeError("invalid legacy Project LLM model")
+        _profile.pop("model")
+        _profile["models"] = {"fast": legacy_model, "heavy": legacy_model}
+    elif type(_profile.get("schema_version")) is not int:
+        raise RuntimeError("invalid resolved Project LLM profile version")
+    elif _profile.get("schema_version") == 1 and set(_profile) == _profile_keys_v1:
+        legacy_model = _profile["model"]
+        if not isinstance(legacy_model, str) or not legacy_model.strip():
+            raise RuntimeError("invalid legacy Project LLM model")
+        _profile.pop("model")
+        _profile["models"] = {"fast": legacy_model, "heavy": legacy_model}
+        _profile["schema_version"] = 2
+    if not _profile_legacy and (_profile.get("schema_version") != 2 or set(_profile) != _profile_keys_v2):
         raise RuntimeError("invalid resolved Project LLM profile")
     if (not isinstance(_profile["id"], str) or not _profile["id"]
-            or not isinstance(_profile["revision"], int) or _profile["revision"] < 1
-            or not isinstance(_profile["provider"], str) or not isinstance(_profile["model"], str)
-            or not _profile["model"] or not isinstance(_profile["endpoint"], str)):
+            or type(_profile["revision"]) is not int or _profile["revision"] < 1
+            or not isinstance(_profile["provider"], str) or not isinstance(_profile["endpoint"], str)
+            or not isinstance(_profile["models"], dict) or set(_profile["models"]) != {"fast", "heavy"}
+            or not all(isinstance(_profile["models"][role], str) and _profile["models"][role] == _profile["models"][role].strip() and 0 < len(_profile["models"][role]) <= 200 for role in ("fast", "heavy"))
+            or (not _profile_legacy and (not isinstance(_profile["snapshot_digest"], str) or len(_profile["snapshot_digest"]) != 64
+                or any(ch not in "0123456789abcdef" for ch in _profile["snapshot_digest"])
+                or type(_profile["role_map_version"]) is not int or _profile["role_map_version"] != 1))):
         raise RuntimeError("invalid resolved Project LLM profile")
     _profile_url = urlsplit(_profile["endpoint"])
     if _profile_url.scheme != "https" or not _profile_url.hostname or _profile_url.username or _profile_url.password or _profile_url.query or _profile_url.fragment:
         raise RuntimeError("invalid resolved Project LLM endpoint")
     _profile_host = _profile_url.hostname.rstrip(".").lower()
     _profile_call_success_marker_path = os.environ.get("LWC_PROFILE_CALL_SUCCESS_MARKER_PATH", "")
+    _profile_call_attempt_marker_path = os.environ.get("LWC_PROFILE_CALL_ATTEMPT_MARKER_PATH", "")
     _original_getaddrinfo = socket.getaddrinfo
 
-    def _mark_profile_call_success():
-        if not _profile_call_success_marker_path:
-            return
+    def _mark_profile_marker(path, label):
+        if not path:
+            return False
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
         try:
-            fd = os.open(_profile_call_success_marker_path, flags, 0o600)
+            fd = os.open(path, flags, 0o600)
         except FileExistsError:
+            return False
+        except OSError as exc:
+            raise RuntimeError(f"Project profile {label} marker is unavailable") from exc
+        os.close(fd)
+        return True
+
+    def _mark_profile_call_success():
+        _mark_profile_marker(_profile_call_success_marker_path, "worked")
+
+    def _is_profile_quota_response(response):
+        if response.status_code != 429:
+            return False
+        try:
+            envelope = response.json()
+        except Exception:
+            return False
+        error = envelope.get("error") if isinstance(envelope, dict) else None
+        code = error.get("code") if isinstance(error, dict) else None
+        return isinstance(code, str) and code.strip().lower() in _QUOTA_CODES
+
+    def _clear_profile_attempt_for_quota(owned_by_request):
+        if not owned_by_request:
+            return
+        try:
+            os.unlink(_profile_call_attempt_marker_path)
+        except FileNotFoundError:
             return
         except OSError as exc:
-            raise RuntimeError("Project profile call outcome marker is unavailable") from exc
-        os.close(fd)
+            raise RuntimeError("Project profile quota attempt marker could not be cleared") from exc
 
     _profile_httpx_send = httpx.Client.send
 
     def _send_with_profile_call_success_marker(self, request, *args, **kwargs):
+        profile_generation = (
+            request.url.host.rstrip(".").lower() == _profile_host
+            and request.method.upper() != "GET"
+        )
+        owns_attempt_marker = _mark_profile_marker(_profile_call_attempt_marker_path, "attempt") if profile_generation else False
         response = _profile_httpx_send(self, request, *args, **kwargs)
-        # Synto checks GET /models before inference; health reads are not generated work.
-        if (request.url.host.rstrip(".").lower() == _profile_host
-                and request.method.upper() != "GET" and 200 <= response.status_code < 300):
+        if profile_generation and 200 <= response.status_code < 300:
+            # This per-batch marker is monotonic: any generation response that
+            # completed means a later stage cannot safely replay the batch.
             _mark_profile_call_success()
+        elif profile_generation and _is_profile_quota_response(response):
+            # Clear only the provisional marker created by this exact request.
+            _clear_profile_attempt_for_quota(owns_attempt_marker)
         return response
 
     httpx.Client.send = _send_with_profile_call_success_marker
@@ -173,6 +234,8 @@ if _profile_raw:
         resolved = _resolve_profile_base(self, role, api_key_env=api_key_env)
         if role == "embed":
             return resolved
+        if role not in ("fast", "heavy"):
+            raise ValueError("unsupported Project LLM role")
         api_key = os.environ.get("LWC_PROFILE_API_KEY", "")
         profile_values = vars(resolved).copy()
         profile_values.update({
@@ -180,13 +243,14 @@ if _profile_raw:
             "url": _profile["endpoint"],
             "api_key": api_key or None,
             "api_key_env": "LWC_PROFILE_API_KEY" if api_key else None,
-            "model": _profile["model"],
+            "model": _profile["models"][role],
             "think": None,
             "supports_json_mode": _profile["protocol"] == "openai_chat_completions",
             "supports_embeddings": False,
             "azure": False,
             "anthropic_compat": _profile["protocol"] == "anthropic_messages",
-            "options": {},
+            "options": {key: value for key, value in resolved.options.items()
+                        if key != "model" and key not in ("thinking", "reasoning_effort")},
             "headers": {},
         })
         return ResolvedModel(**profile_values)
