@@ -17,6 +17,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	conceptcache "github.com/rayer/llm-wiki-bff/internal/cache"
+	"github.com/rayer/llm-wiki-bff/internal/config"
 	"github.com/rayer/llm-wiki-bff/internal/contentcontext"
 	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"github.com/rayer/llm-wiki-bff/internal/localfs"
@@ -215,6 +216,90 @@ func TestGetContentContextReadsOnlyPersistedStateAndPinnedIdentity(t *testing.T)
 	}
 	if root.writeCalls != 0 || executor.calls != 0 {
 		t.Fatalf("request triggered writes=%d or query calls=%d", root.writeCalls, executor.calls)
+	}
+}
+
+func TestLocalPublicationFeedsPersistedGETAndAuthenticatedMCPContext(t *testing.T) {
+	fsClient := newContentContextEmulator(t)
+	defer fsClient.Close()
+
+	owner, projectID := "local-context-owner", fmt.Sprintf("local-context-%d", time.Now().UnixNano())
+	projectRef := scopedfirestore.Collection(fsClient.Raw(), "projects").Doc(projectDocID(owner, projectID))
+	stateRef := projectRef.Collection("content_context").Doc("state")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := projectRef.Set(ctx, map[string]interface{}{
+		"user_id": owner, "project_id": projectID, "status": "ready", "name": "Local research",
+		"description": "Published project notes and concepts", "description_revision": int64(1),
+	}); err != nil {
+		t.Fatalf("seed Project metadata: %v", err)
+	}
+	defer func() {
+		_, _ = stateRef.Delete(context.Background())
+		_, _ = projectRef.Delete(context.Background())
+	}()
+
+	concepts := []byte(`{"slug":"alpha","title":"Alpha","body":"Published local concept.","frontmatter":{"id":"id-alpha"},"sources":[]}` + "\n")
+	snapshot, err := conceptcache.ParseCanonicalJSONLSnapshot(projectID, "local-local-transaction-1", concepts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, metadata, err := contentcontext.BuildSummaryInput(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := strings.TrimPrefix(snapshot.Identity.ConceptsDigest, "sha256:")
+	descriptor := contentcontext.LocalPublicationDescriptor{
+		Version: contentcontext.LocalPublicationVersion, OwnerID: owner, ProjectID: projectID,
+		ExecutionID: "local-execution-1", TransactionID: "local-transaction-1", Generation: "local-local-transaction-1",
+		ConceptsDigest: digest, SummarySourceGeneration: "local-local-transaction-1",
+		SummarySourceIdentity: contentcontext.LocalSummarySourceIdentity("local-transaction-1", digest),
+		SummaryInput:          input, SummaryMetadata: metadata,
+	}
+	descriptorData, err := contentcontext.EncodeLocalPublicationDescriptor(descriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	localRoot := localfs.New(t.TempDir())
+	project := localRoot.WithScope(owner, projectID)
+	if _, err := project.WriteBytes(ctx, concepts, "cache/concepts.jsonl"); err != nil {
+		t.Fatalf("write local concepts: %v", err)
+	}
+	if _, err := project.WriteBytes(ctx, descriptorData, contentcontext.LocalPublicationDescriptorPath); err != nil {
+		t.Fatalf("write journaled local publication descriptor: %v", err)
+	}
+	if _, err := stateRef.Set(ctx, contentContextStateMap(descriptor.Generation, digest, "ready", "", digest, "Local summary from committed concepts")); err != nil {
+		t.Fatalf("seed persisted summary state: %v", err)
+	}
+
+	h := New(localRoot, fsClient, search.NewIndex(), conceptcache.New(), nil, nil)
+	if got := serveContentContext(h, owner, projectID, projectID); got.Code != http.StatusOK {
+		t.Fatalf("local GET status=%d body=%s", got.Code, got.Body.String())
+	} else {
+		var body contentContextResponse
+		if err := json.Unmarshal(got.Body.Bytes(), &body); err != nil || body.Status != contentcontext.StatusReady ||
+			body.CurrentGeneration == nil || *body.CurrentGeneration != descriptor.Generation || body.Summary == nil || body.Summary.Text != "Local summary from committed concepts" {
+			t.Fatalf("local GET body=%+v err=%v", body, err)
+		}
+	}
+
+	h.SetMCPConfig(&config.BFFMCP{Instructions: "Keep project instructions."})
+	identity := mcpProjectKeyIdentity{userID: owner, projectID: projectID, keyID: "local-bound-key", capabilities: []string{mcpQueryCapability}}
+	response := mcpMetadataWireRequest(t, h.mcpAuthenticatedHandler(identity),
+		`{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"fixture-client","version":"1"},"io.modelcontextprotocol/clientCapabilities":{}}}}`, "2026-07-28")
+	result := mcpMetadataResult(t, response)
+	instructions, ok := result["instructions"].(string)
+	if !ok || !strings.Contains(instructions, "Local research") || !strings.Contains(instructions, "Local summary from committed concepts") ||
+		!strings.Contains(instructions, descriptor.Generation) {
+		t.Fatalf("authenticated MCP context omitted the local publication: %#v", result)
+	}
+	response = mcpMetadataWireRequest(t, h.mcpAuthenticatedHandler(identity),
+		`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"fixture-client","version":"1"},"io.modelcontextprotocol/clientCapabilities":{}}}}`, "2026-07-28")
+	tools := mcpMetadataResult(t, response)["tools"].([]interface{})
+	queryTool := tools[0].(map[string]interface{})
+	if queryTool["name"] != "query_project" || !strings.Contains(queryTool["description"].(string), "Local research") ||
+		!strings.Contains(queryTool["description"].(string), "Local summary from committed concepts") {
+		t.Fatalf("authenticated MCP tool description omitted the local publication: %#v", queryTool)
 	}
 }
 

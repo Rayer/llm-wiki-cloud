@@ -1,0 +1,18 @@
+# LWC-420 r2 implementation report
+
+## Scope
+
+This report tracks the isolated LWC-420 r2 work in the Project context worktree. The worker adds a bounded local publication descriptor inside the existing local publish journal; it does not introduce a cloud generation or archive. Local Query identity remains explicitly legacy, while the Project context GET and authenticated MCP metadata use an optional publication reader that validates the descriptor against the committed concepts bytes.
+
+The descriptor captures the bounded selection-v1 summary input in the same journal transaction as `cache/concepts.jsonl`. A same-digest publication advances the current local transaction identity while preserving the original summary source identity, input, and metadata. The local worker uses the existing vault lease for reconciliation, claim, input validation, and finalization; model work runs after the publication lease is released. Summary failures remain outside the knowledge publication result.
+
+## Local checks completed
+
+- `FIRESTORE_EMULATOR_HOST=127.0.0.1:8585 go test ./cmd/olw_worker ./internal/localfs ./internal/contentcontext ./internal/cache -count=1` passed.
+- Focused local publication, Firestore carry-forward/fencing, local GET/MCP readback, and precommit no-inference tests passed.
+- Frontend `npm test` reported 568/568 Node tests and 604/604 component tests passed; `npm run typecheck` passed.
+- `FIRESTORE_EMULATOR_HOST=127.0.0.1:8585 go test ./internal/handler/v1 -count=1` has one known failure in the held LWC-443 provider lane: `TestProfileRuntimeConnectedManualThenCompileTagging/retained-candidate-exhaustion-retries-through-activation` reports `calls=3` at `profile_runtime_e2e_test.go:385`. No LWC-443 changes were made here.
+
+## Pending immutable dependency
+
+The repaired immutable LWC-443 Fast resolver interface and final LWC-445 description head have not yet been supplied by the coordinator. Do not replace `contentContextFastProfile` with another locally invented selector or add a parallel credential authority. The next discriminating check is to inspect the exact parent-supplied 443 interface for a pinned Fast candidate snapshot plus metadata-only eligibility proof tied to the claimed summary work, then bind that candidate to both local and cloud summary execution and rerun the worker and handler checks. The current 443 and 445 integration commits are HOLDs and are not treated as final approvals.

@@ -26,17 +26,17 @@ const SummarySystemPrompt = "Summarize only the topics present in the supplied p
 var ErrEmptyConcepts = errors.New("published concepts are empty")
 
 type SummaryInputMetadata struct {
-	ConceptsDigest         string
-	SourceGeneration       string
-	InputDigest            string
-	SelectionVersion       string
-	TotalConcepts          int
-	SelectedConcepts       int
-	Sampled                bool
-	TitleTruncatedConcepts int
-	BodyTruncatedConcepts  int
-	TitleCodepointsOmitted int
-	BodyCodepointsOmitted  int
+	ConceptsDigest         string `json:"concepts_sha256"`
+	SourceGeneration       string `json:"source_generation"`
+	InputDigest            string `json:"input_sha256,omitempty"`
+	SelectionVersion       string `json:"selection_version"`
+	TotalConcepts          int    `json:"total_concepts"`
+	SelectedConcepts       int    `json:"selected_concepts"`
+	Sampled                bool   `json:"sampled"`
+	TitleTruncatedConcepts int    `json:"title_truncated_concepts"`
+	BodyTruncatedConcepts  int    `json:"body_truncated_concepts"`
+	TitleCodepointsOmitted int    `json:"title_codepoints_omitted"`
+	BodyCodepointsOmitted  int    `json:"body_codepoints_omitted"`
 }
 
 type summaryInputPayload struct {
@@ -59,7 +59,7 @@ type summaryConcept struct {
 }
 
 // BuildSummaryInput creates a deterministic, bounded prompt payload from a
-// manifest-verified published concept snapshot. It never reads loose cache data.
+// publication-bound concept snapshot. It never reads storage or loose cache data.
 func BuildSummaryInput(snapshot cache.PinnedCanonicalSnapshot) ([]byte, SummaryInputMetadata, error) {
 	digest, validDigest := NormalizeSHA256(snapshot.Identity.ConceptsDigest)
 	if snapshot.Identity.ProjectID == "" || snapshot.Identity.GenerationID == "" || !validDigest {

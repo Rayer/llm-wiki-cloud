@@ -282,8 +282,12 @@ func runCloudContentContext(ctx context.Context, cfg workerConfig, objects objec
 	inputCtx, cancelInput := context.WithTimeout(ctx, contentContextInputTimeout)
 	input, metadata, err := loadContentContextSummaryInput(inputCtx, cfg, *claim)
 	cancelInput()
+	return runClaimedContentContextSummary(ctx, cfg, repository, authority, *claim, input, metadata, err)
+}
+
+func runClaimedContentContextSummary(ctx context.Context, cfg workerConfig, repository *contentcontext.FirestoreRepository, authority contentcontext.PublicationAuthority, claim contentcontext.SummaryClaim, input []byte, metadata contentcontext.SummaryInputMetadata, err error) error {
 	if errors.Is(err, contentcontext.ErrEmptyConcepts) {
-		marked, markErr := repository.MarkEmpty(ctx, cfg.UserID, cfg.ProjectID, authority, *claim)
+		marked, markErr := repository.MarkEmpty(ctx, cfg.UserID, cfg.ProjectID, authority, claim)
 		if markErr != nil {
 			return &contentContextOperationError{class: "storage_failure", err: markErr}
 		}
@@ -293,23 +297,23 @@ func runCloudContentContext(ctx context.Context, cfg workerConfig, objects objec
 		return nil
 	}
 	if err != nil {
-		return failCloudContentContextSummary(ctx, repository, authority, cfg, *claim, "input_invalid", err)
+		return failCloudContentContextSummary(ctx, repository, authority, cfg, claim, "input_invalid", err)
 	}
 	if len(input) == 0 || len(input)+len(contentcontext.SummarySystemPrompt)+1 > contentcontext.SummaryMaxInputBytes ||
 		metadata.SourceGeneration != claim.SourceGeneration || metadata.SelectionVersion != contentcontext.SummarySelectionVersion ||
-		!validSummaryInputMetadata(metadata, *claim) {
+		!validSummaryInputMetadata(metadata, claim) {
 		err = errors.New("pinned summary input metadata is invalid")
-		return failCloudContentContextSummary(ctx, repository, authority, cfg, *claim, "input_invalid", err)
+		return failCloudContentContextSummary(ctx, repository, authority, cfg, claim, "input_invalid", err)
 	}
 
 	profile, ok := contentContextFastProfile(cfg)
 	if !ok {
-		return failCloudContentContextSummary(ctx, repository, authority, cfg, *claim, "provider_unavailable", errors.New("Project Fast profile is unavailable"))
+		return failCloudContentContextSummary(ctx, repository, authority, cfg, claim, "provider_unavailable", errors.New("Project Fast profile is unavailable"))
 	}
 	models := normalizePipelineLLMModels(profile)
 	summaryClient, err := newContentContextSummaryClient(profile)
 	if err != nil {
-		return failCloudContentContextSummary(ctx, repository, authority, cfg, *claim, "provider_unavailable", err)
+		return failCloudContentContextSummary(ctx, repository, authority, cfg, claim, "provider_unavailable", err)
 	}
 	defer summaryClient.Close()
 	modelCtx, cancelModel := context.WithTimeout(ctx, contentContextModelTimeout)
@@ -317,7 +321,7 @@ func runCloudContentContext(ctx context.Context, cfg workerConfig, objects objec
 	result, err := summaryClient.Complete(modelCtx, contentcontext.SummarySystemPrompt, string(input))
 	cancelModel()
 	if err != nil {
-		return failCloudContentContextSummary(ctx, repository, authority, cfg, *claim, contentContextProviderErrorClass(err), err)
+		return failCloudContentContextSummary(ctx, repository, authority, cfg, claim, contentContextProviderErrorClass(err), err)
 	}
 	text, err := contentcontext.ParseSummaryOutput([]byte(result.Text))
 	if err != nil || result.Metadata.ProfileID != profile.ID || result.Metadata.ProfileRevision != profile.Revision ||
@@ -325,7 +329,7 @@ func runCloudContentContext(ctx context.Context, cfg workerConfig, objects objec
 		if err == nil {
 			err = errors.New("Fast summary response metadata is invalid")
 		}
-		return failCloudContentContextSummary(ctx, repository, authority, cfg, *claim, "summary_invalid", err)
+		return failCloudContentContextSummary(ctx, repository, authority, cfg, claim, "summary_invalid", err)
 	}
 	completion := contentcontext.SummaryCompletion{
 		Text: text, PromptRevision: contentcontext.SummaryPromptRevision,
@@ -334,7 +338,7 @@ func runCloudContentContext(ctx context.Context, cfg workerConfig, objects objec
 		ReturnedModel: result.Metadata.ReturnedModel, InputDigest: metadata.InputDigest,
 		SelectionVersion: metadata.SelectionVersion,
 	}
-	completed, err := repository.Complete(ctx, cfg.UserID, cfg.ProjectID, authority, *claim, completion)
+	completed, err := repository.Complete(ctx, cfg.UserID, cfg.ProjectID, authority, claim, completion)
 	if err != nil {
 		return &contentContextOperationError{class: "storage_failure", err: fmt.Errorf("persist content-context summary: %w", err)}
 	}

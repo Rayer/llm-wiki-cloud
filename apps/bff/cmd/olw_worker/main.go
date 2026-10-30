@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/rayer/llm-wiki-bff/internal/annotation"
+	"github.com/rayer/llm-wiki-bff/internal/auth"
 	conceptcache "github.com/rayer/llm-wiki-bff/internal/cache"
 	"github.com/rayer/llm-wiki-bff/internal/generation"
 	"github.com/rayer/llm-wiki-bff/internal/llm"
@@ -694,6 +695,18 @@ func runWorkerBatchWorkspace(ctx context.Context, cfg workerConfig, commands [][
 	}
 	workspace := ""
 	terminalAttempted := false
+	if auth.ValidPathSegment(cfg.UserID) && auth.ValidPathSegment(cfg.ProjectID) {
+		defer func() {
+			if !workspacePublished {
+				return
+			}
+			runCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), contentContextRunTimeout)
+			defer cancel()
+			if err := runLocalContentContext(runCtx, cfg, vault); err != nil {
+				reportContentContextReconcileFailure(err)
+			}
+		}()
+	}
 	recordTerminal := func(failure error, published bool) {
 		if failure == nil || terminalAttempted {
 			return
@@ -763,6 +776,11 @@ func runWorkerBatchWorkspace(ctx context.Context, cfg workerConfig, commands [][
 			return errors.Join(failure, preserveWorkerFailure(recordErr, failureStageReceiptRecording, failureClassRecordingFailure))
 		}
 		return failure
+	}
+	if auth.ValidPathSegment(cfg.UserID) && auth.ValidPathSegment(cfg.ProjectID) {
+		if err := prepareLocalContentContextDescriptor(workspace, vault, cfg); err != nil {
+			warnContentContextFailure("publication_descriptor_unavailable")
+		}
 	}
 	publicationOutcome = "unknown"
 	_, publishSpan := observability.StartWorkerSpan(ctx, "pipeline.worker.publish")

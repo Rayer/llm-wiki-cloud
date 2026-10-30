@@ -1,0 +1,390 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"cloud.google.com/go/firestore"
+	"github.com/rayer/llm-wiki-bff/internal/contentcontext"
+	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
+	"github.com/rayer/llm-wiki-bff/internal/localfs"
+)
+
+func TestLocalPublicationJournalCarriesSameDigestSummarySource(t *testing.T) {
+	root := t.TempDir()
+	vault := filepath.Join(root, "users", "owner", "projects", "project")
+	if err := os.MkdirAll(vault, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	workspace := t.TempDir()
+	concepts := localContentContextFixtureConcepts(t, "alpha")
+	localContentContextFixtureWorkspace(t, workspace, concepts)
+	cfg := workerConfig{UserID: "owner", ProjectID: "project", ExecutionID: "execution-1"}
+	if err := prepareLocalContentContextDescriptor(workspace, vault, cfg); err != nil {
+		t.Fatal(err)
+	}
+	first, err := readLocalContentContextDescriptor(workspace, cfg.UserID, cfg.ProjectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syncWorkspaceOutputs(workspace, vault, cfg.ExecutionID); err != nil {
+		t.Fatal(err)
+	}
+	if err := acquireAndReleaseTestVaultLease(t, vault, cfg.ExecutionID); err != nil {
+		t.Fatal(err)
+	}
+
+	secondWorkspace := t.TempDir()
+	localContentContextFixtureWorkspace(t, secondWorkspace, concepts)
+	cfg.ExecutionID = "execution-2"
+	if err := prepareLocalContentContextDescriptor(secondWorkspace, vault, cfg); err != nil {
+		t.Fatal(err)
+	}
+	second, err := readLocalContentContextDescriptor(secondWorkspace, cfg.UserID, cfg.ProjectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Generation == second.Generation || first.TransactionID == second.TransactionID || first.ExecutionID == second.ExecutionID {
+		t.Fatalf("local publication identity did not advance: first=%+v second=%+v", first, second)
+	}
+	if first.SummarySourceGeneration != second.SummarySourceGeneration || first.SummarySourceIdentity != second.SummarySourceIdentity ||
+		string(first.SummaryInput) != string(second.SummaryInput) || first.SummaryMetadata != second.SummaryMetadata {
+		t.Fatalf("same-digest publication changed captured summary source: first=%+v second=%+v", first, second)
+	}
+
+	changedWorkspace := t.TempDir()
+	localContentContextFixtureWorkspace(t, changedWorkspace, localContentContextFixtureConcepts(t, "beta"))
+	cfg.ExecutionID = "execution-3"
+	if err := prepareLocalContentContextDescriptor(changedWorkspace, vault, cfg); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := readLocalContentContextDescriptor(changedWorkspace, cfg.UserID, cfg.ProjectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed.ConceptsDigest == second.ConceptsDigest || changed.SummarySourceGeneration != changed.Generation ||
+		changed.SummarySourceIdentity == second.SummarySourceIdentity || string(changed.SummaryInput) == string(second.SummaryInput) {
+		t.Fatalf("changed digest did not create a new captured summary source: old=%+v new=%+v", second, changed)
+	}
+}
+
+func TestLocalPublicationJournalIsVisibleThroughLocalReader(t *testing.T) {
+	root := t.TempDir()
+	vault := filepath.Join(root, "users", "owner", "projects", "project")
+	if err := os.MkdirAll(vault, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	workspace := t.TempDir()
+	localContentContextFixtureWorkspace(t, workspace, localContentContextFixtureConcepts(t, "alpha"))
+	cfg := workerConfig{UserID: "owner", ProjectID: "project", ExecutionID: "execution-1"}
+	if err := prepareLocalContentContextDescriptor(workspace, vault, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := syncWorkspaceOutputs(workspace, vault, cfg.ExecutionID); err != nil {
+		t.Fatal(err)
+	}
+
+	reader := localfs.New(root).WithScope(cfg.UserID, cfg.ProjectID)
+	publication, err := reader.ContentContextPublication(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor, err := readLocalContentContextDescriptor(vault, cfg.UserID, cfg.ProjectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := reader.QueryGenerationIdentity(context.Background())
+	if err != nil || identity.ProjectID != cfg.ProjectID || identity.GenerationID != "legacy" || identity.ConceptsDigest != "" || reader.ViewToken() != "legacy" {
+		t.Fatalf("local Query identity=%+v token=%q err=%v", identity, reader.ViewToken(), err)
+	}
+	if publication.Generation != descriptor.Generation || publication.ConceptsDigest != descriptor.ConceptsDigest {
+		t.Fatalf("local content-context publication=%+v descriptor=%+v", publication, descriptor)
+	}
+}
+
+func TestLocalPublicationAuthorityCarriesSameDigestAndFencesLateAttempt(t *testing.T) {
+	endpoint := strings.TrimSpace(os.Getenv("FIRESTORE_EMULATOR_HOST"))
+	if endpoint == "" {
+		t.Skip("FIRESTORE_EMULATOR_HOST is not set")
+	}
+	parsed, err := url.Parse("http://" + endpoint)
+	if err != nil || parsed.Host == "" {
+		t.Fatalf("invalid Firestore emulator host %q", endpoint)
+	}
+	host, _, err := net.SplitHostPort(parsed.Host)
+	if err != nil || (host != "127.0.0.1" && host != "localhost" && host != "::1") {
+		t.Fatalf("Firestore emulator must use loopback, got %q", parsed.Host)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cloudProject := fmt.Sprintf("local-content-context-%d", time.Now().UnixNano())
+	t.Setenv("GOOGLE_CLOUD_PROJECT", cloudProject)
+	t.Setenv("FIRESTORE_DATABASE_ID", "(default)")
+	client, err := newProfileFirestoreClient(ctx, cloudProject)
+	if err != nil {
+		t.Fatalf("create Firestore emulator client: %v", err)
+	}
+	defer client.Close()
+
+	cfg := workerConfig{UserID: "local-owner", ProjectID: fmt.Sprintf("local-project-%d", time.Now().UnixNano()), ExecutionID: "local-summary-test"}
+	stateRef := scopedfirestore.Collection(client, "projects").Doc(cfg.UserID + "_" + cfg.ProjectID).Collection("content_context").Doc("state")
+	defer func() { _, _ = stateRef.Delete(context.Background()) }()
+	vault := t.TempDir()
+	commitLocalContentContextFixture(t, vault, cfg, "alpha")
+	authority := newLocalContentContextAuthority(cfg, vault)
+	repository := contentcontext.NewFirestoreRepository(client)
+	if _, err := repository.ReconcileCurrent(ctx, cfg.UserID, cfg.ProjectID, authority); err != nil {
+		t.Fatalf("reconcile initial local publication: %v", err)
+	}
+	firstClaim, err := repository.Claim(ctx, cfg.UserID, cfg.ProjectID, authority)
+	if err != nil || firstClaim == nil {
+		t.Fatalf("claim initial local publication: claim=%+v err=%v", firstClaim, err)
+	}
+
+	second := commitLocalContentContextFixture(t, vault, cfg, "alpha")
+	if second.SummarySourceGeneration != firstClaim.SourceGeneration || second.SummarySourceIdentity != firstClaim.SourceManifestIdentity {
+		t.Fatalf("same-digest local publication changed source identity: claim=%+v descriptor=%+v", firstClaim, second)
+	}
+	completion := contentcontext.SummaryCompletion{
+		Text: "summary from first local publication", PromptRevision: contentcontext.SummaryPromptRevision,
+		ProfileID: "fast-profile", ProfileRevision: 1, Role: contentcontext.SummaryRole,
+		RequestedModel: "fast-model", ReturnedModel: "fast-model-v2",
+		InputDigest: strings.Repeat("b", 64), SelectionVersion: contentcontext.SummarySelectionVersion,
+	}
+	if saved, err := repository.Complete(ctx, cfg.UserID, cfg.ProjectID, authority, *firstClaim, completion); err != nil || !saved {
+		t.Fatalf("complete carried local work: saved=%t err=%v", saved, err)
+	}
+	state, err := repository.Read(ctx, cfg.UserID, cfg.ProjectID)
+	if err != nil || state.TargetGeneration != second.Generation || state.LastGood == nil || state.LastGood.SourceGeneration != firstClaim.SourceGeneration {
+		t.Fatalf("same-digest local state=%+v err=%v", state, err)
+	}
+
+	commitLocalContentContextFixture(t, vault, cfg, "beta")
+	thirdClaim, err := repository.Claim(ctx, cfg.UserID, cfg.ProjectID, authority)
+	if err != nil || thirdClaim == nil {
+		t.Fatalf("claim changed local digest: claim=%+v err=%v", thirdClaim, err)
+	}
+	commitLocalContentContextFixture(t, vault, cfg, "gamma")
+	if saved, err := repository.Complete(ctx, cfg.UserID, cfg.ProjectID, authority, *thirdClaim, completion); err != nil || saved {
+		t.Fatalf("late changed-digest local attempt saved=%t err=%v", saved, err)
+	}
+	state, err = repository.Read(ctx, cfg.UserID, cfg.ProjectID)
+	if err != nil || state.Status != contentcontext.StatusPending || state.TargetConceptsSHA != localConceptsDigest(localContentContextFixtureConcepts(t, "gamma")) ||
+		state.LastGood == nil || state.LastGood.Text != "summary from first local publication" {
+		t.Fatalf("late local attempt changed current/last-good state: state=%+v err=%v", state, err)
+	}
+}
+
+func TestLocalWorkspaceWorkerPublishesAndRecordsEmptyContextWithoutInference(t *testing.T) {
+	endpoint := strings.TrimSpace(os.Getenv("FIRESTORE_EMULATOR_HOST"))
+	if endpoint == "" {
+		t.Skip("FIRESTORE_EMULATOR_HOST is not set")
+	}
+	parsed, err := url.Parse("http://" + endpoint)
+	if err != nil || parsed.Host == "" {
+		t.Fatalf("invalid Firestore emulator host %q", endpoint)
+	}
+	host, _, err := net.SplitHostPort(parsed.Host)
+	if err != nil || (host != "127.0.0.1" && host != "localhost" && host != "::1") {
+		t.Fatalf("Firestore emulator must use loopback, got %q", parsed.Host)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cloudProject := fmt.Sprintf("local-empty-context-%d", time.Now().UnixNano())
+	t.Setenv("GOOGLE_CLOUD_PROJECT", cloudProject)
+	t.Setenv("FIRESTORE_DATABASE_ID", "(default)")
+	client, err := newProfileFirestoreClient(ctx, cloudProject)
+	if err != nil {
+		t.Fatalf("create Firestore emulator client: %v", err)
+	}
+	defer client.Close()
+
+	oldHooks := localWorkspaceBatchHooks
+	t.Cleanup(func() { localWorkspaceBatchHooks = oldHooks })
+	oldSummaryClient := newContentContextSummaryClient
+	t.Cleanup(func() { newContentContextSummaryClient = oldSummaryClient })
+	newContentContextSummaryClient = func(pipelineLLMProfile) (contentContextSummaryClient, error) {
+		t.Fatal("empty local concepts attempted model inference")
+		return nil, errors.New("unreachable")
+	}
+
+	cfg := workerConfig{
+		UserID: "local-empty-owner", ProjectID: fmt.Sprintf("local-empty-%d", time.Now().UnixNano()),
+		ExecutionID: "local-empty-worker", Postprocess: true, WorkspaceDir: t.TempDir(),
+	}
+	vault := t.TempDir()
+	localContentContextFixtureWorkspace(t, vault, nil)
+	stateRef := scopedfirestore.Collection(client, "projects").Doc(cfg.UserID + "_" + cfg.ProjectID).Collection("content_context").Doc("state")
+	defer func() { _, _ = stateRef.Delete(context.Background()) }()
+
+	hooks := oldHooks
+	hooks.snapshotSources = func(string) ([]sourceSnapshot, error) { return nil, nil }
+	hooks.snapshotConcepts = func(string, ...[]sourceSnapshot) ([]conceptSnapshot, error) { return nil, nil }
+	hooks.runWorkerBatchAtVault = func(context.Context, workerConfig, [][]string, string) error { return nil }
+	hooks.reconcileWorkspaceSources = func(string, []sourceSnapshot) error { return nil }
+	hooks.reconcileWorkspaceConcepts = func(string, []conceptSnapshot, ...[]sourceSnapshot) error { return nil }
+	hooks.recordSuccess = func(string, []sourceSnapshot, time.Time) error { return nil }
+	localWorkspaceBatchHooks = hooks
+
+	if err := runWorkerBatchWorkspace(ctx, cfg, [][]string{{"run"}}, vault); err != nil {
+		t.Fatalf("run local workspace worker: %v", err)
+	}
+	descriptor, err := readLocalContentContextDescriptor(vault, cfg.UserID, cfg.ProjectID)
+	if err != nil || descriptor.InputErrorClass != "empty_concepts" {
+		t.Fatalf("published local descriptor=%+v err=%v", descriptor, err)
+	}
+	snapshot, err := stateRef.Get(ctx)
+	if err != nil {
+		t.Fatalf("read local worker state: %v", err)
+	}
+	var state contentcontext.StateDocument
+	if err := snapshot.DataTo(&state); err != nil {
+		t.Fatalf("decode local worker state: %v", err)
+	}
+	if err := state.Validate(); err != nil {
+		t.Fatalf("validate local worker state: %v", err)
+	}
+	if state.Status != contentcontext.StatusMissing || state.TargetGeneration != descriptor.Generation ||
+		state.TargetConceptsSHA != descriptor.ConceptsDigest || state.LastGood != nil {
+		t.Fatalf("empty local worker state=%+v descriptor=%+v", state, descriptor)
+	}
+}
+
+func commitLocalContentContextFixture(t *testing.T, vault string, cfg workerConfig, slug string) contentcontext.LocalPublicationDescriptor {
+	t.Helper()
+	lease, err := acquireVaultLease(vault, cfg.ExecutionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := lease.Release(); err != nil {
+			t.Error(err)
+		}
+	}()
+	workspace := t.TempDir()
+	localContentContextFixtureWorkspace(t, workspace, localContentContextFixtureConcepts(t, slug))
+	if err := prepareLocalContentContextDescriptor(workspace, vault, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := syncWorkspaceOutputs(workspace, vault, cfg.ExecutionID); err != nil {
+		t.Fatal(err)
+	}
+	descriptor, err := readLocalContentContextDescriptor(vault, cfg.UserID, cfg.ProjectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return descriptor
+}
+
+func TestLocalPrecommitFailureDoesNotStartContentContext(t *testing.T) {
+	oldHooks := localWorkspaceBatchHooks
+	t.Cleanup(func() { localWorkspaceBatchHooks = oldHooks })
+	oldRename := publishRename
+	t.Cleanup(func() { publishRename = oldRename })
+	oldFirestore := newContentContextFirestoreClient
+	t.Cleanup(func() { newContentContextFirestoreClient = oldFirestore })
+	oldSummaryClient := newContentContextSummaryClient
+	t.Cleanup(func() { newContentContextSummaryClient = oldSummaryClient })
+
+	vault := workspaceVault(t, "raw")
+	workspaceDir := t.TempDir()
+	localContentContextFixtureWorkspace(t, vault, localContentContextFixtureConcepts(t, "alpha"))
+	hooks := oldHooks
+	hooks.recoverInterruptedPublish = func(string) error { return nil }
+	hooks.snapshotSources = func(string) ([]sourceSnapshot, error) { return nil, nil }
+	hooks.snapshotConcepts = func(string, ...[]sourceSnapshot) ([]conceptSnapshot, error) { return nil, nil }
+	hooks.createWorkspace = createWorkspace
+	hooks.materializeSnapshots = func(string, []sourceSnapshot) error { return nil }
+	hooks.runWorkerBatchAtVault = func(context.Context, workerConfig, [][]string, string) error { return nil }
+	hooks.reconcileWorkspaceSources = func(string, []sourceSnapshot) error { return nil }
+	hooks.reconcileWorkspaceConcepts = func(string, []conceptSnapshot, ...[]sourceSnapshot) error { return nil }
+	hooks.syncWorkspaceOutputs = syncWorkspaceOutputs
+	hooks.recordSuccess = func(string, []sourceSnapshot, time.Time) error { return nil }
+	localWorkspaceBatchHooks = hooks
+
+	publishRename = func(root *os.Root, oldName, newName string) error {
+		if newName == contentcontext.LocalPublicationDescriptorPath {
+			return errors.New("injected precommit descriptor rename failure")
+		}
+		return oldRename(root, oldName, newName)
+	}
+	firestoreCalls, providerCalls := 0, 0
+	newContentContextFirestoreClient = func(context.Context, string) (*firestore.Client, error) {
+		firestoreCalls++
+		return nil, errors.New("should not reach Firestore before commit")
+	}
+	newContentContextSummaryClient = func(pipelineLLMProfile) (contentContextSummaryClient, error) {
+		providerCalls++
+		return nil, errors.New("should not call provider before commit")
+	}
+
+	err := runWorkerBatchWorkspace(context.Background(), workerConfig{
+		UserID: "owner", ProjectID: "project", ExecutionID: "precommit-failure", Postprocess: true, WorkspaceDir: workspaceDir,
+	}, [][]string{{"run"}}, vault)
+	if err == nil || !strings.Contains(err.Error(), "precommit descriptor rename failure") {
+		t.Fatalf("runWorkerBatchWorkspace error=%v, want injected precommit failure", err)
+	}
+	if firestoreCalls != 0 || providerCalls != 0 {
+		t.Fatalf("precommit failure started Firestore=%d provider=%d times", firestoreCalls, providerCalls)
+	}
+	if _, err := os.Stat(filepath.Join(vault, contentcontext.LocalPublicationDescriptorPath)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("precommit failure published descriptor: %v", err)
+	}
+}
+
+func acquireAndReleaseTestVaultLease(t *testing.T, vault, executionID string) error {
+	t.Helper()
+	lease, err := acquireVaultLease(vault, executionID)
+	if err != nil {
+		return err
+	}
+	return lease.Release()
+}
+
+func localContentContextFixtureConcepts(t *testing.T, slug string) []byte {
+	t.Helper()
+	data, err := json.Marshal(map[string]any{
+		"slug": slug, "title": strings.ToUpper(slug), "body": "A local published concept.",
+		"frontmatter": map[string]any{"id": "id-" + slug}, "sources": []string{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return append(data, '\n')
+}
+
+func localContentContextFixtureWorkspace(t *testing.T, root string, concepts []byte) {
+	t.Helper()
+	for path, data := range map[string][]byte{
+		"cache/concepts.jsonl":         concepts,
+		"cache/id_map.json":            []byte(`{"source_meta":{}}`),
+		"cache/dormant_concepts.jsonl": []byte{},
+		"cache/raw_status.json":        []byte(`{"version":1,"sources":{}}`),
+		"cache/suggested_queries.json": []byte(`{"version":1,"queries":[]}`),
+		"synto.toml":                   []byte("[pipeline]\nauto_commit = false\nauto_maintain = false\n"),
+		".synto/INDEX.json":            []byte(syntoIndexFixture("22af645d1859", "01JAZ5N7Y3K8M2Q4R6T9VWXAC8", "new", false)),
+	} {
+		writeLocalContentContextFixture(t, root, path, data)
+	}
+	writeValidSQLiteState(t, filepath.Join(root, ".synto", "state.db"))
+}
+
+func writeLocalContentContextFixture(t *testing.T, root, path string, data []byte) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(filepath.Join(root, path)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, path), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}

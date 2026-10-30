@@ -125,16 +125,32 @@ func currentContentContextPublication(ctx context.Context, root storage.RootStor
 	if err != nil {
 		return storage.QueryGenerationIdentity{}, false, err
 	}
-	identityProvider, ok := pinned.(storage.QueryGenerationIdentityProvider)
-	if !ok {
-		return storage.QueryGenerationIdentity{}, false, errors.New("pinned generation identity unavailable")
-	}
-	identity, err := identityProvider.QueryGenerationIdentity(ctx)
-	if errors.Is(err, storage.ErrQueryGenerationUnpinned) && hasLegacyPinnedView(pinned) {
-		return storage.QueryGenerationIdentity{}, true, nil
-	}
-	if err != nil {
-		return storage.QueryGenerationIdentity{}, false, err
+	var identity storage.QueryGenerationIdentity
+	if publicationReader, ok := pinned.(contentcontext.PublicationReader); ok {
+		publication, err := publicationReader.ContentContextPublication(ctx)
+		if errors.Is(err, storage.ErrQueryGenerationUnpinned) && hasLegacyPinnedView(pinned) {
+			return storage.QueryGenerationIdentity{}, true, nil
+		}
+		if err != nil {
+			return storage.QueryGenerationIdentity{}, false, err
+		}
+		identity = storage.QueryGenerationIdentity{
+			ProjectID: projectID, GenerationID: publication.Generation,
+			ConceptsDigest: publication.ConceptsDigest,
+		}
+	} else {
+		identityProvider, ok := pinned.(storage.QueryGenerationIdentityProvider)
+		if !ok {
+			return storage.QueryGenerationIdentity{}, false, errors.New("pinned generation identity unavailable")
+		}
+		var err error
+		identity, err = identityProvider.QueryGenerationIdentity(ctx)
+		if errors.Is(err, storage.ErrQueryGenerationUnpinned) && hasLegacyPinnedView(pinned) {
+			return storage.QueryGenerationIdentity{}, true, nil
+		}
+		if err != nil {
+			return storage.QueryGenerationIdentity{}, false, err
+		}
 	}
 	if identity.ProjectID != projectID || identity.GenerationID == "" {
 		return storage.QueryGenerationIdentity{}, false, errors.New("invalid pinned generation identity")

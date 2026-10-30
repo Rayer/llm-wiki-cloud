@@ -37,6 +37,12 @@ type Publication struct {
 	ManifestIdentity string
 }
 
+// PublicationReader is the narrow optional reader used by the Project context
+// API. It does not change the legacy identity contract used by local Query.
+type PublicationReader interface {
+	ContentContextPublication(context.Context) (Publication, error)
+}
+
 // PublicationAuthority is implemented by the worker around the existing
 // project publication lock. Its fence covers only the state transaction and
 // manifest comparisons; the summary model call runs outside this callback.
