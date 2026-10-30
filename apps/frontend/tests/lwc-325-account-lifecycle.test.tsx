@@ -22,7 +22,8 @@ vi.mock('@/lib/auth', () => ({ useAuth: () => ({ hydrated: true, user: { id: 'ad
 vi.mock('@/lib/i18n', async () => {
   const actual = await vi.importActual<typeof import('@/lib/i18n')>('@/lib/i18n');
   const { i18nLaneTestTranslate } = await vi.importActual<typeof import('./i18n-lane-test-helper')>('./i18n-lane-test-helper');
-  return { useLocale: () => ({ locale: 'en', t: (key: string, params?: Record<string, string | number>) => i18nLaneTestTranslate(actual.translate, key, params) }) };
+  const useTestLocale = () => ({ locale: 'en' as const, t: (key: string, params?: Record<string, string | number>) => i18nLaneTestTranslate(actual.translate, key, params) });
+  return { useLocale: useTestLocale, useT: useTestLocale };
 });
 vi.mock('@/components/NavigationBlocker', () => ({ useNavigationBlocker: () => ({ setBlocked: vi.fn() }) }));
 
