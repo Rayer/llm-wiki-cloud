@@ -18,6 +18,7 @@ import (
 	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"github.com/rayer/llm-wiki-bff/internal/llm"
 	"github.com/rayer/llm-wiki-bff/internal/localfs"
+	"github.com/rayer/llm-wiki-bff/internal/sourcestatus"
 )
 
 func TestLocalPublicationJournalCarriesSameDigestSummarySource(t *testing.T) {
@@ -236,8 +237,8 @@ func TestLocalFirstClaimAfterSameDigestCarryForwardUsesCapturedSource(t *testing
 	}
 }
 
-func TestLocalWorkerRecoversCommittedSummaryWithoutCompilingOrPublishing(t *testing.T) {
-	for _, crashPoint := range []string{"before_first_state_registration", "after_claim_before_complete"} {
+func TestLocalWorkerRecoversCommittedSummaryAndContinuesOrdinaryPipeline(t *testing.T) {
+	for _, crashPoint := range []string{"before_first_state_registration", "after_claim_before_complete_expired", "after_claim_before_complete_active"} {
 		t.Run(crashPoint, func(t *testing.T) {
 			ctx := contentContextEmulatorContext(t, 30*time.Second)
 			cloudProject := fmt.Sprintf("local-content-context-recovery-%d", time.Now().UnixNano())
@@ -261,13 +262,15 @@ func TestLocalWorkerRecoversCommittedSummaryWithoutCompilingOrPublishing(t *test
 			authority := newLocalContentContextAuthority(cfg, vault)
 			repository := contentcontext.NewFirestoreRepository(client)
 			var interruptedClaim *contentcontext.SummaryClaim
-			if crashPoint == "after_claim_before_complete" {
+			if crashPoint != "before_first_state_registration" {
 				interruptedClaim, err = repository.Claim(ctx, cfg.UserID, cfg.ProjectID, authority)
 				if err != nil || interruptedClaim == nil {
 					t.Fatalf("claim before simulated crash: claim=%+v err=%v", interruptedClaim, err)
 				}
-				if _, err := stateRef.Update(ctx, []firestore.Update{{Path: "summary_work.lease", Value: time.Now().UTC().Add(-time.Minute)}}); err != nil {
-					t.Fatalf("expire interrupted claim lease: %v", err)
+				if crashPoint == "after_claim_before_complete_expired" {
+					if _, err := stateRef.Update(ctx, []firestore.Update{{Path: "summary_work.lease", Value: time.Now().UTC().Add(-time.Minute)}}); err != nil {
+						t.Fatalf("expire interrupted claim lease: %v", err)
+					}
 				}
 			}
 
@@ -290,34 +293,84 @@ func TestLocalWorkerRecoversCommittedSummaryWithoutCompilingOrPublishing(t *test
 			}
 
 			pipelineCalls, publishCalls := 0, 0
+			raw := []byte("# new source\nNew pipeline input.\n")
+			rawSHA := localConceptsDigest(raw)
+			annotationSHA := localConceptsDigest(nil)
+			snapshot := sourceSnapshot{
+				SourceID: "source-new", RawPath: "raw/new.md", RawBytes: raw, RawSHA256: rawSHA,
+				AnnotationSHA: annotationSHA, Fingerprint: sourcestatus.Fingerprint(rawSHA, annotationSHA), Dirty: true,
+			}
+			newConcepts := localContentContextFixtureConcepts(t, "beta")
+			var stateBeforePipeline contentcontext.StateDocument
 			hooks := oldHooks
-			hooks.snapshotSources = func(string) ([]sourceSnapshot, error) { pipelineCalls++; return nil, nil }
-			hooks.syncWorkspaceOutputs = func(string, string, string) error { publishCalls++; return nil }
+			hooks.snapshotSources = func(string) ([]sourceSnapshot, error) {
+				stateBeforePipeline, err = repository.Read(ctx, cfg.UserID, cfg.ProjectID)
+				if err != nil {
+					return nil, err
+				}
+				pipelineCalls++
+				return []sourceSnapshot{snapshot}, nil
+			}
+			hooks.snapshotConcepts = func(string, ...[]sourceSnapshot) ([]conceptSnapshot, error) { return nil, nil }
+			hooks.runWorkerBatchAtVault = func(_ context.Context, _ workerConfig, _ [][]string, workspace string) error {
+				materialized, err := os.ReadFile(filepath.Join(workspace, snapshot.RawPath))
+				if err != nil || string(materialized) != string(raw) {
+						return fmt.Errorf("new source was not materialized: bytes=%q err=%v", materialized, err)
+				}
+				return os.WriteFile(filepath.Join(workspace, "cache", "concepts.jsonl"), newConcepts, 0o600)
+			}
+			hooks.reconcileWorkspaceSources = func(string, []sourceSnapshot) error { return nil }
+			hooks.reconcileWorkspaceConcepts = func(string, []conceptSnapshot, ...[]sourceSnapshot) error { return nil }
+			hooks.syncWorkspaceOutputs = func(workspace, vault, executionID string) error {
+				publishCalls++
+				return syncWorkspaceOutputs(workspace, vault, executionID)
+			}
 			localWorkspaceBatchHooks = hooks
 			cfg.ExecutionID = "local-recovery-resume"
 			if err := runWorkerBatchWorkspace(ctx, cfg, [][]string{{"run"}}, vault); err != nil {
-				t.Fatalf("run local content-context recovery: %v", err)
+				t.Fatalf("run recovered local workspace pipeline: %v", err)
 			}
-			if summaryClient.calls != 1 || pipelineCalls != 0 || publishCalls != 0 {
-				t.Fatalf("recovery calls summary=%d compile=%d publish=%d", summaryClient.calls, pipelineCalls, publishCalls)
+			wantRecoveryStatus := contentcontext.StatusReady
+			wantSummaryCallsBeforePipeline := 1
+			if crashPoint == "after_claim_before_complete_active" {
+				wantRecoveryStatus = contentcontext.StatusPending
+				wantSummaryCallsBeforePipeline = 0
+			}
+			if pipelineCalls != 1 || publishCalls != 1 || summaryClient.calls != wantSummaryCallsBeforePipeline+1 {
+				t.Fatalf("worker calls summary=%d compile=%d publish=%d", summaryClient.calls, pipelineCalls, publishCalls)
+			}
+			if stateBeforePipeline.Status != wantRecoveryStatus || stateBeforePipeline.TargetGeneration != published.Generation ||
+				stateBeforePipeline.LatestPublication == nil || stateBeforePipeline.LatestPublication.ManifestIdentity != published.Publication().ManifestIdentity {
+				t.Fatalf("state before new pipeline input=%+v, want status=%s and committed G1=%s", stateBeforePipeline, wantRecoveryStatus, published.Generation)
+			}
+			wantRetryCount := 0
+			if crashPoint == "after_claim_before_complete_expired" {
+				wantRetryCount = 1
+			}
+			if stateBeforePipeline.SummaryWork == nil || stateBeforePipeline.SummaryWork.RetryCount != wantRetryCount {
+				t.Fatalf("recovery changed claim budget: work=%+v want retry_count=%d", stateBeforePipeline.SummaryWork, wantRetryCount)
 			}
 			state, err := repository.Read(ctx, cfg.UserID, cfg.ProjectID)
-			if err != nil || state.Status != contentcontext.StatusReady || state.TargetGeneration != published.Generation ||
-				state.LatestPublication == nil || state.LatestPublication.ManifestIdentity != published.Publication().ManifestIdentity ||
-				state.LastGood == nil || state.LastGood.SourceGeneration != published.SummarySourceGeneration || state.SummaryWork == nil {
-				t.Fatalf("recovered state=%+v err=%v", state, err)
+			descriptor, descriptorErr := readLocalContentContextDescriptor(vault, cfg.UserID, cfg.ProjectID)
+			status, statusErr := readSourceStatus(vault)
+			receipt := status.Sources[snapshot.SourceID]
+			if err != nil || descriptorErr != nil || statusErr != nil || state.Status != contentcontext.StatusReady ||
+				state.TargetGeneration != descriptor.Generation || descriptor.Generation == published.Generation ||
+				descriptor.ConceptsDigest != localConceptsDigest(newConcepts) ||
+				state.LatestPublication == nil || state.LatestPublication.Generation != descriptor.Generation ||
+				state.LastGood == nil || state.LastGood.SourceGeneration != descriptor.SummarySourceGeneration || state.SummaryWork == nil ||
+				state.SummaryWork.SourceGeneration != descriptor.SummarySourceGeneration ||
+				!sourcestatus.ValidReceipt(receipt, snapshot.RawPath) || receipt.LastIngestedRawSHA256 != snapshot.RawSHA256 {
+				t.Fatalf("ordinary pipeline result state=%+v descriptor=%+v receipt=%+v status=%+v err=%v/%v/%v", state, descriptor, receipt, status, err, descriptorErr, statusErr)
 			}
-			if crashPoint == "after_claim_before_complete" {
-				if state.SummaryWork.RetryCount != 1 || interruptedClaim == nil {
-					t.Fatalf("recovered claim budget=%+v old=%+v", state.SummaryWork, interruptedClaim)
-				}
+			if interruptedClaim != nil {
 				completion := contentcontext.SummaryCompletion{
 					Text: "stale result", PromptRevision: contentcontext.SummaryPromptRevision,
 					ProfileSource: "bootstrap", Role: contentcontext.SummaryRole, RequestedModel: "test-fast", ReturnedModel: "test-fast-v2",
 					InputDigest: strings.Repeat("a", 64), SelectionVersion: contentcontext.SummarySelectionVersion,
 				}
 				if saved, err := repository.Complete(ctx, cfg.UserID, cfg.ProjectID, authority, *interruptedClaim, completion); !errors.Is(err, contentcontext.ErrAttemptRejected) || saved {
-					t.Fatalf("interrupted claim committed after recovery: saved=%t err=%v", saved, err)
+					t.Fatalf("interrupted claim committed after new publication: saved=%t err=%v", saved, err)
 				}
 			}
 		})

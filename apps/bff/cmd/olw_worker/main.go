@@ -747,7 +747,13 @@ func runWorkerBatchWorkspace(ctx context.Context, cfg workerConfig, commands [][
 			reportContentContextReconcileFailure(err)
 		}
 		cancel()
-		return nil
+		lease, err = localWorkspaceBatchHooks.acquireVaultLease(vault, cfg.ExecutionID)
+		if err != nil {
+			return err
+		}
+		if err := revalidateCommittedLocalContentContext(vault, cfg); err != nil {
+			reportContentContextReconcileFailure(err)
+		}
 	}
 	snapshots, err := localWorkspaceBatchHooks.snapshotSources(vault)
 	if err != nil {

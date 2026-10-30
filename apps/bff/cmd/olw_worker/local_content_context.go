@@ -189,6 +189,28 @@ func committedLocalContentContextDescriptor(vault string, cfg workerConfig) (con
 	return descriptor, err == nil
 }
 
+// revalidateCommittedLocalContentContext confirms the descriptor and concept
+// bytes after the worker reacquires its publisher lease following inference.
+func revalidateCommittedLocalContentContext(vault string, cfg workerConfig) error {
+	descriptor, err := readLocalContentContextDescriptor(vault, cfg.UserID, cfg.ProjectID)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	root, err := os.OpenRoot(vault)
+	if err != nil {
+		return err
+	}
+	concepts, readErr := readLocalContentContextFile(root, "cache/concepts.jsonl", generation.MaxFileBytes)
+	closeErr := root.Close()
+	if readErr != nil || closeErr != nil {
+		return errors.Join(readErr, closeErr)
+	}
+	return contentcontext.ValidateLocalPublicationConcepts(descriptor, concepts)
+}
+
 // localContentContextRecoveryNeeded reports whether the confirmed local
 // publication has not yet been reconciled or still has pending summary work.
 // The caller holds the publisher lease while checking; inference happens only
