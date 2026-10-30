@@ -267,7 +267,7 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
     stages = (
         ('frontend-project-readback', 'curl', 'repo', 30),
         ('frontend-npm-ci', 'npm', 'frontend', 600),
-        ('frontend-i18n-prepare', 'frontend-i18n', 'fake-root', 1100),
+        ('frontend-i18n-prepare', 'frontend-i18n', 'repo', 1100),
         ('frontend-vercel-pull', 'vercel-pull', 'frontend', 30),
         ('frontend-vercel-build', 'vercel-build', 'frontend', 900),
     )
@@ -533,7 +533,7 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
                     self.assertEqual(args, ['npm', 'ci', '--ignore-scripts'])
                     return subprocess.CompletedProcess(args, 0, stdout='', stderr='')
                 if operation == 'frontend-i18n-prepare':
-                    self.assertEqual(Path(cwd), fake_root)
+                    self.assertEqual(Path(cwd), SUPPORT_ROOT)
                     self.assertEqual(timeout, 1100)
                     self.assertEqual(env['TMPDIR'], expected_tmpdir)
                     self.assertEqual(env['GOMAXPROCS'], '2')
@@ -1237,7 +1237,7 @@ else:
                     self.assertEqual(args, ['npm', 'ci', '--ignore-scripts'])
                     return subprocess.CompletedProcess(args, 0, stdout='', stderr='')
                 if operation == 'frontend-i18n-prepare':
-                    self.assertEqual(Path(cwd), fake_root)
+                    self.assertEqual(Path(cwd), SUPPORT_ROOT)
                     self.assertEqual(timeout, 1100)
                     for secret_name in ('VERCEL_TOKEN', 'VERCEL_PROJECT_ID', 'VERCEL_ORG_ID',
                                         'VERCEL_TEAM_ID', 'NOW_ORG_ID', 'NOW_PROJECT_ID'):
@@ -1309,7 +1309,7 @@ else:
                 'frontend-project-readback', 'frontend-npm-ci', 'frontend-i18n-prepare',
                 'frontend-vercel-pull', 'frontend-vercel-build'])
             i18n, pull, build = trace[2], trace[3], trace[4]
-            self.assertEqual(i18n[2], str(fake_root))
+            self.assertEqual(i18n[2], str(SUPPORT_ROOT))
             self.assertEqual(i18n[3], 1100)
             for secret_name in ('VERCEL_TOKEN', 'VERCEL_PROJECT_ID', 'VERCEL_ORG_ID',
                                 'VERCEL_TEAM_ID', 'NOW_ORG_ID', 'NOW_PROJECT_ID'):

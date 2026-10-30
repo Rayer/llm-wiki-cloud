@@ -992,8 +992,8 @@ class Providers:
                 'GOMAXPROCS': '2',
                 'GOFLAGS': '-p=2',
             })
-            i18n_root = ROOT
-            i18n_script = i18n_root / 'deploy' / 'engine' / 'frontend_i18n.py'
+            i18n_script = Path(__file__).resolve().with_name('frontend_i18n.py')
+            i18n_root = i18n_script.parents[2]
             i18n_args = [
                 'python3', i18n_script,
                 '--root', i18n_root, '--environment', self.p['environment'],
