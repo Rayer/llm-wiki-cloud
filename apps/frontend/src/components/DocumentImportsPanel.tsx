@@ -8,7 +8,11 @@ import { useWorkspace } from './WorkspaceProvider';
 import { Surface } from './ui/Surface';
 import { useSearchParams } from 'next/navigation';
 
-type Props = { projectId: string; sourcePaths: string[] };
+type Props = {
+  projectId: string;
+  sourcePaths: string[];
+  onRecordsChange?: (records: DocumentImportRecord[]) => void;
+};
 type ImportFilter = 'all' | 'pending' | 'succeeded' | 'failed';
 type LoadError = { message: string; requestId?: string; diagnosticId?: string };
 
@@ -25,7 +29,7 @@ function recordError(cause: unknown): LoadError {
   };
 }
 
-export function DocumentImportsPanel({ projectId, sourcePaths }: Props) {
+export function DocumentImportsPanel({ projectId, sourcePaths, onRecordsChange }: Props) {
   const { t } = useT();
   const { refreshNavCounts } = useWorkspace();
   const params = useSearchParams();
@@ -91,10 +95,19 @@ export function DocumentImportsPanel({ projectId, sourcePaths }: Props) {
   useEffect(() => {
     if (!requestedDocumentId || !records.some((record) => record.document_id === requestedDocumentId)) return;
     if (focusedDocumentIdRef.current === requestedDocumentId) return;
+    const requestedRecord = records.find((record) => record.document_id === requestedDocumentId);
+    if (requestedRecord?.source_state === 'saved' && requestedRecord.source_ref && sourcePaths.includes(requestedRecord.source_ref.raw_path)) {
+      focusedDocumentIdRef.current = requestedDocumentId;
+      return;
+    }
     focusedDocumentIdRef.current = requestedDocumentId;
     targetRowRef.current?.scrollIntoView({ block: 'center' });
     targetRowRef.current?.focus();
-  }, [records, requestedDocumentId]);
+  }, [records, requestedDocumentId, sourcePaths]);
+
+  useEffect(() => {
+    onRecordsChange?.(records);
+  }, [onRecordsChange, records]);
 
   const hasPending = records.some(pendingState);
   useEffect(() => {
@@ -120,9 +133,9 @@ export function DocumentImportsPanel({ projectId, sourcePaths }: Props) {
 
   const visibleRecords = useMemo(() => records.filter((record) => {
     if (record.deletion_state === 'deleted') return false;
-    if (filter === 'all' && record.source_state === 'saved' && record.source_ref && sourcePaths.includes(record.source_ref.raw_path) && !record.pipeline_ref?.status) return false;
+    if (record.source_state === 'saved' && record.source_ref && sourcePaths.includes(record.source_ref.raw_path)) return false;
     return true;
-  }), [filter, records, sourcePaths]);
+  }), [records, sourcePaths]);
 
   const changeFilter = (value: ImportFilter) => {
     const next = new URLSearchParams(params.toString());

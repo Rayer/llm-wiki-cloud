@@ -163,7 +163,7 @@ for (const terminal of ['failed', 'published']) {
       .mockResolvedValueOnce(list([pipelineRecord('running')]))
       .mockResolvedValueOnce(list([pipelineRecord(terminal)]));
 
-    render(<DocumentImportsPanel projectId="project-1" sourcePaths={['documents/report.md']} />);
+    render(<DocumentImportsPanel projectId="project-1" sourcePaths={[]} />);
     await screen.findByText('Pipeline pending');
     await waitFor(() => expect(intervals.size).toBe(1));
 
