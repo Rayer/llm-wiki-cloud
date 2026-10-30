@@ -396,3 +396,176 @@ func TestDocumentImportDeleteResumesFromDurableWorkAndExhaustsVisibly(t *testing
 		t.Fatalf("failed badge after cleanup completion/exhaustion=%+v err=%v", summary, err)
 	}
 }
+
+func TestDocumentImportTerminalOutcomesSettleExpiredWorkAfterCrash(t *testing.T) {
+	f := newRuntimeFixture(t)
+	base := localfs.New(t.TempDir())
+	projectStore := base.Scope(f.user, f.project)
+	f.dispatcher.Handler.store = &documentImportPipelineRoot{RootStore: base, project: projectStore}
+	objects := projectStore.(documentimport.ObjectStore)
+	projectRef := f.repo.client.Collection("projects").Doc(projectDocID(f.user, f.project))
+	if _, err := projectRef.Set(f.ctx, map[string]any{"user_id": f.user, "project_id": f.project, "status": "ready", "document_import_failed_count": int64(2)}, firestore.MergeAll); err != nil {
+		t.Fatal(err)
+	}
+	docRepo := f.dispatcher.Handler.documentImports.Repository
+	createDeleting := func(documentID, attemptID string, staleGeneration bool) documentimport.Record {
+		t.Helper()
+		path := documentimport.OriginalPath(documentID)
+		generation, err := objects.WriteFileIfGeneration(f.ctx, []byte("original"), path, 0)
+		if err != nil {
+			t.Fatalf("write original object for %s: %v", documentID, err)
+		}
+		if staleGeneration {
+			generation++
+		}
+		record := documentimport.Record{
+			SchemaVersion: documentimport.SchemaVersion, OwnerID: f.user, ProjectID: f.project, DocumentID: documentID,
+			AttemptID: attemptID, OriginalFilename: "failed.docx", Bytes: 1, SHA256: strings.Repeat("a", 64),
+			OriginalObjectPath: path, OriginalGeneration: generation, ConversionState: documentimport.ConversionFailed,
+			SourceState: documentimport.SourceNotStarted, DeletionState: documentimport.DeletionPresent, Revision: 1,
+			Failure: &documentimport.Failure{Stage: "conversion", Class: "worker_unavailable", SafeMessageKey: "worker_unavailable"},
+		}
+		ref := f.repo.client.Collection("projects").Doc(projectDocID(f.user, f.project)).Collection("document_imports").Doc(documentID)
+		if _, err := ref.Set(f.ctx, record); err != nil {
+			t.Fatalf("seed failed document %s: %v", documentID, err)
+		}
+		record, err = docRepo.MarkDeleting(f.ctx, f.user, f.project, documentID, record.Revision)
+		if err != nil {
+			t.Fatalf("queue cleanup for %s: %v", documentID, err)
+		}
+		return record
+	}
+	deleted := createDeleting("document-delete-terminal-success", "document-delete-terminal-success-a1", false)
+	deleteFailed := createDeleting("document-delete-terminal-failure", "document-delete-terminal-failure-a1", true)
+	baseNow := time.Now().UTC().Add(time.Second)
+	f.clock = baseNow
+	repo := f.dispatcher.Handler.profileRepository.(*firestoreProfileRepository)
+	deleteWorkRefs := make([]*firestore.DocumentRef, 0, 2)
+	for _, record := range []documentimport.Record{deleted, deleteFailed} {
+		work := profileruntime.Work{UserID: f.user, ProjectID: f.project, Kind: "document_import", ID: record.AttemptID}
+		ref := f.repo.client.Collection(profileruntime.WorkCollection).Doc(profileruntime.WorkID(work))
+		if _, err := ref.Update(f.ctx, []firestore.Update{
+			{Path: "attempts", Value: profileruntime.MaxAttempts - 1}, {Path: "due", Value: baseNow},
+		}); err != nil {
+			t.Fatalf("prepare last cleanup attempt for %s: %v", record.DocumentID, err)
+		}
+		lastAttempt, claimed, err := f.dispatcher.claim(f.ctx, repo, ref)
+		if err != nil || !claimed || lastAttempt.Attempts != profileruntime.MaxAttempts {
+			t.Fatalf("claim last cleanup attempt for %s: work=%+v claimed=%t err=%v", record.DocumentID, lastAttempt, claimed, err)
+		}
+		if err := f.dispatcher.executeDocumentImport(f.ctx, repo, lastAttempt); err != nil {
+			t.Fatalf("persist terminal cleanup for %s: %v", record.DocumentID, err)
+		}
+		expected := documentimport.DeletionComplete
+		if record.DocumentID == deleteFailed.DocumentID {
+			expected = documentimport.DeletionFailed
+		}
+		finished, err := docRepo.Get(f.ctx, f.user, f.project, record.DocumentID)
+		if err != nil || finished.DeletionState != expected {
+			t.Fatalf("terminal cleanup for %s = %s err=%v, want %s", record.DocumentID, finished.DeletionState, err, expected)
+		}
+		deleteWorkRefs = append(deleteWorkRefs, ref)
+	}
+
+	terminalPipelineWork := make([]*firestore.DocumentRef, 0, 2)
+	for i, pipelineStatus := range []string{"published", "failed"} {
+		documentID := "document-terminal-pipeline-" + pipelineStatus
+		attemptID := documentID + "-a1"
+		record := documentimport.Record{
+			SchemaVersion: documentimport.SchemaVersion, OwnerID: f.user, ProjectID: f.project, DocumentID: documentID, AttemptID: attemptID,
+			OriginalFilename: "converted.docx", Bytes: 1, SHA256: strings.Repeat("b", 64), ConversionState: documentimport.ConversionSucceeded,
+			SourceState: documentimport.SourceSaved, SourceRef: &documentimport.SourceRef{RawPath: "document-import-test.md", SHA256: strings.Repeat("c", 64), ObjectGeneration: 1},
+			DeletionState: documentimport.DeletionPresent, Revision: 1,
+			PipelineRef: &documentimport.PipelineRef{Status: pipelineStatus, IntentID: "intent-" + pipelineStatus, SourceRevision: int64(i + 1)},
+		}
+		if pipelineStatus == "failed" {
+			record.PipelineRef.Reason = "pipeline_prepare_failed"
+		}
+		recordRef := f.repo.client.Collection("projects").Doc(projectDocID(f.user, f.project)).Collection("document_imports").Doc(documentID)
+		if _, err := recordRef.Set(f.ctx, record); err != nil {
+			t.Fatalf("seed terminal Pipeline document: %v", err)
+		}
+		work := profileruntime.Work{UserID: f.user, ProjectID: f.project, Kind: "document_import", Revision: record.Revision,
+			ID: attemptID, DocumentID: documentID, Due: baseNow, Pending: true, Attempts: profileruntime.MaxAttempts, Status: "running", Token: "stale-worker-token"}
+		workRef := f.repo.client.Collection(profileruntime.WorkCollection).Doc(profileruntime.WorkID(work))
+		if _, err := workRef.Set(f.ctx, work); err != nil {
+			t.Fatalf("seed exhausted terminal Pipeline work: %v", err)
+		}
+		terminalPipelineWork = append(terminalPipelineWork, workRef)
+	}
+
+	following, _, err := docRepo.Begin(f.ctx, documentimport.Record{
+		OwnerID: f.user, ProjectID: f.project, ClientSubmissionID: "document-following-job-01", OriginalFilename: "next.txt",
+		Bytes: 1, SHA256: strings.Repeat("d", 64),
+	})
+	if err != nil {
+		t.Fatalf("begin following document work: %v", err)
+	}
+	following, err = docRepo.CompleteAcceptance(f.ctx, f.user, f.project, following.DocumentID, 1)
+	if err != nil {
+		t.Fatalf("accept following document work: %v", err)
+	}
+	followingWork := profileruntime.Work{UserID: f.user, ProjectID: f.project, Kind: "document_import", ID: following.AttemptID}
+	followingWorkRef := f.repo.client.Collection(profileruntime.WorkCollection).Doc(profileruntime.WorkID(followingWork))
+
+	recoveryNow := baseNow.Add(profileruntime.LeaseDuration + time.Minute)
+	f.clock = recoveryNow
+	for i, ref := range deleteWorkRefs {
+		if _, err := ref.Update(f.ctx, []firestore.Update{
+			{Path: "due", Value: recoveryNow.Add(time.Duration(-5+i) * time.Second)},
+			{Path: "lease_until", Value: recoveryNow.Add(-time.Second)},
+		}); err != nil {
+			t.Fatalf("expire cleanup work: %v", err)
+		}
+	}
+	for i, ref := range terminalPipelineWork {
+		if _, err := ref.Update(f.ctx, []firestore.Update{{Path: "due", Value: recoveryNow.Add(time.Duration(-3+i) * time.Second)}}); err != nil {
+			t.Fatalf("order terminal Pipeline work: %v", err)
+		}
+	}
+	if _, err := followingWorkRef.Update(f.ctx, []firestore.Update{{Path: "due", Value: recoveryNow.Add(-time.Second)}}); err != nil {
+		t.Fatalf("make following work due: %v", err)
+	}
+	starts := 0
+	f.dispatcher.Handler.SetDocumentImportStarter(documentImportStarterFunc(func(context.Context, string, string, string, string) (string, error) {
+		starts++
+		return "following-job", nil
+	}))
+	processed, err := f.dispatcher.Dispatch(f.ctx, 8)
+	if err != nil || processed != 1 || starts != 1 {
+		t.Fatalf("dispatch after terminal crash windows: processed=%d starts=%d err=%v", processed, starts, err)
+	}
+	for i, ref := range append(deleteWorkRefs, terminalPipelineWork...) {
+		var work profileruntime.Work
+		if snapshot, err := ref.Get(f.ctx); err != nil || snapshot.DataTo(&work) != nil || work.Pending || work.Status != "exhausted" {
+			t.Errorf("terminal work %d did not settle: work=%+v err=%v", i, work, err)
+		}
+	}
+	for _, item := range []struct {
+		documentID string
+		want       documentimport.DeletionState
+	}{
+		{deleted.DocumentID, documentimport.DeletionComplete}, {deleteFailed.DocumentID, documentimport.DeletionFailed},
+	} {
+		record, err := docRepo.Get(f.ctx, f.user, f.project, item.documentID)
+		if err != nil || record.DeletionState != item.want {
+			t.Errorf("recovery changed terminal deletion %s: state=%s err=%v", item.documentID, record.DeletionState, err)
+		}
+	}
+	for _, pipelineStatus := range []string{"published", "failed"} {
+		documentID := "document-terminal-pipeline-" + pipelineStatus
+		record, err := docRepo.Get(f.ctx, f.user, f.project, documentID)
+		if err != nil || record.PipelineRef == nil || record.PipelineRef.Status != pipelineStatus ||
+			record.ConversionState != documentimport.ConversionSucceeded || record.SourceState != documentimport.SourceSaved {
+			t.Errorf("recovery changed terminal Pipeline projection for %s: record=%+v err=%v", pipelineStatus, record, err)
+		}
+	}
+	var nextWork profileruntime.Work
+	if snapshot, err := followingWorkRef.Get(f.ctx); err != nil || snapshot.DataTo(&nextWork) != nil || !nextWork.Pending || nextWork.Attempts != 1 {
+		t.Fatalf("following document work did not execute after settled terminal work: work=%+v err=%v", nextWork, err)
+	}
+	summary, err := docRepo.Summary(f.ctx, f.user, f.project, f.user, "")
+	if err != nil || summary.FailedCount != 1 {
+		t.Fatalf("terminal cleanup recovery changed failed count more than once: summary=%+v err=%v", summary, err)
+	}
+}

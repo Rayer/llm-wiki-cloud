@@ -270,6 +270,9 @@ func (r *FirestoreRepository) FailDispatchInTransaction(ctx context.Context, tx 
 	if record.AttemptID != attemptID {
 		return ErrStateConflict
 	}
+	if record.DeletionState == DeletionComplete || record.DeletionState == DeletionFailed {
+		return nil
+	}
 	state := readProjectState(projectSnap.Data())
 	if record.DeletionState == DeletionInProgress {
 		record.DeletionState = DeletionFailed
@@ -290,6 +293,10 @@ func (r *FirestoreRepository) FailDispatchInTransaction(ctx context.Context, tx 
 	}
 	if record.DeletionState != DeletionPresent {
 		return ErrStateConflict
+	}
+	if record.ConversionState == ConversionFailed || record.ConversionState == ConversionSucceeded &&
+		(record.SourceState == SourceFailed || record.SourceState == SourceSaved && !PipelineAssociationPending(record.PipelineRef)) {
+		return nil
 	}
 	failure := &Failure{Stage: "dispatch", Class: "worker_unavailable", SafeMessageKey: "worker_unavailable", DiagnosticID: diagnosticID()}
 	associationFailure := false
