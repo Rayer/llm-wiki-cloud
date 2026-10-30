@@ -41,7 +41,7 @@ func TestFirestoreRepositoryPublicationCarryForwardFencingAndAttemptCAS(t *testi
 	authority.publication = testPublication("G2", 'a', "manifest-g2")
 	state, err = repository.ReconcileCurrent(ctx, ownerID, projectID, authority)
 	if err != nil || state.TargetGeneration != "G2" || state.TargetSequence != 2 || state.SummaryWork == nil ||
-		state.SummaryWork.SourceGeneration != "G1" || state.SummaryWork.AttemptID != claim.AttemptID ||
+		state.SummaryWork.WorkID != claim.WorkID || state.SummaryWork.SourceGeneration != "G1" || state.SummaryWork.AttemptID != claim.AttemptID ||
 		state.SummaryWork.LeaseUntil == nil || !state.SummaryWork.LeaseUntil.Equal(claim.LeaseUntil) || state.SummaryWork.RetryCount != 0 {
 		t.Fatalf("same-digest carry-forward reset work: state=%+v err=%v", state, err)
 	}
@@ -62,7 +62,8 @@ func TestFirestoreRepositoryPublicationCarryForwardFencingAndAttemptCAS(t *testi
 
 	authority.publication = testPublication("G3", 'b', "manifest-g3")
 	state, err = repository.ReconcileCurrent(ctx, ownerID, projectID, authority)
-	if err != nil || state.Status != StatusPending || state.LastGood == nil || state.LastGood.Text != "summary from G1" || state.TargetGeneration != "G3" {
+	if err != nil || state.Status != StatusPending || state.LastGood == nil || state.LastGood.Text != "summary from G1" ||
+		state.TargetGeneration != "G3" || state.SummaryWork == nil || state.SummaryWork.WorkID == claim.WorkID {
 		t.Fatalf("different digest did not retain last-good: state=%+v err=%v", state, err)
 	}
 	oldDigestClaim, err := repository.Claim(ctx, ownerID, projectID, authority)
