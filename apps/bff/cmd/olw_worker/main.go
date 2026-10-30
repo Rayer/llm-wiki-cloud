@@ -61,6 +61,7 @@ type workerConfig struct {
 	BootstrapLLMSource           bool
 	QuotaMarkerPath              string
 	ProfileCallSuccessMarkerPath string
+	ProfileCallAttemptMarkerPath string
 	SuppressOutput               bool
 	SuggestedQueries             bool
 	// CleanRebuild skips materializing prior generation outputs (wiki/.synto/
@@ -414,6 +415,7 @@ func runWorkerBatch(ctx context.Context, cfg workerConfig, rawCommands string) (
 			}
 			cfg.QuotaMarkerPath = filepath.Join(markerDir, "quota")
 			cfg.ProfileCallSuccessMarkerPath = filepath.Join(markerDir, "profile-call-success")
+			cfg.ProfileCallAttemptMarkerPath = filepath.Join(markerDir, "profile-call-attempt")
 			defer os.RemoveAll(markerDir)
 		}
 	}
@@ -1079,18 +1081,38 @@ func prepareOLWEnvironment(cfg workerConfig) ([]string, error) {
 	}
 	if cfg.ActiveLLMProfile != nil {
 		models := normalizePipelineLLMModels(*cfg.ActiveLLMProfile)
-		profile, err := json.Marshal(struct {
-			SchemaVersion  int               `json:"schema_version"`
-			SnapshotDigest string            `json:"snapshot_digest"`
-			RoleMapVersion int               `json:"role_map_version"`
-			ID             string            `json:"id"`
-			Revision       int64             `json:"revision"`
-			Provider       string            `json:"provider"`
-			Protocol       llm.Protocol      `json:"protocol"`
-			Endpoint       string            `json:"endpoint"`
-			Models         pipelineLLMModels `json:"models"`
-		}{2, cfg.ActiveLLMProfile.SnapshotDigest, cfg.ActiveLLMProfile.RoleMapVersion, cfg.ActiveLLMProfile.ID, cfg.ActiveLLMProfile.Revision, cfg.ActiveLLMProfile.Provider,
-			cfg.ActiveLLMProfile.Protocol, cfg.ActiveLLMProfile.Endpoint, models})
+		var profile []byte
+		var err error
+		if cfg.ActiveLLMProfile.SchemaVersion == 0 && cfg.ActiveLLMProfile.SnapshotDigest == "" && cfg.ActiveLLMProfile.RoleMapVersion == 0 {
+			legacyModel := strings.TrimSpace(cfg.ActiveLLMProfile.Model)
+			if legacyModel == "" || models.Fast != legacyModel || models.Heavy != legacyModel {
+				return nil, errors.New("legacy Pipeline profile cannot represent distinct role models")
+			}
+			profile, err = json.Marshal(struct {
+				ID       string       `json:"id"`
+				Revision int64        `json:"revision"`
+				Provider string       `json:"provider"`
+				Protocol llm.Protocol `json:"protocol"`
+				Endpoint string       `json:"endpoint"`
+				Model    string       `json:"model"`
+			}{cfg.ActiveLLMProfile.ID, cfg.ActiveLLMProfile.Revision, cfg.ActiveLLMProfile.Provider,
+				cfg.ActiveLLMProfile.Protocol, cfg.ActiveLLMProfile.Endpoint, legacyModel})
+		} else if cfg.ActiveLLMProfile.SchemaVersion == 2 && validProfileSnapshotDigest(cfg.ActiveLLMProfile.SnapshotDigest) && cfg.ActiveLLMProfile.RoleMapVersion == 1 {
+			profile, err = json.Marshal(struct {
+				SchemaVersion  int               `json:"schema_version"`
+				SnapshotDigest string            `json:"snapshot_digest"`
+				RoleMapVersion int               `json:"role_map_version"`
+				ID             string            `json:"id"`
+				Revision       int64             `json:"revision"`
+				Provider       string            `json:"provider"`
+				Protocol       llm.Protocol      `json:"protocol"`
+				Endpoint       string            `json:"endpoint"`
+				Models         pipelineLLMModels `json:"models"`
+			}{2, cfg.ActiveLLMProfile.SnapshotDigest, cfg.ActiveLLMProfile.RoleMapVersion, cfg.ActiveLLMProfile.ID, cfg.ActiveLLMProfile.Revision, cfg.ActiveLLMProfile.Provider,
+				cfg.ActiveLLMProfile.Protocol, cfg.ActiveLLMProfile.Endpoint, models})
+		} else {
+			return nil, errors.New("Pipeline profile wire version is invalid")
+		}
 		if err != nil {
 			return nil, errors.New("serialize Pipeline profile selection")
 		}
@@ -1102,6 +1124,9 @@ func prepareOLWEnvironment(cfg workerConfig) ([]string, error) {
 	}
 	if cfg.ProfileCallSuccessMarkerPath != "" {
 		env = append(env, "LWC_PROFILE_CALL_SUCCESS_MARKER_PATH="+cfg.ProfileCallSuccessMarkerPath)
+	}
+	if cfg.ProfileCallAttemptMarkerPath != "" {
+		env = append(env, "LWC_PROFILE_CALL_ATTEMPT_MARKER_PATH="+cfg.ProfileCallAttemptMarkerPath)
 	}
 	env = append(env, profileFixtureEnvironment()...)
 	return env, nil
@@ -1162,8 +1187,8 @@ func allowlistedSyntoEnvironment(extra []string) []string {
 		}
 		switch key {
 		case "XDG_CONFIG_HOME", "SYNTO_API_KEY", "DEEPSEEK_API_KEY", "LWC_PROFILE_SCHEMA_PATH", "LWC_PROFILE_GUIDANCE",
-			"LWC_PROFILE_CONFIG", "LWC_PROFILE_API_KEY", "LWC_PROFILE_QUOTA_MARKER_PATH", "LWC_PROFILE_CALL_SUCCESS_MARKER_PATH",
-			"LWC_PROFILE_FIXTURE_TRANSPORT", "LWC_PROFILE_FIXTURE_RECEIPT_FILE", "LWC_PROFILE_FIXTURE_QUOTA_MODEL", "LWC_PROFILE_FIXTURE_QUOTA_AFTER":
+			"LWC_PROFILE_CONFIG", "LWC_PROFILE_API_KEY", "LWC_PROFILE_QUOTA_MARKER_PATH", "LWC_PROFILE_CALL_SUCCESS_MARKER_PATH", "LWC_PROFILE_CALL_ATTEMPT_MARKER_PATH",
+			"LWC_PROFILE_FIXTURE_TRANSPORT", "LWC_PROFILE_FIXTURE_RECEIPT_FILE", "LWC_PROFILE_FIXTURE_QUOTA_MODEL", "LWC_PROFILE_FIXTURE_QUOTA_AFTER", "LWC_PROFILE_FIXTURE_REQUIRE_AUTH", "LWC_PROFILE_FIXTURE_HEALTH_ROLE":
 			env = append(env, item)
 		}
 	}
@@ -1610,14 +1635,11 @@ var newSuggestedQueryProfileClient = func(profile pipelineLLMProfile) (suggested
 		Role: llm.ProfileRoleFast, Protocol: profile.Protocol, Endpoint: profile.Endpoint, Model: models.Fast}, string(profile.APIKey), llm.ProfileClientOptions{Timeout: 10 * time.Second})
 }
 
-var suggestedQueryProfileResolver = resolvePipelineLLMProfiles
-
 type resolvedSuggestedQueryPool struct {
 	mu        sync.Mutex
 	cfg       workerConfig
 	profiles  []pipelineLLMProfile
 	attempted map[string]struct{}
-	resolver  func(context.Context, workerConfig) ([]pipelineLLMProfile, bool, error)
 	factory   func(pipelineLLMProfile) (suggestedQueryProfileClient, error)
 	model     llm.ModelIdentity
 	profile   llm.ProfileIdentity
@@ -1637,7 +1659,7 @@ func newStandaloneSuggestedQueryProvider(ctx context.Context, cfg workerConfig) 
 		}
 		return &resolvedSuggestedQueryPool{
 			cfg: cfg, profiles: cfg.ProfileCandidates, attempted: make(map[string]struct{}),
-			resolver: suggestedQueryProfileResolver, factory: newSuggestedQueryProfileClient,
+			factory: newSuggestedQueryProfileClient,
 		}, nil
 	}
 	if cfg.BootstrapLLMSource || cfg.ActiveLLMProfile != nil {
@@ -1654,10 +1676,11 @@ func (p *resolvedSuggestedQueryPool) Chat(ctx context.Context, systemPrompt, use
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	var lastQuota error
+	candidates := p.profiles
 	for attempt := 0; attempt < maxPipelineProfileAttempts; attempt++ {
 		selected := -1
-		for index := range p.profiles {
-			if _, tried := p.attempted[p.profiles[index].ID]; !tried {
+		for index := range candidates {
+			if _, tried := p.attempted[candidates[index].ID]; !tried {
 				selected = index
 				break
 			}
@@ -1668,7 +1691,7 @@ func (p *resolvedSuggestedQueryPool) Chat(ctx context.Context, systemPrompt, use
 			}
 			return "", errors.New("shared suggested-query profile pool is unavailable")
 		}
-		profile := p.profiles[selected]
+		profile := candidates[selected]
 		client, err := p.factory(profile)
 		if err != nil {
 			return "", err
@@ -1685,8 +1708,10 @@ func (p *resolvedSuggestedQueryPool) Chat(ctx context.Context, systemPrompt, use
 		}
 		lastQuota = callErr
 		p.attempted[profile.ID] = struct{}{}
-		// The candidate list came from the reservation's immutable snapshot.
-		// Keep it fixed for this pre-work quota fallback.
+		candidates, err = revalidatePipelineProfileCandidates(ctx, p.cfg, p.profiles)
+		if err != nil {
+			return "", errors.Join(callErr, errors.New("shared suggested-query fallback stopped because current eligibility was not proven"), err)
+		}
 	}
 	return "", errors.New("shared suggested-query profile attempt limit reached")
 }

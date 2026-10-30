@@ -35,6 +35,14 @@ type pipelineLLMProfile struct {
 	APIKey         []byte            `json:"api_key,omitempty"`
 }
 
+type pipelineLLMProfileResponse struct {
+	SchemaVersion  int                  `json:"schema_version"`
+	SnapshotDigest string               `json:"snapshot_digest"`
+	RoleMapVersion int                  `json:"role_map_version"`
+	Source         string               `json:"source"`
+	Profiles       []pipelineLLMProfile `json:"profiles"`
+}
+
 type pipelineLLMModels struct {
 	Fast  string `json:"fast"`
 	Heavy string `json:"heavy"`
@@ -48,6 +56,10 @@ type pipelineLLMProfileResolverRequest struct {
 }
 
 func resolvePipelineLLMProfiles(ctx context.Context, cfg workerConfig) ([]pipelineLLMProfile, bool, error) {
+	return resolvePipelineLLMProfilesWithCredentials(ctx, cfg, true)
+}
+
+func resolvePipelineLLMProfilesWithCredentials(ctx context.Context, cfg workerConfig, includeCredentials bool) ([]pipelineLLMProfile, bool, error) {
 	parsed, err := url.Parse(strings.TrimSpace(cfg.ProfileResolverURL))
 	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" ||
 		parsed.Path != "/internal/pipeline/llm-profile" ||
@@ -66,7 +78,7 @@ func resolvePipelineLLMProfiles(ctx context.Context, cfg workerConfig) ([]pipeli
 	}
 	client.Timeout = 10 * time.Second
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	body, err := json.Marshal(pipelineLLMProfileResolverRequest{ReservationID: cfg.PipelineReservationID, UserID: cfg.UserID, ProjectID: cfg.ProjectID, IncludeCredentials: true})
+	body, err := json.Marshal(pipelineLLMProfileResolverRequest{ReservationID: cfg.PipelineReservationID, UserID: cfg.UserID, ProjectID: cfg.ProjectID, IncludeCredentials: includeCredentials})
 	if err != nil {
 		return nil, false, errors.New("Pipeline profile request is invalid")
 	}
@@ -90,13 +102,18 @@ func resolvePipelineLLMProfiles(ctx context.Context, cfg workerConfig) ([]pipeli
 		return nil, false, errors.New("Pipeline profile response is invalid")
 	}
 	defer clear(raw)
-	var result struct {
-		SchemaVersion  int                  `json:"schema_version"`
-		SnapshotDigest string               `json:"snapshot_digest"`
-		RoleMapVersion int                  `json:"role_map_version"`
-		Source         string               `json:"source"`
-		Profiles       []pipelineLLMProfile `json:"profiles"`
+	var envelope map[string]json.RawMessage
+	if json.Unmarshal(raw, &envelope) != nil {
+		return nil, false, errors.New("Pipeline profile response is invalid")
 	}
+	if _, hasVersion := envelope["schema_version"]; !hasVersion {
+		legacy, legacyErr := decodeExactBaseLegacyPipelineProfileResponse(raw)
+		if legacyErr != nil {
+			return nil, false, legacyErr
+		}
+		return legacy.Profiles, legacy.Source == "shared", nil
+	}
+	var result pipelineLLMProfileResponse
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if decoder.Decode(&result) != nil || decoder.Decode(new(any)) != io.EOF {
@@ -151,6 +168,69 @@ func resolvePipelineLLMProfiles(ctx context.Context, cfg workerConfig) ([]pipeli
 	return result.Profiles, result.Source == "shared", nil
 }
 
+// decodeExactBaseLegacyPipelineProfileResponse accepts only the wire emitted
+// by the pre-freeze Producer at the frozen source base. It does not fabricate
+// schema, snapshot, or role-map metadata; shared legacy profiles therefore
+// cannot use snapshot-dependent quota fallback.
+func decodeExactBaseLegacyPipelineProfileResponse(raw []byte) (pipelineLLMProfileResponse, error) {
+	var top map[string]json.RawMessage
+	if json.Unmarshal(raw, &top) != nil || !exactJSONKeySet(top, "source", "profiles") {
+		return pipelineLLMProfileResponse{}, errors.New("legacy Pipeline profile response is invalid")
+	}
+	var result struct {
+		Source   string            `json:"source"`
+		Profiles []json.RawMessage `json:"profiles"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&result) != nil || decoder.Decode(new(any)) != io.EOF {
+		return pipelineLLMProfileResponse{}, errors.New("legacy Pipeline profile response is invalid")
+	}
+	profiles := make([]pipelineLLMProfile, 0, len(result.Profiles))
+	for _, rawProfile := range result.Profiles {
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(rawProfile, &fields) != nil || !(exactJSONKeySet(fields, "id", "revision", "provider", "protocol", "endpoint", "model") ||
+			exactJSONKeySet(fields, "id", "revision", "provider", "protocol", "endpoint", "model", "api_key")) {
+			clearPipelineProfileKeys(profiles)
+			return pipelineLLMProfileResponse{}, errors.New("legacy Pipeline profile is invalid")
+		}
+		var profile pipelineLLMProfile
+		profileDecoder := json.NewDecoder(bytes.NewReader(rawProfile))
+		profileDecoder.DisallowUnknownFields()
+		if profileDecoder.Decode(&profile) != nil || profileDecoder.Decode(new(any)) != io.EOF ||
+			strings.TrimSpace(profile.Model) == "" {
+			clearPipelineProfileKeys(profiles)
+			return pipelineLLMProfileResponse{}, errors.New("legacy Pipeline profile is invalid")
+		}
+		profile.Models = pipelineLLMModels{Fast: profile.Model, Heavy: profile.Model}
+		if err := validatePipelineLLMProfile(profile); err != nil {
+			clear(profile.APIKey)
+			clearPipelineProfileKeys(profiles)
+			return pipelineLLMProfileResponse{}, errors.New("legacy Pipeline profile is invalid")
+		}
+		profiles = append(profiles, profile)
+	}
+	if result.Source == "bootstrap" && len(profiles) != 0 || result.Source == "personal" && len(profiles) != 1 ||
+		result.Source == "shared" && len(profiles) == 0 ||
+		(result.Source != "bootstrap" && result.Source != "personal" && result.Source != "shared") {
+		clearPipelineProfileKeys(profiles)
+		return pipelineLLMProfileResponse{}, errors.New("legacy Pipeline profile source is invalid")
+	}
+	return pipelineLLMProfileResponse{Source: result.Source, Profiles: profiles}, nil
+}
+
+func exactJSONKeySet(fields map[string]json.RawMessage, keys ...string) bool {
+	if len(fields) != len(keys) {
+		return false
+	}
+	for _, key := range keys {
+		if _, ok := fields[key]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
 func validProfileSnapshotDigest(value string) bool {
 	if len(value) != 64 {
 		return false
@@ -188,8 +268,14 @@ func resolveSuggestedQueriesSource(ctx context.Context, cfg workerConfig) (worke
 func validatePipelineLLMProfile(profile pipelineLLMProfile) error {
 	models := normalizePipelineLLMModels(profile)
 	for role, model := range map[llm.ProfileRole]string{llm.ProfileRoleFast: models.Fast, llm.ProfileRoleHeavy: models.Heavy} {
+		key := string(profile.APIKey)
+		if key == "" {
+			// Constructor-only validation for identity-only revalidation. This value
+			// is never serialized or sent to a provider.
+			key = "identity-wire-validation-only"
+		}
 		client, err := llm.NewProfileClient(llm.ProfileConfig{ID: profile.ID, Revision: profile.Revision, Role: role, Provider: profile.Provider,
-			Protocol: profile.Protocol, Endpoint: profile.Endpoint, Model: model}, string(profile.APIKey), llm.ProfileClientOptions{Timeout: 10 * time.Second})
+			Protocol: profile.Protocol, Endpoint: profile.Endpoint, Model: model}, key, llm.ProfileClientOptions{Timeout: 10 * time.Second})
 		if err != nil {
 			return errors.New("Pipeline profile configuration is invalid")
 		}
@@ -211,10 +297,58 @@ func clearPipelineProfileKeys(profiles []pipelineLLMProfile) {
 	}
 }
 
+// revalidatePipelineProfileCandidates checks current eligibility for the same
+// reservation snapshot without loading credentials. It returns the originally
+// pinned candidates so an eligible candidate always keeps its original model
+// revision and credential bytes.
+func revalidatePipelineProfileCandidates(ctx context.Context, cfg workerConfig, pinned []pipelineLLMProfile) ([]pipelineLLMProfile, error) {
+	if !cfg.SharedProfilePool || len(pinned) == 0 {
+		return nil, errors.New("shared Pipeline profile snapshot is unavailable")
+	}
+	byID := make(map[string]pipelineLLMProfile, len(pinned))
+	for _, profile := range pinned {
+		if profile.ID == "" || !validProfileSnapshotDigest(profile.SnapshotDigest) || profile.RoleMapVersion != 1 {
+			return nil, errors.New("shared Pipeline profile snapshot identity is invalid")
+		}
+		byID[profile.ID] = profile
+	}
+	current, shared, err := resolvePipelineLLMProfilesWithCredentials(ctx, cfg, false)
+	defer clearPipelineProfileKeys(current)
+	if err != nil || !shared {
+		return nil, errors.New("shared Pipeline profile eligibility could not be revalidated")
+	}
+	eligible := make(map[string]struct{}, len(current))
+	for _, identity := range current {
+		profile, ok := byID[identity.ID]
+		if !ok || !samePipelineProfileIdentity(profile, identity) || len(identity.APIKey) != 0 {
+			return nil, errors.New("shared Pipeline profile identity changed during fallback")
+		}
+		eligible[identity.ID] = struct{}{}
+	}
+	result := make([]pipelineLLMProfile, 0, len(eligible))
+	for _, profile := range pinned {
+		if _, ok := eligible[profile.ID]; ok {
+			result = append(result, profile)
+		}
+	}
+	if len(result) == 0 {
+		return nil, errors.New("shared Pipeline profile pool has no currently eligible candidates")
+	}
+	return result, nil
+}
+
+func samePipelineProfileIdentity(left, right pipelineLLMProfile) bool {
+	return left.ID == right.ID && left.Revision == right.Revision && left.Provider == right.Provider &&
+		left.Protocol == right.Protocol && left.Endpoint == right.Endpoint && left.Models == right.Models &&
+		left.SnapshotDigest == right.SnapshotDigest && left.RoleMapVersion == right.RoleMapVersion &&
+		left.SchemaVersion == right.SchemaVersion
+}
+
 func runWorkerBatchAtVaultWithProfilePool(ctx context.Context, cfg workerConfig, commands [][]string, vault, workspace string, snapshots []sourceSnapshot, materialize bool) (string, error) {
-	profiles := cfg.ProfileCandidates
-	// The owner of this operation clears its pinned credentials after publish
-	// finalization, which may need the same Fast snapshot for content context.
+	pinnedProfiles := cfg.ProfileCandidates
+	profiles := pinnedProfiles
+	// The outer worker owns these pinned credentials through publication
+	// finalization, which may use the same Fast snapshot for content context.
 	if !cfg.SharedProfilePool || len(profiles) == 0 {
 		if len(profiles) > 0 {
 			cfg.ActiveLLMProfile = &profiles[0]
@@ -238,15 +372,20 @@ func runWorkerBatchAtVaultWithProfilePool(ctx context.Context, cfg workerConfig,
 		if !pipelineProfileQuotaMarkerExists(cfg) {
 			return workspace, err
 		}
-		if pipelineProfileCallSuccessMarkerExists(cfg) {
-			return workspace, errors.Join(err, errors.New("shared Pipeline quota fallback stopped because no-replay safety was not proven"))
+		quotaErr := err
+		if pipelineProfileWorkOrAttemptMarkerExists(cfg) {
+			return workspace, errors.Join(quotaErr, errors.New("shared Pipeline quota fallback stopped because no-replay safety was not proven"))
 		}
 		if attempt+1 >= maxPipelineProfileAttempts {
-			return workspace, errors.Join(err, errors.New("shared Pipeline profile attempt limit reached"))
+			return workspace, errors.Join(quotaErr, errors.New("shared Pipeline profile attempt limit reached"))
 		}
-		// The resolver response pins the binding, shared pool and profile revisions
-		// for this reservation. Keep this immutable candidate set for pre-work
-		// quota fallback; a resumed worker resolves the same reservation again.
+		// Eligibility may have changed after the initial credential-bearing
+		// resolution. Revalidate identity-only against this reservation's pinned
+		// snapshot, then retain the original models and keys for eligible IDs.
+		profiles, err = revalidatePipelineProfileCandidates(ctx, cfg, pinnedProfiles)
+		if err != nil {
+			return workspace, errors.Join(quotaErr, err, errors.New("shared Pipeline profile fallback stopped because current eligibility was not proven"))
+		}
 		index = -1
 		for candidateIndex := range profiles {
 			if _, alreadyAttempted := attempted[profiles[candidateIndex].ID]; !alreadyAttempted {
@@ -255,12 +394,12 @@ func runWorkerBatchAtVaultWithProfilePool(ctx context.Context, cfg workerConfig,
 			}
 		}
 		if index < 0 {
-			return workspace, err
+			return workspace, errors.Join(quotaErr, errors.New("shared Pipeline profile pool has no untried currently eligible candidate"))
 		}
 		if removeErr := localWorkspaceBatchHooks.removeWorkspace(workspace); removeErr != nil {
 			return "", errors.Join(err, fmt.Errorf("remove quota-exhausted Synto workspace: %w", removeErr))
 		}
-		for _, marker := range []string{cfg.QuotaMarkerPath, cfg.ProfileCallSuccessMarkerPath} {
+		for _, marker := range []string{cfg.QuotaMarkerPath, cfg.ProfileCallSuccessMarkerPath, cfg.ProfileCallAttemptMarkerPath} {
 			if marker != "" {
 				if removeErr := os.Remove(marker); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
 					return "", errors.Join(err, fmt.Errorf("clear Synto profile marker: %w", removeErr))
@@ -314,12 +453,18 @@ func pipelineProfileQuotaMarkerExists(cfg workerConfig) bool {
 	return err == nil && info.Mode().IsRegular() && info.Size() == 0
 }
 
-// An unset marker path or unreadable marker state fails closed: quota fallback
-// replays the Synto command only when no profile response succeeded.
-func pipelineProfileCallSuccessMarkerExists(cfg workerConfig) bool {
-	if cfg.ProfileCallSuccessMarkerPath == "" {
+// An unset marker path or unreadable marker state fails closed. The monotonic
+// worked marker prevents replay after any successful generation; a remaining
+// attempt marker means an interrupted or non-quota request may have worked.
+func pipelineProfileWorkOrAttemptMarkerExists(cfg workerConfig) bool {
+	if cfg.ProfileCallSuccessMarkerPath == "" || cfg.ProfileCallAttemptMarkerPath == "" {
 		return true
 	}
-	_, err := os.Lstat(cfg.ProfileCallSuccessMarkerPath)
-	return err == nil || !errors.Is(err, os.ErrNotExist)
+	for _, marker := range []string{cfg.ProfileCallSuccessMarkerPath, cfg.ProfileCallAttemptMarkerPath} {
+		_, err := os.Lstat(marker)
+		if err == nil || !errors.Is(err, os.ErrNotExist) {
+			return true
+		}
+	}
+	return false
 }

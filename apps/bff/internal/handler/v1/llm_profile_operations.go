@@ -26,6 +26,7 @@ type llmProfileOperationInput struct {
 	Model               string          `json:"model,omitempty"`
 	Models              json.RawMessage `json:"models,omitempty"`
 	Role                string          `json:"role"`
+	CredentialMode      string          `json:"credential_mode"`
 	APIKey              string          `json:"api_key,omitempty"`
 	CredentialReference string          `json:"credential_reference,omitempty"`
 }
@@ -94,13 +95,38 @@ func (h *Handler) runLLMProfileOperation(c *gin.Context, shared, testMessage boo
 	defer cancel()
 	models, err := client.DiscoverModels(ctx)
 	if err != nil {
+		var profileErr *llm.ProfileCallError
+		if errors.As(err, &profileErr) && profileErr.Kind == llm.ProviderDiscoveryUnsupported {
+			c.JSON(http.StatusOK, gin.H{"ok": true, "role": role, "status": "unsupported", "models": []string{}, "partial": false})
+			return
+		}
 		writeLLMProfileOperationError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"ok": true, "role": role, "models": models})
+	c.JSON(http.StatusOK, gin.H{"ok": true, "role": role, "status": "success", "models": models.Models, "partial": models.Partial})
 }
 
 func (h *Handler) resolveLLMProfileOperation(ctx context.Context, owner string, shared bool, input llmProfileOperationInput, role llm.ProfileRole, requireModel bool) (llm.ProfileConfig, []byte, error) {
+	credentialMode := strings.TrimSpace(input.CredentialMode)
+	switch credentialMode {
+	case "saved":
+		if strings.TrimSpace(input.APIKey) != "" {
+			return llm.ProfileConfig{}, nil, errLLMProfileInvalid
+		}
+	case "replacement":
+		if strings.TrimSpace(input.CredentialReference) != "" {
+			return llm.ProfileConfig{}, nil, errLLMProfileCredentialUnavailable
+		}
+		if strings.TrimSpace(input.APIKey) == "" {
+			return llm.ProfileConfig{}, nil, errLLMProfileInvalid
+		}
+	case "none":
+		if strings.TrimSpace(input.APIKey) != "" || strings.TrimSpace(input.CredentialReference) != "" {
+			return llm.ProfileConfig{}, nil, errLLMProfileCredentialUnavailable
+		}
+	default:
+		return llm.ProfileConfig{}, nil, errLLMProfileInvalid
+	}
 	provider := strings.ToLower(strings.TrimSpace(input.Provider))
 	protocol := llm.Protocol(strings.TrimSpace(input.Protocol))
 	endpoint := strings.TrimSpace(input.Endpoint)
@@ -178,22 +204,30 @@ func (h *Handler) resolveLLMProfileOperation(ctx context.Context, owner string, 
 	if provider == "" || endpoint == "" || (protocol != llm.ProtocolOpenAIChatCompletions && protocol != llm.ProtocolAnthropicMessages) {
 		return llm.ProfileConfig{}, nil, errLLMProfileInvalid
 	}
-	key := []byte(strings.TrimSpace(input.APIKey))
-	if len(key) == 0 {
+	key := []byte(nil)
+	switch credentialMode {
+	case "replacement":
+		key = []byte(strings.TrimSpace(input.APIKey))
+	case "saved":
 		if record != nil {
-			key, err = h.profileCredential(*record, owner)
+			if record.SecretConfigured {
+				key, err = h.profileCredential(*record, owner)
+			} else {
+				err = errLLMProfileCredentialUnavailable
+			}
 		} else if input.CredentialReference != "" {
 			record = &llmProfileDocument{ID: "draft", OwnerID: owner, CredentialOrigin: "deployment", CredentialReference: input.CredentialReference, SecretConfigured: true}
 			key, err = h.profileCredential(*record, owner)
-		} else if provider == "custom" {
-			err = nil
 		} else {
 			err = errLLMProfileCredentialUnavailable
 		}
-		if err != nil {
-			clear(key)
-			return llm.ProfileConfig{}, nil, errLLMProfileCredentialUnavailable
-		}
+	case "none":
+		// Explicitly do not consult the saved profile or deployment reference.
+		err = nil
+	}
+	if err != nil {
+		clear(key)
+		return llm.ProfileConfig{}, nil, errLLMProfileCredentialUnavailable
 	}
 	if len(key) > 4096 || bytes.ContainsAny(key, "\r\n\x00") {
 		clear(key)
@@ -242,9 +276,6 @@ func writeLLMProfileOperationError(c *gin.Context, err error) {
 	var profileErr *llm.ProfileCallError
 	if errors.As(err, &profileErr) {
 		status := http.StatusBadGateway
-		if profileErr.Kind == llm.ProviderAuthentication {
-			status = http.StatusUnauthorized
-		}
 		if profileErr.Kind == llm.ProviderRateLimited || profileErr.Kind == llm.ProviderQuotaExhausted {
 			status = http.StatusTooManyRequests
 		}

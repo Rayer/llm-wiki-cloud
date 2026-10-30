@@ -113,11 +113,12 @@ export type LLMProfileOperationInput = {
   endpoint: string;
   models: LLMProfileModels;
   role: 'fast' | 'heavy';
+  credential_mode: 'saved' | 'replacement' | 'none';
   api_key?: string;
   credential_reference?: string;
 };
 
-export type LLMProfileDiscoveryResult = { ok: true; role: 'fast' | 'heavy'; models: string[] };
+export type LLMProfileDiscoveryResult = { ok: true; role: 'fast' | 'heavy'; status: 'success' | 'unsupported'; models: string[]; partial: boolean };
 export type LLMProfileTestResult = { ok: true; role: 'fast' | 'heavy'; model: string; returned_model?: string; text: string };
 
 export type WikiEntry = {

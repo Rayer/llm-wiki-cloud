@@ -88,7 +88,7 @@ func (c *profileCallIdentityCapture) snapshot() []recordedProfileCallIdentity {
 	return append([]recordedProfileCallIdentity(nil), c.calls...)
 }
 
-func TestProfilePoolDoesNotReplaySynthesisAfterExpansionWorked(t *testing.T) {
+func TestProfilePoolAllowsSynthesisFallbackAfterExpansionWorkedWithoutReplayingExpansion(t *testing.T) {
 	var firstCalls, secondCalls int
 	assertRequest := func(request *http.Request, wantModel string) {
 		t.Helper()
@@ -129,14 +129,16 @@ func TestProfilePoolDoesNotReplaySynthesisAfterExpansionWorked(t *testing.T) {
 	if err != nil || expansion != "expanded" {
 		t.Fatalf("expansion Chat()=(%q,%v)", expansion, err)
 	}
-	if _, err := pool.Chat(WithCallPurpose(ctx, "evidence_answer"), "answer", "evidence"); !IsQuotaExhausted(err) {
-		t.Fatalf("synthesis after expansion must stop at quota, got %v", err)
+	synthesis, err := pool.Chat(WithCallPurpose(ctx, "evidence_answer"), "answer", "evidence")
+	if err != nil || synthesis != "synthesized" {
+		t.Fatalf("synthesis after expansion should fall back to B: (%q,%v)", synthesis, err)
 	}
-	if firstCalls != 2 || secondCalls != 0 {
-		t.Fatalf("provider transport calls=(A:%d,B:%d), want A expansion + quota and no replay", firstCalls, secondCalls)
+	if firstCalls != 2 || secondCalls != 1 {
+		t.Fatalf("provider transport calls=(A:%d,B:%d), want A expansion + A quota + B synthesis", firstCalls, secondCalls)
 	}
 	calls := capture.snapshot()
-	if len(calls) != 1 || calls[0].purpose != "expansion" || calls[0].profile.ID != "first" || calls[0].model.Model != "first-model" {
-		t.Fatalf("successful transport identities=%+v, want only expansion A before no-replay quota", calls)
+	if len(calls) != 2 || calls[0].purpose != "expansion" || calls[0].profile.ID != "first" || calls[0].model.Model != "first-model" ||
+		calls[1].purpose != "evidence_answer" || calls[1].profile.ID != "second" || calls[1].model.Model != "second-model" {
+		t.Fatalf("successful transport identities=%+v, want expansion A once and synthesis B", calls)
 	}
 }

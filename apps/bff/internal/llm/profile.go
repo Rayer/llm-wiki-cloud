@@ -12,11 +12,13 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 )
 
 const maxProfileResponseBytes = 1 << 20
+const maxProfileDiscoveredModels = 1000
 
 type profileContextualCallRecorder interface {
 	StartProfileCallAtContext(context.Context, ProfileConfig, string, string) func(string, string, time.Time)
@@ -103,6 +105,11 @@ type CompletionResult struct {
 	Metadata CompletionMetadata `json:"metadata"`
 }
 
+type ModelDiscoveryResult struct {
+	Models  []string
+	Partial bool
+}
+
 type ProfileIdentity struct {
 	ID            string
 	Revision      int64
@@ -130,14 +137,18 @@ type ProfileClient struct {
 type ProviderErrorKind string
 
 const (
-	ProviderAuthentication  ProviderErrorKind = "provider_authentication"
-	ProviderRateLimited     ProviderErrorKind = "provider_rate_limited"
-	ProviderTimeout         ProviderErrorKind = "provider_timeout"
-	ProviderBilling         ProviderErrorKind = "provider_billing"
-	ProviderFailure         ProviderErrorKind = "provider_failure"
-	ProviderQuotaExhausted  ProviderErrorKind = "quota_exhausted"
-	ProviderResponseInvalid ProviderErrorKind = "provider_response_invalid"
-	ProviderOutputTruncated ProviderErrorKind = "provider_output_truncated"
+	ProviderAuthentication       ProviderErrorKind = "provider_authentication"
+	ProviderRateLimited          ProviderErrorKind = "provider_rate_limited"
+	ProviderTimeout              ProviderErrorKind = "provider_timeout"
+	ProviderBilling              ProviderErrorKind = "provider_billing"
+	ProviderFailure              ProviderErrorKind = "provider_failure"
+	ProviderQuotaExhausted       ProviderErrorKind = "quota_exhausted"
+	ProviderResponseInvalid      ProviderErrorKind = "provider_response_invalid"
+	ProviderOutputTruncated      ProviderErrorKind = "provider_output_truncated"
+	ProviderDiscoveryUnsupported ProviderErrorKind = "provider_discovery_unsupported"
+	ProviderModelNotFound        ProviderErrorKind = "provider_model_not_found"
+	ProviderParameterUnsupported ProviderErrorKind = "provider_parameter_unsupported"
+	ProviderPermissionDenied     ProviderErrorKind = "provider_permission_denied"
 )
 
 // ProfileCallError contains only a safe category and status, never provider bodies or keys.
@@ -435,9 +446,9 @@ func (c *ProfileClient) Complete(ctx context.Context, systemPrompt, userMessage 
 
 // DiscoverModels performs a bounded, authenticated GET using the profile
 // transport. A successful response says nothing about chat generation access.
-func (c *ProfileClient) DiscoverModels(ctx context.Context) ([]string, error) {
+func (c *ProfileClient) DiscoverModels(ctx context.Context) (ModelDiscoveryResult, error) {
 	if c == nil || c.client == nil {
-		return nil, &ProfileCallError{Kind: ProviderFailure}
+		return ModelDiscoveryResult{}, &ProfileCallError{Kind: ProviderFailure}
 	}
 	endpoint := strings.TrimRight(c.profile.Endpoint, "/") + "/models"
 	if c.profile.Protocol == ProtocolAnthropicMessages && c.profile.Endpoint == "https://api.anthropic.com" {
@@ -445,7 +456,7 @@ func (c *ProfileClient) DiscoverModels(ctx context.Context) ([]string, error) {
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return nil, &ProfileCallError{Kind: ProviderFailure}
+		return ModelDiscoveryResult{}, &ProfileCallError{Kind: ProviderFailure}
 	}
 	if c.profile.Protocol == ProtocolAnthropicMessages {
 		request.Header.Set("x-api-key", c.apiKey)
@@ -463,42 +474,52 @@ func (c *ProfileClient) DiscoverModels(ctx context.Context) ([]string, error) {
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			callOutcome = string(ProviderTimeout)
-			return nil, &ProfileCallError{Kind: ProviderTimeout}
+			return ModelDiscoveryResult{}, &ProfileCallError{Kind: ProviderTimeout}
 		}
 		var netErr net.Error
 		if errors.As(err, &netErr) && netErr.Timeout() {
 			callOutcome = string(ProviderTimeout)
-			return nil, &ProfileCallError{Kind: ProviderTimeout}
+			return ModelDiscoveryResult{}, &ProfileCallError{Kind: ProviderTimeout}
 		}
-		return nil, &ProfileCallError{Kind: ProviderFailure}
+		return ModelDiscoveryResult{}, &ProfileCallError{Kind: ProviderFailure}
 	}
 	defer response.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(response.Body, c.maxBody+1))
 	if err != nil || int64(len(data)) > c.maxBody {
 		callOutcome = string(ProviderResponseInvalid)
-		return nil, &ProfileCallError{Kind: ProviderResponseInvalid, StatusCode: response.StatusCode}
+		return ModelDiscoveryResult{}, &ProfileCallError{Kind: ProviderResponseInvalid, StatusCode: response.StatusCode}
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		callErr := classifyProfileHTTPError(response.StatusCode, data)
+		if response.StatusCode == http.StatusNotFound || response.StatusCode == http.StatusMethodNotAllowed || response.StatusCode == http.StatusNotImplemented {
+			callErr = &ProfileCallError{Kind: ProviderDiscoveryUnsupported, StatusCode: response.StatusCode}
+		}
 		callOutcome = profileCallTraceOutcome(callErr)
-		return nil, callErr
+		return ModelDiscoveryResult{}, callErr
 	}
 	var envelope struct {
-		Data []struct {
+		HasMore *bool `json:"has_more"`
+		Data    []struct {
 			ID string `json:"id"`
 		} `json:"data"`
 	}
-	if err := json.Unmarshal(data, &envelope); err != nil || len(envelope.Data) > 500 {
+	if err := json.Unmarshal(data, &envelope); err != nil {
 		callOutcome = string(ProviderResponseInvalid)
-		return nil, &ProfileCallError{Kind: ProviderResponseInvalid, StatusCode: response.StatusCode}
+		return ModelDiscoveryResult{}, &ProfileCallError{Kind: ProviderResponseInvalid, StatusCode: response.StatusCode}
 	}
-	models := make([]string, 0, len(envelope.Data))
-	seen := make(map[string]struct{}, len(envelope.Data))
-	for _, item := range envelope.Data {
+	partial := len(envelope.Data) > maxProfileDiscoveredModels || (envelope.HasMore != nil && *envelope.HasMore)
+	limit := len(envelope.Data)
+	if limit > maxProfileDiscoveredModels {
+		limit = maxProfileDiscoveredModels
+		partial = true
+	}
+	models := make([]string, 0, limit)
+	seen := make(map[string]struct{}, limit)
+	for _, item := range envelope.Data[:limit] {
 		id := strings.TrimSpace(item.ID)
 		if id == "" || len(id) > 200 || strings.ContainsAny(id, "\r\n\x00") {
 			callOutcome = string(ProviderResponseInvalid)
-			return nil, &ProfileCallError{Kind: ProviderResponseInvalid, StatusCode: response.StatusCode}
+			return ModelDiscoveryResult{}, &ProfileCallError{Kind: ProviderResponseInvalid, StatusCode: response.StatusCode}
 		}
 		if _, exists := seen[id]; exists {
 			continue
@@ -506,8 +527,9 @@ func (c *ProfileClient) DiscoverModels(ctx context.Context) ([]string, error) {
 		seen[id] = struct{}{}
 		models = append(models, id)
 	}
+	sort.Strings(models)
 	callOutcome = "success"
-	return models, nil
+	return ModelDiscoveryResult{Models: models, Partial: partial}, nil
 }
 
 func truncatedProfileFinishReason(reason string) bool {
@@ -585,10 +607,18 @@ func classifyProfileHTTPError(statusCode int, data []byte) error {
 		return &ProfileCallError{Kind: ProviderQuotaExhausted, StatusCode: statusCode}
 	case "billing_error":
 		return &ProfileCallError{Kind: ProviderBilling, StatusCode: statusCode}
+	case "model_not_found":
+		return &ProfileCallError{Kind: ProviderModelNotFound, StatusCode: statusCode}
+	case "unsupported_parameter":
+		return &ProfileCallError{Kind: ProviderParameterUnsupported, StatusCode: statusCode}
+	case "permission_denied", "insufficient_permissions":
+		return &ProfileCallError{Kind: ProviderPermissionDenied, StatusCode: statusCode}
 	}
 	switch statusCode {
-	case http.StatusUnauthorized, http.StatusForbidden:
+	case http.StatusUnauthorized:
 		return &ProfileCallError{Kind: ProviderAuthentication, StatusCode: statusCode}
+	case http.StatusForbidden:
+		return &ProfileCallError{Kind: ProviderPermissionDenied, StatusCode: statusCode}
 	case http.StatusTooManyRequests:
 		return &ProfileCallError{Kind: ProviderRateLimited, StatusCode: statusCode}
 	case http.StatusRequestTimeout, http.StatusGatewayTimeout:
