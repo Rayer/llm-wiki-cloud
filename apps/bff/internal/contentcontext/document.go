@@ -64,33 +64,69 @@ func (d StateDocument) Validate() error {
 		return errors.New("invalid content-context target digest")
 	}
 	if d.LatestPublication != nil {
-		if d.LatestPublication.Generation == "" || !validSHA256(d.LatestPublication.ConceptsSHA256) || d.LatestPublication.ManifestIdentity == "" ||
-			d.LatestPublication.Generation != d.TargetGeneration || d.LatestPublication.ConceptsSHA256 != d.TargetConceptsSHA {
+		publicationDigest, publicationDigestValid := NormalizeSHA256(d.LatestPublication.ConceptsSHA256)
+		targetDigest, targetDigestValid := NormalizeSHA256(d.TargetConceptsSHA)
+		if d.LatestPublication.Generation == "" || !publicationDigestValid || d.LatestPublication.ManifestIdentity == "" ||
+			d.LatestPublication.Generation != d.TargetGeneration || !targetDigestValid || publicationDigest != targetDigest || d.TargetSequence < 1 {
 			return errors.New("invalid content-context publication")
+		}
+		if d.SummaryWork == nil {
+			return errors.New("content-context publication has no summary work")
 		}
 	} else if d.TargetGeneration != "" || d.TargetConceptsSHA != "" {
 		return errors.New("content-context target has no publication")
 	}
 	if d.SummaryWork != nil {
-		if !validStatus(d.SummaryWork.Status) || !validSHA256(d.SummaryWork.ConceptsSHA256) || d.SummaryWork.ConceptsSHA256 != d.TargetConceptsSHA ||
-			d.SummaryWork.WorkID == "" || d.SummaryWork.SourceGeneration == "" || d.SummaryWork.SourceManifestIdentity == "" || d.SummaryWork.RetryCount < 0 {
+		workDigest, workDigestValid := NormalizeSHA256(d.SummaryWork.ConceptsSHA256)
+		targetDigest, targetDigestValid := NormalizeSHA256(d.TargetConceptsSHA)
+		if !validStatus(d.SummaryWork.Status) || !workDigestValid || !targetDigestValid || workDigest != targetDigest ||
+			d.SummaryWork.WorkID == "" || d.SummaryWork.SourceGeneration == "" || d.SummaryWork.RetryCount < 0 || d.SummaryWork.RetryCount >= SummaryMaxClaims ||
+			(d.SummaryWork.Status == StatusPending && d.SummaryWork.SourceManifestIdentity == "") {
 			return errors.New("invalid content-context summary work")
 		}
 		if d.Status != d.SummaryWork.Status {
 			return errors.New("content-context state status mismatch")
 		}
+		if d.SummaryWork.AttemptID != d.AttemptID || (d.AttemptID == "") != (d.SummaryWork.LeaseUntil == nil) {
+			return errors.New("content-context attempt identity mismatch")
+		}
+		if d.AttemptID == "" && (d.AttemptStartedAt != nil || d.AttemptFinishedAt != nil) {
+			return errors.New("content-context attempt timestamps have no attempt")
+		}
+		if d.AttemptID != "" && (d.AttemptStartedAt == nil || (d.Status == StatusPending && d.AttemptFinishedAt != nil) ||
+			(d.Status != StatusPending && d.AttemptFinishedAt == nil) ||
+			(d.AttemptFinishedAt != nil && d.AttemptFinishedAt.Before(*d.AttemptStartedAt))) {
+			return errors.New("invalid content-context attempt timestamps")
+		}
 	} else if d.Status != StatusMissing {
 		return errors.New("content-context status has no summary work")
+	} else if d.AttemptID != "" || d.AttemptStartedAt != nil || d.AttemptFinishedAt != nil {
+		return errors.New("content-context attempt has no summary work")
 	}
 	if d.LastGood != nil {
 		if strings.TrimSpace(d.LastGood.Text) == "" || utf8.RuneCountInString(d.LastGood.Text) > 1000 ||
 			d.LastGood.SourceGeneration == "" || !validSHA256(d.LastGood.ConceptsSHA256) || d.LastGood.GeneratedAt.IsZero() ||
-			d.LastGood.PromptRevision == "" || d.LastGood.Role == "" || d.LastGood.InputDigest == "" || d.LastGood.SelectionVersion == "" {
+			d.LastGood.PromptRevision == "" || d.LastGood.ProfileID == "" || d.LastGood.ProfileRevision < 1 ||
+			d.LastGood.Role != SummaryRole || d.LastGood.RequestedModel == "" || d.LastGood.ReturnedModel == "" ||
+			!validSHA256(d.LastGood.InputDigest) || d.LastGood.SelectionVersion != SummarySelectionVersion {
 			return errors.New("invalid content-context last-good summary")
 		}
 	}
 	if d.Status == StatusFailed && !validErrorClass(d.ErrorClass) {
 		return errors.New("invalid content-context error class")
+	}
+	if d.Status == StatusReady {
+		if d.LastGood == nil {
+			return errors.New("ready content-context has no summary")
+		}
+		lastDigest, lastDigestValid := NormalizeSHA256(d.LastGood.ConceptsSHA256)
+		targetDigest, targetDigestValid := NormalizeSHA256(d.TargetConceptsSHA)
+		if !lastDigestValid || !targetDigestValid || lastDigest != targetDigest {
+			return errors.New("ready content-context summary does not match target")
+		}
+	}
+	if d.Status != StatusFailed && d.ErrorClass != "" {
+		return errors.New("unexpected content-context error class")
 	}
 	return nil
 }

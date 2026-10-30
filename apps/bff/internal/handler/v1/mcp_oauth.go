@@ -91,7 +91,7 @@ func (h *Handler) MCPProjectOAuthHandler(environment, resourceOrigin string) gin
 			}
 			return nil
 		}
-		h.serveAuthenticatedMCP(h.mcpSDKHandler(requestIdentity), requestIdentity, c.Writer, c.Request)
+		h.serveAuthenticatedMCP(h.mcpSDKHandlerWithContext(c.Request.Context(), requestIdentity), requestIdentity, c.Writer, c.Request)
 	}
 }
 

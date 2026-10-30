@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -69,14 +70,24 @@ func testContentContextDigest(ch byte) string { return strings.Repeat(string(ch)
 func contentContextStateMap(generation, digest, stateStatus, errorClass, lastGoodDigest, summary string) map[string]interface{} {
 	generated := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
 	manifestIdentity := "manifest-" + generation
+	attemptID := ""
+	var attemptStartedAt interface{}
+	var attemptFinishedAt interface{}
+	var lease interface{}
+	if stateStatus == "failed" {
+		attemptID = "attempt"
+		attemptStartedAt = generated.Add(-time.Minute)
+		attemptFinishedAt = generated
+		lease = generated.Add(time.Minute)
+	}
 	return map[string]interface{}{
 		"schema_version":         1,
 		"target_generation":      generation,
 		"target_concepts_sha256": digest,
 		"status":                 stateStatus,
-		"attempt_id":             "",
-		"attempt_started_at":     nil,
-		"attempt_finished_at":    nil,
+		"attempt_id":             attemptID,
+		"attempt_started_at":     attemptStartedAt,
+		"attempt_finished_at":    attemptFinishedAt,
 		"error_class":            errorClass,
 		"last_good": map[string]interface{}{
 			"text": summary, "source_generation": generation, "concepts_sha256": lastGoodDigest,
@@ -90,7 +101,7 @@ func contentContextStateMap(generation, digest, stateStatus, errorClass, lastGoo
 		"target_sequence": int64(2),
 		"summary_work": map[string]interface{}{
 			"work_id": "work-" + digest, "concepts_sha256": digest, "source_generation": generation,
-			"source_manifest_identity": manifestIdentity, "attempt_id": "attempt", "lease": generated.Add(time.Minute),
+			"source_manifest_identity": manifestIdentity, "attempt_id": attemptID, "lease": lease,
 			"retry_count": 0, "status": stateStatus,
 		},
 	}
@@ -204,6 +215,135 @@ func TestGetContentContextReadsOnlyPersistedStateAndPinnedIdentity(t *testing.T)
 	}
 	if root.writeCalls != 0 || executor.calls != 0 {
 		t.Fatalf("request triggered writes=%d or query calls=%d", root.writeCalls, executor.calls)
+	}
+}
+
+func TestFirestoreRepositoryProducerStateFlowsThroughContentContextAPI(t *testing.T) {
+	fsClient := newContentContextEmulator(t)
+	defer fsClient.Close()
+
+	owner, projectID := "cc-producer-owner", fmt.Sprintf("cc-producer-%d", time.Now().UnixNano())
+	projectRef := scopedfirestore.Collection(fsClient.Raw(), "projects").Doc(projectDocID(owner, projectID))
+	stateRef := projectRef.Collection("content_context").Doc("state")
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if _, err := projectRef.Set(ctx, map[string]interface{}{"user_id": owner, "project_id": projectID}); err != nil {
+		t.Fatalf("seed owner Project: %v", err)
+	}
+	defer func() {
+		_, _ = stateRef.Delete(context.Background())
+		_, _ = projectRef.Delete(context.Background())
+	}()
+
+	digest := testContentContextDigest('d')
+	authority := &contentContextAPITestAuthority{publication: contentcontext.Publication{
+		Generation: "published-G1", ConceptsDigest: "sha256:" + digest, ManifestIdentity: "manifest-G1",
+	}}
+	repository := contentcontext.NewFirestoreRepository(fsClient.Raw())
+	if _, err := repository.ReconcileCurrent(ctx, owner, projectID, authority); err != nil {
+		t.Fatalf("register confirmed publication: %v", err)
+	}
+	claim, err := repository.Claim(ctx, owner, projectID, authority)
+	if err != nil || claim == nil {
+		t.Fatalf("claim published summary work: claim=%+v err=%v", claim, err)
+	}
+	completion := contentcontext.SummaryCompletion{
+		Text: "Producer-backed published summary", PromptRevision: contentcontext.SummaryPromptRevision,
+		ProfileID: "selected-profile", ProfileRevision: 4, Role: contentcontext.SummaryRole,
+		RequestedModel: "fast-requested", ReturnedModel: "fast-returned",
+		InputDigest: testContentContextDigest('e'), SelectionVersion: contentcontext.SummarySelectionVersion,
+	}
+	if saved, err := repository.Complete(ctx, owner, projectID, authority, *claim, completion); err != nil || !saved {
+		t.Fatalf("persist producer summary: saved=%t err=%v", saved, err)
+	}
+
+	root := newContentContextTestRoot(t, storage.QueryGenerationIdentity{
+		ProjectID: projectID, GenerationID: "published-G1", ConceptsDigest: "sha256:" + digest,
+	}, nil)
+	h := New(root, fsClient, search.NewIndex(), conceptcache.New(), nil, nil)
+	response := serveContentContext(h, owner, projectID, projectID)
+	if response.Code != http.StatusOK {
+		t.Fatalf("read producer summary status=%d body=%s", response.Code, response.Body.String())
+	}
+	var body contentContextResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode producer summary: %v", err)
+	}
+	if body.Status != contentcontext.StatusReady || body.CurrentGeneration == nil || *body.CurrentGeneration != "published-G1" ||
+		body.CurrentConceptsSHA256 == nil || *body.CurrentConceptsSHA256 != digest || body.Summary == nil ||
+		body.Summary.Text != completion.Text || body.Summary.SourceGeneration != "published-G1" || body.Summary.Role != contentcontext.SummaryRole || body.Stale {
+		t.Fatalf("producer Firestore state was not read faithfully: %+v", body)
+	}
+}
+
+type contentContextAPITestAuthority struct {
+	mu          sync.Mutex
+	publication contentcontext.Publication
+	inFence     bool
+}
+
+func (a *contentContextAPITestAuthority) WithProjectFence(ctx context.Context, _, _ string, operation func(context.Context) error) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.inFence = true
+	defer func() { a.inFence = false }()
+	return operation(ctx)
+}
+
+func (a *contentContextAPITestAuthority) CurrentPublication(context.Context, string, string) (contentcontext.Publication, error) {
+	if !a.inFence {
+		return contentcontext.Publication{}, errors.New("publication read escaped fence")
+	}
+	return a.publication, nil
+}
+
+func TestFirestoreRepositoryConcurrentClaimsHaveOneWinner(t *testing.T) {
+	fsClient := newContentContextEmulator(t)
+	defer fsClient.Close()
+
+	owner, projectID := "cc-race-owner", fmt.Sprintf("cc-race-%d", time.Now().UnixNano())
+	stateRef := scopedfirestore.Collection(fsClient.Raw(), "projects").Doc(owner + "_" + projectID).Collection("content_context").Doc("state")
+	defer func() { _, _ = stateRef.Delete(context.Background()) }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	authority := &contentContextAPITestAuthority{publication: contentcontext.Publication{
+		Generation: "published-G1", ConceptsDigest: testContentContextDigest('a'), ManifestIdentity: "manifest-G1",
+	}}
+	repository := contentcontext.NewFirestoreRepository(fsClient.Raw())
+	if _, err := repository.ReconcileCurrent(ctx, owner, projectID, authority); err != nil {
+		t.Fatalf("register publication: %v", err)
+	}
+
+	const contenders = 8
+	claims := make(chan *contentcontext.SummaryClaim, contenders)
+	errs := make(chan error, contenders)
+	var wait sync.WaitGroup
+	for i := 0; i < contenders; i++ {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			claim, err := repository.Claim(ctx, owner, projectID, authority)
+			claims <- claim
+			errs <- err
+		}()
+	}
+	wait.Wait()
+	close(claims)
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent claim failed: %v", err)
+		}
+	}
+	winners := 0
+	for claim := range claims {
+		if claim != nil {
+			winners++
+		}
+	}
+	if winners != 1 {
+		t.Fatalf("concurrent claim winners=%d, want exactly one", winners)
 	}
 }
 

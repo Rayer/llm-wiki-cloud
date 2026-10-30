@@ -32,7 +32,7 @@ export default function ProfilePage() {
     <div className="space-y-5">
       <ProjectHeading key={`heading:${user.id}:${currentProject.id}`} project={currentProject} />
       <ProjectDescriptionEditor
-        key={`${user.id}:${sessionEpoch}:${currentProject.id}`}
+        key={`description:${user.id}:${sessionEpoch}:${currentProject.id}`}
         projectId={currentProject.id}
       />
       <ProjectContentContextPanel
