@@ -1,12 +1,15 @@
 'use client';
 
-import { apiFetch, safeWikiRouteSegment } from './api.ts';
+import { ApiError, apiFetch, safeWikiRouteSegment } from './api.ts';
 import { getRuntimeConfig } from './runtime-config.ts';
 import { recordRequestResponse } from './request-ids.ts';
 import {
   normalizeProject,
   normalizeProjects,
+  normalizeProjectDescription,
   selectDefaultProject,
+  isValidProjectDescription,
+  MAX_PROJECT_DESCRIPTION_LENGTH,
   type Project,
 } from './project-core.ts';
 
@@ -36,6 +39,12 @@ export type ProjectContentContext = {
   summary: ProjectContentSummary | null;
   stale: boolean;
   error_class?: string | null;
+};
+
+export type ProjectDescription = {
+  projectId: string;
+  description: string;
+  revision: number;
 };
 
 function apiError(payload: unknown, fallback: string): string {
@@ -107,16 +116,22 @@ export async function bootstrapDefaultProject(accessToken: string): Promise<stri
   return record.default_project_id;
 }
 
-export async function createProject(name: string): Promise<Project> {
+export async function createProject(name: string, description = '', idempotencyKey = crypto.randomUUID()): Promise<Project> {
   const trimmedName = name.trim();
+  const normalizedDescription = normalizeProjectDescription(description);
+  if (!isValidProjectDescription(normalizedDescription)) {
+    throw new Error(`Project description must be valid text of at most ${MAX_PROJECT_DESCRIPTION_LENGTH} characters.`);
+  }
   const response = await apiFetch('/api/v1/init-project', {
     method: 'POST',
     json: true,
     requireProject: false,
+    headers: { 'Idempotency-Key': idempotencyKey },
     body: JSON.stringify({
       name: trimmedName,
       project: trimmedName,
       project_name: trimmedName,
+      description: normalizedDescription,
     }),
   });
   const payload: unknown = await response.json().catch(() => null);
@@ -127,6 +142,54 @@ export async function createProject(name: string): Promise<Project> {
   const project = normalizeProject(payload);
   if (!project) throw new Error('Create project response did not include a project.');
   return project;
+}
+
+function parseProjectDescription(payload: unknown, expectedProjectId: string): ProjectDescription {
+  if (
+    !payload || typeof payload !== 'object' || Array.isArray(payload)
+    || !('project_id' in payload) || payload.project_id !== expectedProjectId
+    || !('description' in payload) || typeof payload.description !== 'string'
+    || !('revision' in payload) || typeof payload.revision !== 'number'
+    || !Number.isSafeInteger(payload.revision) || payload.revision < 0
+  ) {
+    throw new Error('Project description response is invalid.');
+  }
+  return {
+    projectId: expectedProjectId,
+    description: payload.description,
+    revision: payload.revision,
+  };
+}
+
+export async function getProjectDescription(projectId: string): Promise<ProjectDescription> {
+  const targetProjectId = safeProjectRouteSegment(projectId);
+  const response = await apiFetch(`/api/v1/projects/${encodeURIComponent(targetProjectId)}/description`, {
+    projectId: targetProjectId,
+  });
+  const payload: unknown = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new ApiError(apiError(payload, `Unable to load project description (${response.status})`), response.status, undefined, response.headers.get('X-Request-ID'));
+  }
+  return parseProjectDescription(payload, targetProjectId);
+}
+
+export async function saveProjectDescription(projectId: string, description: string, revision: number): Promise<ProjectDescription> {
+  const targetProjectId = safeProjectRouteSegment(projectId);
+  const normalizedDescription = normalizeProjectDescription(description);
+  if (!isValidProjectDescription(normalizedDescription) || !Number.isSafeInteger(revision) || revision < 0) {
+    throw new Error(`Project description must be valid text of at most ${MAX_PROJECT_DESCRIPTION_LENGTH} characters.`);
+  }
+  const response = await apiFetch(`/api/v1/projects/${encodeURIComponent(targetProjectId)}/description`, {
+    method: 'PUT',
+    projectId: targetProjectId,
+    json: true,
+    body: JSON.stringify({ description: normalizedDescription, revision }),
+  });
+  const payload: unknown = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new ApiError(apiError(payload, `Unable to save project description (${response.status})`), response.status, undefined, response.headers.get('X-Request-ID'));
+  }
+  return parseProjectDescription(payload, targetProjectId);
 }
 
 export async function renameProject(projectId: string, name: string): Promise<string> {
@@ -213,5 +276,6 @@ export {
   normalizeProject,
   normalizeProjects,
   selectDefaultProject,
+  MAX_PROJECT_DESCRIPTION_LENGTH,
   type Project,
 };

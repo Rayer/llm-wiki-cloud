@@ -415,6 +415,7 @@ type BuildRequestInitOptions = {
   projectId?: string;
   accessToken?: string | null;
   json?: boolean;
+  headers?: Record<string, string>;
   body?: BodyInit;
   signal?: AbortSignal;
 };
@@ -424,10 +425,12 @@ export function buildRequestInit({
   projectId,
   accessToken,
   json = false,
+  headers: extraHeaders,
   body,
   signal,
 }: BuildRequestInitOptions): RequestInit {
   const headers: Record<string, string> = {
+    ...extraHeaders,
     ...(json ? { 'Content-Type': 'application/json' } : {}),
   };
 
@@ -486,6 +489,7 @@ type ApiFetchOptions = {
   method?: string;
   projectId?: string;
   json?: boolean;
+  headers?: Record<string, string>;
   body?: BodyInit;
   requireProject?: boolean;
   signal?: AbortSignal;

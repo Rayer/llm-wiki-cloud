@@ -590,6 +590,8 @@ func newProductionRouter(
 		v1.POST("/projects/:pid/recompile-all", hV1.RecompileAll)
 		profileRoutes := v1.Group("")
 		profileRoutes.Use(hV1.TrialDemoAccessGuard())
+		profileRoutes.GET("/projects/:pid/description", hV1.GetProjectDescription)
+		profileRoutes.PUT("/projects/:pid/description", hV1.PutProjectDescription)
 		profileRoutes.GET("/projects/:pid/profile", hV1.GetProfile)
 		profileRoutes.PUT("/projects/:pid/profile", hV1.PutProfile)
 		profileRoutes.GET("/projects/:pid/profile/bootstrap-guidance", hV1.GetProfileBootstrapGuidance)
