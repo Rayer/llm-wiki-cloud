@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 
 const mocks = vi.hoisted(() => ({
   renameProject: vi.fn().mockResolvedValue(undefined),
+  setBlocked: vi.fn(),
   hydrated: true,
   projectsLoading: false,
   currentProject: { id: 'project-a', name: 'Project A' } as { id: string; name: string } | null,
@@ -24,6 +25,7 @@ vi.mock('@/components/WorkspaceProvider', () => ({
 }));
 
 vi.mock('@/lib/auth', () => ({ useAuth: () => ({ user: mocks.user, accessToken: mocks.accessToken, sessionEpoch: mocks.sessionEpoch }) }));
+vi.mock('@/components/NavigationBlocker', () => ({ useNavigationBlocker: () => ({ setBlocked: mocks.setBlocked, confirmNavigation: () => true }) }));
 vi.mock('@/components/ProjectProfilePanel', () => ({
   ProjectProfilePanel: ({ projectId }: { projectId: string }) => <div data-testid="profile-panel">{projectId}</div>,
 }));
