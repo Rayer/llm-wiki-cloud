@@ -806,7 +806,10 @@ func runWorkerBatchWorkspace(ctx context.Context, cfg workerConfig, commands [][
 	}
 	if auth.ValidPathSegment(cfg.UserID) && auth.ValidPathSegment(cfg.ProjectID) {
 		if err := prepareLocalContentContextDescriptor(workspace, vault, cfg); err != nil {
-			warnContentContextFailure("publication_descriptor_unavailable")
+			warnContentContextFailure(contentContextFailureEvent{
+				operation: "prepare_descriptor", class: "publication_descriptor_unavailable",
+				cause: contentContextFailureCause(err), attemptID: "none",
+			})
 		}
 	}
 	publicationOutcome = "unknown"
