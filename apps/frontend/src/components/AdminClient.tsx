@@ -37,7 +37,6 @@ import { useNavigationBlocker } from './NavigationBlocker';
 
 type Tab = 'projects' | 'users' | 'settings' | 'shared-llm';
 type Notice = { tone: 'success' | 'error' | 'pending'; message: string } | null;
-const userReadbackFailure: Notice = { tone: 'error', message: 'Update succeeded, but current user state is unknown. Retry loading users before making another change.' };
 
 function adminAutomationCopy(t: (key: string, params?: Record<string, string | number>) => string, key: string, fallback: string, params?: Record<string, string | number>): string {
   const translated = t(key, params);
