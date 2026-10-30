@@ -44,6 +44,7 @@ type Toast = {
 
 type PipelineProjectContext = { projectId: string | null; generation: number };
 type PipelineRequestScope = { projectId: string; contextGeneration: number; requestGeneration: number };
+type PipelineAutomationPollScope = Pick<PipelineRequestScope, 'projectId' | 'contextGeneration'>;
 type PipelineExecutionOwner = { projectId: string; contextGeneration: number };
 
 function scrapeErrorMessageKey(error: unknown): 'Pipeline.urlUncertain' | 'Pipeline.urlUnavailable' {
@@ -95,6 +96,13 @@ function hasNewRaw(quota: PipelineQuota | null | undefined): boolean {
 
 function isPendingPipelineIntent(intent: PipelineIntentStatus | null | undefined): intent is PipelineIntentStatus {
   return Boolean(intent && ['preparing', 'ready', 'invoking', 'invocation_unknown', 'compiling'].includes(intent.status));
+}
+
+function isPipelineAutomationInFlight(settings: ProjectPipelineAutomation | null): boolean {
+  if (!settings?.effective_enabled || ['failed', 'cancelled'].includes(settings.pipeline_status)) return false;
+  return settings.backlog_scan_status === 'pending'
+    || ['pending', 'preparing', 'running', 'unknown'].includes(settings.pipeline_status)
+    || settings.source_revision > settings.processed_revision;
 }
 
 export function PipelineClient() {
@@ -186,17 +194,19 @@ export function PipelineClient() {
     }
   }, [isPipelineRequestCurrent]);
 
-  const refreshPipelineAutomation = useCallback(async (scope: Pick<PipelineRequestScope, 'projectId' | 'contextGeneration'>) => {
+  const refreshPipelineAutomation = useCallback(async (scope: PipelineAutomationPollScope): Promise<ProjectPipelineAutomation | null> => {
     try {
       const settings = await getProjectPipelineAutomation(scope.projectId);
       const latest = pipelineProjectContextRef.current;
-      if (!pipelineMountedRef.current || latest.projectId !== scope.projectId || latest.generation !== scope.contextGeneration) return;
+      if (!pipelineMountedRef.current || latest.projectId !== scope.projectId || latest.generation !== scope.contextGeneration) return null;
       setPipelineAutomation(settings);
       setPipelineAutomationError(null);
+      return settings;
     } catch (error) {
       const latest = pipelineProjectContextRef.current;
-      if (!pipelineMountedRef.current || latest.projectId !== scope.projectId || latest.generation !== scope.contextGeneration) return;
+      if (!pipelineMountedRef.current || latest.projectId !== scope.projectId || latest.generation !== scope.contextGeneration) return null;
       setPipelineAutomationError(error instanceof Error ? error.message : automationCopy(t, 'Pipeline.automationStatusUnavailable', 'Automatic processing status is unavailable.'));
+      return null;
     }
   }, [setPipelineAutomation, setPipelineAutomationError, t]);
 
@@ -207,42 +217,11 @@ export function PipelineClient() {
     void refreshPipelineAutomation({ projectId, contextGeneration: pipelineProjectContextRef.current.generation });
   }, [projectId, refreshPipelineAutomation]);
 
-  const handleUploadQueueSettled = useCallback(({ changed, projectId }: RawUploadsSettled) => {
-    if (!changed) return;
-    // New raw files may change quota eligibility.
-    const context = pipelineProjectContextRef.current;
-    if (context.projectId === projectId) {
-      void refreshPipelineStatus({
-        projectId: context.projectId,
-        contextGeneration: context.generation,
-        requestGeneration: pipelineRequestGenerationRef.current,
-      });
-      void refreshPipelineAutomation({ projectId, contextGeneration: context.generation });
-    }
-  }, [refreshPipelineAutomation, refreshPipelineStatus]);
-
-  const handleProjectAutomationToggle = useCallback(async () => {
-    if (!projectId || !pipelineAutomation || pipelineAutomationPending) return;
-    const context = pipelineProjectContextRef.current;
-    const isCurrent = () => pipelineProjectContextRef.current.projectId === projectId
-      && pipelineProjectContextRef.current.generation === context.generation;
-    setPipelineAutomationPending(true);
-    setPipelineAutomationError(null);
-    try {
-      const next = await updateProjectPipelineAutomation(projectId, !pipelineAutomation.enabled, pipelineAutomation.revision);
-      if (isCurrent()) setPipelineAutomation(next);
-    } catch (error) {
-      if (isCurrent()) {
-        setPipelineAutomationError(error instanceof Error ? error.message : automationCopy(t, 'Pipeline.automationUpdateFailed', 'Automatic processing settings could not be updated.'));
-        void refreshPipelineAutomation({ projectId, contextGeneration: context.generation });
-      }
-    } finally {
-      setPipelineAutomationPending(false);
-    }
-  }, [pipelineAutomation, pipelineAutomationPending, projectId, refreshPipelineAutomation,
-    setPipelineAutomation, setPipelineAutomationError, setPipelineAutomationPending, t]);
-
   const pipelinePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pipelineAutomationPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pipelineAutomationPollScopeRef = useRef<PipelineAutomationPollScope | null>(null);
+  const pipelineAutomationPollInFlightRef = useRef(false);
+  const pipelineAutomationPollTickRef = useRef<(scope: PipelineAutomationPollScope) => void>(() => {});
 
   const addToast = useCallback((message: string, type: Toast['type']) => {
     const id = ++toastId;
@@ -257,14 +236,23 @@ export function PipelineClient() {
     }
   }, []);
 
+  const stopPipelineAutomationPolling = useCallback(() => {
+    if (pipelineAutomationPollRef.current) {
+      clearInterval(pipelineAutomationPollRef.current);
+      pipelineAutomationPollRef.current = null;
+    }
+    pipelineAutomationPollScopeRef.current = null;
+  }, []);
+
   useEffect(() => {
     pipelineMountedRef.current = true;
     return () => {
       pipelineMountedRef.current = false;
       pipelineRequestGenerationRef.current += 1;
       stopPipelinePolling();
+      stopPipelineAutomationPolling();
     };
-  }, [stopPipelinePolling]);
+  }, [stopPipelineAutomationPolling, stopPipelinePolling]);
 
   const pollPipelineStatus = useCallback(async (scope: PipelineRequestScope, executionId?: string, intentId?: string) => {
     if (!isPipelineRequestCurrent(scope)) return;
@@ -315,6 +303,115 @@ export function PipelineClient() {
   }, [addToast, isPipelineRequestCurrent, refreshPipelineAutomation, stopPipelinePolling]);
 
   useEffect(() => stopPipelinePolling, [currentProject?.id, stopPipelinePolling]);
+  useEffect(() => stopPipelineAutomationPolling, [currentProject?.id, stopPipelineAutomationPolling]);
+
+  const pollPipelineAutomationLifecycle = useCallback(async (scope: PipelineAutomationPollScope) => {
+    const context = pipelineProjectContextRef.current;
+    const isCurrent = () => pipelineMountedRef.current
+      && pipelineAutomationPollScopeRef.current?.projectId === scope.projectId
+      && pipelineAutomationPollScopeRef.current.contextGeneration === scope.contextGeneration
+      && pipelineProjectContextRef.current.projectId === scope.projectId
+      && pipelineProjectContextRef.current.generation === scope.contextGeneration;
+    if (!isCurrent() || context.projectId !== scope.projectId || pipelineAutomationPollInFlightRef.current) return;
+    pipelineAutomationPollInFlightRef.current = true;
+    try {
+      const settings = await refreshPipelineAutomation(scope);
+      let status: PipelineStatus | null = null;
+      try {
+        status = await getPipelineStatus(scope.projectId);
+      } catch {
+        // Keep the independent monitor alive so a later interval can recover.
+      }
+      if (!isCurrent()) return;
+      if (status?.project_id === scope.projectId) {
+        const currentIntent = pipelineStatus?.pipeline_intent;
+        const nextIntent = status.pipeline_intent;
+        if (isPendingPipelineIntent(nextIntent)) {
+          // Let an already-running intent finish before taking ownership of a newer one.
+          if (!pipelinePollRef.current || !isPendingPipelineIntent(currentIntent)) {
+            stopPipelinePolling();
+            pipelineTerminalPollScopeRef.current = null;
+            pipelinePollErrorNotifiedRef.current = false;
+            const requestScope: PipelineRequestScope = {
+              projectId: scope.projectId,
+              contextGeneration: scope.contextGeneration,
+              requestGeneration: ++pipelineRequestGenerationRef.current,
+            };
+            pipelineExecutionOwnerRef.current = { projectId: scope.projectId, contextGeneration: scope.contextGeneration };
+            setPipelineStatusReadFailedProjectId(null);
+            setPipelineStatus(status);
+            const poll = () => void pollPipelineStatus(requestScope, nextIntent.execution_id, nextIntent.id);
+            pipelinePollRef.current = setInterval(poll, 5000);
+            poll();
+          }
+        } else if (!pipelinePollRef.current) {
+          setPipelineStatusReadFailedProjectId(null);
+          setPipelineStatus(status);
+        }
+      }
+      if (settings && !isPipelineAutomationInFlight(settings)) stopPipelineAutomationPolling();
+    } finally {
+      pipelineAutomationPollInFlightRef.current = false;
+    }
+  }, [pipelineStatus?.pipeline_intent, pollPipelineStatus, refreshPipelineAutomation,
+    setPipelineStatus, setPipelineStatusReadFailedProjectId, stopPipelineAutomationPolling, stopPipelinePolling]);
+
+  useEffect(() => {
+    pipelineAutomationPollTickRef.current = (scope) => { void pollPipelineAutomationLifecycle(scope); };
+  }, [pollPipelineAutomationLifecycle]);
+
+  const startPipelineAutomationPolling = useCallback((scope: PipelineAutomationPollScope) => {
+    if (!scope.projectId) return;
+    const current = pipelineAutomationPollScopeRef.current;
+    if (current && (current.projectId !== scope.projectId || current.contextGeneration !== scope.contextGeneration)) {
+      stopPipelineAutomationPolling();
+    }
+    pipelineAutomationPollScopeRef.current = scope;
+    if (!pipelineAutomationPollRef.current) {
+      pipelineAutomationPollRef.current = setInterval(() => {
+        const latest = pipelineAutomationPollScopeRef.current;
+        if (latest) pipelineAutomationPollTickRef.current(latest);
+      }, 5000);
+    }
+  }, [stopPipelineAutomationPolling]);
+
+  const handleUploadQueueSettled = useCallback(({ changed, projectId: uploadedProjectId }: RawUploadsSettled) => {
+    if (!changed) return;
+    const context = pipelineProjectContextRef.current;
+    if (context.projectId === uploadedProjectId) {
+      void refreshPipelineStatus({
+        projectId: uploadedProjectId,
+        contextGeneration: context.generation,
+        requestGeneration: pipelineRequestGenerationRef.current,
+      });
+      void refreshPipelineAutomation({ projectId: uploadedProjectId, contextGeneration: context.generation });
+      startPipelineAutomationPolling({ projectId: uploadedProjectId, contextGeneration: context.generation });
+    }
+  }, [refreshPipelineAutomation, refreshPipelineStatus, startPipelineAutomationPolling]);
+
+  const handleProjectAutomationToggle = useCallback(async () => {
+    if (!projectId || !pipelineAutomation || pipelineAutomationPending) return;
+    const context = pipelineProjectContextRef.current;
+    const isCurrent = () => pipelineProjectContextRef.current.projectId === projectId
+      && pipelineProjectContextRef.current.generation === context.generation;
+    setPipelineAutomationPending(true);
+    setPipelineAutomationError(null);
+    try {
+      const next = await updateProjectPipelineAutomation(projectId, !pipelineAutomation.enabled, pipelineAutomation.revision);
+      if (isCurrent()) {
+        setPipelineAutomation(next);
+        startPipelineAutomationPolling({ projectId, contextGeneration: context.generation });
+      }
+    } catch (error) {
+      if (isCurrent()) {
+        setPipelineAutomationError(error instanceof Error ? error.message : automationCopy(t, 'Pipeline.automationUpdateFailed', 'Automatic processing settings could not be updated.'));
+        void refreshPipelineAutomation({ projectId, contextGeneration: context.generation });
+      }
+    } finally {
+      setPipelineAutomationPending(false);
+    }
+  }, [pipelineAutomation, pipelineAutomationPending, projectId, refreshPipelineAutomation,
+    setPipelineAutomation, setPipelineAutomationError, setPipelineAutomationPending, startPipelineAutomationPolling, t]);
 
   useEffect(() => {
     const refreshAfterAnnotationSave = () => {
