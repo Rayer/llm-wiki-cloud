@@ -178,7 +178,7 @@ func (h *Handler) SyncRawUpload(c *gin.Context) {
 	observability.FinishDataSpan(inputSpan, "success")
 	writeCtx, writeSpan := observability.StartDataPhase(c.Request.Context(), "write")
 	ownerID, projectID := strings.TrimSpace(c.GetString("userID")), strings.TrimSpace(c.GetString("projectID"))
-	journal, sourceRef, err := h.prepareSourceCommitDigest(writeCtx, ownerID, projectID, "cli_sync", path, sha256)
+	journal, sourceRef, err := h.prepareSourceCommitDigest(writeCtx, ownerID, projectID, "cli_sync", path, sha256, expectedGeneration)
 	if err != nil {
 		observability.FinishDataSpan(writeSpan, "failure")
 		observability.WriteDataJSON(c, http.StatusServiceUnavailable, gin.H{"error": "raw sync unavailable"})

@@ -40,11 +40,12 @@ type VerifiedProject struct {
 }
 
 type PrepareRequest struct {
-	OperationID    string
-	Entrypoint     string
-	RawPath        string
-	ExpectedSHA256 string
-	BatchID        string
+	OperationID               string
+	Entrypoint                string
+	RawPath                   string
+	ExpectedSHA256            string
+	ExpectedStorageGeneration string
+	BatchID                   string
 }
 
 type Ref struct {
@@ -123,15 +124,6 @@ func (j *FirestoreJournal) PrepareSourceCommit(ctx context.Context, project Veri
 		if status.Code(err) != codes.NotFound {
 			return err
 		}
-		baseGeneration := ""
-		currentRef := projectRef.Collection("pipeline_source_current").Doc(pathDocumentID(request.RawPath))
-		currentSnapshot, currentErr := tx.Get(currentRef)
-		if currentErr != nil && status.Code(currentErr) != codes.NotFound {
-			return currentErr
-		}
-		if currentSnapshot != nil && currentSnapshot.Exists() {
-			baseGeneration, _ = currentSnapshot.Data()["generation"].(string)
-		}
 		if err := enqueueSourceCommitReconcile(ctx, tx, j.fs, project, request.OperationID, now.Add(sourceCommitReconcileDelay)); err != nil {
 			return err
 		}
@@ -139,8 +131,9 @@ func (j *FirestoreJournal) PrepareSourceCommit(ctx context.Context, project Veri
 			"schema_version": 1, "operation_id": request.OperationID, "entrypoint": request.Entrypoint,
 			"raw_path": request.RawPath, "expected_sha256": request.ExpectedSHA256,
 			"batch_id": request.BatchID, "commit_state": "prepared", "created_at": now,
-			"base_generation": baseGeneration, "reconcile_deadline": now.Add(sourceCommitReconcileGrace),
-			"updated_at": now,
+			"expected_storage_generation": request.ExpectedStorageGeneration,
+			"reconcile_deadline":          now.Add(sourceCommitReconcileGrace),
+			"updated_at":                  now,
 		})
 	})
 	if err != nil {
@@ -325,19 +318,18 @@ func (j *FirestoreJournal) ReconcileSourceCommit(ctx context.Context, ref Ref) (
 	}
 	actualDigest := digest(bytes)
 	if actualDigest != expectedDigest {
-		baseGeneration, _ := data["base_generation"].(string)
-		if baseGeneration != "" && strconv.FormatInt(generation, 10) != baseGeneration {
-			currentRef := projectDocument(j.fs, VerifiedProject{OwnerID: ref.OwnerID, ProjectID: ref.ProjectID}).
-				Collection("pipeline_source_current").Doc(pathDocumentID(path))
-			currentSnapshot, currentErr := currentRef.Get(ctx)
-			if currentErr != nil && status.Code(currentErr) != codes.NotFound {
-				return CommitResult{}, currentErr
-			}
-			if currentSnapshot != nil && currentSnapshot.Exists() {
-				current := currentSnapshot.Data()
-				currentGeneration, _ := current["generation"].(string)
-				currentDigest, _ := current["sha256"].(string)
-				if currentGeneration == strconv.FormatInt(generation, 10) && currentDigest == actualDigest {
+		if entrypoint, _ := data["entrypoint"].(string); entrypoint == "cli_sync" {
+			if expected, recorded := data["expected_storage_generation"].(string); recorded {
+				expectedGeneration := int64(0)
+				validPrecondition := expected == ""
+				if expected != "" {
+					expectedGeneration, err = strconv.ParseInt(expected, 10, 64)
+					validPrecondition = err == nil && expectedGeneration > 0
+				}
+				if validPrecondition && generation != expectedGeneration {
+					// Raw Sync publishes with this exact GCS generation precondition.
+					// A different current generation proves the staged writer can no
+					// longer commit; a matching generation may still be in progress.
 					if err := j.markCommitAborted(ctx, ref, "raw_superseded"); err != nil {
 						return CommitResult{}, err
 					}
@@ -413,6 +405,12 @@ func validPrepareRequest(request *PrepareRequest) bool {
 	if request.BatchID != "" && (!auth.ValidPathSegment(request.BatchID) || len(request.BatchID) > 128) {
 		return false
 	}
+	if request.ExpectedStorageGeneration != "" {
+		generation, err := strconv.ParseInt(request.ExpectedStorageGeneration, 10, 64)
+		if request.Entrypoint != "cli_sync" || err != nil || generation <= 0 {
+			return false
+		}
+	}
 	switch request.Entrypoint {
 	case "ui_upload", "url_accept", "mcp_add_raw", "mcp_import_url", "cli_sync", "document_import":
 		return true
@@ -440,8 +438,10 @@ func generationAtLeast(current, stored string) bool {
 }
 
 func samePrepare(data map[string]interface{}, request PrepareRequest) bool {
+	expectedGeneration, _ := data["expected_storage_generation"].(string)
 	return data["operation_id"] == request.OperationID && data["entrypoint"] == request.Entrypoint &&
-		data["raw_path"] == request.RawPath && data["expected_sha256"] == request.ExpectedSHA256 && data["batch_id"] == request.BatchID
+		data["raw_path"] == request.RawPath && data["expected_sha256"] == request.ExpectedSHA256 &&
+		expectedGeneration == request.ExpectedStorageGeneration && data["batch_id"] == request.BatchID
 }
 
 func readyProject(data map[string]interface{}, project VerifiedProject) bool {
