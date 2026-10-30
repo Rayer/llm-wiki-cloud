@@ -142,6 +142,7 @@ local-document-import-worker-build: local-document-import-runtime
 	GOMAXPROCS=2 GOFLAGS=-p=2 go build -o "$(DOCUMENT_IMPORT_WORKER)" ./cmd/document_import_worker
 
 local-document-import-test: local-document-import-runtime
+	PIP_CONFIG_FILE=/dev/null PIP_INDEX_URL=https://pypi.org/simple "$(DOCUMENT_IMPORT_VENV)/bin/python" -m pip install --disable-pip-version-check --no-input --no-cache-dir --require-hashes -r "$(abspath $(DOCUMENT_IMPORT_DIR))/requirements-test.lock"
 	PYTHONDONTWRITEBYTECODE=1 PATH="$(DOCUMENT_IMPORT_VENV)/bin:$$PATH" "$(DOCUMENT_IMPORT_VENV)/bin/python" "$(abspath $(DOCUMENT_IMPORT_DIR))/test_converter.py"
 
 local-worker-build:

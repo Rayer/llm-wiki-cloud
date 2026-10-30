@@ -20,9 +20,13 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: apps/document-import-worker/requirements.lock
+          cache-dependency-path: |
+            apps/document-import-worker/requirements.lock
+            apps/document-import-worker/requirements-test.lock
       - name: Install the hash-locked offline converter
         run: python -m pip install --disable-pip-version-check --require-hashes -r apps/document-import-worker/requirements.lock
+      - name: Install the hash-locked fixture writer
+        run: python -m pip install --disable-pip-version-check --require-hashes -r apps/document-import-worker/requirements-test.lock
       - name: Convert real fixtures under the guarded MarkItDown runtime
         env:
           PYTHONDONTWRITEBYTECODE: "1"
