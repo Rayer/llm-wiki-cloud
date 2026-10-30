@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -13,6 +14,7 @@ import (
 	cloudfirestore "cloud.google.com/go/firestore"
 	"github.com/rayer/llm-wiki-bff/internal/auth"
 	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
+	"github.com/rayer/llm-wiki-bff/internal/profileruntime"
 	"github.com/rayer/llm-wiki-bff/internal/storage"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -153,7 +155,7 @@ func (j *FirestoreJournal) ConfirmSourceCommit(ctx context.Context, ref Ref, req
 	currentRef := projectDocument(j.fs, VerifiedProject{OwnerID: ref.OwnerID, ProjectID: ref.ProjectID}).Collection("pipeline_source_current").Doc(pathDocumentID(path))
 	projectRef := projectDocument(j.fs, VerifiedProject{OwnerID: ref.OwnerID, ProjectID: ref.ProjectID})
 	now := time.Now().UTC()
-	result := CommitResult{State: "committed", ProcessingStatus: "pending"}
+	result := CommitResult{State: "committed", ProcessingStatus: "unknown"}
 	err = j.fs.RunTransaction(ctx, func(ctx context.Context, tx *cloudfirestore.Transaction) error {
 		result.SourceRevision = 0
 		currentSnapshot, err := tx.Get(currentRef)
@@ -167,7 +169,7 @@ func (j *FirestoreJournal) ConfirmSourceCommit(ctx context.Context, ref Ref, req
 		storedGeneration, _ := current["generation"].(string)
 		storedDigest, _ := current["sha256"].(string)
 		latest := current == nil || generationAtLeast(generation, storedGeneration)
-		changed := latest && (current == nil || storedDigest != actualDigest)
+		changed := latest && request.Status != "already_exists" && (current == nil || storedDigest != actualDigest)
 		projectSnapshot, err := tx.Get(projectRef)
 		if err != nil {
 			return err
@@ -193,6 +195,23 @@ func (j *FirestoreJournal) ConfirmSourceCommit(ctx context.Context, ref Ref, req
 			result.ProcessingStatus, _ = eventData["processing_status"].(string)
 			return nil
 		}
+		settingsRef := scopedfirestore.Collection(j.fs, "system").Doc("pipeline_automation")
+		settingsSnapshot, settingsErr := tx.Get(settingsRef)
+		if settingsErr != nil && status.Code(settingsErr) != codes.NotFound {
+			return settingsErr
+		}
+		adminAllowed := false
+		if settingsSnapshot != nil && settingsSnapshot.Exists() {
+			adminAllowed, _ = settingsSnapshot.Data()["allow_auto_pipeline"].(bool)
+		}
+		projectEnabled, _ := projectData["auto_pipeline_enabled"].(bool)
+		processingStatus := "not_started"
+		if changed {
+			processingStatus = "not_started_disabled"
+			if adminAllowed && projectEnabled {
+				processingStatus = "pending"
+			}
+		}
 		revision, _ := projectData["pipeline_source_revision"].(int64)
 		if changed {
 			revision++
@@ -203,10 +222,18 @@ func (j *FirestoreJournal) ConfirmSourceCommit(ctx context.Context, ref Ref, req
 			}
 			if err := tx.Update(projectRef, []cloudfirestore.Update{
 				{Path: "pipeline_source_revision", Value: revision},
+				{Path: "pipeline_pending_source_revision", Value: revision},
+				{Path: "pipeline_automation_status", Value: processingStatus},
 				{Path: "pipeline_last_source_path", Value: path},
 				{Path: "pipeline_last_source_sha256", Value: actualDigest},
 				{Path: "pipeline_last_source_generation", Value: generation},
 				{Path: "updated_at", Value: now},
+			}); err != nil {
+				return err
+			}
+			if err := profileruntime.Enqueue(tx, j.fs, profileruntime.Work{
+				UserID: ref.OwnerID, ProjectID: ref.ProjectID, Kind: "pipeline_automation",
+				Revision: revision, ID: "source-" + strconv.FormatInt(revision, 10), Due: now,
 			}); err != nil {
 				return err
 			}
@@ -218,12 +245,13 @@ func (j *FirestoreJournal) ConfirmSourceCommit(ctx context.Context, ref Ref, req
 		if err := tx.Update(eventRef, []cloudfirestore.Update{
 			{Path: "commit_state", Value: "committed"}, {Path: "confirmed_sha256", Value: actualDigest},
 			{Path: "object_generation", Value: generation}, {Path: "storage_status", Value: request.Status},
-			{Path: "processing_status", Value: "pending"},
+			{Path: "processing_status", Value: processingStatus},
 			{Path: "source_revision", Value: revision}, {Path: "updated_at", Value: now},
 		}); err != nil {
 			return err
 		}
 		result.SourceRevision = revision
+		result.ProcessingStatus = processingStatus
 		return nil
 	})
 	return result, err
@@ -359,6 +387,27 @@ func pathDocumentID(rawPath string) string {
 func digest(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
+}
+
+// InventoryFingerprint identifies source content only; generation changes and
+// annotations do not count as new source content.
+func InventoryFingerprint(ctx context.Context, raw storage.RawSyncStore) (string, error) {
+	if raw == nil {
+		return "", ErrSourceCommitUnconfirmed
+	}
+	files, err := raw.ListSyncRawFiles(ctx)
+	if err != nil {
+		return "", err
+	}
+	sort.Slice(files, func(i, k int) bool { return files[i].Path < files[k].Path })
+	hasher := sha256.New()
+	for _, file := range files {
+		if storage.ValidateRawSyncPath(file.Path) != nil || !storage.ValidRawSyncSHA256(file.SHA256) {
+			return "", ErrSourceCommitUnconfirmed
+		}
+		_, _ = hasher.Write([]byte(file.Path + "\x00" + file.SHA256 + "\n"))
+	}
+	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
 func newOperationID() (string, error) {
