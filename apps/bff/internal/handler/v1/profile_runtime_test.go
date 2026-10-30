@@ -1176,3 +1176,26 @@ func TestProfileRuntimeConfirmationReschedulesFailedTagsOnce(t *testing.T) {
 		t.Fatalf("duplicate confirmation reset lease: %+v", got)
 	}
 }
+
+func TestBootstrapOperationSnapshotCanonicalizesFirestoreNilProfiles(t *testing.T) {
+	snapshot := llm.OperationProfileSnapshot{
+		Version: 1, Source: "bootstrap", RoleMapVersion: profileRoleMapVersion,
+		Profiles: []llm.ProfileRevisionReference{},
+	}
+	sealProfileOperationSnapshot(&snapshot)
+	wantDigest := snapshot.ConfigDigest
+	snapshot.Profiles = nil // Firestore DataTo can round-trip [] as nil.
+	if !validProfileOperationSnapshot(snapshot) || snapshot.ConfigDigest != wantDigest {
+		t.Fatalf("explicit bootstrap snapshot rejected after empty-slice round-trip: %+v", snapshot)
+	}
+
+	for name, invalid := range map[string]llm.OperationProfileSnapshot{
+		"missing source":                 {Version: snapshot.Version, RoleMapVersion: snapshot.RoleMapVersion, Profiles: nil, ConfigDigest: wantDigest},
+		"shared source without profiles": {Version: snapshot.Version, Source: "shared", RoleMapVersion: snapshot.RoleMapVersion, Profiles: nil, ConfigDigest: wantDigest},
+		"bootstrap with a profile":       {Version: snapshot.Version, Source: "bootstrap", RoleMapVersion: snapshot.RoleMapVersion, Profiles: []llm.ProfileRevisionReference{{OwnerID: "platform", ID: "fixture", Revision: 1}}, ConfigDigest: wantDigest},
+	} {
+		if validProfileOperationSnapshot(invalid) {
+			t.Errorf("invalid %s snapshot was accepted: %+v", name, invalid)
+		}
+	}
+}

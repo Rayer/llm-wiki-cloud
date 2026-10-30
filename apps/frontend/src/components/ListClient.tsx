@@ -120,7 +120,7 @@ function ListClientSession({
         )}
       </div>
 
-      {loading ? <LoadingState /> : null}
+      {loading ? <LoadingState label={t('States.loadingWikiData')} /> : null}
       {error ? (
         <ErrorState
           message={error.message}

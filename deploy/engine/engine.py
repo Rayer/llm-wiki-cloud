@@ -235,6 +235,10 @@ def admit(args):
           args.environment == 'development' and args.reuse):
         auth_source = auth_source_from_receipt(Path(args.reuse) / 'receipts/auth.json')
         require(auth_source is not None, 'independent-auth-source-required')
+    elif (release_source_mode == 'independent' and 'auth' in selected and
+          args.environment == 'development' and args.reuse):
+        auth_source = auth_source_from_receipt(Path(args.reuse) / 'receipts/auth.json')
+        require(auth_source is not None, 'independent-auth-source-required')
     if (release_source_mode == 'independent' and 'auth' in selected and
             args.environment == 'development'):
         require(auth_source is not None, 'independent-auth-source-required')
@@ -383,6 +387,43 @@ class Engine:
         except (ReceiptError, KeyError, TypeError) as exc:
             raise Breakpoint('artifact-auth-dev-pair-incompatible', 'failed', False,
                              'inspect-retained-artifact', cause=str(exc)) from None
+
+    def auth_package_preflight(self, reuse=None, dev=None):
+        """Require a verified compatible retained Auth receipt before skipping package fetch."""
+        if (release_source_mode(self.plan) != 'independent' or
+                'auth' not in self.plan['selected']):
+            return False
+        source_directory = Path(dev).resolve() if dev else (Path(reuse).resolve() if reuse else None)
+        if source_directory is None:
+            return True
+        if dev:
+            Engine(dev).validate_dev_receipt_pair()
+        receipt_path = source_directory / 'receipts/auth.json'
+        if not receipt_path.is_file():
+            return True
+        try:
+            candidate = read(receipt_path)
+            validate_auth_component_receipt(candidate, 'independent')
+        except (Breakpoint, ReceiptError, KeyError, OSError, TypeError, ValueError) as exc:
+            raise Breakpoint('artifact-auth-receipt-incompatible', 'failed', False,
+                             'inspect-retained-artifact', stage='auth-reuse-preflight',
+                             cause=str(exc)) from None
+        source = self.plan.get('auth_source')
+        expected_source = {
+            'repository_id': source['repository_id'], 'revision': source['revision'],
+            'tree_sha256': source['tree_sha256'], 'artifact_id': source['artifact_id'],
+            'build_run_id': source['run_id'], 'build_run_attempt': source['run_attempt'],
+        }
+        if (candidate.get('identity') != self.plan['identities']['auth'] or
+                candidate.get('auth_source') != expected_source):
+            return True
+        try:
+            self.provider.usable('auth', candidate['artifact'])
+        except Breakpoint as exc:
+            if exc.reason == 'artifact-unusable':
+                return True
+            raise
+        return False
 
     def barrier(self):
         artifacts = {}
@@ -709,6 +750,22 @@ class Engine:
                 if c == 'frontend':
                     applicable = applicable and candidate['target_config'] == digest(self.plan['normalized']['frontend'])
                 if applicable:
+                    if c == 'auth' and source_mode == 'independent':
+                        auth_source = self.plan['auth_source']
+                        expected_auth_source = {
+                            'repository_id': auth_source['repository_id'],
+                            'revision': auth_source['revision'],
+                            'tree_sha256': auth_source['tree_sha256'],
+                            'artifact_id': auth_source['artifact_id'],
+                            'build_run_id': auth_source['run_id'],
+                            'build_run_attempt': auth_source['run_attempt'],
+                        }
+                        try:
+                            validate_auth_component_receipt(
+                                candidate, 'independent', expected_auth_source=expected_auth_source)
+                        except (ReceiptError, KeyError, TypeError) as exc:
+                            raise Breakpoint('artifact-auth-receipt-incompatible', 'failed', False,
+                                             'inspect-retained-artifact', cause=str(exc)) from None
                     receipt = candidate
                     if c == 'frontend':
                         shutil.copy2(source / 'frontend.tgz', self.directory / 'frontend.tgz')
@@ -718,8 +775,13 @@ class Engine:
                         source_mode == 'independent'):
                     require(isinstance(self.plan.get('auth_source'), dict),
                             'independent-auth-source-required')
-                artifact = (self.prepare_container(c) if c in ('auth', 'bff', 'documentimport')
-                            else self.provider.prepare(c))
+                if c == 'auth' and source_mode == 'independent':
+                    artifact, build = self.provider.prepare_independent_auth()
+                    self.state['builds'][c] = build
+                    self.save()
+                else:
+                    artifact = (self.prepare_container(c) if c in ('auth', 'bff', 'documentimport')
+                                else self.provider.prepare(c))
                 receipt = {'schema': 2, 'component': c, 'identity': self.plan['identities'][c],
                            'build_sha': self.plan['source'], 'artifact': artifact,
                            'target_config': digest(self.plan['normalized']['frontend']) if c == 'frontend' else None}
@@ -1095,7 +1157,7 @@ class Engine:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('operation', choices=('prepare', 'deploy', 'rollback', 'reactivate', 'tag', 'readback'))
+    parser.add_argument('operation', choices=('prepare', 'auth-preflight', 'deploy', 'rollback', 'reactivate', 'tag', 'readback'))
     parser.add_argument('--directory', required=True)
     parser.add_argument('--environment', choices=('development', 'production'))
     parser.add_argument('--source')
@@ -1123,16 +1185,24 @@ def main():
                 'invalid-executor-sha')
         with (directory / '.lock').open('w') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            if args.operation == 'prepare' and not (directory / 'plan.json').exists():
+            if args.operation in ('prepare', 'auth-preflight') and not (directory / 'plan.json').exists():
                 require(all((args.environment, args.source, args.tag, args.components)), 'missing-admission-input')
                 write(directory / 'plan.json', admit(args))
             engine = Engine(directory, args.executor_sha)
-            if args.operation == 'prepare':
+            if args.operation in ('prepare', 'auth-preflight'):
                 require(not args.components or selection(args.components) == engine.plan['selected'], 'selection-change-requires-new-plan')
                 require(not args.source or args.source == engine.plan['source'], 'source-change-requires-new-plan')
                 require(not args.tag or args.tag == engine.plan['tag'], 'tag-change-requires-new-plan')
                 require(not args.environment or args.environment == engine.plan['normalized']['environment'], 'target-change-requires-new-plan')
-                engine.prepare(args.reuse, args.dev)
+                if args.operation == 'auth-preflight':
+                    needs_package = engine.auth_package_preflight(args.reuse, args.dev)
+                    output = os.environ.get('GITHUB_OUTPUT')
+                    if output:
+                        with open(output, 'a', encoding='utf-8') as stream:
+                            stream.write(f"needs_auth_ci_package={'true' if needs_package else 'false'}\n")
+                    print(json.dumps({'needs_auth_ci_package': needs_package}, sort_keys=True))
+                else:
+                    engine.prepare(args.reuse, args.dev)
             else:
                 require(not args.force or args.operation == 'deploy', 'force-not-allowed')
                 engine.runtime_guard(args.operation, args.force)
@@ -1149,7 +1219,8 @@ def main():
                     engine.restore(chosen)
                 else:
                     engine.deploy(chosen, reactivate=True)
-            engine.result()
+            if args.operation != 'auth-preflight':
+                engine.result()
     except (Breakpoint, OSError, KeyError, ValueError, TypeError, AttributeError) as exc:
         if not isinstance(exc, Breakpoint):
             exc = Breakpoint('invalid-or-unreadable-input', stage='unknown',

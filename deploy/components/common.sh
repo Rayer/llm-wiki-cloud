@@ -317,14 +317,25 @@ image_for() {
 }
 
 validate_image_value() {
-  local component="$1" image="$2" registry expected
+  local component="$1" image="$2" registry expected independent_auth=false independent_prefix retained_prefix
   registry=$(plan_json '.gcp.artifact_registry'); expected="${registry}/$(component_image_name "$component")"
+  independent_prefix="asia-east1-docker.pkg.dev/llm-wiki-cloud/gateauth-ci-images/gateauth"
+  retained_prefix="asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/llm-wiki-auth"
+  if [[ "$component" == auth && "${GAT4_RELEASE_SOURCE_MODE:-${GAT4_DEV_RECEIPT_MODE:-}}" == independent ]]; then
+    independent_auth=true
+  fi
+  if [[ "$independent_auth" == true && \
+        ( "$image" == "$independent_prefix@sha256:"???????????????????????????????????????????????????????????????? || \
+          "$image" == "$retained_prefix@sha256:"???????????????????????????????????????????????????????????????? ) ]]; then
+    [[ "${image##*@sha256:}" =~ ^[0-9a-f]{64}$ ]] || die "immutable $component image receipt digest is invalid"
+    return
+  fi
   [[ "$image" == "$expected@sha256:"???????????????????????????????????????????????????????????????? ]] || die "immutable $component image receipt is not in the exact configured repository"
   [[ "${image##*@sha256:}" =~ ^[0-9a-f]{64}$ ]] || die "immutable $component image receipt digest is invalid"
 }
 
 record_dev_receipt() {
-  local selected components='[]' images='{}' component image auth_image fingerprint run_id run_attempt mode="${GAT4_DEV_RECEIPT_MODE:-}" metadata_file="${GAT4_DEV_RECEIPT_SOURCE_METADATA_FILE:-}" metadata_set=0
+  local selected components='[]' images='{}' component image auth_image auth_image_file auth_digest fingerprint run_id run_attempt mode="${GAT4_DEV_RECEIPT_MODE:-}" metadata_file="${GAT4_DEV_RECEIPT_SOURCE_METADATA_FILE:-}" metadata_set=0
   [[ ${GAT4_DEV_RECEIPT_SOURCE_METADATA_FILE+x} ]] && metadata_set=1
   case "$mode" in
     "") die "DEV receipt source mode must be explicit" ;;
@@ -373,8 +384,12 @@ record_dev_receipt() {
     esac
   done < <(jq -r '.[]' <<<"$selected")
   if [[ "$mode" == independent ]]; then
-    auth_image="$(plan_json '.gcp.artifact_registry')/$(component_image_name auth)@$(jq -er '.auth.artifact_digest' "$metadata_file")"
+    auth_image_file="$ARTIFACT_DIR/images/auth-image-$SOURCE_SHA.txt"
+    [[ -s "$auth_image_file" ]] || die "independent Auth CI image receipt is missing"
+    auth_image=$(tr -d '[:space:]' < "$auth_image_file")
+    auth_digest=$(jq -er '.auth.artifact_digest' "$metadata_file")
     validate_image_value auth "$auth_image"
+    [[ "${auth_image##*@}" == "$auth_digest" ]] || die "independent Auth artifact digest does not match its immutable image"
     image=$(jq -r '.auth // empty' <<<"$images")
     [[ -z "$image" || "$image" == "$auth_image" ]] || die "independent Auth artifact digest does not match its immutable image"
     images=$(jq --arg image "$auth_image" '. + {auth:$image}' <<<"$images")

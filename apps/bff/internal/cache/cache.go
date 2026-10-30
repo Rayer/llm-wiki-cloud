@@ -48,9 +48,11 @@ type CanonicalEntry struct {
 	ContentDigest string
 }
 
-// PinnedCanonicalSnapshot is a manifest-verified concepts.jsonl corpus view.
-// ContentDigest on each entry uses the same raw-row bytes hashed by Profile Tag
-// inventory input; Identity.ConceptsDigest covers the complete JSONL file.
+// PinnedCanonicalSnapshot is a canonical concepts.jsonl view bound to a
+// verified publication identity. Cloud callers supply a manifest-pinned
+// identity; local callers bind the exact committed transaction identity.
+// ContentDigest on each entry uses the raw row bytes; Identity.ConceptsDigest
+// covers the complete JSONL file.
 type PinnedCanonicalSnapshot struct {
 	Identity storage.QueryGenerationIdentity
 	Entries  []CanonicalEntry
@@ -456,6 +458,27 @@ func (c *Cache) PinnedCanonicalSnapshot(ctx context.Context, reader Reader) (Pin
 	c.mu.Unlock()
 	finishRead(nil, "success", "none")
 	return clonePinnedSnapshot(snapshot), nil
+}
+
+// ParseCanonicalJSONLSnapshot validates canonical row identities and binds
+// the exact local JSONL bytes to the caller-supplied transaction identity.
+// Callers publish the bytes and any captured input in the same local journal
+// transaction. This does not create or infer a cloud manifest identity.
+func ParseCanonicalJSONLSnapshot(projectID, generationID string, data []byte) (PinnedCanonicalSnapshot, error) {
+	if projectID == "" || generationID == "" || generationID == "legacy" || len(data) > generation.MaxFileBytes {
+		return PinnedCanonicalSnapshot{}, errors.New("local canonical concepts identity is invalid")
+	}
+	entries, err := parseCanonicalEntries(data)
+	if err != nil {
+		return PinnedCanonicalSnapshot{}, err
+	}
+	return PinnedCanonicalSnapshot{
+		Identity: storage.QueryGenerationIdentity{
+			ProjectID: projectID, GenerationID: generationID,
+			ConceptsDigest: manifestFileDigest(data),
+		},
+		Entries: entries,
+	}, nil
 }
 
 // Entry returns a cached concept for the requested project.

@@ -32,13 +32,15 @@ type Executor struct {
 }
 
 type stageCallIdentityRecorder struct {
-	mu           sync.Mutex
-	expansion    llm.ModelIdentity
-	synthesis    llm.ModelIdentity
-	lastProfile  llm.ProfileIdentity
-	hasExpand    bool
-	hasSynthesis bool
-	hasProfile   bool
+	mu                  sync.Mutex
+	expansion           llm.ModelIdentity
+	synthesis           llm.ModelIdentity
+	expansionProfile    llm.ProfileIdentity
+	synthesisProfile    llm.ProfileIdentity
+	hasExpand           bool
+	hasSynthesis        bool
+	hasExpansionProfile bool
+	hasSynthesisProfile bool
 }
 
 func (r *stageCallIdentityRecorder) RecordCallIdentity(ctx context.Context, model llm.ModelIdentity, profile llm.ProfileIdentity) {
@@ -50,18 +52,21 @@ func (r *stageCallIdentityRecorder) RecordCallIdentity(ctx context.Context, mode
 	switch llm.CallPurpose(ctx) {
 	case "expansion":
 		r.expansion, r.hasExpand = model, true
+		if profile.ID != "" {
+			r.expansionProfile, r.hasExpansionProfile = profile, true
+		}
 	case "evidence_answer", "model_prior":
 		r.synthesis, r.hasSynthesis = model, true
-	}
-	if profile.ID != "" {
-		r.lastProfile, r.hasProfile = profile, true
+		if profile.ID != "" {
+			r.synthesisProfile, r.hasSynthesisProfile = profile, true
+		}
 	}
 }
 
-func (r *stageCallIdentityRecorder) snapshot() (llm.ModelIdentity, bool, llm.ModelIdentity, bool, llm.ProfileIdentity, bool) {
+func (r *stageCallIdentityRecorder) snapshot() (llm.ModelIdentity, bool, llm.ProfileIdentity, bool, llm.ModelIdentity, bool, llm.ProfileIdentity, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.expansion, r.hasExpand, r.synthesis, r.hasSynthesis, r.lastProfile, r.hasProfile
+	return r.expansion, r.hasExpand, r.expansionProfile, r.hasExpansionProfile, r.synthesis, r.hasSynthesis, r.synthesisProfile, r.hasSynthesisProfile
 }
 
 func NewExecutor(config queryconfig.Config, conceptCache *cache.Cache, expansionProvider queryquality.ChatProvider, legacy query.Executor, synthesizer query.Synthesizer) (*Executor, error) {
@@ -207,10 +212,18 @@ func (e *Executor) Execute(ctx context.Context, reader cache.Reader, request que
 		finishResolve(ErrIdentityUnavailable)
 		return query.Result{}, ErrIdentityUnavailable
 	}
+	projectRoles, hasProjectRoles := llm.ProjectRoleClientsFromContext(ctx)
 	projectClient, hasProjectClient := llm.ProjectChatClientFromContext(ctx)
+	if hasProjectRoles {
+		projectClient, hasProjectClient = projectRoles.Fast, true
+	}
 	runtimeIdentity := effective.RuntimeConfigIdentity()
 	if hasProjectClient {
-		modelIdentity, ok := projectClient.ModelIdentity()
+		expansionClient, synthesisClient := projectClient, projectClient
+		if hasProjectRoles {
+			expansionClient, synthesisClient = projectRoles.Fast, projectRoles.Heavy
+		}
+		modelIdentity, ok := expansionClient.ModelIdentity()
 		if !ok || strings.TrimSpace(modelIdentity.Provider) == "" || strings.TrimSpace(modelIdentity.Model) == "" {
 			finishResolve(ErrIdentityUnavailable)
 			return query.Result{}, ErrIdentityUnavailable
@@ -219,19 +232,31 @@ func (e *Executor) Execute(ctx context.Context, reader cache.Reader, request que
 		runtimeIdentity.ExpansionModel = modelIdentity.Model
 		runtimeIdentity.ExpansionReasoning = modelIdentity.Reasoning
 		runtimeIdentity.ExpansionTemperature = modelIdentity.Temperature
-		runtimeIdentity.SynthesisProvider = modelIdentity.Provider
-		runtimeIdentity.SynthesisModel = modelIdentity.Model
-		runtimeIdentity.SynthesisReasoning = modelIdentity.Reasoning
-		runtimeIdentity.SynthesisTemperature = modelIdentity.Temperature
+		synthesisIdentity, ok := synthesisClient.ModelIdentity()
+		if !ok || strings.TrimSpace(synthesisIdentity.Provider) == "" || strings.TrimSpace(synthesisIdentity.Model) == "" {
+			finishResolve(ErrIdentityUnavailable)
+			return query.Result{}, ErrIdentityUnavailable
+		}
+		runtimeIdentity.SynthesisProvider = synthesisIdentity.Provider
+		runtimeIdentity.SynthesisModel = synthesisIdentity.Model
+		runtimeIdentity.SynthesisReasoning = synthesisIdentity.Reasoning
+		runtimeIdentity.SynthesisTemperature = synthesisIdentity.Temperature
 		if profileIdentity, ok := projectClient.(llm.ProfileIdentityProvider); ok {
 			identity := profileIdentity.ProfileIdentity()
 			runtimeIdentity.LLMProfileID = identity.ID
 			runtimeIdentity.LLMProfileRevision = identity.Revision
 			runtimeIdentity.LLMProtocol = identity.Protocol
+			runtimeIdentity.LLMFastProfileID = identity.ID
+			runtimeIdentity.LLMFastProfileRevision = identity.Revision
 		}
-		synthesizer := query.NewProjectService(e.conceptCache, projectClient)
+		if profileIdentity, ok := synthesisClient.(llm.ProfileIdentityProvider); ok {
+			identity := profileIdentity.ProfileIdentity()
+			runtimeIdentity.LLMHeavyProfileID = identity.ID
+			runtimeIdentity.LLMHeavyProfileRevision = identity.Revision
+		}
+		synthesizer := query.NewProjectService(e.conceptCache, synthesisClient)
 		service, err = queryquality.NewStrictProductionExecutorWithQueryServiceConfig(
-			e.conceptCache, projectClient, nil, synthesizer, effective.Profile, effective.PromptID, effective.Options, runtimeIdentity,
+			e.conceptCache, expansionClient, nil, synthesizer, effective.Profile, effective.PromptID, effective.Options, runtimeIdentity,
 		)
 		if err != nil {
 			finishResolve(err)
@@ -246,7 +271,7 @@ func (e *Executor) Execute(ctx context.Context, reader cache.Reader, request que
 		return query.Result{}, err
 	}
 	if hasProjectClient {
-		expansionIdentity, hasExpansion, synthesisIdentity, hasSynthesis, lastProfile, hasProfile := callIdentities.snapshot()
+		expansionIdentity, hasExpansion, expansionProfile, hasExpansionProfile, synthesisIdentity, hasSynthesis, synthesisProfile, hasSynthesisProfile := callIdentities.snapshot()
 		if hasExpansion {
 			runtimeIdentity.ExpansionProvider, runtimeIdentity.ExpansionModel = expansionIdentity.Provider, expansionIdentity.Model
 			runtimeIdentity.ExpansionReasoning, runtimeIdentity.ExpansionTemperature = expansionIdentity.Reasoning, expansionIdentity.Temperature
@@ -255,16 +280,23 @@ func (e *Executor) Execute(ctx context.Context, reader cache.Reader, request que
 			runtimeIdentity.SynthesisProvider, runtimeIdentity.SynthesisModel = synthesisIdentity.Provider, synthesisIdentity.Model
 			runtimeIdentity.SynthesisReasoning, runtimeIdentity.SynthesisTemperature = synthesisIdentity.Reasoning, synthesisIdentity.Temperature
 		}
-		if hasProfile {
-			identity := lastProfile
-			runtimeIdentity.LLMProfileID = identity.ID
-			runtimeIdentity.LLMProfileRevision = identity.Revision
-			runtimeIdentity.LLMProtocol = identity.Protocol
-		} else if profileIdentity, ok := projectClient.(llm.ProfileIdentityProvider); ok {
-			identity := profileIdentity.ProfileIdentity()
-			runtimeIdentity.LLMProfileID = identity.ID
-			runtimeIdentity.LLMProfileRevision = identity.Revision
-			runtimeIdentity.LLMProtocol = identity.Protocol
+		if hasExpansionProfile {
+			runtimeIdentity.LLMFastProfileID = expansionProfile.ID
+			runtimeIdentity.LLMFastProfileRevision = expansionProfile.Revision
+			runtimeIdentity.ExpansionReturnedModel = expansionProfile.ReturnedModel
+			runtimeIdentity.LLMProfileID = expansionProfile.ID
+			runtimeIdentity.LLMProfileRevision = expansionProfile.Revision
+			runtimeIdentity.LLMProtocol = expansionProfile.Protocol
+		}
+		if hasSynthesisProfile {
+			runtimeIdentity.LLMHeavyProfileID = synthesisProfile.ID
+			runtimeIdentity.LLMHeavyProfileRevision = synthesisProfile.Revision
+			runtimeIdentity.SynthesisReturnedModel = synthesisProfile.ReturnedModel
+			if !hasExpansionProfile {
+				runtimeIdentity.LLMProfileID = synthesisProfile.ID
+				runtimeIdentity.LLMProfileRevision = synthesisProfile.Revision
+				runtimeIdentity.LLMProtocol = synthesisProfile.Protocol
+			}
 		}
 	}
 	result.RuntimeConfigIdentity = query.CloneRuntimeConfigIdentity(&runtimeIdentity)

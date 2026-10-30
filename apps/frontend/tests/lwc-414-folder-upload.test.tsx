@@ -27,6 +27,8 @@ const mocks = vi.hoisted(() => ({
   uploadRawFile: vi.fn(),
   translate: (key: string, params?: Record<string, string | number>) => key === 'RawUpload.retryFile'
     ? `Retry ${params?.filename ?? ''}`
+    : key === 'RawUpload.fileProgress'
+      ? `${params?.filename ?? ''}: ${params?.status ?? ''} ${params?.progress ?? 0}%`
     : ({
       'RawUpload.status.queued': 'Queued',
       'RawUpload.status.uploading': 'Uploading',
@@ -44,7 +46,12 @@ vi.mock('@/lib/api', async () => ({
   uploadRawFile: mocks.uploadRawFile,
 }));
 
-vi.mock('@/lib/i18n', () => ({ useT: () => ({ t: mocks.translate }) }));
+vi.mock('@/lib/i18n', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/i18n')>('@/lib/i18n');
+  const { i18nLaneTestTranslate } = await vi.importActual<typeof import('./i18n-lane-test-helper')>('./i18n-lane-test-helper');
+  mocks.translate = (key, params) => i18nLaneTestTranslate(actual.translate, key, params);
+  return { useT: () => ({ t: mocks.translate }) };
+});
 vi.mock('@/components/WorkspaceProvider', () => ({
   useWorkspace: () => ({
     currentProject: mocks.currentProject,

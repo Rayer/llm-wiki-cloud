@@ -77,7 +77,7 @@ export function ErrorIdDetails({
   );
 }
 
-export function LoadingState({ label = 'Loading wiki data' }: { label?: string }) {
+export function LoadingState({ label }: { label: string }) {
   return (
     <Surface className="p-6" variant="glass" aria-live="polite">
       <p className="mb-4 text-sm text-zinc-500">{label}...</p>

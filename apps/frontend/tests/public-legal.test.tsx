@@ -18,6 +18,8 @@ import WorkspaceLayout from '@/app/(workspace)/layout';
 import LegalLayout from '@/app/(legal)/layout';
 import PrivacyPage from '@/app/(legal)/privacy/page';
 import TermsPage from '@/app/(legal)/terms/page';
+import EnglishPrivacyPage from '@/app/(legal)/en/privacy/page';
+import EnglishTermsPage from '@/app/(legal)/en/terms/page';
 
 afterEach(() => {
   cleanup();
@@ -53,7 +55,7 @@ it.each([
   render(content);
   expect(screen.getByRole('heading', { level: 1, name: title })).toBeTruthy();
   expect(screen.getByRole('heading', { name: section })).toBeTruthy();
-  expect(screen.getByRole('link', { name: 'LLM Wiki Cloud · 返回首頁' }).getAttribute('href')).toBe('/');
+  expect(screen.getByRole('link', { name: 'LLM Wiki Cloud home / LLM Wiki Cloud 返回首頁' }).getAttribute('href')).toBe('/');
   const contact = screen.getByRole('link', { name: 'rayershih@gmail.com' });
   expect(contact.getAttribute('href')).toBe('mailto:rayershih@gmail.com');
   contact.focus();
@@ -66,8 +68,35 @@ it.each([
   // Workspace startup stays behind its runtime-config loading boundary.
   const workspaceHtml = renderToStaticMarkup(<RootLayout><WorkspaceLayout>{content}</WorkspaceLayout></RootLayout>);
   const workspaceDocument = new DOMParser().parseFromString(workspaceHtml, 'text/html');
-  expect(workspaceDocument.querySelector('[role="status"]')?.textContent).toContain('Loading runtime configuration');
+  expect(workspaceDocument.querySelector('[role="status"]')?.textContent).toContain('執行階段設定');
   expect(gates.auth).not.toHaveBeenCalled();
   expect(gates.shell).not.toHaveBeenCalled();
   expect(fetch).not.toHaveBeenCalled();
+});
+
+it.each([
+  [EnglishPrivacyPage, 'Privacy Policy', 'Project content and AI processing', 'Account and sign-in information'],
+  [EnglishTermsPage, 'Terms of Service', 'Content you submit', 'AI results and third-party services'],
+] as const)('renders %s as fixed English policy content without workspace startup', (Page, title, section, expectedDisclosure) => {
+  const fetch = vi.fn(() => { throw new Error('API unavailable'); });
+  vi.stubGlobal('fetch', fetch);
+  const storage = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('storage unavailable'); });
+  const content = <LegalLayout><Page /></LegalLayout>;
+  const html = renderToStaticMarkup(<RootLayout>{content}</RootLayout>);
+  const document = new DOMParser().parseFromString(html, 'text/html');
+  expect(document.querySelector('[lang="en"] h1')?.textContent).toBe(title);
+  expect(document.querySelector('main article [lang="en"]')?.textContent).toContain(expectedDisclosure);
+  expect(document.querySelectorAll('main section').length).toBeGreaterThanOrEqual(5);
+  expect(document.querySelector('a[href="mailto:rayershih@gmail.com"]')?.textContent).toBe('rayershih@gmail.com');
+  expect(document.querySelector('a[href="/privacy"]')).not.toBeNull();
+  expect(document.querySelector('a[href="/terms"]')).not.toBeNull();
+  expect(document.querySelector('a[href="/en/privacy"]')).not.toBeNull();
+  expect(document.querySelector('a[href="/en/terms"]')).not.toBeNull();
+  render(content);
+  expect(screen.getByRole('heading', { level: 1, name: title })).toBeTruthy();
+  expect(screen.getByRole('heading', { name: section })).toBeTruthy();
+  expect(fetch).not.toHaveBeenCalled();
+  expect(storage).not.toHaveBeenCalled();
+  expect(gates.auth).not.toHaveBeenCalled();
+  expect(gates.shell).not.toHaveBeenCalled();
 });

@@ -16,6 +16,7 @@ import (
 
 	"cloud.google.com/go/storage"
 	fm "github.com/adrg/frontmatter"
+	"github.com/rayer/llm-wiki-bff/internal/contentcontext"
 	"github.com/rayer/llm-wiki-bff/internal/gcs"
 	"github.com/rayer/llm-wiki-bff/internal/generation"
 	store "github.com/rayer/llm-wiki-bff/internal/storage"
@@ -380,15 +381,45 @@ func (c *Client) Scope(userID, projectID string) store.Store {
 // it has no manifest pointer to resolve.
 func (c *Client) Pin(context.Context) (store.Store, error) { return c, nil }
 
-func (c *Client) ViewToken() string { return "legacy" }
+func (c *Client) ViewToken() string {
+	return "legacy"
+}
 
-// QueryGenerationIdentity makes local development's legacy behavior explicit;
-// it does not scan the filesystem or inspect generated artifacts.
+// QueryGenerationIdentity keeps local Query's explicit legacy behavior. The
+// Project context API reads the optional publication descriptor separately.
 func (c *Client) QueryGenerationIdentity(context.Context) (store.QueryGenerationIdentity, error) {
 	if c == nil || c.projectID == "" {
 		return store.QueryGenerationIdentity{}, store.ErrQueryGenerationIdentityUnavailable
 	}
 	return store.QueryGenerationIdentity{ProjectID: c.projectID, GenerationID: "legacy"}, nil
+}
+
+// ContentContextPublication exposes only the optional descriptor written by
+// the worker's existing local publish journal. Query continues to observe the
+// explicit legacy identity above.
+func (c *Client) ContentContextPublication(ctx context.Context) (contentcontext.Publication, error) {
+	if c == nil || c.projectID == "" || c.userID == "" {
+		return contentcontext.Publication{}, store.ErrQueryGenerationIdentityUnavailable
+	}
+	data, err := c.ReadFileLimited(ctx, contentcontext.LocalPublicationDescriptorPath, contentcontext.LocalPublicationMaxBytes+1)
+	if errors.Is(err, store.ErrObjectNotExist) || errors.Is(err, storage.ErrObjectNotExist) || errors.Is(err, os.ErrNotExist) {
+		return contentcontext.Publication{}, store.ErrQueryGenerationUnpinned
+	}
+	if err != nil {
+		return contentcontext.Publication{}, store.ErrQueryGenerationIdentityUnavailable
+	}
+	descriptor, err := contentcontext.DecodeLocalPublicationDescriptor(data, c.userID, c.projectID)
+	if err != nil {
+		return contentcontext.Publication{}, store.ErrQueryGenerationIdentityUnavailable
+	}
+	concepts, err := c.ReadFileLimited(ctx, "cache/concepts.jsonl", generation.MaxFileBytes)
+	if err != nil {
+		return contentcontext.Publication{}, store.ErrQueryGenerationIdentityUnavailable
+	}
+	if contentcontext.ValidateLocalPublicationConcepts(descriptor, concepts) != nil {
+		return contentcontext.Publication{}, store.ErrQueryGenerationIdentityUnavailable
+	}
+	return descriptor.Publication(), nil
 }
 
 func (c *Client) Prefix() string {

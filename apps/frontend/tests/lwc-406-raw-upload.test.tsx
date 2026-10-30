@@ -30,18 +30,11 @@ vi.mock('@/components/WorkspaceProvider', () => ({
   }),
 }));
 
-vi.mock('@/lib/i18n', () => ({ useT: () => ({ t: (key: string, params?: Record<string, string | number>) => ({
-  'RawUpload.status.queued': 'Queued',
-  'RawUpload.status.uploading': 'Uploading',
-  'RawUpload.status.accepted': 'Accepted',
-  'RawUpload.status.created': 'Created',
-  'RawUpload.status.alreadyExists': 'Already exists',
-  'RawUpload.status.replaced': 'Replaced',
-  'RawUpload.status.failed': 'Failed',
-  'RawUpload.retry': 'Retry',
-  'RawUpload.retryFile': `Retry ${params?.filename ?? ''}`,
-  'RawUpload.uploadSummary': `${params?.created ?? 0} created, ${params?.existing ?? 0} already exists, ${params?.accepted ?? 0} accepted, ${params?.replaced ?? 0} replaced, ${params?.failed ?? 0} failed, ${params?.pending ?? 0} in progress`,
-}[key] ?? key) }) }));
+vi.mock('@/lib/i18n', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/i18n')>('@/lib/i18n');
+  const { i18nLaneTestTranslate } = await vi.importActual<typeof import('./i18n-lane-test-helper')>('./i18n-lane-test-helper');
+  return { useT: () => ({ t: (key: string, params?: Record<string, string | number>) => i18nLaneTestTranslate(actual.translate, key, params) }) };
+});
 vi.mock('next/navigation', () => ({ useSearchParams: () => new URLSearchParams() }));
 
 import { RawClient } from '@/components/RawClient';

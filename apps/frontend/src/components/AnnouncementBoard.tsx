@@ -2,6 +2,7 @@
 
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { useT } from '@/lib/i18n';
 
 const SAFE_LINK = /^(?:https?:|mailto:)/i;
 const SAFE_IMAGE = /^https:\/\//i;
@@ -32,11 +33,12 @@ export function AnnouncementContent({ markdown }: { markdown: string }) {
 }
 
 export function AnnouncementBoard({ markdown }: { markdown?: string | null }) {
+  const { t } = useT();
   if (!markdown?.trim()) return null;
 
   return (
     <section
-      aria-label="Announcement"
+      aria-label={t('Admin.announcement')}
       className="announcement-board mt-5 max-h-52 overflow-y-auto rounded-lg border border-emerald-300/20 bg-emerald-300/5 px-4 py-3"
     >
       <AnnouncementContent markdown={markdown} />

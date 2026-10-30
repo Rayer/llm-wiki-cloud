@@ -131,6 +131,13 @@ type ModelIdentity struct {
 	Temperature float64
 }
 
+// ProjectRoleClients keeps one Project operation on a single immutable Profile
+// snapshot while allowing its Fast and Heavy calls to select distinct models.
+type ProjectRoleClients struct {
+	Fast  ProjectChatClient
+	Heavy ProjectChatClient
+}
+
 type ModelIdentityProvider interface {
 	ModelIdentity() (ModelIdentity, bool)
 }
@@ -141,6 +148,7 @@ type ProjectChatClient interface {
 }
 
 type projectChatClientContextKey struct{}
+type projectRoleClientsContextKey struct{}
 
 func WithProjectChatClient(ctx context.Context, client ProjectChatClient) context.Context {
 	return context.WithValue(ctx, projectChatClientContextKey{}, client)
@@ -149,6 +157,29 @@ func WithProjectChatClient(ctx context.Context, client ProjectChatClient) contex
 func ProjectChatClientFromContext(ctx context.Context) (ProjectChatClient, bool) {
 	client, ok := ctx.Value(projectChatClientContextKey{}).(ProjectChatClient)
 	return client, ok && client != nil
+}
+
+func WithProjectRoleClients(ctx context.Context, clients ProjectRoleClients) context.Context {
+	return context.WithValue(ctx, projectRoleClientsContextKey{}, clients)
+}
+
+func ProjectRoleClientsFromContext(ctx context.Context) (ProjectRoleClients, bool) {
+	clients, ok := ctx.Value(projectRoleClientsContextKey{}).(ProjectRoleClients)
+	return clients, ok && clients.Fast != nil && clients.Heavy != nil
+}
+
+func ProjectChatClientForRole(ctx context.Context, role ProfileRole) (ProjectChatClient, bool) {
+	if clients, ok := ProjectRoleClientsFromContext(ctx); ok {
+		switch role {
+		case ProfileRoleFast:
+			return clients.Fast, true
+		case ProfileRoleHeavy:
+			return clients.Heavy, true
+		default:
+			return nil, false
+		}
+	}
+	return ProjectChatClientFromContext(ctx)
 }
 
 func (c *Client) ModelIdentity() (ModelIdentity, bool) {

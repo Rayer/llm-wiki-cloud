@@ -45,19 +45,35 @@ func TestQueryRuntimeUsesProjectProfileFixtureTransport(t *testing.T) {
 	receiptPath := filepath.Join(t.TempDir(), "provider-receipts.tsv")
 	t.Setenv("LWC_BYOK_PROFILE_FIXTURE_RECEIPT_FILE", receiptPath)
 
-	profile, err := llm.NewProfileClient(llm.ProfileConfig{
-		ID: "created-profile", Revision: 2, Provider: "custom", Protocol: llm.ProtocolOpenAIChatCompletions,
-		Endpoint: "https://fixture.example/v1", Model: "fixture-model",
+	fastProfile, err := llm.NewProfileClient(llm.ProfileConfig{
+		ID: "created-profile", Revision: 2, Role: llm.ProfileRoleFast, Provider: "custom", Protocol: llm.ProtocolOpenAIChatCompletions,
+		Endpoint: "https://fixture.example/v1", Model: "fixture-fast-model",
 	}, "synthetic-fixture-secret", llm.ProfileClientOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	pool, err := llm.NewProfilePoolClient([]*llm.ProfileClient{profile}, nil)
+	heavyProfile, err := llm.NewProfileClient(llm.ProfileConfig{
+		ID: "created-profile", Revision: 2, Role: llm.ProfileRoleHeavy, Provider: "custom", Protocol: llm.ProtocolOpenAIChatCompletions,
+		Endpoint: "https://fixture.example/v1", Model: "fixture-heavy-model",
+	}, "synthetic-fixture-secret", llm.ProfileClientOptions{})
 	if err != nil {
-		profile.Close()
+		fastProfile.Close()
 		t.Fatal(err)
 	}
-	defer pool.Close()
+	fastPool, err := llm.NewProfilePoolClient([]*llm.ProfileClient{fastProfile}, nil)
+	if err != nil {
+		fastProfile.Close()
+		heavyProfile.Close()
+		t.Fatal(err)
+	}
+	heavyPool, err := llm.NewProfilePoolClient([]*llm.ProfileClient{heavyProfile}, nil)
+	if err != nil {
+		fastPool.Close()
+		heavyProfile.Close()
+		t.Fatal(err)
+	}
+	defer fastPool.Close()
+	defer heavyPool.Close()
 
 	config := runtimeConfig(t)
 	config.Stages.AnswerSynthesizer.NoEvidencePolicy = queryconfig.ModelPriorFallbackPolicy
@@ -71,7 +87,8 @@ func TestQueryRuntimeUsesProjectProfileFixtureTransport(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx, receipt := query.WithReceipt(context.Background())
-	ctx = llm.WithProjectChatClient(ctx, pool)
+	ctx = llm.WithProjectRoleClients(ctx, llm.ProjectRoleClients{Fast: fastPool, Heavy: heavyPool})
+	ctx = llm.WithProjectChatClient(ctx, fastPool)
 	reader := &runtimeReader{identity: storage.QueryGenerationIdentity{
 		ProjectID: "project-a", GenerationID: "generation-7", ConceptsDigest: "sha256:" + strings.Repeat("a", 64),
 	}}
@@ -81,7 +98,7 @@ func TestQueryRuntimeUsesProjectProfileFixtureTransport(t *testing.T) {
 	}
 	query.FinishReceipt(receipt)
 	identity := result.RuntimeConfigIdentity
-	if identity == nil || identity.ExpansionModel != "fixture-model" || identity.SynthesisModel != "fixture-model" ||
+	if identity == nil || identity.ExpansionModel != "fixture-fast-model" || identity.SynthesisModel != "fixture-heavy-model" ||
 		identity.LLMProfileID != "created-profile" || identity.LLMProfileRevision != 2 || identity.LLMProtocol != string(llm.ProtocolOpenAIChatCompletions) {
 		t.Fatalf("Query result provenance=%+v, want the selected Project profile fixture identity", identity)
 	}
@@ -92,10 +109,20 @@ func TestQueryRuntimeUsesProjectProfileFixtureTransport(t *testing.T) {
 	if len(hostCalls) < 2 {
 		t.Fatalf("Query host calls=%+v, want actual expansion and synthesis provider calls", hostCalls)
 	}
+	seenFast, seenHeavy := false, false
 	for _, hostCall := range hostCalls {
-		if hostCall.ProfileID != "created-profile" || hostCall.Model != "fixture-model" || hostCall.Outcome != "success" {
+		if hostCall.ProfileID != "created-profile" || hostCall.Outcome != "success" {
 			t.Fatalf("Query host call used unexpected profile: %+v", hostCall)
 		}
+		if hostCall.Stage == "query_expansion" && hostCall.Model == "fixture-fast-model" {
+			seenFast = true
+		}
+		if hostCall.Stage == "answer_synthesis" && hostCall.Model == "fixture-heavy-model" {
+			seenHeavy = true
+		}
+	}
+	if !seenFast || !seenHeavy {
+		t.Fatalf("Query role host calls did not split Fast and Heavy: %+v", hostCalls)
 	}
 
 	providerReceipts, err := os.ReadFile(receiptPath)
@@ -103,7 +130,8 @@ func TestQueryRuntimeUsesProjectProfileFixtureTransport(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(string(providerReceipts)), "\n")
-	if len(lines) < 2 || !strings.Contains(string(providerReceipts), "openai_chat_completions\tfixture-model\t/v1/chat/completions") ||
+	if len(lines) < 2 || !strings.Contains(string(providerReceipts), "openai_chat_completions\tfixture-fast-model\t/v1/chat/completions") ||
+		!strings.Contains(string(providerReceipts), "openai_chat_completions\tfixture-heavy-model\t/v1/chat/completions") ||
 		strings.Contains(string(providerReceipts), "synthetic-fixture-secret") {
 		t.Fatalf("sanitized provider transport receipts=%q", providerReceipts)
 	}

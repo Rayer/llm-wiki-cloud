@@ -34,11 +34,11 @@ test('raw client renders metadata table with inline preview entrypoints', async 
   assert.match(client, /LoadingState/);
   assert.match(client, /ErrorState/);
   assert.match(client, /EmptyState/);
-  assert.match(client, /<th[^>]*>\s*Name\s*<\/th>/s);
-  assert.match(client, /<th[^>]*>\s*Size\s*<\/th>/s);
-  assert.match(client, /<th[^>]*>\s*Updated\s*<\/th>/s);
-  assert.match(client, /<th[^>]*>\s*SHA256\s*<\/th>/s);
-  assert.match(client, /<th[^>]*>\s*Ingested\s*<\/th>/s);
+  assert.match(client, /<th[^>]*>\{t\('Raw\.name'\)\}<\/th>/s);
+  assert.match(client, /<th[^>]*>\{t\('Raw\.size'\)\}<\/th>/s);
+  assert.match(client, /<th[^>]*>\{t\('Raw\.updated'\)\}<\/th>/s);
+  assert.match(client, /<th[^>]*>\{t\('Raw\.sha256'\)\}<\/th>/s);
+  assert.match(client, /<th[^>]*>\{t\('Raw\.ingested'\)\}<\/th>/s);
   assert.match(client, /variant=\{file\.ingested \? 'published' : 'muted'\}/);
   assert.match(client, /openRawPreview/);
   assert.match(client, /<MarkdownView content=\{scopedPreview\.content\}/);

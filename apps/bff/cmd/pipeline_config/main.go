@@ -64,6 +64,7 @@ type pipelineConfig struct {
 	RunTimeoutSeconds int        `json:"runTimeoutSeconds"`
 	ArticleMaxTokens  *int       `json:"articleMaxTokens"`
 	LLM               llmProfile `json:"llm"`
+	I18n              i18nConfig `json:"i18n"`
 }
 
 type bffSecretReference struct {
@@ -249,12 +250,19 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) >= 2 && os.Args[1] == "translate-i18n" {
+		if err := runTranslateI18nCLI(context.Background(), os.Args[2:], googleReader); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) < 2 || os.Args[1] != "prepare" {
-		fmt.Fprintln(os.Stderr, "usage: pipeline-config prepare --target pipeline|bff|auth --environment local|dev|prod --output DIR")
+		fmt.Fprintln(os.Stderr, "usage: pipeline-config prepare|translate-i18n ...")
 		os.Exit(2)
 	}
 	flags := flag.NewFlagSet("prepare", flag.ExitOnError)
-	target := flags.String("target", "pipeline", "generated target: pipeline, bff, or auth")
+	target := flags.String("target", "pipeline", "generated target: pipeline, bff, auth, or i18n")
 	environment := flags.String("environment", "", "selected target environment")
 	output := flags.String("output", "", "generated output directory")
 	descriptor := flags.Bool("descriptor", false, "emit a nonsecret component input snapshot for deployment admission")
@@ -288,8 +296,8 @@ func runPrepareTargetMode(ctx context.Context, target, environment, output strin
 }
 
 func runPrepareTargetModeAtSource(ctx context.Context, target, environment, output string, descriptorOnly bool, sourceSHA string, newReader readerFactory) error {
-	if target != "pipeline" && target != "bff" && target != "auth" {
-		return errors.New("target must be pipeline, bff, or auth")
+	if target != "pipeline" && target != "bff" && target != "auth" && target != "i18n" {
+		return errors.New("target must be pipeline, bff, auth, or i18n")
 	}
 	if descriptorOnly && target != "bff" && target != "auth" {
 		return errors.New("--descriptor requires --target bff or auth")
@@ -347,7 +355,7 @@ func runPrepareTargetModeAtSource(ctx context.Context, target, environment, outp
 			}
 			properties = append(properties, "--property", property.name+"="+value)
 		}
-	} else {
+	} else if target == "auth" {
 		for _, property := range []struct{ name, env, fallback string }{
 			{"authLocalScope", "LOCAL_CLOUD_SCOPE", ""},
 			{"authLocalJWTSecretFile", "LOCAL_CLOUD_JWT_SECRET_FILE", ""},
@@ -418,6 +426,9 @@ func runPrepareTargetModeAtSource(ctx context.Context, target, environment, outp
 			return writeAuthInputSnapshot(output, inputs)
 		}
 		return writeAuthSourceProjection(output, projection)
+	}
+	if target == "i18n" {
+		return prepareI18nTarget(root, output, ssotBytes, environment, sourceSHA)
 	}
 	if err := json.Unmarshal(ssotBytes, &config); err != nil {
 		return fmt.Errorf("decode selected Pipeline SSOT: %w", err)

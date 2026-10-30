@@ -267,6 +267,7 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
     stages = (
         ('frontend-project-readback', 'curl', 'repo', 30),
         ('frontend-npm-ci', 'npm', 'frontend', 600),
+        ('frontend-i18n-prepare', 'frontend-i18n', 'repo', 1100),
         ('frontend-vercel-pull', 'vercel-pull', 'frontend', 30),
         ('frontend-vercel-build', 'vercel-build', 'frontend', 900),
     )
@@ -319,6 +320,8 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
             return 'frontend-project-readback'
         if args[:2] == ['npm', 'ci']:
             return 'frontend-npm-ci'
+        if args and args[0] == 'python3' and any(str(arg).endswith('/frontend_i18n.py') for arg in args):
+            return 'frontend-i18n-prepare'
         if args[:2] == ['vercel', 'pull']:
             return 'frontend-vercel-pull'
         if args[:2] == ['vercel', 'build']:
@@ -359,6 +362,16 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
                             'accountId': self.team, 'rootDirectory': 'apps/frontend',
                             'link': {'org': 'Rayer', 'repo': 'llm-wiki-cloud'}}
                 return subprocess.CompletedProcess(args, 0, stdout=json.dumps(response), stderr='')
+            if operation == 'frontend-i18n-prepare':
+                self.assertEqual(timeout, 1100)
+                self.assertEqual(env.get('GOMAXPROCS'), '2')
+                self.assertEqual(env.get('GOFLAGS'), '-p=2')
+                self.assertEqual(env.get('TMPDIR'), str(work))
+                for secret_name in ('VERCEL_TOKEN', 'VERCEL_PROJECT_ID', 'VERCEL_ORG_ID',
+                                    'VERCEL_TEAM_ID', 'NOW_ORG_ID', 'NOW_PROJECT_ID'):
+                    self.assertNotIn(secret_name, env)
+                return subprocess.CompletedProcess(args, 0, stdout=json.dumps({
+                    'source_revision': instance.plan['source'], 'bundle_revision': 'f' * 64}), stderr='')
             if operation == 'frontend-vercel-pull':
                 project_root = fake_root / 'apps/frontend'
                 safe_env = {key: env[key] for key in (
@@ -494,6 +507,7 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
                                 claiming_workspace=False, archive_failure=False,
                                 prebuilt_runtime=False):
         with tempfile.TemporaryDirectory() as work:
+            expected_tmpdir = os.environ.get('TMPDIR', str(work))
             instance, directory, fake_root, auth_receipt_bytes = self.make_engine(
                 work, claiming_workspace=claiming_workspace)
             fake_profiles = fake_root / 'deploy/engine/profiles.json'
@@ -518,6 +532,17 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
                     self.assertEqual(Path(cwd), fake_root / 'apps/frontend')
                     self.assertEqual(args, ['npm', 'ci', '--ignore-scripts'])
                     return subprocess.CompletedProcess(args, 0, stdout='', stderr='')
+                if operation == 'frontend-i18n-prepare':
+                    self.assertEqual(Path(cwd), SUPPORT_ROOT)
+                    self.assertEqual(timeout, 1100)
+                    self.assertEqual(env['TMPDIR'], expected_tmpdir)
+                    self.assertEqual(env['GOMAXPROCS'], '2')
+                    self.assertEqual(env['GOFLAGS'], '-p=2')
+                    for secret_name in ('VERCEL_TOKEN', 'VERCEL_PROJECT_ID', 'VERCEL_ORG_ID',
+                                        'VERCEL_TEAM_ID', 'NOW_ORG_ID', 'NOW_PROJECT_ID'):
+                        self.assertNotIn(secret_name, env)
+                    return subprocess.CompletedProcess(args, 0, stdout=json.dumps({
+                        'source_revision': instance.plan['source'], 'bundle_revision': 'f' * 64}), stderr='')
                 if operation == 'frontend-vercel-pull':
                     project_root = fake_root / 'apps/frontend'
                     self.assertEqual(Path(cwd), project_root)
@@ -584,7 +609,7 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
                 raise AssertionError('unexpected operation in Engine.main valid-response fixture')
 
             env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'HOME': str(work),
-                   'TMPDIR': os.environ.get('TMPDIR', str(work)), 'VERCEL_TOKEN': self.token,
+                   'TMPDIR': expected_tmpdir, 'VERCEL_TOKEN': self.token,
                    'VERCEL_TEAM_ID': self.team, 'VERCEL_PROJECT_ID': self.project}
             argv = ['engine.py', 'prepare', '--directory', str(directory),
                     '--environment', 'development', '--source', instance.plan['source'],
@@ -714,8 +739,9 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
                     outcome['archive_payloads']['.vercel/output/static/build-config.json']), {
                         'schema_version': 1,
                         'config_url': 'https://config.test.invalid/frontend-config.json'})
-                self.assertEqual(outcome['trace'][:4], ['auth-digest', 'frontend-project-readback',
-                                                        'frontend-npm-ci', 'frontend-vercel-pull'])
+                self.assertEqual(outcome['trace'][:5], ['auth-digest', 'frontend-project-readback',
+                                                        'frontend-npm-ci', 'frontend-i18n-prepare',
+                                                        'frontend-vercel-pull'])
                 self.assertIn('frontend-vercel-build', outcome['trace'])
                 self.assertNotIn('auth-build', outcome['trace'])
                 self.assertEqual(json.loads(outcome['stdout']), result)
@@ -851,7 +877,8 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
         self.assertEqual(outcome['result']['observed']['component_status'], 'unstarted')
         self.assertEqual(outcome['result']['cause']['exception_type'], 'JSONDecodeError')
         self.assertEqual(outcome['trace'], [
-            'auth-digest', 'frontend-project-readback', 'frontend-npm-ci', 'frontend-vercel-pull'])
+            'auth-digest', 'frontend-project-readback', 'frontend-npm-ci',
+            'frontend-i18n-prepare', 'frontend-vercel-pull'])
         self.assertEqual(outcome['pulled_link']['bytes'], b'{malformed')
         self.assertEqual(outcome['restored_link_bytes'], outcome['pulled_link']['bytes'])
         self.assertEqual(outcome['restored_link_mode'], outcome['pulled_link']['mode'])
@@ -902,6 +929,9 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
                                 'accountId': self.team, 'rootDirectory': 'apps/frontend',
                                 'link': {'org': 'Rayer', 'repo': 'llm-wiki-cloud'}}
                     return subprocess.CompletedProcess(args, 0, stdout=json.dumps(response), stderr='')
+                if operation == 'frontend-i18n-prepare':
+                    return subprocess.CompletedProcess(args, 0, stdout=json.dumps({
+                        'source_revision': instance.plan['source'], 'bundle_revision': 'f' * 64}), stderr='')
                 if operation == 'frontend-vercel-pull':
                     link = fake_root / 'apps/frontend/.vercel/project.json'
                     link.parent.mkdir(parents=True)
@@ -974,7 +1004,10 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
                 fake_bin = work / 'bin'
                 fake_bin.mkdir()
                 python = fake_bin / 'python3'
-                python.write_text('#!/bin/sh\nexec ' + shlex.quote(sys.executable) + ' "$@"\n')
+                python.write_text(
+                    '#!/bin/sh\ncase "$1" in */frontend_i18n.py) '
+                    'printf \'{"source_revision":"' + 'c' * 40 + '","bundle_revision":"' + 'f' * 64 + '"}\\n\'; exit 0;; esac\n'
+                    'exec ' + shlex.quote(sys.executable) + ' "$@"\n')
                 python.chmod(0o755)
                 gcloud = fake_bin / 'gcloud'
                 gcloud.write_text('#!/bin/sh\nprintf "sha256:' + 'a' * 64 + '\\n"\n')
@@ -1016,6 +1049,8 @@ sys.stdout.write(os.environ['FAKE_PROJECT_RESPONSE'])
                         'status': 'exit0', 'exit_code': 0, 'timeout_class': None},
                     'frontend-npm-ci': {
                         'status': 'not-run', 'exit_code': None, 'timeout_class': None},
+                    'frontend-i18n-prepare': {
+                        'status': 'not-run', 'exit_code': None, 'timeout_class': None},
                     'frontend-vercel-pull': {
                         'status': 'not-run', 'exit_code': None, 'timeout_class': None},
                     'frontend-vercel-build': {
@@ -1052,7 +1087,10 @@ sys.stdout.write(os.environ['FAKE_PROJECT_RESPONSE'])
                 fake_bin = work / 'bin'
                 fake_bin.mkdir()
                 python = fake_bin / 'python3'
-                python.write_text('#!/bin/sh\nexec ' + shlex.quote(sys.executable) + ' "$@"\n')
+                python.write_text(
+                    '#!/bin/sh\ncase "$1" in */frontend_i18n.py) '
+                    'printf \'{"source_revision":"' + 'c' * 40 + '","bundle_revision":"' + 'f' * 64 + '"}\\n\'; exit 0;; esac\n'
+                    'exec ' + shlex.quote(sys.executable) + ' "$@"\n')
                 python.chmod(0o755)
                 gcloud = fake_bin / 'gcloud'
                 gcloud.write_text('#!/bin/sh\nprintf "sha256:' + 'a' * 64 + '\\n"\n')
@@ -1198,6 +1236,14 @@ else:
                     self.assertEqual(Path(cwd), project_root)
                     self.assertEqual(args, ['npm', 'ci', '--ignore-scripts'])
                     return subprocess.CompletedProcess(args, 0, stdout='', stderr='')
+                if operation == 'frontend-i18n-prepare':
+                    self.assertEqual(Path(cwd), SUPPORT_ROOT)
+                    self.assertEqual(timeout, 1100)
+                    for secret_name in ('VERCEL_TOKEN', 'VERCEL_PROJECT_ID', 'VERCEL_ORG_ID',
+                                        'VERCEL_TEAM_ID', 'NOW_ORG_ID', 'NOW_PROJECT_ID'):
+                        self.assertNotIn(secret_name, env)
+                    return subprocess.CompletedProcess(args, 0, stdout=json.dumps({
+                        'source_revision': instance.plan['source'], 'bundle_revision': 'f' * 64}), stderr='')
                 if operation in ('frontend-vercel-pull', 'frontend-vercel-build'):
                     if operation == 'frontend-vercel-pull':
                         self.assertEqual(args, ['vercel', 'pull', '--yes', '--environment=preview',
@@ -1260,9 +1306,17 @@ else:
                 self.assertEqual(os.environ['NOW_PROJECT_ID'], 'prj_LegacyWrong')
 
             self.assertEqual([row[0] for row in trace], [
-                'frontend-project-readback', 'frontend-npm-ci',
+                'frontend-project-readback', 'frontend-npm-ci', 'frontend-i18n-prepare',
                 'frontend-vercel-pull', 'frontend-vercel-build'])
-            pull, build = trace[2], trace[3]
+            i18n, pull, build = trace[2], trace[3], trace[4]
+            self.assertEqual(i18n[2], str(SUPPORT_ROOT))
+            self.assertEqual(i18n[3], 1100)
+            for secret_name in ('VERCEL_TOKEN', 'VERCEL_PROJECT_ID', 'VERCEL_ORG_ID',
+                                'VERCEL_TEAM_ID', 'NOW_ORG_ID', 'NOW_PROJECT_ID'):
+                self.assertNotIn(secret_name, i18n[4])
+            self.assertEqual(i18n[4]['TMPDIR'], inherited['TMPDIR'])
+            self.assertEqual(i18n[4]['GOMAXPROCS'], '2')
+            self.assertEqual(i18n[4]['GOFLAGS'], '-p=2')
             for row in (pull, build):
                 child_env = row[4]
                 self.assertEqual(child_env['VERCEL_ORG_ID'], self.team)

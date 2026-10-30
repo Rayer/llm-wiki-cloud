@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" == "$EXPECTED_REPO_ROOT/deploy/engine/frontend_i18n.py" ]]; then
+  shift
+  printf '%s\n' "$*" >> "$FIXTURE_ROOT/i18n-calls"
+  printf '%s\n' '{"catalog_revision":"6fc95c491e2bdac0542f4449c1ed53cb32ddb5ba5c12386ee2379df31f76ce94","bundle_revision":"e2700e247686c53ab8bd8747693638c89046d33fb5db7624aa39526d0bb8db06"}'
+  exit 0
+fi
+
+exec "$REAL_PYTHON3" "$@"

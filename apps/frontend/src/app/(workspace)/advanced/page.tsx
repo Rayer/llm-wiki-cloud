@@ -18,11 +18,12 @@ import {
   type MCPOAuthGrant,
 } from '@/lib/mcp-oauth';
 
-function AccountGrantPanel({ accessToken, sessionEpoch, userId, t }: {
+function AccountGrantPanel({ accessToken, sessionEpoch, userId, t, locale }: {
   accessToken: string | null;
   sessionEpoch: number;
   userId: string;
   t: (key: string) => string;
+  locale: 'zh-TW' | 'zh-CN' | 'en';
 }) {
   const contextKey = `${userId}:${sessionEpoch}`;
   const [grants, setGrants] = useState<MCPOAuthGrant[]>([]);
@@ -104,7 +105,7 @@ function AccountGrantPanel({ accessToken, sessionEpoch, userId, t }: {
           {visibleGrants.map((grant) => (
             <li key={grant.id} className="rounded-xl border border-white/8 bg-black/20 p-4">
               <div className="flex flex-wrap items-start justify-between gap-3">
-                <div className="min-w-0"><p className="break-words font-medium text-white">{grant.client_name}</p><p className="mt-1 break-all font-mono text-xs text-zinc-400">{grant.resource}</p><p className="mt-2 text-xs text-zinc-400">{grant.scope} · {t(`MCPOAuth.status.${grant.status}`)}</p><p className="mt-1 text-xs text-zinc-500">{t('MCPOAuth.expires')}: {new Date(grant.expires_at).toLocaleString()}</p></div>
+                <div className="min-w-0"><p className="break-words font-medium text-white">{grant.client_name}</p><p className="mt-1 break-all font-mono text-xs text-zinc-400">{grant.resource}</p><p className="mt-2 text-xs text-zinc-400">{grant.scope} · {t(`MCPOAuth.status.${grant.status}`)}</p><p className="mt-1 text-xs text-zinc-500">{t('MCPOAuth.expires')}: {new Date(grant.expires_at).toLocaleString(locale === 'zh-TW' ? 'zh-TW' : locale === 'zh-CN' ? 'zh-CN' : 'en-US')}</p></div>
                 {grant.status === 'active' ? <button type="button" disabled={busy?.key === contextKey && busy.id === grant.id} onClick={() => void revoke(grant)} className="min-h-11 shrink-0 rounded-lg border border-red-300/20 px-3 text-sm text-red-100 hover:bg-red-300/10 disabled:opacity-50">{busy?.key === contextKey && busy.id === grant.id ? t('MCPOAuth.processing') : t('MCPOAuth.revoke')}</button> : null}
               </div>
             </li>
@@ -116,7 +117,7 @@ function AccountGrantPanel({ accessToken, sessionEpoch, userId, t }: {
 }
 
 export default function AdvancedPage() {
-  const { locale, t } = useT();
+  const { locale, t, catalogRevision } = useT();
   const { accessToken, sessionEpoch, user, isDemoSession } = useAuth();
   const { hydrated, currentProject, projectsLoading } = useWorkspace();
   const [grants, setGrants] = useState<MCPOAuthGrant[]>([]);
@@ -219,9 +220,9 @@ export default function AdvancedPage() {
         <Link href="/profile" className="inline-flex min-h-11 items-center rounded-lg border border-white/10 px-4 text-sm text-zinc-300 hover:bg-white/5">{t('MCPOAuth.profileLink')}</Link>
       </header>
 
-      <AccountGrantPanel accessToken={accessToken} sessionEpoch={sessionEpoch} userId={user.id} t={t} />
+                <AccountGrantPanel accessToken={accessToken} sessionEpoch={sessionEpoch} userId={user.id} t={t} locale={locale} />
 
-      {currentProject ? <AgentMcpTabs resourceURL={resourceURL} environmentLabel={environmentLabel} identityKey={contextKey + ':' + resourceURL + ':' + locale} locale={locale} t={t} /> : null}
+      {currentProject ? <AgentMcpTabs resourceURL={resourceURL} environmentLabel={environmentLabel} identityKey={contextKey + ':' + resourceURL + ':' + locale + ':' + catalogRevision} locale={locale} t={t} /> : null}
 
       {currentProject ? (
       <details className="rounded-2xl border border-white/10 bg-[#151515]">
@@ -249,7 +250,7 @@ export default function AdvancedPage() {
                     <p className="break-words font-medium text-white">{grant.client_name}</p>
                     <p className="mt-1 break-all font-mono text-xs text-zinc-400">{grant.resource}</p>
                     <p className="mt-2 text-xs text-zinc-400">{grant.scope} · {t(`MCPOAuth.status.${grant.status}`)}</p>
-                    <p className="mt-1 text-xs text-zinc-500">{t('MCPOAuth.expires')}: {new Date(grant.expires_at).toLocaleString()}</p>
+                    <p className="mt-1 text-xs text-zinc-500">{t('MCPOAuth.expires')}: {new Date(grant.expires_at).toLocaleString(locale === 'zh-TW' ? 'zh-TW' : locale === 'zh-CN' ? 'zh-CN' : 'en-US')}</p>
                   </div>
                   {grant.status === 'active' ? <button type="button" disabled={visibleBusyGrant === grant.id} onClick={() => void revoke(grant)} className="min-h-11 shrink-0 rounded-lg border border-red-300/20 px-3 text-sm text-red-100 hover:bg-red-300/10 disabled:opacity-50">{visibleBusyGrant === grant.id ? t('MCPOAuth.processing') : t('MCPOAuth.revoke')}</button> : null}
                 </div>
@@ -267,7 +268,7 @@ export default function AdvancedPage() {
           <span className="mt-1 block text-sm text-zinc-400">{t('MCPOAuth.manualFallbackIntro')}</span>
         </summary>
         <div className="border-t border-white/10 px-5 pb-5 sm:px-6 sm:pb-6">
-          <ProjectKeysSection key={`${user.id}:${currentProject.id}:${sessionEpoch}`} currentProject={currentProject} accessToken={accessToken} t={t} />
+          <ProjectKeysSection key={`${user.id}:${currentProject.id}:${sessionEpoch}`} currentProject={currentProject} accessToken={accessToken} t={t} locale={locale} />
         </div>
       </details>
       ) : null}

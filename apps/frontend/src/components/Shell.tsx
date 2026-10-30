@@ -16,6 +16,7 @@ import { CommandPalette, useCommandPalette } from './ui/CommandPalette';
 import { NavigationBlockerProvider, NavigationLink } from './NavigationBlocker';
 import { AccountSettingsModal } from './AccountSettingsModal';
 import { RequestIDPanel } from './RequestIDPanel';
+import { LocaleControl } from './LocaleControl';
 
 export function Shell({ children }: { children: React.ReactNode }) {
   return (
@@ -39,6 +40,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
   const {
     hydrated,
     token,
+    loginOpen,
     projects,
     currentProject,
     projectsLoading,
@@ -282,7 +284,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
                 type="button"
                 onClick={() => setPaletteOpen(true)}
                 className="hidden min-h-11 min-w-11 items-center justify-center rounded-md border border-white/10 bg-white/5 px-2 text-[10px] text-zinc-500 transition hover:bg-white/10 hover:text-zinc-300 lg:inline-flex"
-                title="Command palette"
+                title={t('Command.title')}
               >
                 ⌘K
               </button>
@@ -301,6 +303,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
 
       <main id="main-content" className="min-w-0 flex-1">
         <div className="mx-auto max-w-6xl px-4 pt-4 sm:px-6 lg:px-10">
+          {pathname === '/login' || !loginOpen ? <LocaleControl /> : null}
           <RequestIDPanel />
         </div>
         {!hydrated ? (
@@ -380,6 +383,8 @@ function ShellContent({ children }: { children: React.ReactNode }) {
             sources: t('Shell.sources'),
             concepts: t('Shell.concepts'),
             status: t('Shell.status'),
+            palette: t('Command.title'),
+            noMatches: t('Command.noMatches'),
           }}
         />
       ) : null}
@@ -389,6 +394,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
 }
 
 function ScrollToTopButton() {
+  const { t } = useT();
   const [visible, setVisible] = useState(false);
 
   useEffect(() => {
@@ -403,7 +409,7 @@ function ScrollToTopButton() {
   return (
     <button
       type="button"
-      aria-label="Scroll to top"
+      aria-label={t('Shell.scrollToTop')}
       onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
       className="fixed bottom-5 right-5 z-20 inline-flex size-12 items-center justify-center rounded-full bg-emerald-400 text-zinc-950 shadow-lg shadow-emerald-500/20 transition hover:-translate-y-0.5 hover:bg-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-200"
     >

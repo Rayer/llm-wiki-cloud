@@ -29,10 +29,12 @@ vi.mock('@/lib/api', async () => {
   };
 });
 
-vi.mock('@/lib/i18n', () => ({
-  useLocale: () => ({ t: (key: string) => key }),
-  useT: () => ({ t: (key: string) => key }),
-}));
+vi.mock('@/lib/i18n', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/i18n')>('@/lib/i18n');
+  const { i18nLaneTestTranslate } = await vi.importActual<typeof import('./i18n-lane-test-helper')>('./i18n-lane-test-helper');
+  const t = (key: string, params?: Record<string, string | number>) => i18nLaneTestTranslate(actual.translate, key, params);
+  return { useLocale: () => ({ locale: 'en', t }), useT: () => ({ t }) };
+});
 
 vi.mock('@/components/WorkspaceProvider', () => ({
   useWorkspace: () => ({
@@ -82,7 +84,7 @@ it.each(['pending', 'failed'] as const)('keeps public legal links accessible whe
     : Promise.reject(new Error('config unavailable')));
   render(<LoginModal />);
   await waitFor(() => expect(mocks.getPublicConfig).toHaveBeenCalled());
-  for (const [name, href] of [['隱私權政策', '/privacy'], ['服務條款', '/terms']]) {
+  for (const [name, href] of [['繁體中文 · 隱私權政策', '/privacy'], ['繁體中文 · 服務條款', '/terms']]) {
     const link = screen.getByRole('link', { name });
     expect(link.getAttribute('href')).toBe(href);
     expect(link.closest('[inert], [aria-hidden="true"]')).toBeNull();

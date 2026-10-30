@@ -2093,6 +2093,49 @@ class CDContractTests(LegacyMonorepoCDTestMixin, unittest.TestCase):
                 )
                 self.assertNotEqual(result.returncode, 0, f"mutable {component} image was accepted")
 
+            dedicated_auth = (
+                "asia-east1-docker.pkg.dev/llm-wiki-cloud/gateauth-ci-images/gateauth@sha256:" + "a" * 64
+            )
+            independent = subprocess.run(
+                ["bash", "-c", common_source() + '\nvalidate_image_value auth "$IMAGE"'],
+                env={**os.environ, "ROOT": str(ROOT), "PLAN_PATH": str(plan_path),
+                     "IMAGE": dedicated_auth, "GAT4_RELEASE_SOURCE_MODE": "independent"},
+                text=True, capture_output=True,
+            )
+            self.assertEqual(independent.returncode, 0, independent.stdout + independent.stderr)
+            retained_auth = (
+                "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/llm-wiki-auth@sha256:" + "b" * 64
+            )
+            retained = subprocess.run(
+                ["bash", "-c", common_source() + '\nvalidate_image_value auth "$IMAGE"'],
+                env={**os.environ, "ROOT": str(ROOT), "PLAN_PATH": str(plan_path),
+                     "IMAGE": retained_auth, "GAT4_RELEASE_SOURCE_MODE": "independent"},
+                text=True, capture_output=True,
+            )
+            self.assertEqual(retained.returncode, 0, retained.stdout + retained.stderr)
+            legacy = subprocess.run(
+                ["bash", "-c", common_source() + '\nvalidate_image_value auth "$IMAGE"'],
+                env={**os.environ, "ROOT": str(ROOT), "PLAN_PATH": str(plan_path), "IMAGE": dedicated_auth},
+                text=True, capture_output=True,
+            )
+            self.assertNotEqual(legacy.returncode, 0, "legacy Auth accepted the dedicated CI repository")
+            arbitrary_retained = subprocess.run(
+                ["bash", "-c", common_source() + '\nvalidate_image_value auth "$IMAGE"'],
+                env={**os.environ, "ROOT": str(ROOT), "PLAN_PATH": str(plan_path),
+                     "IMAGE": "evil.example/cloud-run-images/llm-wiki-auth@sha256:" + "b" * 64,
+                     "GAT4_RELEASE_SOURCE_MODE": "independent"},
+                text=True, capture_output=True,
+            )
+            self.assertNotEqual(arbitrary_retained.returncode, 0,
+                                "independent Auth accepted an unpinned retained repository")
+            shared_bff = subprocess.run(
+                ["bash", "-c", common_source() + '\nvalidate_image_value bff "$IMAGE"'],
+                env={**os.environ, "ROOT": str(ROOT), "PLAN_PATH": str(plan_path),
+                     "IMAGE": dedicated_auth, "GAT4_RELEASE_SOURCE_MODE": "independent"},
+                text=True, capture_output=True,
+            )
+            self.assertNotEqual(shared_bff.returncode, 0, "BFF accepted the Auth-only CI repository")
+
 
 
     def test_readback_and_rollback_are_truthful_and_handle_based(self):

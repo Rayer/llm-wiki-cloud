@@ -154,8 +154,9 @@ type WorkspaceContextValue = {
   register: (email: string, password: string) => Promise<void>;
   signOut: () => Promise<void>;
   selectProject: (projectId: string, destination?: string) => void;
-  addProject: (name: string) => Promise<Project>;
+  addProject: (name: string, description?: string, idempotencyKey?: string) => Promise<Project>;
   renameProject: (projectId: string, name: string) => Promise<string>;
+  updateProjectDescription: (projectId: string, description: string, revision: number) => void;
   refreshProjects: () => Promise<void>;
   openNewProject: () => void;
   closeNewProject: () => void;
@@ -407,14 +408,14 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     router.replace(destination ?? '/');
   }, [confirmNavigation, currentProject?.id, projects, router]);
 
-  const addProject = useCallback(async (name: string) => {
+  const addProject = useCallback(async (name: string, description = '', idempotencyKey?: string) => {
     if (!token) throw new Error('Please log in to create a project.');
     if (isDemoSession) throw new Error('Demo mode cannot create projects.');
     const startedListGeneration = projectListGenerationRef.current;
     const operationEpoch = sessionEpoch;
     const operationToken = token;
     const operationOwnerId = user?.id ?? '';
-    const project = await createProject(name);
+    const project = await createProject(name, description, idempotencyKey);
     if (
       !projectStateActiveRef.current
       || projectListGenerationRef.current !== startedListGeneration
@@ -438,6 +439,15 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setProjectsError('');
     return project;
   }, [isDemoSession, sessionEpoch, token, user]);
+
+  const updateProjectDescription = useCallback((projectId: string, description: string, revision: number) => {
+    setProjects((currentProjects) => currentProjects.map((project) => (
+      project.id === projectId ? { ...project, description, descriptionRevision: revision } : project
+    )));
+    setCurrentProject((current) => (
+      current?.id === projectId ? { ...current, description, descriptionRevision: revision } : current
+    ));
+  }, []);
 
   const markProfileOnboardingPresented = useCallback((ownerId: string, projectId: string, expectedSessionEpoch: number) => {
     const intent = profileOnboarding;
@@ -597,6 +607,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     selectProject,
     addProject,
     renameProject,
+    updateProjectDescription,
     refreshProjects,
     openNewProject: () => {
       if (isDemoSession) return;
@@ -606,6 +617,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   }), [
     addProject,
     renameProject,
+    updateProjectDescription,
     currentProject,
     displayedNavCounts,
     hydrated,

@@ -63,8 +63,8 @@ function folderCandidateError(file: File): string | undefined {
   return undefined;
 }
 
-function formatBytes(bytes: number): string {
-  return `${bytes.toLocaleString()} B`;
+function formatBytes(bytes: number, locale: 'zh-TW' | 'zh-CN' | 'en'): string {
+  return `${bytes.toLocaleString(locale === 'zh-TW' ? 'zh-TW' : locale === 'zh-CN' ? 'zh-CN' : 'en-US')} B`;
 }
 
 type Translator = (key: string, params?: Record<string, string | number>) => string;
@@ -117,7 +117,7 @@ export function RawUploadPanel({
   onBlocked,
   onQueueSettled,
 }: RawUploadPanelProps) {
-  const { t } = useT();
+  const { t, locale } = useT();
   const { isDemoSession, currentProject, refreshNavCounts } = useWorkspace();
   const fileRef = useRef<HTMLInputElement>(null);
   const folderRef = useRef<HTMLInputElement>(null);
@@ -485,7 +485,7 @@ export function RawUploadPanel({
               </p>
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <p className="text-xs text-zinc-300">
-                  {t('RawUpload.selectionSummary', { count: selectedCandidates.length, bytes: formatBytes(selectedBytes) })}
+                  {t('RawUpload.selectionSummary', { count: selectedCandidates.length, bytes: formatBytes(selectedBytes, locale) })}
                 </p>
                 <div className="flex flex-wrap gap-2">
                   <button
@@ -532,7 +532,7 @@ export function RawUploadPanel({
                         <p className="truncate font-medium text-zinc-200" title={candidate.file.name}>{candidate.file.name}</p>
                         <p className="break-all text-zinc-400" title={candidate.relativePath}>{candidate.relativePath}</p>
                         <p className="mt-0.5 text-zinc-500">
-                          {formatBytes(candidate.file.size)} · {t('RawUpload.destination', { filename: candidate.file.name })}
+                          {formatBytes(candidate.file.size, locale)} · {t('RawUpload.destination', { filename: candidate.file.name })}
                         </p>
                         {candidate.error ? <p className="mt-0.5 text-amber-200">{t(candidate.error)}</p> : null}
                         {collision ? <p className="mt-0.5 text-amber-200">{t('RawUpload.collisionForFile')}</p> : null}
@@ -587,7 +587,7 @@ export function RawUploadPanel({
                   <div
                     className="mt-1 h-1.5 overflow-hidden rounded-full bg-white/10"
                     role="progressbar"
-                    aria-label={`${item.file.name}: ${uploadStatusLabel(item.status, t)} ${item.progress}%`}
+                    aria-label={t('RawUpload.fileProgress', { filename: item.file.name, status: uploadStatusLabel(item.status, t), progress: item.progress })}
                     aria-valuemin={0}
                     aria-valuemax={100}
                     aria-valuenow={item.progress}

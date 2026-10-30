@@ -27,13 +27,7 @@ func TestStandaloneSuggestedQueriesPublishesSelectedProfileFixtureGeneration(t *
 		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
 			t.Errorf("decode resolver request: %v", err)
 		}
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(struct {
-			Source   string               `json:"source"`
-			Profiles []pipelineLLMProfile `json:"profiles"`
-		}{Source: "personal", Profiles: []pipelineLLMProfile{profile}}); err != nil {
-			t.Errorf("encode resolver response: %v", err)
-		}
+		writePipelineProfileWire(w, "personal", []pipelineLLMProfile{profile})
 	}))
 	defer server.Close()
 
@@ -47,7 +41,7 @@ func TestStandaloneSuggestedQueriesPublishesSelectedProfileFixtureGeneration(t *
 	if err != nil {
 		t.Fatalf("runSuggestedQueriesCommand() error = %v", err)
 	}
-	if received != (pipelineLLMProfileResolverRequest{ReservationID: "reservation-fixture", UserID: "user-fixture", ProjectID: "project-fixture"}) {
+	if received != (pipelineLLMProfileResolverRequest{ReservationID: "reservation-fixture", UserID: "user-fixture", ProjectID: "project-fixture", IncludeCredentials: true}) {
 		t.Fatalf("resolver request=%+v, want the disposable Project binding scope", received)
 	}
 	artifactData, err := os.ReadFile(filepath.Join(vault, suggestedqueries.Path))

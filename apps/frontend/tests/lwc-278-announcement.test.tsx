@@ -46,10 +46,12 @@ vi.mock('@/lib/api', () => ({
   updateAdminUserRole: vi.fn(),
 }));
 vi.mock('@/lib/auth', () => ({ useAuth: mockUseAuth }));
-vi.mock('@/lib/i18n', () => ({
-  useLocale: () => ({ t: (key: string) => key }),
-  useT: () => ({ t: (key: string) => key }),
-}));
+vi.mock('@/lib/i18n', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/i18n')>('@/lib/i18n');
+  const { i18nLaneTestTranslate } = await vi.importActual<typeof import('./i18n-lane-test-helper')>('./i18n-lane-test-helper');
+  const t = (key: string, params?: Record<string, string | number>) => i18nLaneTestTranslate(actual.translate, key, params);
+  return { useLocale: () => ({ locale: 'en', t }), useT: () => ({ t }) };
+});
 vi.mock('@/components/RegisterModal', () => ({ RegisterModal: () => null }));
 vi.mock('@/components/WorkspaceProvider', () => ({ useWorkspace: mockUseWorkspace }));
 

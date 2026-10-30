@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -28,7 +29,37 @@ func (profileFixtureRoundTripper) RoundTrip(request *http.Request) (*http.Respon
 	if request == nil || request.URL == nil || request.URL.Scheme != "https" || request.URL.Hostname() != "fixture.example" {
 		return nil, errors.New("profile fixture rejected an unconfigured endpoint")
 	}
-	defer request.Body.Close()
+	if request.Body != nil {
+		defer request.Body.Close()
+	}
+	if os.Getenv("LWC_BYOK_PROFILE_FIXTURE_REQUIRE_AUTH") == "1" && request.Header.Get("Authorization") == "" && request.Header.Get("x-api-key") == "" {
+		writeProfileFixtureReceipt("openai_unauthenticated", "", request.URL.Path)
+		body := `{"error":{"code":"invalid_api_key","message":"fixture requires auth"}}`
+		return &http.Response{StatusCode: http.StatusUnauthorized, Header: http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(body)), ContentLength: int64(len(body)), Request: request}, nil
+	}
+	if request.Method == http.MethodGet && strings.HasSuffix(strings.TrimRight(request.URL.Path, "/"), "/models") {
+		if rawStatus := strings.TrimSpace(os.Getenv("LWC_BYOK_PROFILE_FIXTURE_DISCOVERY_STATUS")); rawStatus != "" {
+			status, err := strconv.Atoi(rawStatus)
+			if err != nil || status < 400 || status > 599 {
+				return nil, errors.New("profile fixture rejected an invalid discovery status")
+			}
+			writeProfileFixtureReceipt("openai_models_discovery_error", "", request.URL.Path)
+			body := `{"error":{"message":"synthetic discovery fixture failure"}}`
+			return &http.Response{StatusCode: status, Header: http.Header{"Content-Type": []string{"application/json"}},
+				Body: io.NopCloser(strings.NewReader(body)), ContentLength: int64(len(body)), Request: request}, nil
+		}
+		writeProfileFixtureReceipt("openai_models_discovery", "", request.URL.Path)
+		body := `{"object":"list","data":[{"id":"fixture-fast-model"},{"id":"fixture-heavy-model"}]}`
+		if os.Getenv("LWC_BYOK_PROFILE_FIXTURE_DISCOVERY_PARTIAL") == "1" {
+			body = `{"object":"list","has_more":true,"data":[{"id":"fixture-fast-model"},{"id":"fixture-heavy-model"}]}`
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(body)), ContentLength: int64(len(body)), Request: request}, nil
+	}
+	if request.Method != http.MethodPost {
+		return nil, errors.New("profile fixture rejected an unsupported method")
+	}
 	var input struct {
 		Model    string `json:"model"`
 		Messages []struct {
@@ -55,6 +86,18 @@ func (profileFixtureRoundTripper) RoundTrip(request *http.Request) (*http.Respon
 			StatusCode: http.StatusUnauthorized, Header: http.Header{"Content-Type": []string{"application/json"}},
 			Body: io.NopCloser(strings.NewReader(body)), ContentLength: int64(len(body)), Request: request,
 		}, nil
+	}
+	if code := strings.TrimSpace(os.Getenv("LWC_BYOK_PROFILE_FIXTURE_GENERATION_ERROR")); code != "" {
+		statuses := map[string]int{"model_not_found": http.StatusNotFound, "unsupported_parameter": http.StatusBadRequest,
+			"permission_denied": http.StatusForbidden, "invalid_api_key": http.StatusUnauthorized}
+		status, ok := statuses[code]
+		if !ok {
+			return nil, errors.New("profile fixture rejected an unsupported generation error")
+		}
+		writeProfileFixtureReceipt("openai_chat_completions_error", input.Model, request.URL.Path)
+		body, _ := json.Marshal(map[string]any{"error": map[string]string{"code": code, "message": "synthetic provider fixture error"}})
+		return &http.Response{StatusCode: status, Header: http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(bytes.NewReader(body)), ContentLength: int64(len(body)), Request: request}, nil
 	}
 	if request.Header.Get("Authorization") == "Bearer synthetic-invalid-expansion-fixture-key" &&
 		strings.Contains(system, "raw_query string") && strings.Contains(system, "Criterion") {
