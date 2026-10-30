@@ -407,7 +407,13 @@
     "granted": "已授予",
     "notGranted": "未授予",
     "removeScope": "移除權限範圍",
-    "grantScope": "授予權限範圍"
+    "grantScope": "授予權限範圍",
+    "autoPipelineBacklogStatus": "待處理來源掃描：{status} · 版本 {revision}",
+    "autoPipelineDescription": "全域開關與專案開關都啟用後，儲存來源才會啟動增量執行。啟用後會掃描已有待處理來源的專案。手動執行與每日排程各自獨立。",
+    "autoPipelineEnabled": "允許自動執行 Pipeline",
+    "autoPipelineUnavailable": "目前無法取得自動 Pipeline 設定。",
+    "autoPipelineUpdateFailed": "無法更新自動 Pipeline 設定。",
+    "autoPipelineUpdateSucceeded": "自動 Pipeline 設定已更新。啟用後會掃描專案中的已儲存來源變更。"
   },
   "Detail": {
     "backTo": "返回 {label}",
@@ -448,6 +454,70 @@
       "notes_pending": "註解待處理",
       "content_pending": "內容待處理",
       "error": "錯誤"
+    },
+    "documentImport": {
+      "confirmDelete": "要刪除 {filename} 的失敗匯入嗎？",
+      "delete": "刪除失敗匯入",
+      "deleteAccepted": "已排入刪除工作。",
+      "deleteFailed": "原始檔案刪除失敗",
+      "deleting": "正在刪除原始檔案",
+      "diagnostic": "診斷編號：{id}",
+      "dismiss": "關閉提醒",
+      "dismissFailed": "無法關閉文件匯入提醒。",
+      "downloadOriginal": "下載原始檔案",
+      "downloadPrepared": "已準備下載原始檔案。",
+      "failedCount": "{count} 個失敗",
+      "failure": {
+        "conversion_error": "轉換失敗",
+        "conversion_storage_error": "無法儲存轉換後的文字",
+        "conversion_timeout": "轉換逾時",
+        "converter_unavailable": "文件轉換器目前無法使用",
+        "corrupt_file": "檔案損毀或無法讀取",
+        "no_readable_text": "找不到可讀取的文字",
+        "original_changed": "匯入期間原始檔案發生變更",
+        "original_unavailable": "無法取得原始檔案",
+        "password_protected": "此文件受密碼保護",
+        "resource_limit": "文件超出轉換限制",
+        "worker_unavailable": "無法啟動轉換工作"
+      },
+      "failureCount": "{count} 個文件匯入失敗。",
+      "failureTitle": "文件匯入需要處理",
+      "filter": {
+        "all": "全部",
+        "failed": "失敗",
+        "pending": "處理中",
+        "succeeded": "成功"
+      },
+      "filterLabel": "顯示：",
+      "listTitle": "文件匯入",
+      "loadFailed": "無法載入文件匯入",
+      "loadMore": "載入更多",
+      "loading": "正在載入文件匯入…",
+      "loadingProject": "正在載入指定專案…",
+      "navBadge": "文件匯入失敗：{count}",
+      "pipelineState": "來源流程：{state}",
+      "projectUnavailable": "找不到指定的專案。",
+      "refreshFailed": "無法更新文件匯入狀態。",
+      "sourceSaveFailed": "無法將轉換後的文字儲存為來源",
+      "sourceSaved": "轉換後的文字已儲存為來源",
+      "sourceState": {
+        "failed": "儲存失敗",
+        "none": "尚未儲存",
+        "saved": "已儲存",
+        "saving": "儲存中",
+        "unknown": "狀態不明"
+      },
+      "state": {
+        "accepted": "已接受",
+        "converting": "轉換中",
+        "failed": "轉換失敗",
+        "queued": "等待轉換",
+        "receiving": "正在接收上傳",
+        "succeeded": "轉換完成"
+      },
+      "statusUnknown": "正在確認來源儲存狀態",
+      "switchingProject": "正在切換至指定專案…",
+      "viewFailures": "查看文件匯入"
     }
   },
   "Annotation": {
@@ -1193,7 +1263,23 @@
     "sourceProfileRevision": "來源 Profile 版本",
     "intentRetry": "重試這次執行",
     "intentRetrying": "正在重試…",
-    "retryFailed": "Pipeline 重試失敗"
+    "retryFailed": "Pipeline 重試失敗",
+    "automationAdminDisabled": "管理員尚未啟用自動處理。已儲存的來源會保持待處理，直到管理員允許處理。",
+    "automationDescription": "全域與專案開關都啟用時，變更的原文會啟動增量 Pipeline。處理成功前，已儲存的內容尚未發布或可供搜尋。",
+    "automationDisabledPending": "已儲存；管理員或專案開關已停用自動處理。",
+    "automationFailure": "最近失敗",
+    "automationManualNote": "手動執行不受自動 Pipeline 開關影響；既有每日排程也維持獨立。",
+    "automationNoChange": "已儲存；此次儲存沒有排入新的自動處理。",
+    "automationProcessedRevision": "已處理版本",
+    "automationProjectToggle": "此專案啟用自動 Pipeline",
+    "automationQueued": "已儲存並等待自動處理；尚未發布或可供搜尋。",
+    "automationSourceRevision": "來源版本",
+    "automationStatus": "處理狀態",
+    "automationStatusUnavailable": "目前無法取得自動處理狀態。",
+    "automationTitle": "此專案的自動處理",
+    "automationUnknown": "已儲存；無法確認處理狀態。",
+    "automationUpdateFailed": "無法更新自動處理設定。",
+    "urlProcessingAutomatic": "全域與專案自動 Pipeline 開關都啟用時，變更的內容會自動處理；發布成功前，已儲存的內容尚不可搜尋。"
   },
   "Raw": {
     "title": "原文檔案",
@@ -1250,7 +1336,8 @@
     "statusFailed": "失敗",
     "summary": "新增 {created} 個 · 已存在 {existing} 個 · 取代 {replaced} 個 · 失敗 {failed} 個 · 處理中 {pending} 個",
     "fileProgress": "{filename}：{status} {progress}%",
-    "retryFile": "重試 {filename}"
+    "retryFile": "重試 {filename}",
+    "documentStatus": "文件 {id} · {conversion} · 來源{source}"
   },
   "ComingSoon": {
     "title": "Coming Soon"

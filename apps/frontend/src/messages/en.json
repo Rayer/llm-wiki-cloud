@@ -407,7 +407,13 @@
     "granted": "granted",
     "notGranted": "not granted",
     "removeScope": "Remove scope",
-    "grantScope": "Grant scope"
+    "grantScope": "Grant scope",
+    "autoPipelineBacklogStatus": "Backlog scan: {status} · Revision {revision}",
+    "autoPipelineDescription": "This global switch must be on with a Project switch for source commits to start incremental runs. Enabling scans existing Projects for pending saved sources. Manual runs and the daily schedule stay independent.",
+    "autoPipelineEnabled": "Allow automatic Pipeline runs",
+    "autoPipelineUnavailable": "Automatic Pipeline settings are unavailable.",
+    "autoPipelineUpdateFailed": "Automatic Pipeline settings update failed.",
+    "autoPipelineUpdateSucceeded": "Automatic Pipeline settings updated. Enabling the switch scans Projects for saved source changes."
   },
   "Detail": {
     "backTo": "Back to {label}",
@@ -448,6 +454,70 @@
       "notes_pending": "Notes pending",
       "content_pending": "Content pending",
       "error": "Error"
+    },
+    "documentImport": {
+      "confirmDelete": "Delete the failed import for {filename}?",
+      "delete": "Delete failed import",
+      "deleteAccepted": "Deletion queued.",
+      "deleteFailed": "Original deletion failed",
+      "deleting": "Deleting original",
+      "diagnostic": "Diagnostic ID: {id}",
+      "dismiss": "Dismiss reminder",
+      "dismissFailed": "Unable to dismiss the document import reminder.",
+      "downloadOriginal": "Download original",
+      "downloadPrepared": "Original download prepared.",
+      "failedCount": "{count} failed",
+      "failure": {
+        "conversion_error": "Conversion failed",
+        "conversion_storage_error": "Converted text could not be stored",
+        "conversion_timeout": "Conversion took too long",
+        "converter_unavailable": "The document converter is unavailable",
+        "corrupt_file": "This file is damaged or unreadable",
+        "no_readable_text": "No readable text was found",
+        "original_changed": "The original file changed during import",
+        "original_unavailable": "The original file is unavailable",
+        "password_protected": "This document is password protected",
+        "resource_limit": "This document exceeds conversion limits",
+        "worker_unavailable": "The conversion worker could not start"
+      },
+      "failureCount": "{count} document imports failed.",
+      "failureTitle": "Document imports need attention",
+      "filter": {
+        "all": "All",
+        "failed": "Failed",
+        "pending": "Pending",
+        "succeeded": "Succeeded"
+      },
+      "filterLabel": "Show:",
+      "listTitle": "Document imports",
+      "loadFailed": "Unable to load document imports",
+      "loadMore": "Load more",
+      "loading": "Loading document imports…",
+      "loadingProject": "Loading the requested project…",
+      "navBadge": "Document import failures: {count}",
+      "pipelineState": "Source pipeline: {state}",
+      "projectUnavailable": "The requested project is unavailable.",
+      "refreshFailed": "Unable to refresh document import status.",
+      "sourceSaveFailed": "Converted text could not be saved as a source",
+      "sourceSaved": "Converted text was saved as a source",
+      "sourceState": {
+        "failed": "save failed",
+        "none": "not saved",
+        "saved": "saved",
+        "saving": "saving",
+        "unknown": "status unknown"
+      },
+      "state": {
+        "accepted": "Accepted",
+        "converting": "Converting",
+        "failed": "Conversion failed",
+        "queued": "Queued for conversion",
+        "receiving": "Receiving upload",
+        "succeeded": "Conversion complete"
+      },
+      "statusUnknown": "The source save status is being reconciled",
+      "switchingProject": "Switching to the requested project…",
+      "viewFailures": "View document imports"
     }
   },
   "Annotation": {
@@ -1193,7 +1263,23 @@
     "sourceProfileRevision": "source Profile revision",
     "intentRetry": "Retry this run",
     "intentRetrying": "Retrying…",
-    "retryFailed": "Pipeline retry failed"
+    "retryFailed": "Pipeline retry failed",
+    "automationAdminDisabled": "Automatic processing is disabled by the Admin. Saved sources remain pending until the Admin allows processing.",
+    "automationDescription": "Changed raw source content starts an incremental Pipeline when both the Admin and Project switches are on. Saved content is not published or searchable until processing succeeds.",
+    "automationDisabledPending": "Saved; automatic processing is disabled by the Admin or Project switch.",
+    "automationFailure": "Last failure",
+    "automationManualNote": "Manual runs remain available independently of the auto-pipeline switches. The existing daily schedule also remains independent.",
+    "automationNoChange": "Saved; no new automatic processing was queued for this save.",
+    "automationProcessedRevision": "Processed revision",
+    "automationProjectToggle": "Auto-pipeline for this Project",
+    "automationQueued": "Saved and waiting for automatic processing; not yet published or searchable.",
+    "automationSourceRevision": "Source revision",
+    "automationStatus": "Processing status",
+    "automationStatusUnavailable": "Automatic processing status is unavailable.",
+    "automationTitle": "Automatic processing for this Project",
+    "automationUnknown": "Saved; processing status could not be confirmed.",
+    "automationUpdateFailed": "Automatic processing settings could not be updated.",
+    "urlProcessingAutomatic": "When both auto-pipeline switches are on, changed content is processed automatically; saved content is not searchable until publication succeeds."
   },
   "Raw": {
     "title": "Raw files",
@@ -1250,7 +1336,8 @@
     "statusFailed": "Failed",
     "summary": "{created} created · {existing} already exists · {replaced} replaced · {failed} failed · {pending} in progress",
     "fileProgress": "{filename}: {status} {progress}%",
-    "retryFile": "Retry {filename}"
+    "retryFile": "Retry {filename}",
+    "documentStatus": "Document {id} · {conversion} · source {source}"
   },
   "ComingSoon": {
     "title": "Coming Soon"

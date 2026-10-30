@@ -545,6 +545,57 @@
       "params": [
         "label"
       ]
+    },
+    "Admin.autoPipelineBacklogStatus": {
+      "kind": "literal",
+      "params": [
+        "revision",
+        "status"
+      ]
+    },
+    "RawUpload.documentStatus": {
+      "kind": "literal",
+      "params": [
+        "conversion",
+        "id",
+        "source"
+      ]
+    },
+    "Source.documentImport.confirmDelete": {
+      "kind": "literal",
+      "params": [
+        "filename"
+      ]
+    },
+    "Source.documentImport.diagnostic": {
+      "kind": "literal",
+      "params": [
+        "id"
+      ]
+    },
+    "Source.documentImport.failedCount": {
+      "kind": "literal",
+      "params": [
+        "count"
+      ]
+    },
+    "Source.documentImport.failureCount": {
+      "kind": "literal",
+      "params": [
+        "count"
+      ]
+    },
+    "Source.documentImport.navBadge": {
+      "kind": "literal",
+      "params": [
+        "count"
+      ]
+    },
+    "Source.documentImport.pipelineState": {
+      "kind": "literal",
+      "params": [
+        "state"
+      ]
     }
   }
 }
