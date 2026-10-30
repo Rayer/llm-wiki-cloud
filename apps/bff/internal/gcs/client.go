@@ -859,6 +859,15 @@ func (c *Client) DeleteProjectPrefix(ctx context.Context, userID, projectID stri
 	return deleted, err
 }
 
+// DeleteFile removes one exact object generation from the scoped project.
+func (c *Client) DeleteFile(ctx context.Context, relPath string, expectedGeneration int64) error {
+	if relPath == "" || relPath == "." || path.Clean(relPath) != relPath ||
+		strings.HasPrefix(relPath, "../") || strings.ContainsAny(relPath, "\\\x00") || expectedGeneration <= 0 {
+		return errors.New("invalid object deletion request")
+	}
+	return c.deleteObject(ctx, c.prefix()+"/"+relPath, expectedGeneration)
+}
+
 func safeProjectPrefixSegment(value string) bool {
 	return value != "" && value != "." && value != ".." && !strings.ContainsAny(value, "/\\\x00")
 }

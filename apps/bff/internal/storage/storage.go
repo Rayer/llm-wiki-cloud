@@ -108,6 +108,13 @@ type ConditionalWriter interface {
 	WriteFileIfGeneration(context.Context, []byte, string, int64) (int64, error)
 }
 
+// ObjectDeleter removes one object only when its recorded generation still
+// matches. It is intentionally separate from Store so cleanup callers cannot
+// broaden ordinary read/write capabilities.
+type ObjectDeleter interface {
+	DeleteFile(context.Context, string, int64) error
+}
+
 // ObjectLister exposes metadata-only prefix listing.
 type ObjectLister interface {
 	ListObjectMeta(context.Context, string) ([]ObjectMeta, error)

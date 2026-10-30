@@ -184,6 +184,51 @@ func (c *Client) WriteFileIfGeneration(ctx context.Context, data []byte, relPath
 	return next, err
 }
 
+func (c *Client) DeleteFile(ctx context.Context, relPath string, expected int64) error {
+	if expected <= 0 {
+		return errors.New("invalid object deletion request")
+	}
+	path, err := c.fullPath(relPath)
+	if err != nil {
+		return err
+	}
+	metaPath, lockPath, err := c.conditionalSidecarPaths(relPath)
+	if err != nil {
+		return err
+	}
+	return withRawSyncFileLock(c, relPath, func() error {
+		return withConditionalLock(lockPath, func() error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			data, err := os.ReadFile(path)
+			if errors.Is(err, os.ErrNotExist) {
+				return store.ErrObjectNotExist
+			}
+			if err != nil {
+				return err
+			}
+			generation, err := recoverConditionalMeta(metaPath, data)
+			if err != nil {
+				return err
+			}
+			if generation != expected {
+				return store.ErrGenerationMismatch
+			}
+			if err := os.Remove(path); err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					return store.ErrObjectNotExist
+				}
+				return err
+			}
+			if err := os.Remove(metaPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+			return nil
+		})
+	})
+}
+
 func recoverConditionalMeta(metaPath string, data []byte) (int64, error) {
 	contentSHA := digest(data)
 	meta, valid := readConditionalMeta(metaPath)
