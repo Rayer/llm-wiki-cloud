@@ -27,10 +27,18 @@ func setQueryIdentityHeaders(c *gin.Context, identity *query.RuntimeConfigIdenti
 		"X-Query-Generation-ID":           identity.GenerationID,
 		"X-Query-Concepts-Digest":         identity.ConceptsDigest,
 		"X-LLM-Profile-ID":                identity.LLMProfileID,
+		"X-LLM-Fast-Profile-ID":           identity.LLMFastProfileID,
+		"X-LLM-Fast-Profile-Revision":     strconv.FormatInt(identity.LLMFastProfileRevision, 10),
+		"X-LLM-Heavy-Profile-ID":          identity.LLMHeavyProfileID,
+		"X-LLM-Heavy-Profile-Revision":    strconv.FormatInt(identity.LLMHeavyProfileRevision, 10),
 		"X-LLM-Profile-Revision":          strconv.FormatInt(identity.LLMProfileRevision, 10),
 		"X-LLM-Protocol":                  identity.LLMProtocol,
 		"X-LLM-Provider":                  identity.ExpansionProvider,
 		"X-LLM-Model":                     identity.ExpansionModel,
+		"X-LLM-Fast-Model":                identity.ExpansionModel,
+		"X-LLM-Heavy-Model":               identity.SynthesisModel,
+		"X-LLM-Fast-Returned-Model":       identity.ExpansionReturnedModel,
+		"X-LLM-Heavy-Returned-Model":      identity.SynthesisReturnedModel,
 	}
 	for key, value := range values {
 		c.Header(key, value)

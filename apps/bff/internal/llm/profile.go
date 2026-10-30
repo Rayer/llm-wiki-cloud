@@ -24,15 +24,47 @@ type profileContextualCallRecorder interface {
 
 type Protocol string
 
+type ProfileRole string
+
 const (
 	ProtocolOpenAIChatCompletions Protocol = "openai_chat_completions"
 	ProtocolAnthropicMessages     Protocol = "anthropic_messages"
 )
 
+const (
+	ProfileRoleFast  ProfileRole = "fast"
+	ProfileRoleHeavy ProfileRole = "heavy"
+)
+
+type ProfileRevisionReference struct {
+	OwnerID             string `firestore:"owner_id" json:"owner_id"`
+	ID                  string `firestore:"id" json:"id"`
+	Revision            int64  `firestore:"revision" json:"revision"`
+	CredentialRevision  int64  `firestore:"credential_revision" json:"credential_revision"`
+	CredentialOrigin    string `firestore:"credential_origin" json:"credential_origin"`
+	CredentialReference string `firestore:"credential_reference,omitempty" json:"credential_reference,omitempty"`
+	SecretConfigured    bool   `firestore:"secret_configured" json:"secret_configured"`
+	ConfigDigest        string `firestore:"config_digest" json:"config_digest"`
+}
+
+// OperationProfileSnapshot pins Project binding and immutable Profile revisions
+// for one synchronous request or durable background operation.
+type OperationProfileSnapshot struct {
+	Version          int                        `firestore:"version" json:"version"`
+	Source           string                     `firestore:"source" json:"source"`
+	BindingRevision  int64                      `firestore:"binding_revision" json:"binding_revision"`
+	BindingProfileID string                     `firestore:"binding_profile_id,omitempty" json:"binding_profile_id,omitempty"`
+	RoleMapVersion   int                        `firestore:"role_map_version" json:"role_map_version"`
+	Profiles         []ProfileRevisionReference `firestore:"profiles" json:"profiles"`
+	ConfigDigest     string                     `firestore:"config_digest" json:"config_digest"`
+	CredentialUsed   bool                       `firestore:"credential_used" json:"credential_used"`
+}
+
 // ProfileConfig contains the nonsecret, immutable identity used for one call.
 type ProfileConfig struct {
 	ID       string
 	Revision int64
+	Role     ProfileRole
 	Provider string
 	Protocol Protocol
 	Endpoint string
@@ -56,6 +88,7 @@ type Usage struct {
 type CompletionMetadata struct {
 	ProfileID         string `json:"profile_id"`
 	ProfileRevision   int64  `json:"profile_revision"`
+	Role              string `json:"role,omitempty"`
 	Provider          string `json:"provider"`
 	Protocol          string `json:"protocol"`
 	RequestedModel    string `json:"requested_model"`
@@ -71,11 +104,13 @@ type CompletionResult struct {
 }
 
 type ProfileIdentity struct {
-	ID       string
-	Revision int64
-	Provider string
-	Protocol string
-	Model    string
+	ID            string
+	Revision      int64
+	Role          string
+	Provider      string
+	Protocol      string
+	Model         string
+	ReturnedModel string
 }
 
 type ProfileIdentityProvider interface {
@@ -83,12 +118,13 @@ type ProfileIdentityProvider interface {
 }
 
 type ProfileClient struct {
-	profile ProfileConfig
-	apiKey  string
-	client  *http.Client
-	maxBody int64
-	maxOut  int
-	temp    *float64
+	profile       ProfileConfig
+	apiKey        string
+	client        *http.Client
+	maxBody       int64
+	maxOut        int
+	temp          *float64
+	discoveryOnly bool
 }
 
 type ProviderErrorKind string
@@ -129,10 +165,23 @@ func NewProfileClient(profile ProfileConfig, apiKey string, options ProfileClien
 	return newProfileClient(profile, apiKey, options, false, profileFixtureTransport())
 }
 
+// NewProfileDiscoveryClient creates the same authenticated, SSRF-safe adapter
+// transport for a read-only /models request. It cannot issue chat completions.
+func NewProfileDiscoveryClient(profile ProfileConfig, apiKey string, options ProfileClientOptions) (*ProfileClient, error) {
+	profile.Model = "lwc-discovery-only"
+	client, err := newProfileClient(profile, apiKey, options, false, profileFixtureTransport())
+	if err != nil {
+		return nil, err
+	}
+	client.discoveryOnly = true
+	return client, nil
+}
+
 // Test transport and loopback access stay package-private so product callers
 // cannot bypass endpoint validation.
 func newProfileClient(profile ProfileConfig, apiKey string, options ProfileClientOptions, allowLoopbackTest bool, testTransport http.RoundTripper) (*ProfileClient, error) {
 	profile.ID = strings.TrimSpace(profile.ID)
+	profile.Role = ProfileRole(strings.TrimSpace(string(profile.Role)))
 	profile.Provider = strings.ToLower(strings.TrimSpace(profile.Provider))
 	profile.Endpoint = strings.TrimSpace(profile.Endpoint)
 	profile.Model = strings.TrimSpace(profile.Model)
@@ -140,6 +189,9 @@ func newProfileClient(profile ProfileConfig, apiKey string, options ProfileClien
 	if profile.ID == "" || profile.Revision < 1 || profile.Model == "" || len(profile.Model) > 200 ||
 		(apiKey == "" && profile.Provider != "custom") || strings.ContainsAny(apiKey, "\r\n") {
 		return nil, errors.New("invalid LLM profile configuration")
+	}
+	if profile.Role != "" && profile.Role != ProfileRoleFast && profile.Role != ProfileRoleHeavy {
+		return nil, errors.New("unsupported LLM profile role")
 	}
 	if profile.Protocol != ProtocolOpenAIChatCompletions && profile.Protocol != ProtocolAnthropicMessages {
 		return nil, errors.New("unsupported LLM profile protocol")
@@ -214,7 +266,7 @@ func (c *ProfileClient) ProfileIdentity() ProfileIdentity {
 	if c == nil {
 		return ProfileIdentity{}
 	}
-	return ProfileIdentity{ID: c.profile.ID, Revision: c.profile.Revision, Provider: c.profile.Provider, Protocol: string(c.profile.Protocol), Model: c.profile.Model}
+	return ProfileIdentity{ID: c.profile.ID, Revision: c.profile.Revision, Role: string(c.profile.Role), Provider: c.profile.Provider, Protocol: string(c.profile.Protocol), Model: c.profile.Model}
 }
 
 func (c *ProfileClient) Chat(ctx context.Context, systemPrompt, userMessage string) (string, error) {
@@ -228,7 +280,7 @@ func (c *ProfileClient) ChatWithMetadata(ctx context.Context, systemPrompt, user
 }
 
 func (c *ProfileClient) Complete(ctx context.Context, systemPrompt, userMessage string) (CompletionResult, error) {
-	if c == nil || c.client == nil {
+	if c == nil || c.client == nil || c.discoveryOnly {
 		return CompletionResult{}, &ProfileCallError{Kind: ProviderFailure}
 	}
 	var body []byte
@@ -370,14 +422,92 @@ func (c *ProfileClient) Complete(ctx context.Context, systemPrompt, userMessage 
 	callOutcome = "success"
 	result.Metadata.ProfileID = c.profile.ID
 	result.Metadata.ProfileRevision = c.profile.Revision
+	result.Metadata.Role = string(c.profile.Role)
 	result.Metadata.Provider = c.profile.Provider
 	result.Metadata.Protocol = string(c.profile.Protocol)
 	result.Metadata.RequestedModel = c.profile.Model
 	RecordCallIdentity(ctx,
 		ModelIdentity{Provider: c.profile.Provider, Model: c.profile.Model},
-		ProfileIdentity{ID: c.profile.ID, Revision: c.profile.Revision, Provider: c.profile.Provider, Protocol: string(c.profile.Protocol), Model: c.profile.Model},
+		ProfileIdentity{ID: c.profile.ID, Revision: c.profile.Revision, Role: string(c.profile.Role), Provider: c.profile.Provider, Protocol: string(c.profile.Protocol), Model: c.profile.Model, ReturnedModel: result.Metadata.ReturnedModel},
 	)
 	return result, nil
+}
+
+// DiscoverModels performs a bounded, authenticated GET using the profile
+// transport. A successful response says nothing about chat generation access.
+func (c *ProfileClient) DiscoverModels(ctx context.Context) ([]string, error) {
+	if c == nil || c.client == nil {
+		return nil, &ProfileCallError{Kind: ProviderFailure}
+	}
+	endpoint := strings.TrimRight(c.profile.Endpoint, "/") + "/models"
+	if c.profile.Protocol == ProtocolAnthropicMessages && c.profile.Endpoint == "https://api.anthropic.com" {
+		endpoint = "https://api.anthropic.com/v1/models"
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, &ProfileCallError{Kind: ProviderFailure}
+	}
+	if c.profile.Protocol == ProtocolAnthropicMessages {
+		request.Header.Set("x-api-key", c.apiKey)
+		request.Header.Set("anthropic-version", "2023-06-01")
+	} else if c.apiKey != "" {
+		request.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+	callOutcome := string(ProviderFailure)
+	finishCall := func(string, string, time.Time) {}
+	if recorder, ok := ctx.Value(recorderKey{}).(profileContextualCallRecorder); ok {
+		finishCall = recorder.StartProfileCallAtContext(ctx, c.profile, "models_discovery", endpoint)
+	}
+	defer func() { finishCall(callOutcome, callOutcome, time.Now()) }()
+	response, err := c.client.Do(request)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			callOutcome = string(ProviderTimeout)
+			return nil, &ProfileCallError{Kind: ProviderTimeout}
+		}
+		var netErr net.Error
+		if errors.As(err, &netErr) && netErr.Timeout() {
+			callOutcome = string(ProviderTimeout)
+			return nil, &ProfileCallError{Kind: ProviderTimeout}
+		}
+		return nil, &ProfileCallError{Kind: ProviderFailure}
+	}
+	defer response.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(response.Body, c.maxBody+1))
+	if err != nil || int64(len(data)) > c.maxBody {
+		callOutcome = string(ProviderResponseInvalid)
+		return nil, &ProfileCallError{Kind: ProviderResponseInvalid, StatusCode: response.StatusCode}
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		callErr := classifyProfileHTTPError(response.StatusCode, data)
+		callOutcome = profileCallTraceOutcome(callErr)
+		return nil, callErr
+	}
+	var envelope struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil || len(envelope.Data) > 500 {
+		callOutcome = string(ProviderResponseInvalid)
+		return nil, &ProfileCallError{Kind: ProviderResponseInvalid, StatusCode: response.StatusCode}
+	}
+	models := make([]string, 0, len(envelope.Data))
+	seen := make(map[string]struct{}, len(envelope.Data))
+	for _, item := range envelope.Data {
+		id := strings.TrimSpace(item.ID)
+		if id == "" || len(id) > 200 || strings.ContainsAny(id, "\r\n\x00") {
+			callOutcome = string(ProviderResponseInvalid)
+			return nil, &ProfileCallError{Kind: ProviderResponseInvalid, StatusCode: response.StatusCode}
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		models = append(models, id)
+	}
+	callOutcome = "success"
+	return models, nil
 }
 
 func truncatedProfileFinishReason(reason string) bool {

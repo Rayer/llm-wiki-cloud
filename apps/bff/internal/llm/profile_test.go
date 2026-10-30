@@ -196,6 +196,48 @@ func TestProfileClientUsesOpenAIChatCompletionsProtocol(t *testing.T) {
 	}
 }
 
+func TestProfileModelDiscoveryUsesAuthenticatedReadOnlyAdapter(t *testing.T) {
+	var calls int
+	transport := profileRoundTripper(func(request *http.Request) (*http.Response, error) {
+		calls++
+		if request.Method != http.MethodGet || request.URL.String() != "https://fixture.example/v1/models" || request.Header.Get("Authorization") != "Bearer synthetic-key" {
+			t.Fatalf("discovery request method=%q url=%q authorization=%q", request.Method, request.URL, request.Header.Get("Authorization"))
+		}
+		return profileResponse(http.StatusOK, `{"object":"list","data":[{"id":"fast-a"},{"id":"heavy-b"},{"id":"fast-a"}]}`), nil
+	})
+	client, err := newProfileClient(ProfileConfig{ID: "p-discovery", Revision: 4, Role: ProfileRoleFast, Provider: "custom", Protocol: ProtocolOpenAIChatCompletions,
+		Endpoint: "https://fixture.example/v1", Model: "lwc-discovery-only"}, "synthetic-key", ProfileClientOptions{}, false, transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	models, err := client.DiscoverModels(context.Background())
+	if err != nil || strings.Join(models, ",") != "fast-a,heavy-b" || calls != 1 {
+		t.Fatalf("models=%v calls=%d err=%v", models, calls, err)
+	}
+	client.discoveryOnly = true
+	if _, err := client.Complete(context.Background(), "system", "message"); err == nil || calls != 1 {
+		t.Fatalf("discovery-only client allowed generation: calls=%d err=%v", calls, err)
+	}
+}
+
+func TestProfileModelDiscoveryClassifiesErrorsWithoutProviderBody(t *testing.T) {
+	client, err := newProfileClient(ProfileConfig{ID: "p-discovery-error", Revision: 1, Provider: "custom", Protocol: ProtocolOpenAIChatCompletions,
+		Endpoint: "https://fixture.example/v1", Model: "lwc-discovery-only"}, "synthetic-key", ProfileClientOptions{}, false,
+		profileRoundTripper(func(*http.Request) (*http.Response, error) {
+			return profileResponse(http.StatusUnauthorized, `{"error":{"message":"synthetic-secret-detail"}}`), nil
+		}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	_, err = client.DiscoverModels(context.Background())
+	var callErr *ProfileCallError
+	if !errors.As(err, &callErr) || callErr.Kind != ProviderAuthentication || strings.Contains(err.Error(), "synthetic-secret-detail") {
+		t.Fatalf("discovery error=%v, want safe authentication category", err)
+	}
+}
+
 func TestProfileClientUsesProviderSpecificCompletionTokenLimit(t *testing.T) {
 	for _, test := range []struct {
 		name        string

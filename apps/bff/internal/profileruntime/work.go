@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
+	"github.com/rayer/llm-wiki-bff/internal/llm"
 	"time"
 
 	"cloud.google.com/go/firestore"
@@ -16,19 +17,20 @@ const ExecutionTimeout = 4 * time.Minute
 const LeaseDuration = 5 * time.Minute
 
 type Work struct {
-	UserID      string    `firestore:"user_id"`
-	ProjectID   string    `firestore:"project_id"`
-	Kind        string    `firestore:"kind"`
-	Revision    int64     `firestore:"revision"`
-	ID          string    `firestore:"id"`
-	RequestID   string    `firestore:"request_id,omitempty" json:"-"`
-	CandidateID string    `firestore:"candidate_id"`
-	Due         time.Time `firestore:"due"`
-	Pending     bool      `firestore:"pending"`
-	Attempts    int       `firestore:"attempts"`
-	Token       string    `firestore:"token"`
-	LeaseUntil  time.Time `firestore:"lease_until"`
-	Status      string    `firestore:"status"`
+	UserID          string                       `firestore:"user_id"`
+	ProjectID       string                       `firestore:"project_id"`
+	Kind            string                       `firestore:"kind"`
+	Revision        int64                        `firestore:"revision"`
+	ID              string                       `firestore:"id"`
+	RequestID       string                       `firestore:"request_id,omitempty" json:"-"`
+	CandidateID     string                       `firestore:"candidate_id"`
+	Due             time.Time                    `firestore:"due"`
+	Pending         bool                         `firestore:"pending"`
+	Attempts        int                          `firestore:"attempts"`
+	Token           string                       `firestore:"token"`
+	LeaseUntil      time.Time                    `firestore:"lease_until"`
+	Status          string                       `firestore:"status"`
+	ProfileSnapshot llm.OperationProfileSnapshot `firestore:"llm_profile_snapshot,omitempty"`
 }
 
 func WorkID(w Work) string {

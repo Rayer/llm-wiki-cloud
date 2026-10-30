@@ -27,7 +27,7 @@ func TestResolvePipelineLLMProfilesSendsReservationIdentity(t *testing.T) {
 			t.Errorf("decode resolver request: %v", err)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"source":"bootstrap","profiles":[]}`))
+		_, _ = w.Write([]byte(`{"schema_version":2,"snapshot_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","role_map_version":1,"source":"bootstrap","profiles":[]}`))
 	}))
 	defer server.Close()
 
@@ -42,7 +42,7 @@ func TestResolvePipelineLLMProfilesSendsReservationIdentity(t *testing.T) {
 	if len(profiles) != 0 || shared {
 		t.Fatalf("resolve result = (%d profiles, shared=%t), want empty bootstrap", len(profiles), shared)
 	}
-	want := pipelineLLMProfileResolverRequest{ReservationID: "reservation-fixture", UserID: "user-fixture", ProjectID: "project-fixture"}
+	want := pipelineLLMProfileResolverRequest{ReservationID: "reservation-fixture", UserID: "user-fixture", ProjectID: "project-fixture", IncludeCredentials: true}
 	if received != want {
 		t.Fatalf("resolver request = %+v, want %+v", received, want)
 	}
@@ -62,20 +62,32 @@ func (c *resolverSuggestedQueryClient) Chat(context.Context, string, string) (st
 }
 
 func (c *resolverSuggestedQueryClient) ModelIdentity() (llm.ModelIdentity, bool) {
-	return llm.ModelIdentity{Provider: c.profile.Provider, Model: c.profile.Model}, true
+	return llm.ModelIdentity{Provider: c.profile.Provider, Model: normalizePipelineLLMModels(c.profile).Fast}, true
 }
 
 func (c *resolverSuggestedQueryClient) ProfileIdentity() llm.ProfileIdentity {
-	return llm.ProfileIdentity{ID: c.profile.ID, Revision: c.profile.Revision, Provider: c.profile.Provider, Protocol: string(c.profile.Protocol), Model: c.profile.Model}
+	return llm.ProfileIdentity{ID: c.profile.ID, Revision: c.profile.Revision, Role: string(llm.ProfileRoleFast), Provider: c.profile.Provider, Protocol: string(c.profile.Protocol), Model: normalizePipelineLLMModels(c.profile).Fast}
 }
 
 func (c *resolverSuggestedQueryClient) Close() { *c.closed++ }
 
 func testResolverProfile(id, model string, revision int64) pipelineLLMProfile {
 	return pipelineLLMProfile{
+		SchemaVersion: 2, SnapshotDigest: strings.Repeat("a", 64), RoleMapVersion: 1,
 		ID: id, Revision: revision, Provider: "custom", Protocol: llm.ProtocolOpenAIChatCompletions,
-		Endpoint: "https://fixture.example/v1", Model: model, APIKey: []byte("synthetic-" + id),
+		Endpoint: "https://fixture.example/v1", Models: pipelineLLMModels{Fast: model, Heavy: model}, APIKey: []byte("synthetic-" + id),
 	}
+}
+
+func writePipelineProfileWire(w http.ResponseWriter, source string, profiles []pipelineLLMProfile) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(struct {
+		SchemaVersion  int                  `json:"schema_version"`
+		SnapshotDigest string               `json:"snapshot_digest"`
+		RoleMapVersion int                  `json:"role_map_version"`
+		Source         string               `json:"source"`
+		Profiles       []pipelineLLMProfile `json:"profiles"`
+	}{2, strings.Repeat("a", 64), 1, source, profiles})
 }
 
 type modelOnlySuggestedQueryProvider struct {
@@ -127,26 +139,15 @@ func testSuggestedQueriesVault(t *testing.T) string {
 	return vault
 }
 
-func TestStandaloneSuggestedQueriesResolvesSelectedProjectSourceAndFreshQuotaFallback(t *testing.T) {
+func TestStandaloneSuggestedQueriesUsesPinnedProjectSourceForQuotaFallback(t *testing.T) {
 	firstProfiles := []pipelineLLMProfile{testResolverProfile("profile-a", "model-a", 1), testResolverProfile("profile-b", "model-b", 2)}
-	refreshedProfiles := []pipelineLLMProfile{testResolverProfile("profile-b", "model-b", 2)}
 	var resolverCalls int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resolverCalls++
 		if r.URL.Path != "/internal/pipeline/llm-profile" {
 			t.Errorf("request path = %q", r.URL.Path)
 		}
-		profiles := firstProfiles
-		if resolverCalls > 1 {
-			profiles = refreshedProfiles
-		}
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(struct {
-			Source   string               `json:"source"`
-			Profiles []pipelineLLMProfile `json:"profiles"`
-		}{Source: "shared", Profiles: profiles}); err != nil {
-			t.Errorf("encode resolver response: %v", err)
-		}
+		writePipelineProfileWire(w, "shared", firstProfiles)
 	}))
 	defer server.Close()
 
@@ -172,8 +173,8 @@ func TestStandaloneSuggestedQueriesResolvesSelectedProjectSourceAndFreshQuotaFal
 	if err != nil {
 		t.Fatalf("runSuggestedQueriesCommand() error = %v", err)
 	}
-	if resolverCalls != 2 || strings.Join(selected, ",") != "profile-a,profile-b" || closed != 2 {
-		t.Fatalf("resolver calls=%d selected=%v closed=%d, want fresh A quota -> B success", resolverCalls, selected, closed)
+	if resolverCalls != 1 || strings.Join(selected, ",") != "profile-a,profile-b" || closed != 2 {
+		t.Fatalf("resolver calls=%d selected=%v closed=%d, want pinned A quota -> B success", resolverCalls, selected, closed)
 	}
 	data, err := os.ReadFile(filepath.Join(vault, suggestedqueries.Path))
 	if err != nil {
@@ -188,7 +189,7 @@ func TestStandaloneSuggestedQueriesResolvesSelectedProjectSourceAndFreshQuotaFal
 	}
 	metadata := artifact.Candidates[0].Generation
 	if metadata.Model != "model-b" || metadata.ProfileID != "profile-b" || metadata.ProfileRevision != 2 || metadata.Provider != "custom" || metadata.Protocol != string(llm.ProtocolOpenAIChatCompletions) {
-		t.Fatalf("artifact generation metadata=%+v, want successful refreshed profile B", metadata)
+		t.Fatalf("artifact generation metadata=%+v, want successful pinned profile B", metadata)
 	}
 }
 
@@ -197,7 +198,7 @@ func TestStandaloneSuggestedQueriesUnavailableSourceFailsBeforeWorkspaceAndBoots
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resolverCalls++
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"source":"shared","profiles":[]}`))
+		writePipelineProfileWire(w, "shared", nil)
 	}))
 	defer server.Close()
 	vault := testSuggestedQueriesVault(t)
@@ -229,7 +230,7 @@ func TestStandaloneSuggestedQueriesUnavailableSourceFailsBeforeWorkspaceAndBoots
 
 	bootstrapServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"source":"bootstrap","profiles":[]}`))
+		_, _ = w.Write([]byte(`{"schema_version":2,"snapshot_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","role_map_version":1,"source":"bootstrap","profiles":[]}`))
 	}))
 	defer bootstrapServer.Close()
 	bootstrap, err := resolveSuggestedQueriesSource(context.Background(), workerConfig{
@@ -380,7 +381,7 @@ func TestSharedProfileQuotaRetryStopsAfterSuccessfulCallOrMissingSafetyMarker(t 
 	}
 }
 
-func TestSharedProfileQuotaRetryRevalidatesNextCandidate(t *testing.T) {
+func TestSharedProfileQuotaRetryUsesPinnedNextCandidate(t *testing.T) {
 	oldHooks := localWorkspaceBatchHooks
 	t.Cleanup(func() { localWorkspaceBatchHooks = oldHooks })
 	root := t.TempDir()
@@ -393,8 +394,7 @@ func TestSharedProfileQuotaRetryRevalidatesNextCandidate(t *testing.T) {
 	resolverCalls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resolverCalls++
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"source":"shared","profiles":[{"id":"shared-current","revision":3,"provider":"custom","protocol":"openai_chat_completions","endpoint":"https://fixture.example/v1","model":"current-model","api_key":"c3ludGhldGljLWN1cnJlbnQta2V5"}]}`))
+		writePipelineProfileWire(w, "shared", []pipelineLLMProfile{testResolverProfile("shared-current", "current-model", 3)})
 	}))
 	defer server.Close()
 	hooks := oldHooks
@@ -422,16 +422,13 @@ func TestSharedProfileQuotaRetryRevalidatesNextCandidate(t *testing.T) {
 		ProfileCallSuccessMarkerPath: filepath.Join(root, "profile-call-success.marker"),
 		ProfileResolverURL:           server.URL + "/internal/pipeline/llm-profile", LocalCloudScope: "test-scope",
 		PipelineReservationID: "reservation-fixture", UserID: "user-fixture", ProjectID: "project-fixture",
-		ProfileCandidates: []pipelineLLMProfile{
-			{ID: "shared-first", Revision: 1},
-			{ID: "removed-second", Revision: 2},
-		},
+		ProfileCandidates: []pipelineLLMProfile{testResolverProfile("shared-first", "first-model", 1), testResolverProfile("removed-second", "second-model", 2)},
 	}
 	if _, err := runWorkerBatchAtVaultWithProfilePool(context.Background(), cfg, [][]string{{"run"}}, root, firstWorkspace, nil, false); err != nil {
 		t.Fatalf("runWorkerBatchAtVaultWithProfilePool() error = %v", err)
 	}
-	if resolverCalls != 1 || len(selected) != 2 || selected[0] != "shared-first" || selected[1] != "shared-current" {
-		t.Fatalf("resolver calls=%d selected=%v, want one fresh resolve and no stale second candidate", resolverCalls, selected)
+	if resolverCalls != 0 || len(selected) != 2 || selected[0] != "shared-first" || selected[1] != "removed-second" {
+		t.Fatalf("resolver calls=%d selected=%v, want the pinned candidate set without refresh", resolverCalls, selected)
 	}
 }
 
@@ -478,8 +475,9 @@ func TestCloudProfileRunnerAppliesResolvedPersonalProfile(t *testing.T) {
 	cfg := workerConfig{
 		WorkspaceDir: root,
 		ProfileCandidates: []pipelineLLMProfile{{
+			SchemaVersion: 2, SnapshotDigest: strings.Repeat("a", 64), RoleMapVersion: 1,
 			ID: "personal-profile", Revision: 4, Provider: "custom", Protocol: "openai_chat_completions",
-			Endpoint: "https://fixture.example/v1", Model: "fixture-chat", APIKey: []byte("synthetic-profile-key"),
+			Endpoint: "https://fixture.example/v1", Models: pipelineLLMModels{Fast: "fixture-fast", Heavy: "fixture-heavy"}, APIKey: []byte("synthetic-profile-key"),
 		}},
 	}
 
@@ -492,7 +490,7 @@ func TestCloudProfileRunnerAppliesResolvedPersonalProfile(t *testing.T) {
 		t.Fatalf("selected=%q workspace=%q; want personal profile in an isolated copy", selectedID, workspace)
 	}
 	if !strings.Contains(gotProfileConfig, `"endpoint":"https://fixture.example/v1"`) ||
-		!strings.Contains(gotProfileConfig, `"model":"fixture-chat"`) || gotProfileKey != "synthetic-profile-key" {
+		!strings.Contains(gotProfileConfig, `"models":{"fast":"fixture-fast","heavy":"fixture-heavy"}`) || gotProfileKey != "synthetic-profile-key" {
 		t.Fatalf("Synto profile environment not applied (config present=%t, key present=%t)", gotProfileConfig != "", gotProfileKey != "")
 	}
 }

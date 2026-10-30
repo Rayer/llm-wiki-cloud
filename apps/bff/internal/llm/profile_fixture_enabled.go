@@ -28,7 +28,18 @@ func (profileFixtureRoundTripper) RoundTrip(request *http.Request) (*http.Respon
 	if request == nil || request.URL == nil || request.URL.Scheme != "https" || request.URL.Hostname() != "fixture.example" {
 		return nil, errors.New("profile fixture rejected an unconfigured endpoint")
 	}
-	defer request.Body.Close()
+	if request.Body != nil {
+		defer request.Body.Close()
+	}
+	if request.Method == http.MethodGet && strings.HasSuffix(strings.TrimRight(request.URL.Path, "/"), "/models") {
+		writeProfileFixtureReceipt("openai_models_discovery", "", request.URL.Path)
+		body := `{"object":"list","data":[{"id":"fixture-fast-model"},{"id":"fixture-heavy-model"}]}`
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(body)), ContentLength: int64(len(body)), Request: request}, nil
+	}
+	if request.Method != http.MethodPost {
+		return nil, errors.New("profile fixture rejected an unsupported method")
+	}
 	var input struct {
 		Model    string `json:"model"`
 		Messages []struct {
