@@ -44,6 +44,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/localpipeline"
 	"github.com/rayer/llm-wiki-bff/internal/observability/otlpfixture"
 	"github.com/rayer/llm-wiki-bff/internal/pipelinequota"
+	"github.com/rayer/llm-wiki-bff/internal/profilederive"
 	"github.com/rayer/llm-wiki-bff/internal/query"
 	"github.com/rayer/llm-wiki-bff/internal/queryquality"
 	"github.com/rayer/llm-wiki-bff/internal/sourcestatus"
@@ -240,11 +241,32 @@ func TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure(t *testin
 		t.Fatalf("create native worker stderr capture: %v", err)
 	}
 	defer workerStderr.Close()
+	h := handlerv1.New(storageClient, fsClient, nil, cache.New(), nil, nil)
+	h.SetAccountLookup(func(context.Context, string) (*auth.UserRecord, error) {
+		return &auth.UserRecord{Status: auth.AccountActive, Role: "member"}, nil
+	})
+	profileResolverRouter := gin.New()
+	profileResolverRouter.POST("/internal/pipeline/llm-profile", func(c *gin.Context) {
+		var request struct {
+			ReservationID string `json:"reservation_id"`
+			UserID        string `json:"user_id"`
+			ProjectID     string `json:"project_id"`
+		}
+		if c.ShouldBindJSON(&request) != nil || request.ReservationID == "" || request.UserID == "" || request.ProjectID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid local profile request"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"source": "bootstrap", "profiles": []interface{}{}})
+	})
+	profileResolverServer := httptest.NewServer(profileResolverRouter)
+	t.Cleanup(profileResolverServer.Close)
+	profileResolverURL := profileResolverServer.URL + "/internal/pipeline/llm-profile"
 	manager, err = localpipeline.New(localpipeline.Config{
 		Firestore: fsClient.Raw(), Storage: storageClient, Worker: worker, Stderr: workerStderr,
 		Project: project, Bucket: bucket, Database: database,
 		Scope: scope, WorkDir: t.TempDir(),
 		PipelineConfigPath: generatedConfigPath, PipelineBindingsPath: privateBindingsPath,
+		ProfileResolverURL: profileResolverURL,
 	})
 	if err != nil {
 		t.Fatalf("configure native worker manager: %v", err)
@@ -253,10 +275,6 @@ func TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure(t *testin
 		t.Fatalf("reconcile test scope: %v", err)
 	}
 
-	h := handlerv1.New(storageClient, fsClient, nil, cache.New(), nil, nil)
-	h.SetAccountLookup(func(context.Context, string) (*auth.UserRecord, error) {
-		return &auth.UserRecord{Status: auth.AccountActive, Role: "member"}, nil
-	})
 	h.SetPipelineQuotaConfig(5, 1, 1, nil)
 	h.SetLocalPipelineExecutor(manager)
 	var cloudRunCalls atomic.Int32
@@ -673,6 +691,224 @@ func TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure(t *testin
 	}
 	t.Logf("SCHEDULED_QUERY_EVIDENCE status=%d execution_id=%s generation_id=%s source_id=%s source_slug=%s raw_sha256=%s concept_page_sha256=%x model_adapter=loopback-openai-compatible model_calls=%d results=%+v citations=%+v answer=%q", queryResponse.StatusCode, scheduledExecutionID, scheduledManifest.GenerationID, sourceRow.StableID, scheduledSourceSlug, wantRawDigest, conceptPageDigest, queryModelCalls.Load(), queryResult.Results, queryResult.Citations, queryResult.AISynth)
 
+	// Exercise the LWC-442 source-commit path through the durable Profile
+	// dispatcher and the same native worker/publication/Query stack. The
+	// dispatcher identity is a local fixture; the only intercepted service is
+	// the Query model transport above.
+	const autoProject = "auto-pipeline-causal-e2e"
+	const autoAudience = "http://profile-dispatch.fixture.local/internal/profile/dispatch"
+	const autoServiceAccount = "profile-dispatch-fixture@llm-wiki-cloud.invalid"
+	autoProjectRef := scopedfirestore.Collection(fsClient.Raw(), "projects").Doc(userID + "_" + autoProject)
+	if _, err := autoProjectRef.Set(ctx, map[string]interface{}{
+		"user_id": userID, "project_id": autoProject, "status": "ready",
+		"auto_pipeline_enabled": true, "auto_pipeline_revision": int64(1),
+		"pipeline_source_revision": int64(0),
+	}); err != nil {
+		t.Fatalf("seed enabled auto-pipeline Project: %v", err)
+	}
+	if _, err := autoProjectRef.Collection("profile").Doc("state").Set(ctx, map[string]interface{}{
+		"project_id": autoProject, "revision": int64(1), "requirements": []map[string]interface{}{},
+	}); err != nil {
+		t.Fatalf("seed empty saved Profile for automatic intent preparation: %v", err)
+	}
+	autoAdminRef := scopedfirestore.Collection(fsClient.Raw(), "system").Doc("pipeline_automation")
+	if _, err := autoAdminRef.Set(ctx, map[string]interface{}{"allow_auto_pipeline": true, "revision": int64(1)}); err != nil {
+		t.Fatalf("enable local auto-pipeline admission: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		for _, name := range []string{"pipeline_source_events", "pipeline_source_current"} {
+			docs, queryErr := autoProjectRef.Collection(name).Documents(cleanupCtx).GetAll()
+			if queryErr != nil {
+				t.Errorf("list auto-pipeline %s cleanup documents: %v", name, queryErr)
+				continue
+			}
+			for _, doc := range docs {
+				if _, deleteErr := doc.Ref.Delete(cleanupCtx); deleteErr != nil {
+					t.Errorf("delete auto-pipeline %s cleanup document: %v", name, deleteErr)
+				}
+			}
+		}
+		if _, err := autoProjectRef.Collection("profile").Doc("state").Delete(cleanupCtx); err != nil && status.Code(err) != codes.NotFound {
+			t.Errorf("delete auto-pipeline Profile fixture: %v", err)
+		}
+		for _, name := range []string{"profile_runtime_work", "pipeline_quota_reservations"} {
+			docs, queryErr := scopedfirestore.Collection(fsClient.Raw(), name).Where("user_id", "==", userID).Where("project_id", "==", autoProject).Documents(cleanupCtx).GetAll()
+			if queryErr != nil {
+				t.Errorf("list auto-pipeline %s cleanup documents: %v", name, queryErr)
+				continue
+			}
+			for _, doc := range docs {
+				if _, deleteErr := doc.Ref.Delete(cleanupCtx); deleteErr != nil {
+					t.Errorf("delete auto-pipeline %s cleanup document: %v", name, deleteErr)
+				}
+			}
+		}
+		if _, err := autoProjectRef.Delete(cleanupCtx); err != nil && status.Code(err) != codes.NotFound {
+			t.Errorf("delete auto-pipeline Project fixture: %v", err)
+		}
+		if _, err := autoAdminRef.Delete(cleanupCtx); err != nil && status.Code(err) != codes.NotFound {
+			t.Errorf("delete auto-pipeline Admin fixture: %v", err)
+		}
+	})
+	autoRawBody := []byte("LWC442_CAUSAL_E2E: rare violet compass verifies the automatically published source.")
+	var autoUploadBody bytes.Buffer
+	autoUploadWriter := multipart.NewWriter(&autoUploadBody)
+	autoFilePart, err := autoUploadWriter.CreateFormFile("file", "lwc442-auto-e2e-source.md")
+	if err != nil {
+		t.Fatalf("create auto-pipeline raw intake part: %v", err)
+	}
+	if _, err := autoFilePart.Write(autoRawBody); err != nil {
+		t.Fatalf("write auto-pipeline raw intake body: %v", err)
+	}
+	if err := autoUploadWriter.Close(); err != nil {
+		t.Fatalf("close auto-pipeline raw intake form: %v", err)
+	}
+	autoIntakeRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/api/v1/raw/upload", &autoUploadBody)
+	if err != nil {
+		t.Fatalf("create auto-pipeline raw intake request: %v", err)
+	}
+	autoIntakeRequest.Header.Set("Authorization", "Bearer "+token)
+	autoIntakeRequest.Header.Set("X-Project-ID", autoProject)
+	autoIntakeRequest.Header.Set("Content-Type", autoUploadWriter.FormDataContentType())
+	autoIntakeResponse, err := server.Client().Do(autoIntakeRequest)
+	if err != nil {
+		t.Fatalf("submit source through auto-pipeline raw writer: %v", err)
+	}
+	var autoIntakeResult struct {
+		Path             string `json:"path"`
+		SHA256           string `json:"sha256"`
+		Status           string `json:"status"`
+		ProcessingStatus string `json:"processing_status"`
+		SourceRevision   int64  `json:"source_revision"`
+	}
+	autoIntakeDecodeErr := json.NewDecoder(io.LimitReader(autoIntakeResponse.Body, 1<<20)).Decode(&autoIntakeResult)
+	_ = autoIntakeResponse.Body.Close()
+	autoRawDigest := fmt.Sprintf("%x", sha256.Sum256(autoRawBody))
+	if autoIntakeResponse.StatusCode != http.StatusCreated || autoIntakeDecodeErr != nil || autoIntakeResult.Path != "raw/lwc442-auto-e2e-source.md" ||
+		autoIntakeResult.SHA256 != autoRawDigest || autoIntakeResult.Status != "created" || autoIntakeResult.ProcessingStatus != "pending" || autoIntakeResult.SourceRevision != 1 {
+		t.Fatalf("auto-pipeline raw intake status=%d result=%+v decodeErr=%v; want committed source revision 1", autoIntakeResponse.StatusCode, autoIntakeResult, autoIntakeDecodeErr)
+	}
+	autoSourceEventQuery := autoProjectRef.Collection("pipeline_source_events").Where("raw_path", "==", "lwc442-auto-e2e-source.md")
+	autoSourceEvents, err := autoSourceEventQuery.Documents(ctx).GetAll()
+	if err != nil || len(autoSourceEvents) != 1 || autoSourceEvents[0].Data()["commit_state"] != "committed" || autoSourceEvents[0].Data()["confirmed_sha256"] != autoRawDigest {
+		t.Fatalf("auto-pipeline source journal event=%v err=%v; want committed event with raw digest", autoSourceEvents, err)
+	}
+	dispatcher := &handlerv1.ProfileDispatcher{Handler: h, Audience: autoAudience, ServiceAccount: autoServiceAccount}
+	dispatcher.Provider = profilederive.NewProvider(localPipelineBootstrapChatClient{})
+	dispatcher.ValidateIdentity = func(_ context.Context, bearer, audience string) (*idtoken.Payload, error) {
+		if bearer != "fixture-profile-dispatch-token" || audience != autoAudience {
+			return nil, errors.New("local Profile dispatcher identity mismatch")
+		}
+		return &idtoken.Payload{Audience: audience, Claims: map[string]interface{}{"email": autoServiceAccount, "email_verified": true}}, nil
+	}
+	dispatchServer := httptest.NewServer(dispatcher)
+	defer dispatchServer.Close()
+	var autoReservation scopedfirestore.QuotaReservation
+	var autoReservationID string
+	for attempt := 0; attempt < 8; attempt++ {
+		dispatchRequest, requestErr := http.NewRequestWithContext(ctx, http.MethodPost, dispatchServer.URL, nil)
+		if requestErr != nil {
+			t.Fatalf("create local Profile dispatch request: %v", requestErr)
+		}
+		dispatchRequest.Header.Set("Authorization", "Bearer fixture-profile-dispatch-token")
+		dispatchResponse, dispatchErr := server.Client().Do(dispatchRequest)
+		if dispatchErr != nil {
+			t.Fatalf("call durable local Profile dispatcher: %v", dispatchErr)
+		}
+		var dispatchResult struct {
+			Processed int `json:"processed"`
+		}
+		dispatchDecodeErr := json.NewDecoder(io.LimitReader(dispatchResponse.Body, 1<<20)).Decode(&dispatchResult)
+		_ = dispatchResponse.Body.Close()
+		if dispatchResponse.StatusCode != http.StatusOK || dispatchDecodeErr != nil {
+			t.Fatalf("local Profile dispatch status=%d result=%+v decodeErr=%v", dispatchResponse.StatusCode, dispatchResult, dispatchDecodeErr)
+		}
+		reservationDocs, listErr := scopedfirestore.Collection(fsClient.Raw(), "pipeline_quota_reservations").Where("user_id", "==", userID).Where("project_id", "==", autoProject).Documents(ctx).GetAll()
+		if listErr != nil {
+			t.Fatalf("read automatic quota reservation: %v", listErr)
+		}
+		for _, doc := range reservationDocs {
+			var reservation scopedfirestore.QuotaReservation
+			if err := doc.DataTo(&reservation); err != nil {
+				t.Fatalf("decode automatic quota reservation: %v", err)
+			}
+			if reservation.Trigger == pipelinequota.TriggerSourceCommit {
+				reservation.ExecutionID, _ = doc.Data()["execution_id"].(string)
+				reservation.BudgetClass, _ = doc.Data()["budget_class"].(string)
+				autoReservation, autoReservationID = reservation, doc.Ref.ID
+			}
+		}
+		if autoReservationID != "" && autoReservation.ExecutionID != "" {
+			break
+		}
+	}
+	if autoReservationID == "" || autoReservation.ExecutionID == "" || autoReservation.BudgetClass != "none" {
+		autoProjectSnapshot, projectErr := autoProjectRef.Get(ctx)
+		autoWorkDocs, workErr := scopedfirestore.Collection(fsClient.Raw(), "profile_runtime_work").Where("user_id", "==", userID).Where("project_id", "==", autoProject).Documents(ctx).GetAll()
+		autoReservationDoc, reservationErr := scopedfirestore.Collection(fsClient.Raw(), "pipeline_quota_reservations").Doc(autoReservationID).Get(ctx)
+		t.Fatalf("durable source dispatcher did not start an automatic local Pipeline reservation=%+v id=%q project=%v projectErr=%v work=%v workErr=%v reservation=%v reservationErr=%v", autoReservation, autoReservationID, autoProjectSnapshot.Data(), projectErr, autoWorkDocs, workErr, autoReservationDoc.Data(), reservationErr)
+	}
+	autoExecutionID := autoReservation.ExecutionID
+	autoState, autoReason := waitLocalPipelineStatus(t, ctx, server.Client(), server.URL, token, autoProject, autoExecutionID)
+	if autoState != "SUCCEEDED" || autoReason != "" {
+		t.Fatalf("automatic native worker status=%q reason=%q; worker stderr=%q", autoState, autoReason, readLocalPipelineWorkerStderr(t, workerStderr, workerStderrPath))
+	}
+	autoStorage := storageClient.WithScope(userID, autoProject)
+	autoManifest, _, autoManifestExists, err := autoStorage.CurrentManifest(ctx)
+	if err != nil || !autoManifestExists || autoManifest.LocalExecutionID != autoExecutionID {
+		t.Fatalf("automatic manifest exists=%v execution=%q err=%v; want exact auto-triggered worker publication", autoManifestExists, autoManifest.LocalExecutionID, err)
+	}
+	autoReceiptBytes, err := autoStorage.ReadLocalPublicationReceipt(ctx, autoExecutionID)
+	if err != nil {
+		t.Fatalf("read automatic publication receipt: %v", err)
+	}
+	autoReceipt, err := localcloud.DecodePublicationReceipt(autoReceiptBytes)
+	if err != nil || autoReceipt.ExecutionID != autoExecutionID || autoReceipt.GenerationID != autoManifest.GenerationID {
+		t.Fatalf("automatic publication receipt=%+v err=%v", autoReceipt, err)
+	}
+	autoConceptPage, err := autoStorage.ReadFile(ctx, "wiki/alpha.md")
+	if err != nil || !bytes.Contains(autoConceptPage, autoRawBody) {
+		t.Fatalf("auto-published concept page lacks the exact writer bytes: err=%v page=%q", err, autoConceptPage)
+	}
+	autoQueryRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/api/v1/query", strings.NewReader(`{"q":"rare violet compass","mode":"wiki"}`))
+	if err != nil {
+		t.Fatalf("create automatic source Query request: %v", err)
+	}
+	autoQueryRequest.Header.Set("Authorization", "Bearer "+token)
+	autoQueryRequest.Header.Set("X-Project-ID", autoProject)
+	autoQueryRequest.Header.Set("Content-Type", "application/json")
+	autoQueryResponse, err := server.Client().Do(autoQueryRequest)
+	if err != nil {
+		t.Fatalf("query newly auto-published source: %v", err)
+	}
+	var autoQueryResult handlerapi.QueryResponse
+	autoQueryDecodeErr := json.NewDecoder(io.LimitReader(autoQueryResponse.Body, 1<<20)).Decode(&autoQueryResult)
+	_ = autoQueryResponse.Body.Close()
+	if autoQueryResponse.StatusCode != http.StatusOK || autoQueryDecodeErr != nil {
+		t.Fatalf("automatic source Query status=%d decodeErr=%v executorErr=%v body=%+v", autoQueryResponse.StatusCode, autoQueryDecodeErr, queryExecutorCapture.err, autoQueryResult)
+	}
+	var returnedAutoConcept, citedAutoConcept bool
+	for _, result := range autoQueryResult.Results {
+		if result.Type == "concept" && result.Slug == "alpha" {
+			returnedAutoConcept = true
+		}
+	}
+	for _, citation := range autoQueryResult.Citations {
+		if citation.Type == "concept" && citation.Slug == "alpha" && citation.ID != "" && citation.Path == "/concepts/"+citation.ID+"-alpha" && bytes.Contains(autoConceptPage, []byte("id: "+citation.ID)) {
+			citedAutoConcept = true
+		}
+	}
+	if !returnedAutoConcept || !citedAutoConcept || strings.TrimSpace(autoQueryResult.AISynth) == "" || !strings.Contains(strings.ToLower(autoQueryResult.AISynth), "newly published raw article") {
+		t.Fatalf("automatic source Query did not answer from and cite the newly published raw source: result=%t citation=%t results=%+v citations=%+v answer=%q", returnedAutoConcept, citedAutoConcept, autoQueryResult.Results, autoQueryResult.Citations, autoQueryResult.AISynth)
+	}
+	projectState, err := autoProjectRef.Get(ctx)
+	if err != nil || projectState.Data()["pipeline_automation_status"] != "published" {
+		t.Fatalf("auto-pipeline final Project status=%v err=%v; want published", projectState.Data(), err)
+	}
+	t.Logf("AUTO_PIPELINE_QUERY_EVIDENCE trigger=source_commit source_path=%s raw_sha256=%s reservation_id=%s execution_id=%s generation_id=%s receipt_generation=%s query_status=%d model_calls=%d result_alpha=%t cited_alpha=%t answer=%q", autoIntakeResult.Path, autoRawDigest, autoReservationID, autoExecutionID, autoManifest.GenerationID, autoReceipt.GenerationID, autoQueryResponse.StatusCode, queryModelCalls.Load(), returnedAutoConcept, citedAutoConcept, autoQueryResult.AISynth)
+
 	time.Sleep(1100 * time.Millisecond) // satisfy the configured test cooldown
 	if _, err := projectStorage.WriteBytes(ctx, []byte("Incremental local pipeline source."), "raw/incremental.md"); err != nil {
 		t.Fatalf("seed incremental raw input: %v", err)
@@ -766,6 +1002,7 @@ func TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure(t *testin
 		Firestore: fsClient.Raw(), Storage: raceStorageClient, Worker: worker, Stderr: workerStderr,
 		Project: project, Bucket: bucket, Database: database, Scope: scope, WorkDir: t.TempDir(),
 		PipelineConfigPath: generatedConfigPath, PipelineBindingsPath: privateBindingsPath,
+		ProfileResolverURL: profileResolverURL,
 	})
 	if err != nil {
 		t.Fatalf("configure proxy-backed native finish manager: %v", err)
@@ -845,6 +1082,7 @@ func TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure(t *testin
 		Firestore: fsClient.Raw(), Storage: storageClient, Worker: worker, Stderr: workerStderr,
 		Project: project, Bucket: bucket, Database: database, Scope: scope, WorkDir: t.TempDir(),
 		PipelineConfigPath: generatedConfigPath, PipelineBindingsPath: privateBindingsPath,
+		ProfileResolverURL: profileResolverURL,
 	})
 	if err != nil {
 		t.Fatalf("restart native worker manager after stale-finish race: %v", err)
@@ -1028,6 +1266,7 @@ func TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure(t *testin
 		Project: project, Bucket: bucket, Database: database,
 		Scope: scope, WorkDir: t.TempDir(),
 		PipelineConfigPath: generatedConfigPath, PipelineBindingsPath: privateBindingsPath,
+		ProfileResolverURL: profileResolverURL,
 	})
 	if err != nil {
 		t.Fatalf("restart native worker manager after Firestore outage: %v", err)
@@ -1732,6 +1971,12 @@ func verifyLocalPipelineRetainedSentinels(ctx context.Context, fs *cloudfirestor
 		return errors.New("other-scope Storage sentinel changed")
 	}
 	return nil
+}
+
+type localPipelineBootstrapChatClient struct{}
+
+func (localPipelineBootstrapChatClient) ChatWithMetadata(context.Context, string, string) (string, string, error) {
+	return `{"compile_guidance":"","guidance_diff":"fixture bootstrap","requirements":[]}`, "local-profile-fixture", nil
 }
 
 type localPipelineCitationTransport struct{}

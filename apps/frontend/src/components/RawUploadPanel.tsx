@@ -63,6 +63,18 @@ function formatBytes(bytes: number, locale: 'zh-TW' | 'zh-CN' | 'en'): string {
   return `${bytes.toLocaleString(locale === 'zh-TW' ? 'zh-TW' : locale === 'zh-CN' ? 'zh-CN' : 'en-US')} B`;
 }
 
+function automationStatusLabel(status: string, t: (key: string) => string): string {
+  const copy: Record<string, [string, string]> = {
+    pending: ['Pipeline.automationQueued', 'Saved and waiting for automatic processing; not yet published or searchable.'],
+    not_started_disabled: ['Pipeline.automationDisabledPending', 'Saved; automatic processing is disabled by the Admin or Project switch.'],
+    unknown: ['Pipeline.automationUnknown', 'Saved; processing status could not be confirmed.'],
+    not_started: ['Pipeline.automationNoChange', 'Saved; no new automatic processing was queued for this save.'],
+  };
+  const [key, fallback] = copy[status] ?? ['Pipeline.automationUnknown', `Saved; processing status is ${status}.`];
+  const translated = t(key);
+  return translated === key ? fallback : translated;
+}
+
 function uploadStatusLabel(status: UploadItemStatus, t: (key: string) => string): string {
   switch (status) {
     case 'queued':
@@ -521,6 +533,11 @@ export function RawUploadPanel({
                   <p className="truncate font-medium text-zinc-200" title={item.file.name}>{item.file.name}</p>
                   <p className="text-zinc-500">{t('RawUpload.projectLabel', { project: item.projectName, id: item.projectId })}</p>
                   {item.result ? <p className="truncate text-zinc-400" title={item.result.path} data-testid="upload-path">{item.result.path}</p> : null}
+                  {item.result?.processing_status ? (
+                    <p className="mt-0.5 text-emerald-200/90" data-testid="upload-processing-status" role="status">
+                      {automationStatusLabel(item.result.processing_status, t)}
+                    </p>
+                  ) : null}
                   <div
                     className="mt-1 h-1.5 overflow-hidden rounded-full bg-white/10"
                     role="progressbar"

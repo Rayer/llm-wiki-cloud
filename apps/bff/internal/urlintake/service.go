@@ -24,6 +24,7 @@ import (
 	cloudstorage "cloud.google.com/go/storage"
 	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"github.com/rayer/llm-wiki-bff/internal/rawintake"
+	"github.com/rayer/llm-wiki-bff/internal/sourceautomation"
 	"github.com/rayer/llm-wiki-bff/internal/storage"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -100,6 +101,7 @@ type Result struct {
 	Preview           *CandidatePreview  `json:"preview,omitempty"`
 	Storage           *StorageOutcome    `json:"storage,omitempty"`
 	ProcessingStatus  string             `json:"processing_status,omitempty"`
+	SourceRevision    int64              `json:"source_revision,omitempty"`
 }
 
 // FailureDiagnostic carries a bounded Fetch dependency classification to API consumers.
@@ -111,12 +113,13 @@ type FailureDiagnostic struct {
 }
 
 type Service struct {
-	Fetcher    Fetcher
-	Evaluator  QualityEvaluator
-	Stores     StoreFactory
-	Resolver   IPResolver
-	Thresholds QualityThresholds
-	Now        func() time.Time
+	Fetcher       Fetcher
+	Evaluator     QualityEvaluator
+	Stores        StoreFactory
+	SourceJournal sourceautomation.Journal
+	Resolver      IPResolver
+	Thresholds    QualityThresholds
+	Now           func() time.Time
 
 	mu            sync.Mutex
 	confirmations map[string]*pendingConfirmation
@@ -129,6 +132,7 @@ type pendingConfirmation struct {
 
 type candidate struct {
 	scope              ActorProject
+	entrypoint         string
 	originalURL        string
 	normalizedURL      string
 	identitySHA256     string
@@ -143,6 +147,7 @@ type candidate struct {
 
 type candidateReceipt struct {
 	Version            int              `json:"version"`
+	Entrypoint         string           `json:"entrypoint,omitempty"`
 	ActorID            string           `json:"actor_id"`
 	ProjectID          string           `json:"project_id"`
 	OriginalURL        string           `json:"original_url"`
@@ -288,6 +293,10 @@ func (s *Service) intake(ctx context.Context, verified ActorProject, request Imp
 		return Result{Status: "rejected", Message: "The merged raw content exceeds the supported size; no file was changed."}, nil
 	}
 	digest := digestString(data)
+	entrypoint := "url_accept"
+	if strict {
+		entrypoint = "mcp_import_url"
+	}
 	_, previewBody, _, _ := parseRawFrontmatter(data)
 	previewMarkdown := string(data)
 	if prepare {
@@ -327,7 +336,7 @@ func (s *Service) intake(ctx context.Context, verified ActorProject, request Imp
 			preview.Warning = "The Fetch provider explicitly marked this content as truncated."
 		}
 		ref, expiresAt, saveErr := s.saveCandidate(ctx, store, verified, &candidate{
-			scope: verified, originalURL: request.URL, normalizedURL: normalizedURL,
+			scope: verified, entrypoint: "url_accept", originalURL: request.URL, normalizedURL: normalizedURL,
 			identitySHA256: identityDigest, relativePath: target.relativePath,
 			expectedGeneration: target.generation, existing: target.exists,
 			data: data, digest: digest, preview: preview,
@@ -374,7 +383,7 @@ func (s *Service) intake(ctx context.Context, verified ActorProject, request Imp
 	}
 	if prepare {
 		ref, expiresAt, err := s.saveCandidate(ctx, store, verified, &candidate{
-			scope: verified, originalURL: request.URL, normalizedURL: normalizedURL,
+			scope: verified, entrypoint: "url_accept", originalURL: request.URL, normalizedURL: normalizedURL,
 			identitySHA256: identityDigest, relativePath: target.relativePath,
 			expectedGeneration: target.generation, existing: target.exists,
 			data: data, digest: digest, preview: preview,
@@ -387,7 +396,7 @@ func (s *Service) intake(ctx context.Context, verified ActorProject, request Imp
 	}
 	if needsConfirmation {
 		ref, expiresAt, err := s.saveConfirmation(&candidate{
-			scope: verified, originalURL: request.URL, normalizedURL: normalizedURL,
+			scope: verified, entrypoint: "url_accept", originalURL: request.URL, normalizedURL: normalizedURL,
 			identitySHA256: identityDigest, relativePath: target.relativePath,
 			expectedGeneration: target.generation, existing: target.exists,
 			data: data, digest: digest, preview: preview,
@@ -399,7 +408,7 @@ func (s *Service) intake(ctx context.Context, verified ActorProject, request Imp
 		return Result{Status: "needs_confirmation", Message: preview.Reason, ConfirmationRef: ref, ExpiresAt: expiresAt.Format(time.RFC3339), Preview: &preview}, nil
 	}
 	prepared := &candidate{
-		scope: verified, originalURL: request.URL, normalizedURL: normalizedURL,
+		scope: verified, entrypoint: entrypoint, originalURL: request.URL, normalizedURL: normalizedURL,
 		identitySHA256: identityDigest, relativePath: target.relativePath,
 		expectedGeneration: target.generation, existing: target.exists,
 		data: data, digest: digest, preview: preview,
@@ -582,7 +591,7 @@ func candidateUncertain(id, message string) Result {
 }
 
 func (s *Service) finishAccepted(ctx context.Context, store ProjectStore, id string, verified ActorProject, receipt candidateReceipt) (Result, error) {
-	prepared := &candidate{scope: verified, originalURL: receipt.OriginalURL, normalizedURL: receipt.NormalizedURL,
+	prepared := &candidate{scope: verified, entrypoint: receipt.Entrypoint, originalURL: receipt.OriginalURL, normalizedURL: receipt.NormalizedURL,
 		identitySHA256: receipt.IdentitySHA256, relativePath: receipt.RelativePath, expectedGeneration: receipt.ExpectedGeneration,
 		existing: receipt.Existing, data: receipt.Data, digest: receipt.Digest, preview: receipt.Preview, expiresAt: receipt.ExpiresAt}
 	result, err := s.commit(ctx, store, prepared)
@@ -643,6 +652,7 @@ func (s *Service) saveCandidate(ctx context.Context, store ProjectStore, scope A
 
 func receiptFromCandidate(scope ActorProject, c *candidate, expires time.Time) candidateReceipt {
 	return candidateReceipt{Version: 1, ActorID: scope.ActorID, ProjectID: scope.ProjectID, OriginalURL: c.originalURL,
+		Entrypoint:    c.entrypoint,
 		NormalizedURL: c.normalizedURL, IdentitySHA256: c.identitySHA256, RelativePath: c.relativePath,
 		ExpectedGeneration: c.expectedGeneration, Existing: c.existing, Data: append([]byte(nil), c.data...), Digest: c.digest,
 		Preview: c.preview, ExpiresAt: expires.UTC(), State: "prepared", Revision: c.digest}
@@ -1379,13 +1389,33 @@ func (s *Service) commit(ctx context.Context, store ProjectStore, prepared *cand
 		}
 		overwrite := prepared.expectedGeneration != 0
 		writer := expectedWriter{ConditionalWriter: store, path: "raw/" + prepared.relativePath, expected: prepared.expectedGeneration}
-		committed, commitErr := rawintake.Commit(ctx, writer, prepared.relativePath, prepared.data, overwrite)
+		committed, processingStatus, sourceRevision, commitErr := s.commitSourceRaw(ctx, store, writer, prepared, overwrite)
 		if commitErr != nil {
+			if committedSourceResult(committed, prepared) {
+				if processingStatus == "unknown" || (processingStatus == "not_started" && sourceRevision == 0 && s.SourceJournal != nil) {
+					processingStatus = "unknown"
+				}
+				result := storedResult(committed, &prepared.preview)
+				result.ProcessingStatus = processingStatus
+				result.SourceRevision = sourceRevision
+				result.Message = urlProcessingMessage(processingStatus)
+				return result, nil
+			}
+			if errors.Is(commitErr, sourceautomation.ErrSourceCommitUnconfirmed) {
+				return Result{Status: "uncertain", Message: "The URL save outcome could not be confirmed. Check the raw path before retrying.", FailureStage: "commit", Preview: &prepared.preview}, nil
+			}
 			if errors.Is(commitErr, rawintake.ErrCommitUncertain) {
 				readback, _, readbackExists, readErr := readRaw(ctx, store, prepared.relativePath)
 				if readErr == nil && readbackExists && bytes.Equal(readback, prepared.data) {
 					recordIntakeEvent(ctx, "commit", "storage", "recovered")
-					return storedResult(rawintake.Result{Path: "raw/" + prepared.relativePath, SHA256: prepared.digest, Status: rawintake.StatusAlreadyExists}, &prepared.preview), nil
+					result := storedResult(rawintake.Result{Path: "raw/" + prepared.relativePath, SHA256: prepared.digest, Status: rawintake.StatusAlreadyExists}, &prepared.preview)
+					if processingStatus == "not_started" && sourceRevision == 0 && s.SourceJournal != nil {
+						processingStatus = "unknown"
+					}
+					result.ProcessingStatus = processingStatus
+					result.SourceRevision = sourceRevision
+					result.Message = urlProcessingMessage(processingStatus)
+					return result, nil
 				}
 				recordIntakeEvent(ctx, "commit", "storage", "uncertain")
 				return Result{Status: "uncertain", Message: "The storage result is uncertain. Check the raw path before retrying.", FailureStage: "commit", Preview: &prepared.preview}, nil
@@ -1393,7 +1423,11 @@ func (s *Service) commit(ctx context.Context, store ProjectStore, prepared *cand
 			if errors.Is(commitErr, rawintake.ErrConflict) {
 				readback, _, readbackExists, readErr := readRaw(ctx, store, prepared.relativePath)
 				if readErr == nil && readbackExists && bytes.Equal(readback, prepared.data) {
-					return storedResult(rawintake.Result{Path: "raw/" + prepared.relativePath, SHA256: prepared.digest, Status: rawintake.StatusAlreadyExists}, &prepared.preview), nil
+					result := storedResult(rawintake.Result{Path: "raw/" + prepared.relativePath, SHA256: prepared.digest, Status: rawintake.StatusAlreadyExists}, &prepared.preview)
+					result.ProcessingStatus = processingStatus
+					result.SourceRevision = sourceRevision
+					result.Message = urlProcessingMessage(processingStatus)
+					return result, nil
 				}
 			}
 			if errors.Is(commitErr, rawintake.ErrConflict) && attempt == 0 && !prepared.existing && prepared.expectedGeneration == 0 {
@@ -1416,15 +1450,91 @@ func (s *Service) commit(ctx context.Context, store ProjectStore, prepared *cand
 			recordIntakeEvent(ctx, "commit", "storage", "failure")
 			return Result{Status: "unavailable", Message: "The raw article could not be saved; no successful write was confirmed.", FailureStage: "commit", Preview: &prepared.preview}, nil
 		}
-		return storedResult(committed, &prepared.preview), nil
+		result := storedResult(committed, &prepared.preview)
+		result.ProcessingStatus = processingStatus
+		result.SourceRevision = sourceRevision
+		result.Message = urlProcessingMessage(processingStatus)
+		return result, nil
 	}
 	return Result{Status: "conflict", Message: ErrURLConflict.Error(), Preview: &prepared.preview}, nil
 }
 
+func committedSourceResult(committed rawintake.Result, prepared *candidate) bool {
+	return prepared != nil && committed.Path == "raw/"+prepared.relativePath &&
+		committed.SHA256 == prepared.digest &&
+		(committed.Status == rawintake.StatusCreated || committed.Status == rawintake.StatusReplaced || committed.Status == rawintake.StatusAlreadyExists)
+}
+
+func (s *Service) commitSourceRaw(ctx context.Context, store ProjectStore, writer storage.ConditionalWriter, prepared *candidate, overwrite bool) (rawintake.Result, string, int64, error) {
+	processingStatus := "not_started"
+	journal := s.SourceJournal
+	if journal == nil {
+		committed, err := rawintake.Commit(ctx, writer, prepared.relativePath, prepared.data, overwrite)
+		return committed, processingStatus, 0, err
+	}
+	entrypoint := prepared.entrypoint
+	if entrypoint == "" {
+		entrypoint = "url_accept"
+	}
+	ref, err := journal.PrepareSourceCommit(ctx, sourceautomation.VerifiedProject{OwnerID: prepared.scope.ActorID, ProjectID: prepared.scope.ProjectID}, sourceautomation.PrepareRequest{
+		Entrypoint: entrypoint, RawPath: prepared.relativePath, ExpectedSHA256: prepared.digest,
+	})
+	if err != nil {
+		return rawintake.Result{}, processingStatus, 0, err
+	}
+	committed, err := rawintake.Commit(ctx, writer, prepared.relativePath, prepared.data, overwrite)
+	if err != nil {
+		reconciled, reconcileErr := journal.ReconcileSourceCommit(ctx, ref)
+		if reconcileErr == nil && reconciled.State == "committed" {
+			return rawintake.Result{Path: "raw/" + prepared.relativePath, SHA256: prepared.digest, Status: rawintake.StatusAlreadyExists}, reconciled.ProcessingStatus, reconciled.SourceRevision, err
+		}
+		return rawintake.Result{}, processingStatus, 0, err
+	}
+	confirmed, err := confirmURLSourceCommit(ctx, journal, ref, store, prepared.relativePath, string(committed.Status))
+	if err != nil || confirmed.State != "committed" {
+		if err == nil {
+			err = sourceautomation.ErrSourceCommitUnconfirmed
+		}
+		return committed, "unknown", 0, err
+	}
+	return committed, confirmed.ProcessingStatus, confirmed.SourceRevision, nil
+}
+
+func confirmURLSourceCommit(ctx context.Context, journal sourceautomation.Journal, ref sourceautomation.Ref, store ProjectStore, relativePath, statusValue string) (sourceautomation.CommitResult, error) {
+	_, generation, err := store.ReadFileWithGeneration(ctx, "raw/"+relativePath)
+	if err != nil {
+		return sourceautomation.CommitResult{State: "unknown", ProcessingStatus: "unknown"}, err
+	}
+	confirmed, err := journal.ConfirmSourceCommit(ctx, ref, sourceautomation.ConfirmRequest{Generation: fmt.Sprint(generation), Status: statusValue})
+	if err == nil {
+		return confirmed, nil
+	}
+	reconciled, reconcileErr := journal.ReconcileSourceCommit(ctx, ref)
+	if reconcileErr == nil {
+		return reconciled, nil
+	}
+	return sourceautomation.CommitResult{State: "unknown", ProcessingStatus: "unknown"}, err
+}
+
 func storedResult(committed rawintake.Result, preview *CandidatePreview) Result {
 	return Result{
-		Status: "stored", Message: "URL content saved to raw/. Run the Project pipeline separately to process it.",
+		Status: "stored", Message: "URL content was saved to raw/. Check automatic processing status for publication and search availability.",
 		Preview: preview, Storage: &StorageOutcome{Path: committed.Path, SHA256: committed.SHA256, Status: string(committed.Status)},
 		ProcessingStatus: "not_started",
+	}
+}
+
+func urlProcessingMessage(status string) string {
+	switch status {
+	case "pending":
+		return "URL content was saved and is waiting for automatic incremental processing. It is not yet published or searchable."
+	case "not_started_disabled":
+		return "URL content was saved. Automatic processing is disabled by the Admin or Project switch; it is not yet published or searchable."
+	case "not_started":
+		return "URL content was saved. No new automatic processing was queued for this save."
+	case "unknown":
+		return "URL content was saved, but automatic processing status could not be confirmed. Check the Project before retrying."
+	default:
+		return "URL content was saved. Automatic processing status is unavailable. Check the Project before retrying."
 	}
 }

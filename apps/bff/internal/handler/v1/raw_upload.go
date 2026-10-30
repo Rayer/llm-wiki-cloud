@@ -37,11 +37,14 @@ var (
 )
 
 type rawUploadResponse struct {
-	Filename string `json:"filename"`
-	Path     string `json:"path"`
-	Bytes    int64  `json:"bytes"`
-	SHA256   string `json:"sha256"`
-	Status   string `json:"status"`
+	Filename         string `json:"filename"`
+	Path             string `json:"path"`
+	Bytes            int64  `json:"bytes"`
+	SHA256           string `json:"sha256"`
+	Status           string `json:"status"`
+	ProcessingStatus string `json:"processing_status"`
+	SourceRevision   int64  `json:"source_revision,omitempty"`
+	CommitStatus     string `json:"commit_status,omitempty"`
 }
 
 // RawUpload handles POST /api/v1/raw/upload. Set overwrite=true as a form
@@ -156,8 +159,17 @@ func (h *Handler) RawUpload(c *gin.Context) {
 		return
 	}
 	writeCtx, writeSpan := observability.StartDataPhase(c.Request.Context(), "write")
+	journal, sourceRef, err := h.prepareSourceCommit(writeCtx, userID, projectID, "ui_upload", relativePath, data)
+	if err != nil {
+		observability.FinishDataSpan(writeSpan, "failure")
+		observability.WriteDataJSON(c, http.StatusServiceUnavailable, handler.ErrorResponse{Error: "raw upload unavailable"})
+		return
+	}
 	result, err := rawintake.Commit(writeCtx, conditionalWriter, relativePath, data, rawUploadOverwrite(c))
 	if err != nil {
+		if journal != nil {
+			_, _ = journal.ReconcileSourceCommit(writeCtx, sourceRef)
+		}
 		if errors.Is(err, rawintake.ErrConflict) {
 			observability.FinishDataSpan(writeSpan, "precondition_failed")
 			observability.SetDataOperationOutcome(writeCtx, "precondition_failed")
@@ -174,6 +186,16 @@ func (h *Handler) RawUpload(c *gin.Context) {
 		observability.WriteDataJSON(c, http.StatusInternalServerError, handler.ErrorResponse{Error: "raw upload unavailable"})
 		return
 	}
+	commitResult, confirmErr := confirmSourceCommit(writeCtx, journal, sourceRef, conditionalWriter, relativePath, string(result.Status))
+	if confirmErr != nil || commitResult.State != "committed" {
+		observability.FinishDataSpan(writeSpan, "unknown")
+		observability.SetDataOperationOutcome(writeCtx, "unknown")
+		response := newRawUploadResponse(filename, size, result)
+		response.ProcessingStatus = "unknown"
+		response.CommitStatus = "saved"
+		observability.WriteDataJSON(c, http.StatusAccepted, response)
+		return
+	}
 	statusCode := http.StatusCreated
 	if result.Status != rawintake.StatusCreated {
 		statusCode = http.StatusOK
@@ -186,7 +208,10 @@ func (h *Handler) RawUpload(c *gin.Context) {
 		observability.SetDataOperationOutcome(writeCtx, "committed")
 	}
 
-	observability.WriteDataJSON(c, statusCode, newRawUploadResponse(filename, size, result))
+	response := newRawUploadResponse(filename, size, result)
+	response.ProcessingStatus = commitResult.ProcessingStatus
+	response.SourceRevision = commitResult.SourceRevision
+	observability.WriteDataJSON(c, statusCode, response)
 }
 
 func rawUploadOverwrite(c *gin.Context) bool {
@@ -271,10 +296,11 @@ func copyRawUploadBody(dst *bytes.Buffer, hasher hash.Hash, src io.Reader) (int6
 
 func newRawUploadResponse(filename string, bytes int64, result rawintake.Result) rawUploadResponse {
 	return rawUploadResponse{
-		Filename: filename,
-		Path:     result.Path,
-		Bytes:    bytes,
-		SHA256:   result.SHA256,
-		Status:   string(result.Status),
+		Filename:         filename,
+		Path:             result.Path,
+		Bytes:            bytes,
+		SHA256:           result.SHA256,
+		Status:           string(result.Status),
+		ProcessingStatus: "not_started",
 	}
 }

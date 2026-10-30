@@ -9,6 +9,8 @@ import {
   ApiError,
   getRecompileAllCapability,
   getPipelineStatus,
+  getProjectPipelineAutomation,
+  updateProjectPipelineAutomation,
   retryPipeline,
   scrapeUrl,
   acceptScrapeCandidate,
@@ -22,6 +24,7 @@ import {
   type PipelineIntentStatus,
   type PipelineResult,
   type PipelineStatus,
+  type ProjectPipelineAutomation,
 } from '@/lib/api';
 import {
   blockReasonMessage,
@@ -41,6 +44,7 @@ type Toast = {
 
 type PipelineProjectContext = { projectId: string | null; generation: number };
 type PipelineRequestScope = { projectId: string; contextGeneration: number; requestGeneration: number };
+type PipelineAutomationPollScope = Pick<PipelineRequestScope, 'projectId' | 'contextGeneration'>;
 type PipelineExecutionOwner = { projectId: string; contextGeneration: number };
 
 function scrapeErrorMessageKey(error: unknown): 'Pipeline.urlUncertain' | 'Pipeline.urlUnavailable' {
@@ -56,6 +60,11 @@ function isSamePipelineRequestScope(a: PipelineRequestScope, b: PipelineRequestS
 }
 
 let toastId = 0;
+
+function automationCopy(t: (key: string) => string, key: string, fallback: string): string {
+  const translated = t(key);
+  return translated === key ? fallback : translated;
+}
 
 function pipelineStatusBadge(status: PipelineStatus | null): string | null {
   const executionStatus = status?.last_execution?.status;
@@ -89,6 +98,13 @@ function isPendingPipelineIntent(intent: PipelineIntentStatus | null | undefined
   return Boolean(intent && ['preparing', 'ready', 'invoking', 'invocation_unknown', 'compiling'].includes(intent.status));
 }
 
+function isPipelineAutomationInFlight(settings: ProjectPipelineAutomation | null): boolean {
+  if (!settings?.effective_enabled || ['failed', 'cancelled'].includes(settings.pipeline_status)) return false;
+  return settings.backlog_scan_status === 'pending'
+    || ['pending', 'preparing', 'running', 'unknown'].includes(settings.pipeline_status)
+    || settings.source_revision > settings.processed_revision;
+}
+
 export function PipelineClient() {
   const { t, locale } = useT();
   const { isDemoSession, currentProject, token } = useWorkspace();
@@ -100,6 +116,9 @@ export function PipelineClient() {
   const [scrapeResult, setScrapeResult] = useState<ScrapeResult | null>(null);
   const [scrapeModalOpen, setScrapeModalOpen] = useState(false);
   const [pipelineStatusReadFailedProjectId, setPipelineStatusReadFailedProjectId] = useState<string | null>(null);
+  const [pipelineAutomation, setPipelineAutomation] = useState<ProjectPipelineAutomation | null>(null);
+  const [pipelineAutomationError, setPipelineAutomationError] = useState<string | null>(null);
+  const [pipelineAutomationPending, setPipelineAutomationPending] = useState(false);
   const pipelineExecutionOwnerRef = useRef<PipelineExecutionOwner | null>(null);
   const pipelineTerminalPollScopeRef = useRef<PipelineRequestScope | null>(null);
   const pipelinePollErrorNotifiedRef = useRef(false);
@@ -111,6 +130,9 @@ export function PipelineClient() {
       };
       pipelineExecutionOwnerRef.current = null;
       setPipelineStatusReadFailedProjectId(null);
+      setPipelineAutomation(null);
+      setPipelineAutomationError(null);
+      setPipelineAutomationPending(false);
       scrapeRequestGenerationRef.current += 1;
       setScrapeLoading(false);
       setScrapeError(null);
@@ -172,20 +194,27 @@ export function PipelineClient() {
     }
   }, [isPipelineRequestCurrent]);
 
-  const handleUploadQueueSettled = useCallback(({ changed, projectId }: RawUploadsSettled) => {
-    if (!changed) return;
-    // New raw files may change quota eligibility.
-    const context = pipelineProjectContextRef.current;
-    if (context.projectId === projectId) {
-      void refreshPipelineStatus({
-        projectId: context.projectId,
-        contextGeneration: context.generation,
-        requestGeneration: pipelineRequestGenerationRef.current,
-      });
+  const refreshPipelineAutomation = useCallback(async (scope: PipelineAutomationPollScope): Promise<ProjectPipelineAutomation | null> => {
+    try {
+      const settings = await getProjectPipelineAutomation(scope.projectId);
+      const latest = pipelineProjectContextRef.current;
+      if (!pipelineMountedRef.current || latest.projectId !== scope.projectId || latest.generation !== scope.contextGeneration) return null;
+      setPipelineAutomation(settings);
+      setPipelineAutomationError(null);
+      return settings;
+    } catch (error) {
+      const latest = pipelineProjectContextRef.current;
+      if (!pipelineMountedRef.current || latest.projectId !== scope.projectId || latest.generation !== scope.contextGeneration) return null;
+      setPipelineAutomationError(error instanceof Error ? error.message : automationCopy(t, 'Pipeline.automationStatusUnavailable', 'Automatic processing status is unavailable.'));
+      return null;
     }
-  }, [refreshPipelineStatus]);
+  }, [setPipelineAutomation, setPipelineAutomationError, t]);
 
   const pipelinePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pipelineAutomationPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pipelineAutomationPollScopeRef = useRef<PipelineAutomationPollScope | null>(null);
+  const pipelineAutomationPollInFlightRef = useRef(false);
+  const pipelineAutomationPollTickRef = useRef<(scope: PipelineAutomationPollScope) => void>(() => {});
 
   const addToast = useCallback((message: string, type: Toast['type']) => {
     const id = ++toastId;
@@ -200,14 +229,23 @@ export function PipelineClient() {
     }
   }, []);
 
+  const stopPipelineAutomationPolling = useCallback(() => {
+    if (pipelineAutomationPollRef.current) {
+      clearInterval(pipelineAutomationPollRef.current);
+      pipelineAutomationPollRef.current = null;
+    }
+    pipelineAutomationPollScopeRef.current = null;
+  }, []);
+
   useEffect(() => {
     pipelineMountedRef.current = true;
     return () => {
       pipelineMountedRef.current = false;
       pipelineRequestGenerationRef.current += 1;
       stopPipelinePolling();
+      stopPipelineAutomationPolling();
     };
-  }, [stopPipelinePolling]);
+  }, [stopPipelineAutomationPolling, stopPipelinePolling]);
 
   const pollPipelineStatus = useCallback(async (scope: PipelineRequestScope, executionId?: string, intentId?: string) => {
     if (!isPipelineRequestCurrent(scope)) return;
@@ -235,6 +273,11 @@ export function PipelineClient() {
       pipelinePollErrorNotifiedRef.current = false;
       setPipelineStatusReadFailedProjectId(null);
       setPipelineStatus(status);
+      void refreshPipelineAutomation({ projectId: scope.projectId, contextGeneration: scope.contextGeneration }).then((settings) => {
+        if (isPipelineRequestCurrent(scope) && settings && !isPipelineAutomationInFlight(settings)) {
+          stopPipelineAutomationPolling();
+        }
+      });
 
       if (isTerminal) {
         if (status.last_execution?.compile_mode === 'full') {
@@ -254,9 +297,130 @@ export function PipelineClient() {
         addToast(err instanceof Error ? err.message : 'Pipeline status failed', 'error');
       }
     }
-  }, [addToast, isPipelineRequestCurrent, stopPipelinePolling]);
+  }, [addToast, isPipelineRequestCurrent, refreshPipelineAutomation, stopPipelineAutomationPolling, stopPipelinePolling]);
 
   useEffect(() => stopPipelinePolling, [currentProject?.id, stopPipelinePolling]);
+  useEffect(() => stopPipelineAutomationPolling, [currentProject?.id, stopPipelineAutomationPolling]);
+
+  const pollPipelineAutomationLifecycle = useCallback(async (scope: PipelineAutomationPollScope) => {
+    const context = pipelineProjectContextRef.current;
+    const isCurrent = () => pipelineMountedRef.current
+      && pipelineAutomationPollScopeRef.current?.projectId === scope.projectId
+      && pipelineAutomationPollScopeRef.current.contextGeneration === scope.contextGeneration
+      && pipelineProjectContextRef.current.projectId === scope.projectId
+      && pipelineProjectContextRef.current.generation === scope.contextGeneration;
+    if (!isCurrent() || context.projectId !== scope.projectId || pipelineAutomationPollInFlightRef.current) return;
+    pipelineAutomationPollInFlightRef.current = true;
+    try {
+      const settings = await refreshPipelineAutomation(scope);
+      let status: PipelineStatus | null = null;
+      try {
+        status = await getPipelineStatus(scope.projectId);
+      } catch {
+        // Keep the independent monitor alive so a later interval can recover.
+      }
+      if (!isCurrent()) return;
+      if (status?.project_id === scope.projectId) {
+        const currentIntent = pipelineStatus?.pipeline_intent;
+        const nextIntent = status.pipeline_intent;
+        if (isPendingPipelineIntent(nextIntent)) {
+          // Let an already-running intent finish before taking ownership of a newer one.
+          if (!pipelinePollRef.current || !isPendingPipelineIntent(currentIntent)) {
+            stopPipelinePolling();
+            pipelineTerminalPollScopeRef.current = null;
+            pipelinePollErrorNotifiedRef.current = false;
+            const requestScope: PipelineRequestScope = {
+              projectId: scope.projectId,
+              contextGeneration: scope.contextGeneration,
+              requestGeneration: ++pipelineRequestGenerationRef.current,
+            };
+            pipelineExecutionOwnerRef.current = { projectId: scope.projectId, contextGeneration: scope.contextGeneration };
+            setPipelineStatusReadFailedProjectId(null);
+            setPipelineStatus(status);
+            const poll = () => void pollPipelineStatus(requestScope, nextIntent.execution_id, nextIntent.id);
+            pipelinePollRef.current = setInterval(poll, 5000);
+            poll();
+          }
+        } else if (!pipelinePollRef.current) {
+          setPipelineStatusReadFailedProjectId(null);
+          setPipelineStatus(status);
+        }
+      }
+      if (settings && !isPipelineAutomationInFlight(settings)) stopPipelineAutomationPolling();
+    } finally {
+      pipelineAutomationPollInFlightRef.current = false;
+    }
+  }, [pipelineStatus?.pipeline_intent, pollPipelineStatus, refreshPipelineAutomation,
+    setPipelineStatus, setPipelineStatusReadFailedProjectId, stopPipelineAutomationPolling, stopPipelinePolling]);
+
+  useEffect(() => {
+    pipelineAutomationPollTickRef.current = (scope) => { void pollPipelineAutomationLifecycle(scope); };
+  }, [pollPipelineAutomationLifecycle]);
+
+  const startPipelineAutomationPolling = useCallback((scope: PipelineAutomationPollScope) => {
+    if (!scope.projectId) return;
+    const current = pipelineAutomationPollScopeRef.current;
+    if (current && (current.projectId !== scope.projectId || current.contextGeneration !== scope.contextGeneration)) {
+      stopPipelineAutomationPolling();
+    }
+    pipelineAutomationPollScopeRef.current = scope;
+    if (!pipelineAutomationPollRef.current) {
+      pipelineAutomationPollRef.current = setInterval(() => {
+        const latest = pipelineAutomationPollScopeRef.current;
+        if (latest) pipelineAutomationPollTickRef.current(latest);
+      }, 5000);
+    }
+  }, [stopPipelineAutomationPolling]);
+
+  useEffect(() => {
+    if (!projectId) return;
+    const scope = { projectId, contextGeneration: pipelineProjectContextRef.current.generation };
+    let cancelled = false;
+    void refreshPipelineAutomation(scope).then((settings) => {
+      if (!cancelled && settings && isPipelineAutomationInFlight(settings)) {
+        startPipelineAutomationPolling(scope);
+      }
+    });
+    return () => { cancelled = true; };
+  }, [projectId, refreshPipelineAutomation, startPipelineAutomationPolling]);
+
+  const handleUploadQueueSettled = useCallback(({ changed, projectId: uploadedProjectId }: RawUploadsSettled) => {
+    if (!changed) return;
+    const context = pipelineProjectContextRef.current;
+    if (context.projectId === uploadedProjectId) {
+      void refreshPipelineStatus({
+        projectId: uploadedProjectId,
+        contextGeneration: context.generation,
+        requestGeneration: pipelineRequestGenerationRef.current,
+      });
+      void refreshPipelineAutomation({ projectId: uploadedProjectId, contextGeneration: context.generation });
+      startPipelineAutomationPolling({ projectId: uploadedProjectId, contextGeneration: context.generation });
+    }
+  }, [refreshPipelineAutomation, refreshPipelineStatus, startPipelineAutomationPolling]);
+
+  const handleProjectAutomationToggle = useCallback(async () => {
+    if (!projectId || !pipelineAutomation || pipelineAutomationPending) return;
+    const context = pipelineProjectContextRef.current;
+    const isCurrent = () => pipelineProjectContextRef.current.projectId === projectId
+      && pipelineProjectContextRef.current.generation === context.generation;
+    setPipelineAutomationPending(true);
+    setPipelineAutomationError(null);
+    try {
+      const next = await updateProjectPipelineAutomation(projectId, !pipelineAutomation.enabled, pipelineAutomation.revision);
+      if (isCurrent()) {
+        setPipelineAutomation(next);
+        startPipelineAutomationPolling({ projectId, contextGeneration: context.generation });
+      }
+    } catch (error) {
+      if (isCurrent()) {
+        setPipelineAutomationError(error instanceof Error ? error.message : automationCopy(t, 'Pipeline.automationUpdateFailed', 'Automatic processing settings could not be updated.'));
+        void refreshPipelineAutomation({ projectId, contextGeneration: context.generation });
+      }
+    } finally {
+      setPipelineAutomationPending(false);
+    }
+  }, [pipelineAutomation, pipelineAutomationPending, projectId, refreshPipelineAutomation,
+    setPipelineAutomation, setPipelineAutomationError, setPipelineAutomationPending, startPipelineAutomationPolling, t]);
 
   useEffect(() => {
     const refreshAfterAnnotationSave = () => {
@@ -429,18 +593,24 @@ export function PipelineClient() {
       if (!isCurrent()) return;
       setScrapeResult(result);
       if (result.status === 'stored') {
-        void refreshPipelineStatus({
+        const scope = {
           projectId: context.projectId,
           contextGeneration: context.generation,
+        };
+        void refreshPipelineStatus({
+          ...scope,
           requestGeneration: pipelineRequestGenerationRef.current,
         });
+        void refreshPipelineAutomation(scope);
+        startPipelineAutomationPolling(scope);
       }
     } catch (error) {
       if (isCurrent()) setScrapeError(t(scrapeErrorMessageKey(error)));
     } finally {
       if (isCurrent()) setScrapeLoading(false);
     }
-  }, [refreshPipelineStatus, scrapeResult?.candidate_id, scrapeResult?.candidate_revision, setScrapeError, setScrapeLoading, setScrapeResult, t]);
+  }, [refreshPipelineAutomation, refreshPipelineStatus, scrapeResult?.candidate_id, scrapeResult?.candidate_revision,
+    setScrapeError, setScrapeLoading, setScrapeResult, startPipelineAutomationPolling, t]);
 
   const handleResolveScrape = useCallback(async () => {
     const candidateId = scrapeResult?.candidate_id;
@@ -455,13 +625,22 @@ export function PipelineClient() {
     setScrapeError(null);
     try {
       const result = await resolveScrapeCandidate(candidateId, context.projectId);
-      if (isCurrent()) setScrapeResult(result);
+      if (isCurrent()) {
+        setScrapeResult(result);
+        if (result.status === 'stored') {
+          const scope = { projectId: context.projectId, contextGeneration: context.generation };
+          void refreshPipelineStatus({ ...scope, requestGeneration: pipelineRequestGenerationRef.current });
+          void refreshPipelineAutomation(scope);
+          startPipelineAutomationPolling(scope);
+        }
+      }
     } catch (error) {
       if (isCurrent()) setScrapeError(t(scrapeErrorMessageKey(error)));
     } finally {
       if (isCurrent()) setScrapeLoading(false);
     }
-  }, [scrapeResult?.candidate_id, setScrapeError, setScrapeLoading, setScrapeResult, t]);
+  }, [refreshPipelineAutomation, refreshPipelineStatus, scrapeResult?.candidate_id, setScrapeError, setScrapeLoading,
+    setScrapeResult, startPipelineAutomationPolling, t]);
 
   const handleDeclineScrape = useCallback(async () => {
     const candidateId = scrapeResult?.candidate_id;
@@ -724,6 +903,57 @@ export function PipelineClient() {
           </div>
         </div>
 
+        <section className="mt-4 rounded-[var(--radius-md)] border border-white/10 bg-zinc-950/40 p-4" data-testid="pipeline-automation-settings">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="max-w-3xl">
+              <h3 className="text-sm font-semibold text-zinc-200">
+                {automationCopy(t, 'Pipeline.automationTitle', 'Automatic processing for this Project')}
+              </h3>
+              <p className="mt-1 text-xs text-zinc-400">
+                {automationCopy(t, 'Pipeline.automationDescription', 'Changed raw source content starts an incremental Pipeline when both the Admin and Project switches are on. Saved content is not published or searchable until processing succeeds.')}
+              </p>
+            </div>
+            {pipelineAutomation ? (
+              <label className="flex min-h-11 items-center gap-3 rounded-md border border-white/10 px-3 py-2 text-sm text-zinc-200">
+                <span>{automationCopy(t, 'Pipeline.automationProjectToggle', 'Auto-pipeline for this Project')}</span>
+                <input
+                  type="checkbox"
+                  checked={pipelineAutomation.enabled}
+                  disabled={pipelineAutomationPending || isDemoSession}
+                  onChange={() => void handleProjectAutomationToggle()}
+                  className="size-5 rounded border-white/20 bg-black/30 text-emerald-400 focus:ring-emerald-400"
+                  data-testid="pipeline-automation-project-toggle"
+                />
+              </label>
+            ) : null}
+          </div>
+          {pipelineAutomationError ? (
+            <p className="mt-2 text-xs text-amber-200" role="status">{pipelineAutomationError}</p>
+          ) : null}
+          {pipelineAutomation ? (
+            <div className="mt-3 space-y-1 text-xs text-zinc-400" aria-live="polite">
+              {!pipelineAutomation.admin_allowed ? (
+                <p className="text-amber-200/90" data-testid="pipeline-automation-blocked">
+                  {automationCopy(t, 'Pipeline.automationAdminDisabled', 'Automatic processing is disabled by the Admin. Saved sources remain pending until the Admin allows processing.')}
+                </p>
+              ) : null}
+              <p>
+                {automationCopy(t, 'Pipeline.automationStatus', 'Processing status')}: <span className="font-medium text-zinc-200">{pipelineAutomation.pipeline_status || 'idle'}</span>
+                {` · ${automationCopy(t, 'Pipeline.automationSourceRevision', 'Source revision')} ${pipelineAutomation.source_revision}`}
+                {` · ${automationCopy(t, 'Pipeline.automationProcessedRevision', 'Processed revision')} ${pipelineAutomation.processed_revision}`}
+              </p>
+              {pipelineAutomation.failure_stage || pipelineAutomation.failure_code ? (
+                <p className="text-red-200/90" data-testid="pipeline-automation-failure">
+                  {automationCopy(t, 'Pipeline.automationFailure', 'Last failure')}: {[pipelineAutomation.failure_stage, pipelineAutomation.failure_code].filter(Boolean).join(' · ')}
+                </p>
+              ) : null}
+              <p>
+                {automationCopy(t, 'Pipeline.automationManualNote', 'Manual runs remain available independently of the auto-pipeline switches. The existing daily schedule also remains independent.')}
+              </p>
+            </div>
+          ) : null}
+        </section>
+
         {/* Pipeline Trigger */}
         <div className="mt-4 rounded-[var(--radius-md)] border border-emerald-400/20 bg-emerald-400/[0.04] p-4">
           <div className="flex items-center justify-between gap-4">
@@ -964,7 +1194,7 @@ export function PipelineClient() {
             heading: t('Pipeline.urlPreviewTitle'), title: t('Pipeline.urlTitleLabel'),
             save: t('Pipeline.urlConfirmCandidate'), decline: t('Pipeline.urlDeclineCandidate'),
             close: t('Pipeline.urlClosePreview'), checkStatus: t('Pipeline.urlCheckSaveStatus'),
-            manualCapture: t('Pipeline.urlManualCapture'), processingSeparate: t('Pipeline.urlProcessingSeparate'),
+            manualCapture: t('Pipeline.urlManualCapture'), processingSeparate: automationCopy(t, 'Pipeline.urlProcessingAutomatic', 'When both auto-pipeline switches are on, changed content is processed automatically; saved content is not searchable until publication succeeds.'),
             rawArticle: t('Pipeline.urlRawArticle'), created: t('Pipeline.urlCreated'), updated: t('Pipeline.urlUpdated'),
             unchanged: t('Pipeline.urlUnchanged'), digest: t('Pipeline.urlCandidateDigest'), loading: t('Pipeline.urlPreviewLoading'),
             qualityUnavailable: t('Pipeline.urlQualityCheckUnavailable'), qualityUnavailableSaved: t('Pipeline.urlQualityCheckUnavailableSaved'),

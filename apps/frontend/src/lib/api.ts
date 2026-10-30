@@ -1412,6 +1412,30 @@ export type RawUploadResult = {
   bytes: number;
   sha256: string;
   status: RawUploadStatus;
+  processing_status?: 'not_started' | 'not_started_disabled' | 'pending' | 'unknown' | string;
+  source_revision?: number;
+  commit_status?: 'saved' | 'uncertain' | string;
+};
+
+export type ProjectPipelineAutomation = {
+  enabled: boolean;
+  revision: number;
+  admin_allowed: boolean;
+  effective_enabled: boolean;
+  blocked_reason?: string;
+  backlog_scan_status: string;
+  pipeline_status: string;
+  source_revision: number;
+  processed_revision: number;
+  failure_stage?: string;
+  failure_code?: string;
+};
+
+export type AdminPipelineAutomation = {
+  allow_auto_pipeline: boolean;
+  revision: number;
+  backlog_scan_status: string;
+  updated_at?: string;
 };
 
 export type RawUploadProgressCallback = (progress: number) => void;
@@ -1710,6 +1734,9 @@ export async function uploadRawFile(
     bytes: typeof body.bytes === 'number' ? body.bytes : file.size,
     sha256: typeof body.sha256 === 'string' ? body.sha256 : '',
     status,
+    ...(typeof body.processing_status === 'string' ? { processing_status: body.processing_status } : {}),
+    ...(typeof body.source_revision === 'number' ? { source_revision: body.source_revision } : {}),
+    ...(typeof body.commit_status === 'string' ? { commit_status: body.commit_status } : {}),
   };
 }
 
@@ -1875,6 +1902,51 @@ export async function getPipelineStatus(projectId?: string, executionId?: string
   if (intentId) query.set('intent_id', intentId);
   const suffix = query.size > 0 ? `?${query.toString()}` : '';
   return requestJson<PipelineStatus>(`/api/v1/pipeline/status${suffix}`, { projectId });
+}
+
+function parseProjectPipelineAutomation(payload: unknown): ProjectPipelineAutomation {
+  if (!isRecord(payload) || typeof payload.enabled !== 'boolean' || typeof payload.revision !== 'number'
+    || typeof payload.admin_allowed !== 'boolean' || typeof payload.effective_enabled !== 'boolean'
+    || typeof payload.backlog_scan_status !== 'string' || typeof payload.pipeline_status !== 'string'
+    || typeof payload.source_revision !== 'number' || typeof payload.processed_revision !== 'number') {
+    throw new ApiError('Invalid Project pipeline automation response', 502);
+  }
+  return payload as unknown as ProjectPipelineAutomation;
+}
+
+function parseAdminPipelineAutomation(payload: unknown): AdminPipelineAutomation {
+  if (!isRecord(payload) || typeof payload.allow_auto_pipeline !== 'boolean' || typeof payload.revision !== 'number'
+    || typeof payload.backlog_scan_status !== 'string') {
+    throw new ApiError('Invalid Admin pipeline automation response', 502);
+  }
+  return payload as unknown as AdminPipelineAutomation;
+}
+
+export async function getProjectPipelineAutomation(projectId: string): Promise<ProjectPipelineAutomation> {
+  const response = await apiFetch(`/api/v1/projects/${encodeURIComponent(projectId)}/pipeline/automation`, { projectId });
+  const payload: unknown = await response.json().catch(() => null);
+  if (!response.ok) throw new ApiError(profileApiError(payload, `Pipeline automation request failed (${response.status})`), response.status);
+  return parseProjectPipelineAutomation(payload);
+}
+
+export async function updateProjectPipelineAutomation(projectId: string, enabled: boolean, revision: number): Promise<ProjectPipelineAutomation> {
+  const response = await apiFetch(`/api/v1/projects/${encodeURIComponent(projectId)}/pipeline/automation`, {
+    method: 'PUT', projectId, json: true, body: JSON.stringify({ enabled, revision }),
+  });
+  const payload: unknown = await response.json().catch(() => null);
+  if (!response.ok) throw new ApiError(profileApiError(payload, `Pipeline automation update failed (${response.status})`), response.status);
+  return parseProjectPipelineAutomation(payload);
+}
+
+export async function getAdminPipelineAutomation(): Promise<AdminPipelineAutomation> {
+  return parseAdminPipelineAutomation(await adminJson('/api/v1/settings/auto-pipeline'));
+}
+
+export async function updateAdminPipelineAutomation(enabled: boolean, revision: number): Promise<AdminPipelineAutomation> {
+  const payload = await adminJson('/api/v1/settings/auto-pipeline', {
+    method: 'PUT', json: true, body: JSON.stringify({ allow_auto_pipeline: enabled, revision }),
+  });
+  return parseAdminPipelineAutomation(payload);
 }
 
 export async function getPipelineLog(logUrl: string, projectId?: string): Promise<string> {

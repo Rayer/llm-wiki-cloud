@@ -22,7 +22,10 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/rayer/llm-wiki-bff/internal/llm"
 	"github.com/rayer/llm-wiki-bff/internal/localfs"
+	"github.com/rayer/llm-wiki-bff/internal/sourceautomation"
 	"github.com/rayer/llm-wiki-bff/internal/urlintake"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type mcpURLFetcherFunc func(context.Context, string) (urlintake.Page, error)
@@ -56,6 +59,25 @@ func (*mcpURLProjectLLMClient) ModelIdentity() (llm.ModelIdentity, bool) {
 type mcpURLCommitUncertainStore struct {
 	urlintake.ProjectStore
 	written atomic.Bool
+}
+
+type unavailableMCPURLJournal struct {
+	prepareCalls atomic.Int32
+	confirmCalls atomic.Int32
+}
+
+func (j *unavailableMCPURLJournal) PrepareSourceCommit(_ context.Context, project sourceautomation.VerifiedProject, request sourceautomation.PrepareRequest) (sourceautomation.Ref, error) {
+	j.prepareCalls.Add(1)
+	return sourceautomation.Ref{OwnerID: project.OwnerID, ProjectID: project.ProjectID, OperationID: "firestore-unavailable"}, nil
+}
+
+func (j *unavailableMCPURLJournal) ConfirmSourceCommit(context.Context, sourceautomation.Ref, sourceautomation.ConfirmRequest) (sourceautomation.CommitResult, error) {
+	j.confirmCalls.Add(1)
+	return sourceautomation.CommitResult{State: "unknown", ProcessingStatus: "unknown"}, status.Error(codes.Unavailable, "injected Firestore outage")
+}
+
+func (*unavailableMCPURLJournal) ReconcileSourceCommit(context.Context, sourceautomation.Ref) (sourceautomation.CommitResult, error) {
+	return sourceautomation.CommitResult{State: "unknown", ProcessingStatus: "unknown"}, status.Error(codes.Unavailable, "injected Firestore outage")
 }
 
 func (s *mcpURLCommitUncertainStore) WriteFileIfGeneration(ctx context.Context, data []byte, path string, expected int64) (int64, error) {
@@ -129,7 +151,7 @@ func TestMCPImportURLUsesStrictScopedIntakeAndConfiguredRawLink(t *testing.T) {
 	for _, tool := range discovered.Tools {
 		toolNames[tool.Name] = true
 	}
-	if len(toolNames) != 3 || !toolNames["query_project"] || !toolNames["add_raw"] || !toolNames["import_url"] {
+	if len(toolNames) != 4 || !toolNames["query_project"] || !toolNames["pipeline_status"] || !toolNames["add_raw"] || !toolNames["import_url"] {
 		t.Fatalf("MCP SDK discovered tools = %v", toolNames)
 	}
 
@@ -293,6 +315,42 @@ func TestMCPImportURLReportsMayHaveWrittenWhenCommitReadbackFails(t *testing.T) 
 	}
 }
 
+func TestMCPImportURLReportsSavedUnknownAfterFirestoreOutage(t *testing.T) {
+	root := localfs.New(t.TempDir())
+	base := root.WithScope("user", "project")
+	service := urlintake.NewService(
+		mcpURLFetcherFunc(func(context.Context, string) (urlintake.Page, error) {
+			return urlintake.Page{Title: "Saved despite outage", Markdown: "# Saved despite outage\n\nThe raw write completed before Firestore became unavailable.\n"}, nil
+		}),
+		mcpURLEvaluatorFunc(func(context.Context, urlintake.QualityInput) (urlintake.QualityEvaluation, error) {
+			return urlintake.QualityEvaluation{ShellProbability: .01, ContentProbability: .99}, nil
+		}),
+		func(urlintake.ActorProject) (urlintake.ProjectStore, error) { return base, nil },
+		urlintake.DefaultQualityThresholds,
+	)
+	service.Resolver = mcpURLResolver{}
+	journal := &unavailableMCPURLJournal{}
+	h := New(root, nil, nil, nil, nil, nil)
+	h.SetURLIntakeService(service)
+	service.SourceJournal = journal
+	h.SetMCPFrontendOrigin("https://wiki.trusted.example")
+	identity := mcpProjectKeyIdentity{userID: "user", projectID: "project", keyID: "write-grant", capabilities: []string{mcpQueryCapability, mcpRawWriteCapability}}
+	response := serveMCPRequest(t, h, identity, mcpToolCallBody(1, "import_url", `{"url":"https://example.com/firestore-outage"}`))
+	payload := mcpStructuredResult(t, response)
+	storageData, _ := payload["storage"].(map[string]any)
+	if journal.prepareCalls.Load() != 1 || journal.confirmCalls.Load() != 1 {
+		t.Fatalf("source journal calls prepare=%d confirm=%d", journal.prepareCalls.Load(), journal.confirmCalls.Load())
+	}
+	if payload["status"] != "stored" || payload["processing_status"] != "unknown" ||
+		storageData["path"] == "" || storageData["sha256"] == "" || payload["raw_url"] == "" {
+		t.Fatalf("saved unknown import payload=%#v", payload)
+	}
+	files, err := base.ListRawFiles(context.Background())
+	if err != nil || len(files) != 1 || files[0].SHA256 != storageData["sha256"] {
+		t.Fatalf("saved raw files=%v err=%v storage=%v", files, err, storageData)
+	}
+}
+
 func TestMCPImportURLReturnsDeclaredSizeFailureStage(t *testing.T) {
 	root := localfs.New(t.TempDir())
 	service := urlintake.NewService(
@@ -375,7 +433,7 @@ func TestMCPImportURLOutputSchemaAndOriginAreConstrained(t *testing.T) {
 	if !slices.Contains(failureStage.Enum, "size") {
 		t.Fatalf("import_url failure stage enum = %v", failureStage.Enum)
 	}
-	if !strings.Contains(mcpImportURLToolDescription, "not factual accuracy") || !strings.Contains(mcpImportURLToolDescription, "does not start") {
+	if !strings.Contains(mcpImportURLToolDescription, "not factual accuracy") || !strings.Contains(mcpImportURLToolDescription, "does not mean published or searchable") {
 		t.Fatalf("import_url description overstates behavior: %q", mcpImportURLToolDescription)
 	}
 	if trustedFrontendOrigin("https://user:password@attacker.example") != "" || trustedFrontendOrigin("https://frontend.example/path") != "" {
