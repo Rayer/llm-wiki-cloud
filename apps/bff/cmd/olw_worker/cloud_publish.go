@@ -378,9 +378,9 @@ func runCloudSuggestedQueries(ctx context.Context, cfg workerConfig, objects obj
 			}
 		}
 		if released {
-			reconcileCtx, cancelReconcile := cloudFailureRecordingContext(ctx)
-			reportContentContextReconcileFailure(reconcileCloudContentContext(reconcileCtx, cfg, objects))
-			cancelReconcile()
+			contentCtx, cancelContent := context.WithTimeout(context.WithoutCancel(ctx), contentContextRunTimeout)
+			reportContentContextReconcileFailure(runCloudContentContext(contentCtx, cfg, objects))
+			cancelContent()
 		}
 		observability.FinishPipelineSpan(leaseSpan, leaseOutcome)
 	}()
@@ -559,9 +559,9 @@ func runCloudWorkerBatch(ctx context.Context, cfg workerConfig, commands [][]str
 			}
 		}
 		if released {
-			reconcileCtx, cancelReconcile := cloudFailureRecordingContext(ctx)
-			reportContentContextReconcileFailure(reconcileCloudContentContext(reconcileCtx, cfg, objects))
-			cancelReconcile()
+			contentCtx, cancelContent := context.WithTimeout(context.WithoutCancel(ctx), contentContextRunTimeout)
+			reportContentContextReconcileFailure(runCloudContentContext(contentCtx, cfg, objects))
+			cancelContent()
 		}
 	}()
 	guidanceCtx, guidanceSpan := observability.StartWorkerSpan(ctx, "pipeline.worker.validate")

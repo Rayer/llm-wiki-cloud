@@ -213,7 +213,8 @@ func clearPipelineProfileKeys(profiles []pipelineLLMProfile) {
 
 func runWorkerBatchAtVaultWithProfilePool(ctx context.Context, cfg workerConfig, commands [][]string, vault, workspace string, snapshots []sourceSnapshot, materialize bool) (string, error) {
 	profiles := cfg.ProfileCandidates
-	defer func() { clearPipelineProfileKeys(profiles) }()
+	// The owner of this operation clears its pinned credentials after publish
+	// finalization, which may need the same Fast snapshot for content context.
 	if !cfg.SharedProfilePool || len(profiles) == 0 {
 		if len(profiles) > 0 {
 			cfg.ActiveLLMProfile = &profiles[0]
