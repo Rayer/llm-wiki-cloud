@@ -31,6 +31,7 @@ type importURLResponse struct {
 	Storage           *importURLStorage            `json:"storage,omitempty"`
 	RawURL            string                       `json:"raw_url,omitempty"`
 	ProcessingStatus  string                       `json:"processing_status"`
+	SourceRevision    int64                        `json:"source_revision,omitempty"`
 	FailureStage      string                       `json:"failure_stage,omitempty"`
 	Reason            string                       `json:"reason,omitempty"`
 	FailureDiagnostic *urlintake.FailureDiagnostic `json:"failure_diagnostic,omitempty"`
@@ -58,7 +59,8 @@ var importURLOutputSchema = json.RawMessage(`{
 			"status":{"type":"string","enum":["created","updated","already_exists"]}
 		},"required":["path","sha256","status"],"additionalProperties":false},
 		"raw_url":{"type":"string","format":"uri"},
-		"processing_status":{"type":"string","enum":["not_started"]},
+		"processing_status":{"type":"string","enum":["not_started","not_started_disabled","pending","unknown"]},
+		"source_revision":{"type":"integer","minimum":0},
 		"failure_stage":{"type":"string","enum":["setup","validation","fetch","size","quality","storage","commit"]},
 		"reason":{"type":"string"},
 		"failure_diagnostic":{"type":"object","properties":{
@@ -72,7 +74,7 @@ var importURLOutputSchema = json.RawMessage(`{
 	"additionalProperties":false
 }`)
 
-const mcpImportURLToolDescription = "Fetches a public URL and imports it into this Project only when the extraction is clearly readable and usable. Truncated, ambiguous, rejected, or unavailable quality checks do not write raw content; retry after a quality service outage. This checks extraction usability, not factual accuracy or Project relevance. A successful save returns the exact raw page link; saving does not start the Project pipeline."
+const mcpImportURLToolDescription = "Fetches a public URL and imports it into this Project only when the extraction is clearly readable and usable. Truncated, ambiguous, rejected, or unavailable quality checks do not write raw content; retry after a quality service outage. This checks extraction usability, not factual accuracy or Project relevance. When the Admin and Project auto-pipeline switches are enabled, a changed saved source is queued for incremental processing. The response distinguishes saved and queued states; queued does not mean published or searchable. A successful save returns the exact raw page link."
 
 func trustedFrontendOrigin(raw string) string {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
@@ -122,7 +124,10 @@ func (h *Handler) callMCPImportURL(ctx context.Context, _ *mcp.CallToolRequest, 
 		return importURLToolResult(importURLResponse{Status: "unavailable", ProcessingStatus: "not_started", FailureStage: "commit", Reason: "The URL import could not be confirmed; check the Project raw content before retrying."}, true), nil, nil
 	}
 
-	response := importURLResponse{Status: result.Status, ProcessingStatus: "not_started"}
+	response := importURLResponse{Status: result.Status, ProcessingStatus: result.ProcessingStatus, SourceRevision: result.SourceRevision}
+	if response.ProcessingStatus == "" {
+		response.ProcessingStatus = "not_started"
+	}
 	if result.Preview != nil {
 		response.Title = result.Preview.Title
 		response.SourceURL = result.Preview.SourceURL

@@ -651,7 +651,10 @@ func TestDataTracedRawSyncCommittedJSONWriterFailurePreservesCommit(t *testing.T
 	if readErr != nil || closeErr != nil || size != int64(len(payload)) || !bytes.Equal(persisted, payload) {
 		t.Fatalf("persisted object changed: size=%d bytes=%q read err=%v close err=%v", size, persisted, readErr, closeErr)
 	}
-	wantJSON, err := json.Marshal(gin.H{"generation": file.Generation, "sha256": digest})
+	wantJSON, err := json.Marshal(gin.H{
+		"generation": file.Generation, "sha256": digest,
+		"processing_status": "not_started", "source_revision": int64(0),
+	})
 	if err != nil || !bytes.Equal(response.attempted, wantJSON) {
 		t.Fatalf("response JSON changed: attempted=%q want=%q err=%v", response.attempted, wantJSON, err)
 	}

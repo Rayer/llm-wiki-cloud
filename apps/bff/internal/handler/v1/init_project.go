@@ -214,10 +214,12 @@ func newInitProjectResponse(projectID, name string) initProjectResponse {
 
 func initProjectData(projectID, name, idempotencyKey string, now time.Time) map[string]interface{} {
 	projectData := map[string]interface{}{
-		"project_id": projectID,
-		"name":       name,
-		"status":     "ready",
-		"created_at": now,
+		"project_id":             projectID,
+		"name":                   name,
+		"status":                 "ready",
+		"created_at":             now,
+		"auto_pipeline_enabled":  true,
+		"auto_pipeline_revision": int64(1),
 	}
 	if idempotencyKey != "" {
 		projectData["idempotency_key"] = idempotencyKey

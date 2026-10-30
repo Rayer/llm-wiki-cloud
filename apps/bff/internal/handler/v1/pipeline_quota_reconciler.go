@@ -198,7 +198,19 @@ func (h *Handler) ReconcilePipelineQuota(ctx context.Context) (resultErr error) 
 func (h *Handler) settleCloudRunQuotaReservation(ctx context.Context, quotaStore pipelineQuotaStore, reservation firestore.QuotaReservation, execution cloudRunExecution) (outcome string, resultErr error) {
 	outcome = "pending"
 	state := cloudRunExecutionStatus(execution)
-	if state == "FAILED" {
+	if reservation.Trigger == pipelinequota.TriggerSourceCommit {
+		publication := h.cloudRunQuotaPublicationOutcome(ctx, &pipelineExecutionOwner{userID: reservation.UserID, projectID: reservation.ProjectID}, shortCloudRunExecutionName(execution.Name, true))
+		switch publication {
+		case pipelinePublicationCommitted:
+			state = "SUCCEEDED"
+		case pipelinePublicationAbsent:
+			if state == "SUCCEEDED" {
+				state = "FAILED"
+			}
+		case pipelinePublicationUnknown:
+			return "unknown", nil
+		}
+	} else if state == "FAILED" {
 		publication := h.cloudRunQuotaPublicationOutcome(ctx, &pipelineExecutionOwner{userID: reservation.UserID, projectID: reservation.ProjectID}, shortCloudRunExecutionName(execution.Name, true))
 		switch publication {
 		case pipelinePublicationCommitted:

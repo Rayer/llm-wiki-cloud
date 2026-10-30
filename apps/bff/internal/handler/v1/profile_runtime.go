@@ -277,11 +277,14 @@ func validProfileRuntimeIdentity(w profileruntime.Work) bool {
 	if !auth.ValidPathSegment(w.UserID) || !auth.ValidPathSegment(w.ProjectID) || !auth.ValidPathSegment(w.ID) {
 		return false
 	}
-	if w.Kind == "pipeline" {
+	if w.Kind == "pipeline" || w.Kind == "pipeline_automation" {
 		return w.Revision >= 0
 	}
 	if w.Kind == "document_import" {
 		return w.Revision > 0 && auth.ValidPathSegment(w.DocumentID)
+	}
+	if w.Kind == "pipeline_automation_scan" {
+		return w.UserID == "system" && w.ProjectID == "automation" && w.Revision > 0
 	}
 	return w.Revision > 0 && (w.Kind == "derive" || w.Kind == "tag" || w.Kind == "compile")
 }
@@ -363,6 +366,15 @@ func (d *ProfileDispatcher) finish(ctx context.Context, repo *firestoreProfileRe
 	return settledStatus, nil
 }
 func (d *ProfileDispatcher) execute(ctx context.Context, repo *firestoreProfileRepository, w profileruntime.Work) error {
+	if w.Kind == "pipeline_automation_scan" {
+		return d.executePipelineAutomationScan(ctx, repo, w)
+	}
+	if w.Kind == "pipeline_automation" {
+		if _, err := d.Handler.AuthorizeProject(ctx, w.UserID, w.ProjectID, ProjectEdit); err != nil {
+			return err
+		}
+		return d.executePipelineAutomation(ctx, repo, w)
+	}
 	if _, err := d.Handler.AuthorizeProject(ctx, w.UserID, w.ProjectID, ProjectEdit); err != nil {
 		return err
 	}

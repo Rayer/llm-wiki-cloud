@@ -194,6 +194,9 @@ func (h *Handler) SetQueryExecutor(executor query.Executor) {
 
 func (h *Handler) SetURLIntakeService(service *urlintake.Service) {
 	h.urlIntake = service
+	if service != nil {
+		service.SourceJournal = h.sourceCommitJournal()
+	}
 }
 
 func (h *Handler) SetMCPFrontendOrigin(origin string) {

@@ -180,6 +180,11 @@ func (h *Handler) mcpSDKHandler(identity mcpProjectKeyIdentity) http.Handler {
 			Name: "get_document_import", Title: "Get document import status", Description: mcpGetDocumentImportDescription,
 			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true}, InputSchema: mcpGetDocumentImportInputSchema,
 		}, h.callMCPGetDocumentImport)
+		mcp.AddTool[mcpPipelineStatusInput, any](server, &mcp.Tool{
+			Name: "pipeline_status", Title: "Get Project Pipeline status",
+			Description: mcpPipelineStatusToolDescription,
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true}, InputSchema: mcpPipelineStatusInputSchema, OutputSchema: mcpPipelineStatusOutputSchema,
+		}, h.callMCPPipelineStatus)
 	}
 	if hasMCPCapability(capabilities, mcpQueryCapability) && hasMCPCapability(capabilities, mcpRawWriteCapability) {
 		mcp.AddTool[addRawInput, any](server, &mcp.Tool{

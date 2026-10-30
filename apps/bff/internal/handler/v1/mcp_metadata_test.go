@@ -194,6 +194,7 @@ func TestMCPMetadataLegacySchema2BehaviorStaysPrivate(t *testing.T) {
 		want := map[string]string{
 			"query_project":       mcpQueryProjectToolDescription,
 			"get_document_import": mcpGetDocumentImportDescription,
+			"pipeline_status":     mcpPipelineStatusToolDescription,
 			"add_raw":             mcpAddRawToolDescription,
 			"import_url":          mcpImportURLToolDescription,
 			"import_document":     mcpImportDocumentDescription,
@@ -326,9 +327,9 @@ func assertMCPMetadataTools(t *testing.T, result map[string]any, metadata *confi
 	if !ok {
 		t.Fatalf("tools/list result = %#v", result)
 	}
-	wantCount := 2
+	wantCount := 3
 	if writer {
-		wantCount = 5
+		wantCount = 6
 	}
 	if len(items) != wantCount {
 		t.Fatalf("tools/list returned %d tools, want %d", len(items), wantCount)
@@ -345,6 +346,7 @@ func assertMCPMetadataTools(t *testing.T, result map[string]any, metadata *confi
 		wantDescription := map[string]string{
 			"query_project":       metadata.ToolDescriptions.QueryProject,
 			"get_document_import": mcpGetDocumentImportDescription,
+			"pipeline_status":     mcpPipelineStatusToolDescription,
 			"add_raw":             metadata.ToolDescriptions.AddRaw,
 			"import_url":          metadata.ToolDescriptions.ImportURL,
 			"import_document":     mcpImportDocumentDescription,
@@ -356,7 +358,7 @@ func assertMCPMetadataTools(t *testing.T, result map[string]any, metadata *confi
 			querySchema, _ = json.Marshal(tool["inputSchema"])
 		}
 	}
-	if !names["query_project"] || !names["get_document_import"] ||
+	if !names["query_project"] || !names["get_document_import"] || !names["pipeline_status"] ||
 		(writer && (!names["add_raw"] || !names["import_url"] || !names["import_document"])) ||
 		(!writer && (names["add_raw"] || names["import_url"] || names["import_document"])) || len(querySchema) == 0 {
 		t.Fatalf("tools/list names or code-owned schema = %v schema=%s", names, querySchema)

@@ -31,6 +31,7 @@ vi.mock('@/lib/api', () => ({
   getAdminSettings: mockGetAdminSettings,
   getAdminUsers: mockGetAdminUsers,
   getAdminAnnouncement: async () => '# Published',
+  getAdminPipelineAutomation: async () => ({ allow_auto_pipeline: false, revision: 0, backlog_scan_status: 'idle' }),
   getAdminManagementCatalog: async () => [
     { id: 'auth:admin', product: 'auth', resource: 'bff', grant_mode: 'operator-only', display_name: { en: 'Platform administrator', 'zh-TW': '平台管理員' }, description: { en: 'Manage accounts.', 'zh-TW': '管理帳號。' } },
     { id: 'lwc:admin', product: 'lwc', resource: 'bff', grant_mode: 'operator-only', display_name: { en: 'LWC administrator', 'zh-TW': 'LWC 管理員' }, description: { en: 'Manage projects.', 'zh-TW': '管理專案。' } },
@@ -41,6 +42,7 @@ vi.mock('@/lib/api', () => ({
   renameAdminProject: vi.fn(),
   triggerAdminProjectPipeline: vi.fn(),
   updateAdminSettings: vi.fn(),
+  updateAdminPipelineAutomation: vi.fn(),
   updateAdminUserRole: vi.fn(),
 }));
 vi.mock('@/lib/auth', () => ({ useAuth: mockUseAuth }));

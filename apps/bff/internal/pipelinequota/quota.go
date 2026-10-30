@@ -19,6 +19,7 @@ const (
 	TriggerManual         Trigger = "manual"
 	TriggerScheduledDaily Trigger = "scheduled_daily"
 	TriggerAdmin          Trigger = "admin"
+	TriggerSourceCommit   Trigger = "source_commit"
 )
 
 const (
@@ -136,10 +137,10 @@ func Evaluate(in Input) Snapshot {
 	if in.Trigger == TriggerScheduledDaily && in.ScheduledUsed {
 		return block(snap, ReasonEntitlementUsed, "The scheduled daily run has already been used")
 	}
-	if in.Trigger != TriggerScheduledDaily && runs >= lim.DailyLimit {
+	if in.Trigger != TriggerScheduledDaily && in.Trigger != TriggerSourceCommit && runs >= lim.DailyLimit {
 		return block(snap, ReasonDailyLimit, fmt.Sprintf("Daily limit reached (%d/%d)", runs, lim.DailyLimit))
 	}
-	if in.Trigger != TriggerAdmin && !in.LastRunAt.IsZero() {
+	if in.Trigger != TriggerAdmin && in.Trigger != TriggerSourceCommit && !in.LastRunAt.IsZero() {
 		until := in.LastRunAt.UTC().Add(lim.Cooldown)
 		// Only expose cooldown_until while the cooldown is still active.
 		// A past timestamp is contract noise for clients (FE already treats ms≤0 as clear).
@@ -149,7 +150,7 @@ func Evaluate(in Input) Snapshot {
 			return block(snap, ReasonCooldown, fmt.Sprintf("Cooldown active; try again in %d minutes", mins))
 		}
 	}
-	if in.Trigger != TriggerAdmin && in.Mode != ModeFull && in.NewRawFiles+in.RawDirtyFiles < lim.MinNewRaw && in.AnnotationDirtyFiles == 0 {
+	if in.Trigger != TriggerAdmin && in.Trigger != TriggerSourceCommit && in.Mode != ModeFull && in.NewRawFiles+in.RawDirtyFiles < lim.MinNewRaw && in.AnnotationDirtyFiles == 0 {
 		return block(snap, ReasonNoNewRaw, "Upload at least one new or modified raw file before running")
 	}
 	snap.Allowed = true

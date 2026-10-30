@@ -129,7 +129,7 @@ func TestMCPImportURLUsesStrictScopedIntakeAndConfiguredRawLink(t *testing.T) {
 	for _, tool := range discovered.Tools {
 		toolNames[tool.Name] = true
 	}
-	if len(toolNames) != 5 || !toolNames["query_project"] || !toolNames["get_document_import"] || !toolNames["add_raw"] || !toolNames["import_url"] || !toolNames["import_document"] {
+	if len(toolNames) != 6 || !toolNames["query_project"] || !toolNames["get_document_import"] || !toolNames["pipeline_status"] || !toolNames["add_raw"] || !toolNames["import_url"] || !toolNames["import_document"] {
 		t.Fatalf("MCP SDK discovered tools = %v", toolNames)
 	}
 
@@ -375,7 +375,7 @@ func TestMCPImportURLOutputSchemaAndOriginAreConstrained(t *testing.T) {
 	if !slices.Contains(failureStage.Enum, "size") {
 		t.Fatalf("import_url failure stage enum = %v", failureStage.Enum)
 	}
-	if !strings.Contains(mcpImportURLToolDescription, "not factual accuracy") || !strings.Contains(mcpImportURLToolDescription, "does not start") {
+	if !strings.Contains(mcpImportURLToolDescription, "not factual accuracy") || !strings.Contains(mcpImportURLToolDescription, "does not mean published or searchable") {
 		t.Fatalf("import_url description overstates behavior: %q", mcpImportURLToolDescription)
 	}
 	if trustedFrontendOrigin("https://user:password@attacker.example") != "" || trustedFrontendOrigin("https://frontend.example/path") != "" {
