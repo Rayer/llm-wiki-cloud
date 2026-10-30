@@ -43,6 +43,12 @@ vi.mock('@/components/NavigationBlocker', () => ({
 import { ApiError } from '../src/lib/api.ts';
 import { ProjectDescriptionEditor } from '../src/components/ProjectDescriptionEditor';
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
 describe('ProjectDescriptionEditor', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -120,5 +126,56 @@ describe('ProjectDescriptionEditor', () => {
 
     await waitFor(() => expect(mocks.saveProjectDescription).toHaveBeenNthCalledWith(2, 'project-a', 'My draft', 2));
     expect(await screen.findByText('ProjectDescription.saved')).toBeTruthy();
+  });
+
+  it('keeps edits made while the latest revision is loading', async () => {
+    const latest = deferred<{ projectId: string; description: string; revision: number }>();
+    mocks.getProjectDescription
+      .mockResolvedValueOnce({ projectId: 'project-a', description: 'Original', revision: 1 })
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockReturnValueOnce(latest.promise);
+    mocks.saveProjectDescription.mockRejectedValueOnce(new ApiError('revision conflict', 409));
+
+    render(<ProjectDescriptionEditor projectId="project-a" />);
+    const textarea = await screen.findByRole('textbox', { name: 'ProjectDescription.label' });
+    fireEvent.change(textarea, { target: { value: 'A' } });
+    fireEvent.click(screen.getByRole('button', { name: 'ProjectDescription.save' }));
+    await screen.findByRole('button', { name: 'ProjectDescription.loadLatest' });
+    fireEvent.click(screen.getByRole('button', { name: 'ProjectDescription.loadLatest' }));
+    await screen.findByRole('button', { name: 'ProjectDescription.loadingLatest' });
+
+    fireEvent.change(textarea, { target: { value: 'B' } });
+    latest.resolve({ projectId: 'project-a', description: 'A', revision: 2 });
+
+    expect(await screen.findByText('A')).toBeTruthy();
+    expect((textarea as HTMLTextAreaElement).value).toBe('B');
+    expect(screen.queryByText('ProjectDescription.saved')).toBeNull();
+    expect(screen.getByText('Original')).toBeTruthy();
+    await waitFor(() => expect(mocks.setBlocked).toHaveBeenLastCalledWith(true, expect.any(Object)));
+    expect(mocks.updateProjectDescription).not.toHaveBeenCalled();
+  });
+
+  it('recognizes the unchanged draft as already saved when the latest read returns it', async () => {
+    const latest = deferred<{ projectId: string; description: string; revision: number }>();
+    mocks.getProjectDescription
+      .mockResolvedValueOnce({ projectId: 'project-a', description: 'Original', revision: 1 })
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockReturnValueOnce(latest.promise);
+    mocks.saveProjectDescription.mockRejectedValueOnce(new ApiError('revision conflict', 409));
+
+    render(<ProjectDescriptionEditor projectId="project-a" />);
+    const textarea = await screen.findByRole('textbox', { name: 'ProjectDescription.label' });
+    fireEvent.change(textarea, { target: { value: 'A' } });
+    fireEvent.click(screen.getByRole('button', { name: 'ProjectDescription.save' }));
+    await screen.findByRole('button', { name: 'ProjectDescription.loadLatest' });
+    fireEvent.click(screen.getByRole('button', { name: 'ProjectDescription.loadLatest' }));
+    await screen.findByRole('button', { name: 'ProjectDescription.loadingLatest' });
+
+    latest.resolve({ projectId: 'project-a', description: 'A', revision: 2 });
+
+    expect(await screen.findByText('ProjectDescription.saved')).toBeTruthy();
+    expect((textarea as HTMLTextAreaElement).value).toBe('A');
+    expect(mocks.updateProjectDescription).toHaveBeenCalledWith('project-a', 'A', 2);
+    await waitFor(() => expect(mocks.setBlocked).toHaveBeenLastCalledWith(false, expect.any(Object)));
   });
 });
