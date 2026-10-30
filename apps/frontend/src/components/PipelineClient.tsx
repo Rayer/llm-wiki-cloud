@@ -210,13 +210,6 @@ export function PipelineClient() {
     }
   }, [setPipelineAutomation, setPipelineAutomationError, t]);
 
-  useEffect(() => {
-    if (!projectId) {
-      return;
-    }
-    void refreshPipelineAutomation({ projectId, contextGeneration: pipelineProjectContextRef.current.generation });
-  }, [projectId, refreshPipelineAutomation]);
-
   const pipelinePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pipelineAutomationPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pipelineAutomationPollScopeRef = useRef<PipelineAutomationPollScope | null>(null);
@@ -280,7 +273,11 @@ export function PipelineClient() {
       pipelinePollErrorNotifiedRef.current = false;
       setPipelineStatusReadFailedProjectId(null);
       setPipelineStatus(status);
-      void refreshPipelineAutomation({ projectId: scope.projectId, contextGeneration: scope.contextGeneration });
+      void refreshPipelineAutomation({ projectId: scope.projectId, contextGeneration: scope.contextGeneration }).then((settings) => {
+        if (isPipelineRequestCurrent(scope) && settings && !isPipelineAutomationInFlight(settings)) {
+          stopPipelineAutomationPolling();
+        }
+      });
 
       if (isTerminal) {
         if (status.last_execution?.compile_mode === 'full') {
@@ -300,7 +297,7 @@ export function PipelineClient() {
         addToast(err instanceof Error ? err.message : 'Pipeline status failed', 'error');
       }
     }
-  }, [addToast, isPipelineRequestCurrent, refreshPipelineAutomation, stopPipelinePolling]);
+  }, [addToast, isPipelineRequestCurrent, refreshPipelineAutomation, stopPipelineAutomationPolling, stopPipelinePolling]);
 
   useEffect(() => stopPipelinePolling, [currentProject?.id, stopPipelinePolling]);
   useEffect(() => stopPipelineAutomationPolling, [currentProject?.id, stopPipelineAutomationPolling]);
@@ -374,6 +371,18 @@ export function PipelineClient() {
       }, 5000);
     }
   }, [stopPipelineAutomationPolling]);
+
+  useEffect(() => {
+    if (!projectId) return;
+    const scope = { projectId, contextGeneration: pipelineProjectContextRef.current.generation };
+    let cancelled = false;
+    void refreshPipelineAutomation(scope).then((settings) => {
+      if (!cancelled && settings && isPipelineAutomationInFlight(settings)) {
+        startPipelineAutomationPolling(scope);
+      }
+    });
+    return () => { cancelled = true; };
+  }, [projectId, refreshPipelineAutomation, startPipelineAutomationPolling]);
 
   const handleUploadQueueSettled = useCallback(({ changed, projectId: uploadedProjectId }: RawUploadsSettled) => {
     if (!changed) return;
@@ -584,18 +593,24 @@ export function PipelineClient() {
       if (!isCurrent()) return;
       setScrapeResult(result);
       if (result.status === 'stored') {
-        void refreshPipelineStatus({
+        const scope = {
           projectId: context.projectId,
           contextGeneration: context.generation,
+        };
+        void refreshPipelineStatus({
+          ...scope,
           requestGeneration: pipelineRequestGenerationRef.current,
         });
+        void refreshPipelineAutomation(scope);
+        startPipelineAutomationPolling(scope);
       }
     } catch (error) {
       if (isCurrent()) setScrapeError(t(scrapeErrorMessageKey(error)));
     } finally {
       if (isCurrent()) setScrapeLoading(false);
     }
-  }, [refreshPipelineStatus, scrapeResult?.candidate_id, scrapeResult?.candidate_revision, setScrapeError, setScrapeLoading, setScrapeResult, t]);
+  }, [refreshPipelineAutomation, refreshPipelineStatus, scrapeResult?.candidate_id, scrapeResult?.candidate_revision,
+    setScrapeError, setScrapeLoading, setScrapeResult, startPipelineAutomationPolling, t]);
 
   const handleResolveScrape = useCallback(async () => {
     const candidateId = scrapeResult?.candidate_id;
@@ -610,13 +625,22 @@ export function PipelineClient() {
     setScrapeError(null);
     try {
       const result = await resolveScrapeCandidate(candidateId, context.projectId);
-      if (isCurrent()) setScrapeResult(result);
+      if (isCurrent()) {
+        setScrapeResult(result);
+        if (result.status === 'stored') {
+          const scope = { projectId: context.projectId, contextGeneration: context.generation };
+          void refreshPipelineStatus({ ...scope, requestGeneration: pipelineRequestGenerationRef.current });
+          void refreshPipelineAutomation(scope);
+          startPipelineAutomationPolling(scope);
+        }
+      }
     } catch (error) {
       if (isCurrent()) setScrapeError(t(scrapeErrorMessageKey(error)));
     } finally {
       if (isCurrent()) setScrapeLoading(false);
     }
-  }, [scrapeResult?.candidate_id, setScrapeError, setScrapeLoading, setScrapeResult, t]);
+  }, [refreshPipelineAutomation, refreshPipelineStatus, scrapeResult?.candidate_id, setScrapeError, setScrapeLoading,
+    setScrapeResult, startPipelineAutomationPolling, t]);
 
   const handleDeclineScrape = useCallback(async () => {
     const candidateId = scrapeResult?.candidate_id;
