@@ -119,23 +119,27 @@ class Providers:
             command_base = ['go', 'run', './cmd/pipeline_config', 'prepare', '--target', 'bff',
                             '--environment', target]
             run(command_base + ['--descriptor', '--output', str(descriptor_dir)],
-                cwd=ROOT / 'apps/bff', env=env, timeout=180, stage='bff-config-prepare')
+                cwd=ROOT / 'apps/bff', env=env, timeout=180, stage='bff-config-descriptor')
             try:
                 descriptor = json.loads((descriptor_dir / 'bff-inputs.json').read_text())
             except (OSError, TypeError, ValueError):
                 raise Breakpoint('bff-config-descriptor-unreadable', 'failed', False,
-                                 'inspect-bff-config-prepare', stage='bff-config-prepare') from None
-            require(descriptor == inputs, 'bff-config-source-descriptor-mismatch')
+                                 'inspect-bff-config-prepare', stage='bff-config-descriptor') from None
+            if descriptor != inputs:
+                raise Breakpoint('bff-config-source-descriptor-mismatch', 'failed', False,
+                                 'inspect-bff-config-prepare', stage='bff-config-descriptor')
             run(command_base + ['--output', str(runtime_dir)], cwd=ROOT / 'apps/bff',
-                env=env, timeout=180, stage='bff-config-prepare')
+                env=env, timeout=180, stage='bff-config-materialize')
             config_path = runtime_dir / 'bff.json'
             try:
                 info = config_path.lstat()
-                require(stat.S_ISREG(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o600 and
-                        0 < info.st_size <= 64 * 1024, 'bff-config-file-invalid')
+                if not (stat.S_ISREG(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o600 and
+                        0 < info.st_size <= 64 * 1024):
+                    raise Breakpoint('bff-config-file-invalid', 'failed', False,
+                                     'inspect-bff-config-prepare', stage='bff-config-materialize')
             except OSError:
                 raise Breakpoint('bff-config-file-unavailable', 'failed', False,
-                                 'inspect-bff-config-prepare', stage='bff-config-prepare') from None
+                                 'inspect-bff-config-prepare', stage='bff-config-materialize') from None
             try:
                 generated_config = json.loads(config_path.read_text())
             except (OSError, TypeError, ValueError):
@@ -419,12 +423,12 @@ class Providers:
         self._gcp_project_number = project_number
         return project_number
 
-    def cloud(self, c, *args, mutation=False):
+    def cloud(self, c, *args, mutation=False, stage=None):
         key = {'exportjob': 'export_job', 'documentimport': 'document_import_job'}.get(c, c)
         cfg = self.p[key]
         region = cfg.get('location', self.p['gcp']['region'])
         return run(['gcloud', 'run', *args, '--project', self.p['gcp']['project_id'],
-                    '--region', region, '--format=json', '--quiet'], mutation=mutation)
+                    '--region', region, '--format=json', '--quiet'], mutation=mutation, stage=stage)
 
     def resource(self, c):
         cfg = {'exportjob': 'export_job', 'documentimport': 'document_import_job'}.get(c, c)
@@ -1433,9 +1437,12 @@ class Providers:
     def document_import_policy(self):
         _, name = self.resource('documentimport')
         try:
-            policy = json.loads(self.cloud('documentimport', 'jobs', 'get-iam-policy', name))
+            policy = json.loads(self.cloud('documentimport', 'jobs', 'get-iam-policy', name,
+                                           stage='document-import-job-policy'))
         except (TypeError, ValueError):
             raise Breakpoint('document-import-job-policy-unreadable') from None
+        if isinstance(policy, dict) and 'bindings' not in policy:
+            policy['bindings'] = []
         require(isinstance(policy, dict) and isinstance(policy.get('etag'), str) and policy['etag'] and
                 isinstance(policy.get('bindings'), list) and
                 all(isinstance(binding, dict) and isinstance(binding.get('role'), str) and
@@ -1482,7 +1489,8 @@ class Providers:
         with tempfile.TemporaryDirectory(prefix='lwc-document-import-iam-') as temporary:
             path = Path(temporary) / 'policy.json'
             path.write_text(json.dumps(after))
-            self.cloud('documentimport', 'jobs', 'set-iam-policy', name, path, mutation=True)
+            self.cloud('documentimport', 'jobs', 'set-iam-policy', name, path, mutation=True,
+                       stage='document-import-job-policy')
         observed = self.document_import_policy()
         require(observed['etag'] != before['etag'] and
                 self.document_import_policy_has(observed, member) and

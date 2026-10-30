@@ -298,19 +298,55 @@ class Acceptance(unittest.TestCase):
         go.unlink(missing_ok=True)
         go.write_text(
             f'#!{sys.executable}\n'
-            'import os, shutil, sys\n'
+            'import json, os, shutil, sys, time\n'
             'args=sys.argv[1:]\n'
             "if args[:3] != ['run', './cmd/pipeline_config', 'prepare']:\n"
             '    sys.exit(99)\n'
+            "stage = 'descriptor' if '--descriptor' in args else 'materialize'\n"
+            "trace = os.environ.get('LWC_TEST_BFF_PREPARE_TRACE')\n"
+            "if trace:\n"
+            "    with open(trace, 'a') as stream: stream.write(stage + '\\n')\n"
+            "if os.environ.get('LWC_TEST_BFF_PREPARE_TIMEOUT_STAGE') == stage:\n"
+            '    deadline = time.monotonic() + 2\n'
+            '    while time.monotonic() < deadline: pass\n'
+            "if os.environ.get('LWC_TEST_BFF_PREPARE_FAIL_STAGE') == stage:\n"
+            "    sys.stderr.write(os.environ.get('LWC_TEST_BFF_PREPARE_STDERR', 'TEST_ONLY_BFF_PREPARE_ERROR\\n'))\n"
+            "    sys.exit(int(os.environ.get('LWC_TEST_BFF_PREPARE_EXIT', '23')))\n"
             "output = __import__('pathlib').Path(args[args.index('--output') + 1])\n"
             "if '--descriptor' in args:\n"
-            "    shutil.copyfile(os.environ['LWC_TEST_BFF_DESCRIPTOR'], output / 'bff-inputs.json')\n"
+            "    parse_case = os.environ.get('LWC_TEST_BFF_DESCRIPTOR_CASE')\n"
+            "    destination = output / 'bff-inputs.json'\n"
+            "    if parse_case == 'malformed':\n"
+            "        destination.write_text('{TEST_ONLY_INVALID_DESCRIPTOR')\n"
+            "    else:\n"
+            "        shutil.copyfile(os.environ['LWC_TEST_BFF_DESCRIPTOR'], destination)\n"
+            "        if parse_case == 'mismatch':\n"
+            "            descriptor = json.loads(destination.read_text())\n"
+            "            descriptor['test_only_mismatch'] = True\n"
+            "            destination.write_text(json.dumps(descriptor))\n"
             'else:\n'
             "    config = output / 'bff.json'\n"
             "    config.write_bytes(open(os.environ['LWC_TEST_BFF_CONFIG'], 'rb').read())\n"
             '    config.chmod(0o600)\n'
         )
         go.chmod(0o755)
+
+    def install_bff_prepare_timeout_shim(self):
+        sitecustomize = self.bin/'sitecustomize.py'
+        sitecustomize.write_text(
+            'import os, subprocess, time\n'
+            '_run = subprocess.run\n'
+            "if os.environ.get('LWC_TEST_BFF_PREPARE_FAST_POLLS') == '1':\n"
+            '    time.sleep = lambda _: None\n'
+            'def _bounded_run(args, *positional, **kwargs):\n'
+            "    values = [str(value) for value in args]\n"
+            "    target = os.environ.get('LWC_TEST_BFF_PREPARE_TIMEOUT_STAGE')\n"
+            "    stage = 'descriptor' if '--descriptor' in values else 'materialize'\n"
+            "    if (target == stage and values[:3] == ['go', 'run', './cmd/pipeline_config']):\n"
+            '        kwargs[\'timeout\'] = 0.05\n'
+            '    return _run(args, *positional, **kwargs)\n'
+            'subprocess.run = _bounded_run\n'
+        )
 
     @staticmethod
     def auth_sdk_http_error_body():
@@ -1368,6 +1404,246 @@ class Acceptance(unittest.TestCase):
         self.assertEqual(e.state['components']['documentimport']['status'], 'rolled_back')
         self.assertNotIn(name, self.current()['resources'])
 
+    def test_documentimport_policy_defaults_only_omitted_bindings_and_keeps_errors_fail_closed(self):
+        e = self.make(('documentimport',), name='documentimport-policy-shape')
+        with patch.object(e.provider, 'cloud', return_value=json.dumps({'etag':'ACAB','version':3})):
+            self.assertEqual(e.provider.document_import_policy(),
+                             {'etag':'ACAB','version':3,'bindings':[]})
+
+        for policy in (
+                {'etag':'ACAB','bindings':None},
+                {'etag':'ACAB','bindings':'invalid'},
+                {'etag':'ACAB','bindings':[None]},
+                {'etag':'ACAB','bindings':[{'role':1,'members':[]}]},
+                {'etag':'ACAB','bindings':[{'role':'roles/viewer','members':'invalid'}]},
+                {'etag':'ACAB','bindings':[{'role':'roles/viewer','members':[1]}]},
+                {'bindings':[]}, {'etag':'','bindings':[]}):
+            with self.subTest(policy=policy):
+                with patch.object(e.provider, 'cloud', return_value=json.dumps(policy)):
+                    with self.assertRaises(Breakpoint) as caught:
+                        e.provider.document_import_policy()
+                self.assertEqual(caught.exception.reason, 'document-import-job-policy-unreadable')
+
+        errors = (
+            Breakpoint('permission-denied','failed',True,'reconcile-before-replay',
+                       stage='document-import-job-policy',
+                       cause={'message':'ERROR: 403 Permission denied reading job policy.\n'}),
+            Breakpoint('provider-timeout','unknown',True,'reconcile-before-replay',
+                       stage='document-import-job-policy',
+                       cause={'message':'policy transport timed out'}),
+        )
+        for error in errors:
+            with self.subTest(reason=error.reason):
+                with patch.object(e.provider, 'cloud', side_effect=error):
+                    with self.assertRaises(Breakpoint) as caught:
+                        e.provider.document_import_policy()
+                self.assertIs(caught.exception, error)
+                self.assertIs(caught.exception.cause, error.cause)
+
+    def documentimport_checkpoint18(self, name, policy_get_stderr=None,
+                                    policy=None, policy_set_stderr=None):
+        selected = ('documentimport','bff','worker','frontend')
+        e = self.ready(self.make(selected, name=name))
+        job_name = self.normalized['document_import_job']['job_name']
+        self.provider = self.current()
+        self.provider['resources'].pop(job_name)
+        self.provider['iam_policies'].pop(job_name)
+        self.provider['document_import_create_policy'] = {'etag':'ACAB'}
+        self.provider['document_import_policy_next_etag'] = 'ACAD'
+        if policy_get_stderr:
+            self.provider['document_import_policy_get_stderr'] = policy_get_stderr
+        self.flush()
+        e.snapshot()
+
+        self.provider = self.current()
+        config = e.provider.document_import_job_config()
+        artifact = e.receipt('documentimport')['artifact']
+        owner = e.provider.document_import_owner()
+        container = {'image':artifact['image'],'env':copy.deepcopy(config['env']),
+                     'resources':{'limits':{'cpu':config['cpu'],'memory':config['memory']}}}
+        template = {'serviceAccountName':config['service_account'],'containers':[container],
+                    'timeoutSeconds':str(config['timeout_seconds']),
+                    'maxRetries':config['max_retries']}
+        self.provider['resources'][job_name] = {
+            'metadata':{'name':job_name,'labels':copy.deepcopy(owner)},
+            'spec':{'template':{'spec':{'parallelism':config['parallelism'],
+                'taskCount':config['tasks'],'template':{'spec':template}}}}}
+        member = 'serviceAccount:'+self.normalized['bff']['runtime_service_account']
+        self.provider['iam_policies'][job_name] = (copy.deepcopy(policy) if policy is not None else {
+            'etag':'BwZfFgGkpeA=','version':1,'bindings':[
+                {'role':'roles/run.jobsExecutorWithOverrides','members':[member]}]})
+        if policy_set_stderr:
+            self.provider['document_import_policy_set_stderr'] = policy_set_stderr
+        self.flush()
+
+        e.state['status'] = 'unknown'
+        e.state['sequence'] = 18
+        entry = e.state['components']['documentimport']
+        entry['status'] = 'unknown'
+        entry['prior'] = {'absent':True}
+        entry['candidate'] = {'create_if_absent':True,'create_owner':owner,
+                              'create_state':'created','image':artifact['image']}
+        write(e.state_path, e.state)
+        latest = self.latest_checkpoint(plan=e.plan['id'],sequence=18,status='unknown',
+                                        components={c:{'status':'unknown' if c == 'documentimport' else 'unstarted'}
+                                                     for c in selected})
+        return e, latest
+
+    def test_documentimport_checkpoint18_recovery_uses_owned_job_and_omitted_policy_bindings(self):
+        e, latest = self.documentimport_checkpoint18('documentimport-checkpoint18-recovery')
+        action, release, _, _ = self.invoke_runtime_action(
+            e, latest, operation='deploy', extra_env={'COMPONENTS':'documentimport'})
+        self.assertEqual(action.returncode, 0, action.stdout+action.stderr)
+        result = json.loads(action.stdout.strip().splitlines()[-1])
+        self.assertEqual(result['status'], 'partially_reactivated')
+        self.assertEqual(result['reason'], 'completed')
+        state = read(release/'state.json')
+        self.assertEqual(state['sequence'] > 18, True)
+        self.assertEqual(state['components']['documentimport']['status'], 'verified')
+        self.assertEqual(state['components']['documentimport']['prior'], {'absent':True})
+        self.assertEqual(state['components']['documentimport']['candidate']['create_state'], 'created')
+        for component in ('bff','worker','frontend'):
+            self.assertEqual(state['components'][component]['status'], 'unstarted')
+
+        name = self.normalized['document_import_job']['job_name']
+        policy = self.current()['iam_policies'][name]
+        member = 'serviceAccount:'+self.normalized['bff']['runtime_service_account']
+        self.assertEqual(policy, {'etag':'BwZfFgGkpeA=','version':1,'bindings':[
+            {'role':'roles/run.jobsExecutorWithOverrides','members':[member]}]})
+        self.assertEqual(self.current().get('iam_policy_submissions', []), [])
+        self.assertEqual(len(self.calls('create')), 0)
+        self.assertEqual(len(self.calls('delete')), 0)
+        self.assertEqual(len(self.calls('set-iam-policy')), 0)
+        self.assertEqual(len(self.calls('execute')), 0)
+        self.assertEqual(len(self.calls('update')), 0)
+
+    def test_documentimport_checkpoint18_rejects_changed_create_owner_before_policy_access(self):
+        e, latest = self.documentimport_checkpoint18('documentimport-checkpoint18-owner-mismatch')
+        name = self.normalized['document_import_job']['job_name']
+        self.provider = self.current()
+        self.provider['resources'][name]['metadata']['labels']['lwc-created-by-run'] = 'different-plan'
+        self.flush()
+        action, release, _, _ = self.invoke_runtime_action(
+            e, latest, operation='deploy', extra_env={'COMPONENTS':'documentimport'})
+        result = json.loads(action.stdout.strip().splitlines()[-1])
+        self.assertEqual(result['status'], 'unknown')
+        self.assertEqual(result['reason'], 'provider-result-unreadable')
+        self.assertEqual(result['causes'][0]['reason'], 'pending-job-mismatch')
+        state = read(release/'state.json')
+        self.assertEqual(state['components']['documentimport']['status'], 'unknown')
+        self.assertEqual(self.current()['iam_policies'][name]['etag'], 'BwZfFgGkpeA=')
+        self.assertEqual(len(self.calls('create')), 0)
+        self.assertEqual(len(self.calls('delete')), 0)
+        self.assertEqual(len(self.calls('get-iam-policy')), 0)
+        self.assertEqual(len(self.calls('set-iam-policy')), 0)
+
+    def test_documentimport_create_reconciles_concurrent_policy_etag_without_losing_external_bindings(self):
+        e = self.ready(self.make(('documentimport',), name='documentimport-policy-etag-conflict'))
+        name = self.normalized['document_import_job']['job_name']
+        self.provider['resources'].pop(name)
+        self.provider['iam_policies'].pop(name)
+        conditional = {'title':'existing-policy','description':'preserve condition',
+                       'expression':"request.time < timestamp('2030-01-01T00:00:00Z')"}
+        initial_bindings = [
+            {'role':'roles/run.jobsExecutorWithOverrides','members':['serviceAccount:existing'],
+             'condition':conditional},
+            {'role':'roles/logging.logWriter','members':['serviceAccount:logger']},
+        ]
+        concurrent_bindings = initial_bindings + [
+            {'role':'roles/storage.objectViewer','members':['serviceAccount:concurrent-writer'],
+             'condition':{'title':'concurrent','expression':'true'}},
+        ]
+        self.provider['document_import_create_policy'] = {
+            'etag':'ACAB','version':3,'bindings':initial_bindings}
+        self.provider['document_import_policy_conflict_once'] = True
+        self.provider['document_import_policy_concurrent_policy'] = {
+            'etag':'CONCURRENT','version':3,'bindings':concurrent_bindings}
+        self.provider['document_import_policy_next_etag'] = 'AFTER-CONFLICT'
+        self.flush()
+        e.snapshot()
+        e.deploy()
+
+        submissions = self.current()['iam_policy_submissions']
+        member = 'serviceAccount:'+self.normalized['bff']['runtime_service_account']
+        self.assertEqual([policy['etag'] for policy in submissions], ['ACAB','CONCURRENT'])
+        self.assertEqual(submissions[0]['version'], 3)
+        self.assertEqual(submissions[0]['bindings'], initial_bindings + [
+            {'role':'roles/run.jobsExecutorWithOverrides','members':[member]}])
+        self.assertEqual(submissions[1]['version'], 3)
+        self.assertEqual(submissions[1]['bindings'], concurrent_bindings + [
+            {'role':'roles/run.jobsExecutorWithOverrides','members':[member]}])
+        final = self.current()['iam_policies'][name]
+        self.assertEqual(final['etag'], 'AFTER-CONFLICT')
+        self.assertEqual(final['version'], 3)
+        self.assertEqual(final['bindings'], concurrent_bindings + [
+            {'role':'roles/run.jobsExecutorWithOverrides','members':[member]}])
+        self.assertEqual(len(self.calls('create')), 1)
+        self.assertEqual(len(self.calls('delete')), 0)
+
+    def test_documentimport_first_create_reads_merges_and_reads_back_etag_only_policy(self):
+        e = self.ready(self.make(('documentimport',), name='documentimport-etag-only-create'))
+        name = self.normalized['document_import_job']['job_name']
+        self.provider['resources'].pop(name)
+        self.provider['iam_policies'].pop(name)
+        self.provider['document_import_create_policy'] = {'etag':'ACAB'}
+        self.provider['document_import_policy_next_etag'] = 'ACAD'
+        self.flush()
+        e.snapshot()
+        self.assertEqual(e.state['components']['documentimport']['prior'], {'absent':True})
+        e.deploy()
+
+        member = 'serviceAccount:'+self.normalized['bff']['runtime_service_account']
+        minimal = [{'role':'roles/run.jobsExecutorWithOverrides','members':[member]}]
+        policy = self.current()['iam_policies'][name]
+        self.assertEqual(policy, {'etag':'ACAD','bindings':minimal})
+        self.assertEqual(self.current()['iam_policy_submissions'],
+                         [{'etag':'ACAB','bindings':minimal}])
+        self.assertEqual(len(self.calls('get-iam-policy')), 3)
+        self.assertEqual(len(self.calls('set-iam-policy')), 1)
+        self.assertEqual(len(self.calls('create')), 1)
+        self.assertEqual(e.state['components']['documentimport']['status'], 'verified')
+
+    def test_documentimport_checkpoint18_policy_permission_failure_keeps_unknown_and_original_cause(self):
+        e, latest = self.documentimport_checkpoint18(
+            'documentimport-checkpoint18-policy-denied',
+            policy_get_stderr='ERROR: (gcloud.run.jobs.get-iam-policy) 403 Permission denied.\n')
+        action, release, _, _ = self.invoke_runtime_action(
+            e, latest, operation='deploy', extra_env={'COMPONENTS':'documentimport'})
+        result = json.loads(action.stdout.strip().splitlines()[-1])
+        self.assertEqual(result['status'], 'unknown')
+        self.assertEqual(result['reason'], 'provider-result-unreadable')
+        self.assertEqual(result['allowed_next_action'], 'reconcile-before-replay')
+        self.assertEqual(result['causes'][0]['phase'], 'reconcile')
+        self.assertEqual(result['causes'][0]['reason'], 'permission-denied')
+        self.assertEqual(result['causes'][0]['status'], 'failed')
+        self.assertEqual(result['causes'][0]['cause']['message'],
+                         'ERROR: (gcloud.run.jobs.get-iam-policy) 403 Permission denied.\n')
+        state = read(release/'state.json')
+        self.assertEqual(state['sequence'] > 18, True)
+        self.assertEqual(state['components']['documentimport']['status'], 'unknown')
+        self.assertEqual(state['components']['documentimport']['prior'], {'absent':True})
+        self.assertEqual(state['components']['documentimport']['candidate']['create_state'], 'created')
+        name = self.normalized['document_import_job']['job_name']
+        self.assertEqual(self.current()['iam_policies'][name]['etag'], 'BwZfFgGkpeA=')
+        self.assertEqual(len(self.calls('create')), 0)
+        self.assertEqual(len(self.calls('delete')), 0)
+        self.assertEqual(len(self.calls('set-iam-policy')), 0)
+        self.assertEqual(len(self.calls('update')), 0)
+
+    def test_documentimport_policy_set_permission_failure_keeps_original_cause(self):
+        e = self.make(('documentimport',), name='documentimport-policy-set-denied')
+        name = self.normalized['document_import_job']['job_name']
+        self.provider['iam_policies'][name] = {'etag':'ACAB'}
+        stderr = 'ERROR: (gcloud.run.jobs.set-iam-policy) 403 Permission denied.\n'
+        self.provider['document_import_policy_set_stderr'] = stderr
+        self.flush()
+        with self.assertRaises(Breakpoint) as caught:
+            e.provider.ensure_document_import_invoker()
+        self.assertEqual(caught.exception.reason, 'permission-denied')
+        self.assertEqual(caught.exception.cause['message'], stderr)
+        self.assertEqual(self.current()['iam_policies'][name], {'etag':'ACAB'})
+        self.assertEqual(self.current()['iam_policy_submissions'][0]['etag'], 'ACAB')
+
     def test_documentimport_snapshot_requires_exact_bff_invoker_binding(self):
         name = self.normalized['document_import_job']['job_name']
         self.provider['iam_policies'][name]['bindings'] = []
@@ -2066,15 +2342,18 @@ class Acceptance(unittest.TestCase):
         descriptor.write_text(json.dumps(e.plan['normalized']['bff']['runtime_inputs']))
         config=self.root/'bff-runtime-config.json'
         config.write_text('{"schema_version":2,"target":"bff","synthetic":"TEST_ONLY_BFF_PAYLOAD"}')
+        trace=self.root/'bff-prepare-trace'
         self.install_bff_prepare_go_helper()
         self.configure(bff_version_response_project='580854833715')
 
         action,release,_,_=self.invoke_runtime_action(
             e,None,operation='release',target='development',
             extra_env={'LWC_TEST_BFF_DESCRIPTOR':str(descriptor),
-                       'LWC_TEST_BFF_CONFIG':str(config)})
+                       'LWC_TEST_BFF_CONFIG':str(config),
+                       'LWC_TEST_BFF_PREPARE_TRACE':str(trace)})
 
         self.assertEqual(action.returncode,0,action.stdout+action.stderr)
+        self.assertEqual(trace.read_text().splitlines(),['descriptor','materialize'])
         result=json.loads(action.stdout.strip().splitlines()[-1])
         retained=read(release/'result.json')
         state=read(release/'state.json')
@@ -2137,6 +2416,106 @@ class Acceptance(unittest.TestCase):
                          {'status':'unconfirmed'})
         self.assertEqual(self.current()['bff_version_adds'],1)
         self.assertNotIn('TEST_ONLY_BFF_PAYLOAD',json.dumps(result))
+
+    def test_runtime_action_preserves_bff_descriptor_and_materializer_child_causes_with_rollback(self):
+        token='TEST_ONLY_BFF_PREPARE_TOKEN'
+        stderr=('TEST_ONLY_BFF_PREPARE_DIAGNOSTIC\n'
+                'Authorization: Bearer '+token+'\nGITHUB_TOKEN='+token+'\n--token='+token+'\n')
+        scenarios=(
+            ('descriptor-exit','exit-descriptor','bff-config-descriptor','command-failed'),
+            ('materialize-exit','exit-materialize','bff-config-materialize','command-failed'),
+            ('descriptor-timeout','timeout-descriptor','bff-config-descriptor','provider-timeout'),
+            ('materialize-timeout','timeout-materialize','bff-config-materialize','provider-timeout'),
+            ('descriptor-malformed','malformed','bff-config-descriptor','bff-config-descriptor-unreadable'),
+            ('descriptor-mismatch','mismatch','bff-config-descriptor','bff-config-source-descriptor-mismatch'),
+        )
+        for name, mode, expected_stage, expected_reason in scenarios:
+            with self.subTest(name=name):
+                e=self.ready(self.make(('documentimport','bff'),name='bff-cause-'+name))
+                job_name=self.normalized['document_import_job']['job_name']
+                self.provider=self.current()
+                self.provider['resources'].pop(job_name,None)
+                self.provider.get('iam_policies',{}).pop(job_name,None)
+                self.provider['document_import_create_policy']={'etag':'ACAB'}
+                self.flush()
+                descriptor=self.root/(name+'-inputs.json')
+                descriptor.write_text(json.dumps(e.plan['normalized']['bff']['runtime_inputs']))
+                config=self.root/(name+'-runtime.json')
+                config.write_text('{"schema_version":2,"target":"bff",'
+                                  '"synthetic":"TEST_ONLY_BFF_CONFIG_PAYLOAD"}')
+                trace=self.root/(name+'-trace')
+                self.install_bff_prepare_go_helper()
+                self.install_bff_prepare_timeout_shim()
+                before_creates=len(self.calls('create'))
+                before_deletes=len(self.calls('delete'))
+                before_policy_sets=len(self.calls('set-iam-policy'))
+                extra_env={
+                    'LWC_TEST_BFF_DESCRIPTOR':str(descriptor),
+                    'LWC_TEST_BFF_CONFIG':str(config),
+                    'LWC_TEST_BFF_PREPARE_TRACE':str(trace),
+                    'LWC_TEST_BFF_PREPARE_FAST_POLLS':'1',
+                    'GITHUB_TOKEN':token,
+                    'PYTHONPATH':str(self.bin)+os.pathsep+os.environ.get('PYTHONPATH',''),
+                }
+                if mode.startswith('exit-'):
+                    extra_env.update(LWC_TEST_BFF_PREPARE_FAIL_STAGE=mode.removeprefix('exit-'),
+                                     LWC_TEST_BFF_PREPARE_STDERR=stderr)
+                elif mode.startswith('timeout-'):
+                    timeout_stage=mode.removeprefix('timeout-')
+                    extra_env['LWC_TEST_BFF_PREPARE_TIMEOUT_STAGE']=timeout_stage
+                else:
+                    extra_env['LWC_TEST_BFF_DESCRIPTOR_CASE']=mode
+
+                action,release,_,_=self.invoke_runtime_action(
+                    e,None,operation='release',target='development',extra_env=extra_env)
+
+                self.assertEqual(action.returncode,1,action.stdout+action.stderr)
+                result=json.loads(action.stdout.strip().splitlines()[-1])
+                state=read(release/'state.json')
+                self.assertEqual((result['status'],result['stage'],result['reason']),
+                                 ('failed','failed_rolled_back','basic-sanity-mismatch'))
+                self.assertEqual(result['component'],'bff')
+                self.assertEqual(state['status'],'failed_rolled_back')
+                self.assertEqual(state['components']['documentimport']['status'],'rolled_back')
+                self.assertEqual(state['components']['documentimport']['prior'],{'absent':True})
+                self.assertEqual(state['components']['bff']['status'],'rolled_back')
+                expected_trace=['descriptor'] if mode in (
+                    'exit-descriptor','timeout-descriptor','malformed','mismatch') else ['descriptor','materialize']
+                self.assertEqual(trace.read_text().splitlines(),expected_trace)
+                self.assertEqual([cause['phase'] for cause in result['causes']],['deploy','poll'])
+                primary=result['causes'][0]
+                self.assertEqual((primary['reason'],primary['status'],primary['stage']),
+                                 (expected_reason,'failed',expected_stage))
+                self.assertEqual(result['causes'][1]['reason'],'basic-sanity-mismatch')
+                if 'exit' in mode:
+                    self.assertEqual(primary['exit_code'],23)
+                    self.assertNotIn('timeout_class',primary)
+                    cause=primary['cause']
+                    self.assertEqual((cause['exception_type'],cause['stage'],cause['code']),
+                                     ('ChildProcessError',expected_stage,'child-command-failed'))
+                    self.assertIn('TEST_ONLY_BFF_PREPARE_DIAGNOSTIC',cause['message'])
+                    self.assertIn('[REDACTED]',cause['message'])
+                    self.assertNotIn(token,cause['message'])
+                elif 'timeout' in mode:
+                    self.assertIsNone(primary.get('exit_code'))
+                    self.assertEqual(primary['timeout_class'],'subprocess-timeout')
+                    cause=primary['cause']
+                    self.assertEqual((cause['exception_type'],cause['stage'],cause['code']),
+                                     ('TimeoutExpired',expected_stage,'child-command-timeout'))
+                    self.assertIsNone(cause['message'])
+                    self.assertTrue(cause['message_omitted'])
+                else:
+                    self.assertNotIn('exit_code',primary)
+                    self.assertNotIn('timeout_class',primary)
+                    self.assertNotIn('cause',primary)
+                serialized=action.stdout+json.dumps(result)
+                self.assertNotIn(token,serialized)
+                self.assertNotIn('TEST_ONLY_BFF_CONFIG_PAYLOAD',serialized)
+                self.assertNotIn(job_name,self.current()['resources'])
+                self.assertEqual(len(self.calls('create'))-before_creates,1)
+                self.assertEqual(len(self.calls('delete'))-before_deletes,1)
+                self.assertEqual(len(self.calls('set-iam-policy'))-before_policy_sets,1)
+                self.assertEqual(len(self.calls('execute')),0)
 
     def test_bff_config_adapter_unavailable_file_fails_before_publication(self):
         e=self.ready(self.make(('bff',),name='bff-config-missing-file'))

@@ -44,8 +44,9 @@ _CAUSE_STAGES = {
     'frontend-project-readback', 'frontend-npm-ci', 'frontend-i18n-prepare',
     'frontend-vercel-pull', 'frontend-vercel-build', 'frontend-vercel-deploy',
     'frontend-deployment-reconcile', 'auth-config-materialize', 'pipeline-config-object-read',
-    'pipeline-config-object-delete', 'pipeline-config-prepare', 'bff-config-publish',
-    'document-import-job-describe',
+    'pipeline-config-object-delete', 'pipeline-config-prepare', 'bff-config-prepare',
+    'bff-config-descriptor', 'bff-config-materialize', 'bff-config-publish',
+    'document-import-job-describe', 'document-import-job-policy',
     'latest-checkpoint', 'unknown',
 }
 _ARTIFACT_CAUSE_PREFIX = 'LWC_ARTIFACT_CAUSE '

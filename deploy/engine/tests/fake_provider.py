@@ -146,13 +146,37 @@ elif tool == 'gcloud':
                     {'etag':'etag-1','bindings':[]}))
                 out=s['resources'][name]
         elif kind == 'jobs' and op == 'get-iam-policy':
-            out=s.get('iam_policies',{}).get(name,{'etag':'etag-0','bindings':[]})
+            if s.get('document_import_policy_get_stderr'):
+                fail=True
+                failure_message=s['document_import_policy_get_stderr']
+            else:
+                out=s.get('iam_policies',{}).get(name,{'etag':'etag-0','bindings':[]})
         elif kind == 'jobs' and op == 'set-iam-policy':
             policy=json.loads(Path(a[4]).read_text())
+            s.setdefault('iam_policy_submissions',[]).append(copy.deepcopy(policy))
             old=s.get('iam_policies',{}).get(name,{'etag':'etag-0','bindings':[]})
-            policy['etag']='etag-'+str(int(old['etag'].removeprefix('etag-'))+1)
-            s.setdefault('iam_policies',{})[name]=policy
-            out=policy
+            if s.get('document_import_policy_conflict_once'):
+                s['document_import_policy_conflict_once']=False
+                old=copy.deepcopy(s['document_import_policy_concurrent_policy'])
+                s.setdefault('iam_policies',{})[name]=old
+                fail=True
+                failure_message='ERROR: (gcloud.run.jobs.set-iam-policy) 409 etag mismatch.\n'
+            elif s.get('document_import_policy_set_stderr'):
+                fail=True
+                failure_message=s['document_import_policy_set_stderr']
+            elif policy.get('etag') != old.get('etag'):
+                fail=True
+                failure_message='ERROR: (gcloud.run.jobs.set-iam-policy) 409 etag mismatch.\n'
+            else:
+                etag=old['etag']
+                if 'document_import_policy_next_etag' in s:
+                    policy['etag']=s['document_import_policy_next_etag']
+                elif etag.startswith('etag-') and etag.removeprefix('etag-').isdigit():
+                    policy['etag']='etag-'+str(int(etag.removeprefix('etag-'))+1)
+                else:
+                    policy['etag']=etag+'-next'
+                s.setdefault('iam_policies',{})[name]=policy
+                out=policy
         elif kind == 'jobs' and op == 'delete':
             s['resources'].pop(name,None)
             s.get('iam_policies',{}).pop(name,None)
