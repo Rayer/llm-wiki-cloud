@@ -1,12 +1,14 @@
 package v1
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,14 +16,19 @@ import (
 	"time"
 
 	cloudfirestore "cloud.google.com/go/firestore"
+	cloudstorage "cloud.google.com/go/storage"
 	"github.com/gin-gonic/gin"
 	"github.com/rayer/llm-wiki-bff/internal/auth"
 	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
+	"github.com/rayer/llm-wiki-bff/internal/gcs"
 	"github.com/rayer/llm-wiki-bff/internal/handler"
 	"github.com/rayer/llm-wiki-bff/internal/localfs"
 	"github.com/rayer/llm-wiki-bff/internal/profileruntime"
 	"github.com/rayer/llm-wiki-bff/internal/sourceautomation"
 	"github.com/rayer/llm-wiki-bff/internal/storage"
+	"google.golang.org/api/iterator"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func TestPipelineAutomationRawSyncToLocalConsumer(t *testing.T) {
@@ -264,6 +271,321 @@ func TestPreparedSourceCommitRecoversThroughDurableDispatcher(t *testing.T) {
 	if _, err := pipelineWorkRef.Get(ctx); err != nil {
 		t.Fatalf("recovery did not enqueue pipeline automation: %v", err)
 	}
+}
+
+func TestRawSyncOverwriteReconcilesWhileGCSStagingIsPaused(t *testing.T) {
+	if !requireLoopbackEmulator(t, "FIRESTORE_EMULATOR_HOST") || !requireLoopbackEmulator(t, "STORAGE_EMULATOR_HOST") {
+		t.Skip("requires loopback Firestore and Storage emulators")
+	}
+
+	client := newOnboardingFirestore(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	owner := fmt.Sprintf("lwc442-overwrite-%d", time.Now().UnixNano())
+	projectID := "wiki"
+	projectRef := scopedfirestore.Collection(client.Raw(), "projects").Doc(projectDocID(owner, projectID))
+	if _, err := projectRef.Set(ctx, map[string]interface{}{
+		"user_id": owner, "project_id": projectID, "status": "ready", "auto_pipeline_enabled": true,
+		"auto_pipeline_revision": int64(1), "pipeline_source_revision": int64(0),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pipelineAutomationAdminRef(client.Raw()).Set(ctx, map[string]interface{}{"allow_auto_pipeline": true, "revision": int64(1)}); err != nil {
+		t.Fatal(err)
+	}
+
+	adminStorage, err := cloudstorage.NewClient(ctx)
+	if err != nil {
+		t.Fatalf("create loopback Storage client: %v", err)
+	}
+	bucketName := fmt.Sprintf("lwc442-source-%d", time.Now().UnixNano())
+	bucket := adminStorage.Bucket(bucketName)
+	if err := bucket.Create(ctx, "lwc442-local", nil); err != nil {
+		_ = adminStorage.Close()
+		t.Fatalf("create disposable Storage emulator bucket: %v", err)
+	}
+	root, err := gcs.NewClientWithScope(bucketName, fmt.Sprintf("lwc442-%d", time.Now().UnixNano()))
+	if err != nil {
+		_ = bucket.Delete(ctx)
+		_ = adminStorage.Close()
+		t.Fatalf("create scoped GCS root: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cleanupCancel()
+		objects := bucket.Objects(cleanupCtx, nil)
+		for {
+			attrs, nextErr := objects.Next()
+			if errors.Is(nextErr, iterator.Done) {
+				break
+			}
+			if nextErr != nil {
+				t.Errorf("list Storage emulator test objects: %v", nextErr)
+				break
+			}
+			if deleteErr := bucket.Object(attrs.Name).Generation(attrs.Generation).Delete(cleanupCtx); deleteErr != nil && !errors.Is(deleteErr, cloudstorage.ErrObjectNotExist) {
+				t.Errorf("delete Storage emulator test object: %v", deleteErr)
+			}
+		}
+		if err := bucket.Delete(cleanupCtx); err != nil && !errors.Is(err, cloudstorage.ErrBucketNotExist) {
+			t.Errorf("delete Storage emulator test bucket: %v", err)
+		}
+		if err := root.Close(); err != nil {
+			t.Errorf("close scoped GCS root: %v", err)
+		}
+		if err := adminStorage.Close(); err != nil {
+			t.Errorf("close Storage emulator client: %v", err)
+		}
+	})
+
+	h := New(root, client, nil, nil, nil, nil)
+	h.SetAccountLookup(func(context.Context, string) (*auth.UserRecord, error) {
+		return &auth.UserRecord{Status: auth.AccountActive, Role: "member"}, nil
+	})
+	local := &pipelineAutomationLocalExecutor{}
+	h.SetLocalPipelineExecutor(local)
+	gin.SetMode(gin.TestMode)
+	upload := func(body io.Reader, digest, expectedGeneration string) *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest(http.MethodPut, "/api/v1/raw-sync/upload?path=notes/overwrite.md", body)
+		c.Request.Header.Set("X-Content-SHA256", digest)
+		if expectedGeneration != "" {
+			c.Request.Header.Set("X-Expected-Generation", expectedGeneration)
+		}
+		c.Set("userID", owner)
+		c.Set("projectID", projectID)
+		h.SyncRawUpload(c)
+		return recorder
+	}
+
+	oldBody := []byte("# Original raw content\n")
+	oldDigest := sha256.Sum256(oldBody)
+	first := upload(strings.NewReader(string(oldBody)), hex.EncodeToString(oldDigest[:]), "")
+	if first.Code != http.StatusOK {
+		t.Fatalf("initial raw sync status=%d body=%s", first.Code, first.Body.String())
+	}
+	var initial struct {
+		Generation string `json:"generation"`
+	}
+	if err := json.Unmarshal(first.Body.Bytes(), &initial); err != nil || initial.Generation == "" {
+		t.Fatalf("initial raw sync response=%s decode=%v", first.Body.String(), err)
+	}
+
+	newBody := bytes.Repeat([]byte("new staged raw content\n"), 80_000)
+	newDigest := sha256.Sum256(newBody)
+	release := make(chan struct{})
+	paused := make(chan struct{})
+	reader := &pausedSyncBody{prefix: newBody[:1<<20], rest: newBody[1<<20:], paused: paused, release: release}
+	secondDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		secondDone <- upload(reader, hex.EncodeToString(newDigest[:]), initial.Generation)
+	}()
+	select {
+	case <-paused:
+	case <-ctx.Done():
+		t.Fatalf("raw sync writer did not pause during GCS staging: %v", ctx.Err())
+	}
+
+	conditionalWriter, ok := root.Scope(owner, projectID).(storage.ConditionalWriter)
+	if !ok {
+		t.Fatal("GCS scope does not expose the conditional raw read contract")
+	}
+	stored, generation, err := conditionalWriter.ReadFileWithGeneration(ctx, "raw/notes/overwrite.md")
+	if err != nil || string(stored) != string(oldBody) || fmt.Sprint(generation) != initial.Generation {
+		t.Fatalf("destination changed before staged write completed: bytes=%d generation=%d err=%v", len(stored), generation, err)
+	}
+	events, err := projectRef.Collection("pipeline_source_events").Documents(ctx).GetAll()
+	if err != nil {
+		t.Fatalf("read prepared source events: %v", err)
+	}
+	var overwriteEvent string
+	for _, snapshot := range events {
+		if snapshot.Data()["expected_sha256"] == hex.EncodeToString(newDigest[:]) {
+			overwriteEvent = snapshot.Ref.ID
+			break
+		}
+	}
+	if overwriteEvent == "" {
+		t.Fatalf("prepared overwrite event was not stored: %v", events)
+	}
+	reconcileWork := profileruntime.Work{UserID: owner, ProjectID: projectID, Kind: "source_commit_reconcile", ID: overwriteEvent}
+	reconcileRef := scopedfirestore.Collection(client.Raw(), profileruntime.WorkCollection).Doc(profileruntime.WorkID(reconcileWork))
+	workSnapshot, err := reconcileRef.Get(ctx)
+	if err != nil {
+		t.Fatalf("read overwrite reconciliation work: %v", err)
+	}
+	var work profileruntime.Work
+	if err := workSnapshot.DataTo(&work); err != nil {
+		t.Fatal(err)
+	}
+	work.Due = time.Now().Add(-time.Hour)
+	if _, err := reconcileRef.Set(ctx, work); err != nil {
+		t.Fatalf("make reconciliation work due: %v", err)
+	}
+	dispatcher := &ProfileDispatcher{Handler: h}
+	if processed, err := dispatcher.Dispatch(ctx, 1); err != nil || processed != 1 {
+		t.Fatalf("reconcile old raw while new upload is staged: processed=%d err=%v", processed, err)
+	}
+	workSnapshot, err = reconcileRef.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := workSnapshot.DataTo(&work); err != nil {
+		t.Fatal(err)
+	}
+	if !work.Pending || work.Status != "waiting_manual" {
+		t.Fatalf("prepared overwrite was not retained as pending: %+v", work)
+	}
+	eventSnapshot, err := projectRef.Collection("pipeline_source_events").Doc(overwriteEvent).Get(ctx)
+	if err != nil || eventSnapshot.Data()["commit_state"] != "prepared" {
+		t.Fatalf("prepared overwrite changed state after old raw read: snapshot=%v err=%v", eventSnapshot, err)
+	}
+
+	close(release)
+	var second *httptest.ResponseRecorder
+	select {
+	case second = <-secondDone:
+	case <-ctx.Done():
+		t.Fatalf("raw sync overwrite did not finish: %v", ctx.Err())
+	}
+	if second.Code != http.StatusOK {
+		t.Fatalf("staged overwrite status=%d body=%s", second.Code, second.Body.String())
+	}
+	var overwritten struct {
+		Generation     string `json:"generation"`
+		SourceRevision int64  `json:"source_revision"`
+	}
+	if err := json.Unmarshal(second.Body.Bytes(), &overwritten); err != nil || overwritten.Generation == "" || overwritten.SourceRevision != 2 {
+		t.Fatalf("overwrite response=%s decode=%v", second.Body.String(), err)
+	}
+	projectSnapshot, err := projectRef.Get(ctx)
+	if err != nil || projectSnapshot.Data()["pipeline_source_revision"] != int64(2) {
+		t.Fatalf("overwrite source revision=%v err=%v", projectSnapshot, err)
+	}
+	automationWork := profileruntime.Work{UserID: owner, ProjectID: projectID, Kind: "pipeline_automation", Revision: 2, ID: "source-2"}
+	automationRef := scopedfirestore.Collection(client.Raw(), profileruntime.WorkCollection).Doc(profileruntime.WorkID(automationWork))
+	automationSnapshot, err := automationRef.Get(ctx)
+	if err != nil || !automationSnapshot.Exists() {
+		t.Fatalf("source revision 2 did not enqueue one automation wake: snapshot=%v err=%v", automationSnapshot, err)
+	}
+	if err := dispatcher.execute(ctx, h.profileRepository.(*firestoreProfileRepository), automationWork); err != nil {
+		t.Fatalf("consume source revision 2 automation wake: %v", err)
+	}
+	works, err := scopedfirestore.Collection(client.Raw(), profileruntime.WorkCollection).Documents(ctx).GetAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pipelineWork *profileruntime.Work
+	automationWakes := 0
+	for _, snapshot := range works {
+		var queued profileruntime.Work
+		if err := snapshot.DataTo(&queued); err != nil {
+			t.Fatal(err)
+		}
+		if queued.UserID != owner || queued.ProjectID != projectID {
+			continue
+		}
+		if queued.Kind == "pipeline_automation" && queued.ID == "source-2" {
+			automationWakes++
+		}
+		if queued.Kind == "pipeline" {
+			pipelineWork = &queued
+		}
+	}
+	if automationWakes != 1 || pipelineWork == nil {
+		t.Fatalf("consumer rebuild missing or duplicated: wakes=%d pipeline=%+v", automationWakes, pipelineWork)
+	}
+	if err := dispatcher.execute(ctx, h.profileRepository.(*firestoreProfileRepository), *pipelineWork); err != nil {
+		t.Fatalf("consume rebuilt pipeline intent: %v", err)
+	}
+	if local.starts != 1 || !strings.HasPrefix(local.reservationID, "auto-") {
+		t.Fatalf("overwritten source started %d pipeline runs with reservation %q", local.starts, local.reservationID)
+	}
+
+	journal := h.sourceCommitJournal()
+	supersededBody := []byte("# Prepared content that will be superseded\n")
+	supersededDigest := sha256.Sum256(supersededBody)
+	supersededRef, err := journal.PrepareSourceCommit(ctx, sourceautomation.VerifiedProject{OwnerID: owner, ProjectID: projectID}, sourceautomation.PrepareRequest{
+		OperationID: "later-version-negative", Entrypoint: "cli_sync", RawPath: "notes/overwrite.md", ExpectedSHA256: hex.EncodeToString(supersededDigest[:]),
+	})
+	if err != nil {
+		t.Fatalf("prepare superseded content: %v", err)
+	}
+	laterBody := []byte("# Later confirmed content\n")
+	laterDigest := sha256.Sum256(laterBody)
+	later := upload(strings.NewReader(string(laterBody)), hex.EncodeToString(laterDigest[:]), overwritten.Generation)
+	if later.Code != http.StatusOK {
+		t.Fatalf("later raw sync status=%d body=%s", later.Code, later.Body.String())
+	}
+	result, err := journal.ReconcileSourceCommit(ctx, supersededRef)
+	if err != nil || result.State != "aborted" {
+		t.Fatalf("reconcile superseded prepared content: result=%+v err=%v", result, err)
+	}
+	supersededEvent, err := projectRef.Collection("pipeline_source_events").Doc(supersededRef.OperationID).Get(ctx)
+	if err != nil || supersededEvent.Data()["abort_reason"] != "raw_superseded" {
+		t.Fatalf("superseded event state=%v err=%v", supersededEvent, err)
+	}
+
+	failedBody := []byte("# Failed staged content\n")
+	failedDigest := sha256.Sum256(failedBody)
+	failedRef, err := journal.PrepareSourceCommit(ctx, sourceautomation.VerifiedProject{OwnerID: owner, ProjectID: projectID}, sourceautomation.PrepareRequest{
+		OperationID: "failed-writer-negative", Entrypoint: "cli_sync", RawPath: "notes/overwrite.md", ExpectedSHA256: hex.EncodeToString(failedDigest[:]),
+	})
+	if err != nil {
+		t.Fatalf("prepare failed content: %v", err)
+	}
+	if result, err := journal.ReconcileSourceCommit(ctx, failedRef); !errors.Is(err, sourceautomation.ErrSourceCommitPending) || result.State != "pending" {
+		t.Fatalf("unconfirmed failed writer did not remain bounded pending: result=%+v err=%v", result, err)
+	}
+	failedEventRef := projectRef.Collection("pipeline_source_events").Doc(failedRef.OperationID)
+	if _, err := failedEventRef.Update(ctx, []cloudfirestore.Update{{Path: "reconcile_deadline", Value: time.Now().Add(-time.Second)}}); err != nil {
+		t.Fatalf("advance failed writer deadline: %v", err)
+	}
+	if result, err := journal.ReconcileSourceCommit(ctx, failedRef); err != nil || result.State != "aborted" {
+		t.Fatalf("expire failed writer without committing it: result=%+v err=%v", result, err)
+	}
+	projectSnapshot, err = projectRef.Get(ctx)
+	if err != nil || projectSnapshot.Data()["pipeline_source_revision"] != int64(3) {
+		t.Fatalf("negative cases changed source revision: project=%v err=%v", projectSnapshot, err)
+	}
+	failedWake := profileruntime.Work{UserID: owner, ProjectID: projectID, Kind: "pipeline_automation", Revision: 4, ID: "source-4"}
+	failedWakeRef := scopedfirestore.Collection(client.Raw(), profileruntime.WorkCollection).Doc(profileruntime.WorkID(failedWake))
+	if snapshot, err := failedWakeRef.Get(ctx); err == nil && snapshot.Exists() {
+		t.Fatalf("aborted source commits emitted a revision-4 wake: %v", snapshot.Data())
+	} else if err != nil && status.Code(err) != codes.NotFound {
+		t.Fatalf("read aborted source wake: %v", err)
+	}
+}
+
+type pausedSyncBody struct {
+	prefix  []byte
+	rest    []byte
+	paused  chan struct{}
+	release <-chan struct{}
+	waiting bool
+}
+
+func (r *pausedSyncBody) Read(p []byte) (int, error) {
+	if len(r.prefix) > 0 {
+		n := copy(p, r.prefix)
+		r.prefix = r.prefix[n:]
+		return n, nil
+	}
+	if r.rest != nil {
+		if !r.waiting {
+			close(r.paused)
+			r.waiting = true
+			<-r.release
+		}
+		n := copy(p, r.rest)
+		r.rest = r.rest[n:]
+		if len(r.rest) == 0 {
+			r.rest = nil
+		}
+		return n, nil
+	}
+	return 0, io.EOF
 }
 
 func TestAdminReopenRetriesFailedSourceWithoutProjectOrRawChanges(t *testing.T) {

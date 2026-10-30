@@ -123,6 +123,15 @@ func (j *FirestoreJournal) PrepareSourceCommit(ctx context.Context, project Veri
 		if status.Code(err) != codes.NotFound {
 			return err
 		}
+		baseGeneration := ""
+		currentRef := projectRef.Collection("pipeline_source_current").Doc(pathDocumentID(request.RawPath))
+		currentSnapshot, currentErr := tx.Get(currentRef)
+		if currentErr != nil && status.Code(currentErr) != codes.NotFound {
+			return currentErr
+		}
+		if currentSnapshot != nil && currentSnapshot.Exists() {
+			baseGeneration, _ = currentSnapshot.Data()["generation"].(string)
+		}
 		if err := enqueueSourceCommitReconcile(ctx, tx, j.fs, project, request.OperationID, now.Add(sourceCommitReconcileDelay)); err != nil {
 			return err
 		}
@@ -130,8 +139,8 @@ func (j *FirestoreJournal) PrepareSourceCommit(ctx context.Context, project Veri
 			"schema_version": 1, "operation_id": request.OperationID, "entrypoint": request.Entrypoint,
 			"raw_path": request.RawPath, "expected_sha256": request.ExpectedSHA256,
 			"batch_id": request.BatchID, "commit_state": "prepared", "created_at": now,
-			"reconcile_deadline": now.Add(sourceCommitReconcileGrace),
-			"updated_at":         now,
+			"base_generation": baseGeneration, "reconcile_deadline": now.Add(sourceCommitReconcileGrace),
+			"updated_at": now,
 		})
 	})
 	if err != nil {
@@ -303,11 +312,7 @@ func (j *FirestoreJournal) ReconcileSourceCommit(ctx context.Context, ref Ref) (
 	bytes, generation, err := reader.ReadFileWithGeneration(ctx, "raw/"+path)
 	if err != nil {
 		if errors.Is(err, storage.ErrObjectNotExist) {
-			deadline, ok := data["reconcile_deadline"].(time.Time)
-			if !ok {
-				createdAt, _ := data["created_at"].(time.Time)
-				deadline = createdAt.Add(sourceCommitReconcileGrace)
-			}
+			deadline := sourceCommitDeadline(data)
 			if deadline.IsZero() || time.Now().UTC().Before(deadline) {
 				return CommitResult{State: "pending", ProcessingStatus: "unknown"}, ErrSourceCommitPending
 			}
@@ -320,12 +325,44 @@ func (j *FirestoreJournal) ReconcileSourceCommit(ctx context.Context, ref Ref) (
 	}
 	actualDigest := digest(bytes)
 	if actualDigest != expectedDigest {
+		baseGeneration, _ := data["base_generation"].(string)
+		if baseGeneration != "" && strconv.FormatInt(generation, 10) != baseGeneration {
+			currentRef := projectDocument(j.fs, VerifiedProject{OwnerID: ref.OwnerID, ProjectID: ref.ProjectID}).
+				Collection("pipeline_source_current").Doc(pathDocumentID(path))
+			currentSnapshot, currentErr := currentRef.Get(ctx)
+			if currentErr != nil && status.Code(currentErr) != codes.NotFound {
+				return CommitResult{}, currentErr
+			}
+			if currentSnapshot != nil && currentSnapshot.Exists() {
+				current := currentSnapshot.Data()
+				currentGeneration, _ := current["generation"].(string)
+				currentDigest, _ := current["sha256"].(string)
+				if currentGeneration == strconv.FormatInt(generation, 10) && currentDigest == actualDigest {
+					if err := j.markCommitAborted(ctx, ref, "raw_superseded"); err != nil {
+						return CommitResult{}, err
+					}
+					return CommitResult{State: "aborted", ProcessingStatus: "pending"}, nil
+				}
+			}
+		}
+		if time.Now().UTC().Before(sourceCommitDeadline(data)) {
+			return CommitResult{State: "pending", ProcessingStatus: "unknown"}, ErrSourceCommitPending
+		}
 		if err := j.markCommitAborted(ctx, ref, "raw_replaced"); err != nil {
 			return CommitResult{}, err
 		}
 		return CommitResult{State: "aborted", ProcessingStatus: "pending"}, nil
 	}
 	return j.ConfirmSourceCommit(ctx, ref, ConfirmRequest{Generation: strconv.FormatInt(generation, 10), Status: "created"})
+}
+
+func sourceCommitDeadline(data map[string]interface{}) time.Time {
+	deadline, ok := data["reconcile_deadline"].(time.Time)
+	if ok {
+		return deadline
+	}
+	createdAt, _ := data["created_at"].(time.Time)
+	return createdAt.Add(sourceCommitReconcileGrace)
 }
 
 func enqueueSourceCommitReconcile(ctx context.Context, tx *cloudfirestore.Transaction, fs *cloudfirestore.Client, project VerifiedProject, operationID string, due time.Time) error {
