@@ -50,6 +50,7 @@ type RouteQueue = {
   refresh: QueuedResponse[];
   logout: QueuedResponse[];
   projects: QueuedResponse[];
+  documentImports: QueuedResponse[];
   publicConfig: QueuedResponse[];
 };
 
@@ -67,6 +68,7 @@ const queue: RouteQueue = {
   refresh: [],
   logout: [],
   projects: [],
+  documentImports: [],
   publicConfig: [],
 };
 
@@ -86,6 +88,7 @@ function routeFrom(input: Parameters<typeof fetch>[0]) {
   if (path.endsWith('/api/v1/auth/refresh')) return 'refresh';
   if (path.endsWith('/api/v1/auth/logout')) return 'logout';
   if (path.endsWith('/api/v1/public/config')) return 'publicConfig';
+  if (path.includes('/api/v1/projects/') && path.includes('/document-imports/')) return 'documentImports';
   if (path.includes('/api/v1/projects')) return 'projects';
   return null;
 }
@@ -112,6 +115,10 @@ function defaultResponse(route: keyof RouteQueue): FetchResponse {
 
   if (route === 'publicConfig') {
     return { status: 200, body: { registration_enabled: false } };
+  }
+
+  if (route === 'documentImports') {
+    return { status: 200, body: { failed_count: 0 } };
   }
 
   return { status: 200, body: route === 'projects' ? [] : {} };
@@ -149,6 +156,7 @@ function clearQueues() {
   queue.refresh = [];
   queue.logout = [];
   queue.projects = [];
+  queue.documentImports = [];
   queue.publicConfig = [];
 }
 

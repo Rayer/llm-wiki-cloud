@@ -172,6 +172,7 @@ export function RawUploadPanel({
             if (submissionID && !next.submissionID) {
               uploadItemsRef.current = uploadItemsRef.current.map((item) => item.id === next.id ? { ...item, submissionID } : item);
             }
+            const uploadOptions = submissionID ? [submissionID, next.batchID] as const : [];
             const result = await uploadRawFile(next.file, (progress) => {
               if (!mountedRef.current) return;
               const current = uploadItemsRef.current.find((item) => item.id === next.id);
@@ -180,7 +181,7 @@ export function RawUploadPanel({
                 item.id === next.id ? { ...item, progress } : item,
               );
               setUploadItems(uploadItemsRef.current);
-            }, next.projectId, submissionID, next.batchID);
+            }, next.projectId, ...uploadOptions);
             if (!mountedRef.current) return;
             settledProjectIdsRef.current.add(next.projectId);
             const documentResult = 'document_id' in result ? result : null;

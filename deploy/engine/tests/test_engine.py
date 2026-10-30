@@ -202,6 +202,9 @@ class Acceptance(unittest.TestCase):
         self.provider['resources'][cfg['job_name']]={'spec':{'template':{'spec':{
             'parallelism':cfg['parallelism'],'taskCount':cfg['tasks'],
             'template':{'spec':document_import_template}}}}}
+        self.provider.setdefault('iam_policies',{})[cfg['job_name']]={
+            'etag':'etag-1','bindings':[{'role':'roles/run.jobsExecutorWithOverrides',
+                'members':['serviceAccount:'+n['bff']['runtime_service_account']]}]}
         for environment in ('development', 'production'):
             bucket=n['worker']['bucket'] if environment == n['environment'] else ('llm-wiki-data' if environment == 'production' else 'llm-wiki-data-dev')
             self.provider.setdefault('pipeline_configs', {})[
@@ -1284,6 +1287,44 @@ class Acceptance(unittest.TestCase):
         self.assertNotIn('--service-account', update)
         e.provider.rollback('documentimport', prior)
         self.assertTrue(e.provider.observe('documentimport', prior, {}, prior=True))
+
+    def test_documentimport_absent_snapshot_creates_job_with_etag_preserving_invoker_and_rolls_back(self):
+        e = self.ready(self.make(('documentimport',), name='documentimport-create'))
+        name = self.normalized['document_import_job']['job_name']
+        self.provider['resources'].pop(name)
+        self.provider['iam_policies'].pop(name)
+        self.provider['document_import_create_policy'] = {
+            'etag':'etag-7','bindings':[{'role':'roles/run.invoker','members':['user:fixture@example.test']}]}
+        self.flush()
+        e.snapshot()
+        prior = e.state['components']['documentimport']['prior']
+        self.assertEqual(prior, {'absent':True})
+        e.deploy()
+        candidate = e.state['components']['documentimport']['candidate']
+        self.assertEqual(candidate['create_state'], 'created')
+        self.assertEqual(e.state['components']['documentimport']['status'], 'verified')
+        create_calls = self.calls('create')
+        self.assertEqual(len(create_calls), 1)
+        self.assertIn('--service-account', create_calls[0])
+        self.assertIn('--set-env-vars', create_calls[0])
+        policy = self.current()['iam_policies'][name]
+        self.assertEqual(policy['etag'], 'etag-8')
+        self.assertEqual(policy['bindings'], [
+            {'role':'roles/run.invoker','members':['user:fixture@example.test']},
+            {'role':'roles/run.jobsExecutorWithOverrides',
+             'members':['serviceAccount:'+self.normalized['bff']['runtime_service_account']]},
+        ])
+        e.restore(['documentimport'])
+        self.assertEqual(e.state['components']['documentimport']['status'], 'rolled_back')
+        self.assertNotIn(name, self.current()['resources'])
+
+    def test_documentimport_snapshot_requires_exact_bff_invoker_binding(self):
+        name = self.normalized['document_import_job']['job_name']
+        self.provider['iam_policies'][name]['bindings'] = []
+        self.flush()
+        e = self.make(('documentimport',), name='documentimport-missing-invoker')
+        with self.assertRaisesRegex(Breakpoint, 'document-import-job-invoker-binding-missing'):
+            e.provider.snapshot('documentimport')
 
     def test_documentimport_snapshot_rejects_secret_environment_or_volume(self):
         name = self.normalized['document_import_job']['job_name']

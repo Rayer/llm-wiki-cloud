@@ -31,7 +31,18 @@ const mocks = vi.hoisted(() => ({
   getPipelineStatus: vi.fn(),
   refreshNavCounts: vi.fn(async () => undefined),
   uploadRawFile: vi.fn(),
-  translate: (key: string) => key,
+  translate: (key: string, params?: Record<string, string | number>) => key === 'RawUpload.retryFile'
+    ? `Retry ${params?.filename ?? ''}`
+    : ({
+      'RawUpload.status.queued': 'Queued',
+      'RawUpload.status.uploading': 'Uploading',
+      'RawUpload.status.accepted': 'Accepted',
+      'RawUpload.status.created': 'Created',
+      'RawUpload.status.alreadyExists': 'Already exists',
+      'RawUpload.status.replaced': 'Replaced',
+      'RawUpload.status.failed': 'Failed',
+      'RawUpload.retry': 'Retry',
+    }[key] ?? key),
 }));
 
 vi.mock('@/lib/api', async () => {

@@ -914,9 +914,9 @@ class Engine:
             entry['status'] = 'rollback_pending'
             self.save()
             try:
-                if not self.provider.observe(c, entry['prior'], {}, True):
+                if not self.provider.observe(c, entry['prior'], entry.get('candidate', {}), True):
                     try:
-                        self.provider.rollback(c, entry['prior'])
+                        self.provider.rollback(c, entry['prior'], entry.get('candidate', {}))
                     except Breakpoint:
                         # A timeout can be accepted; verified readback is authoritative.
                         pass
@@ -966,6 +966,9 @@ class Engine:
                 continue
             require(entry['status'] not in ('rollback_pending', 'rollback_unknown', 'rollback_failed'), 'recovery-must-be-reconciled')
             changed.append(c)
+            if c == 'documentimport':
+                entry['candidate'].setdefault('create_if_absent', entry['prior'].get('absent') is True)
+                self.save()
             was_pending = entry['status'] in ('pending', 'unknown')
             entry['status'] = 'pending'
             self.state['status'] = 'deploying'

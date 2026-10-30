@@ -30,7 +30,18 @@ vi.mock('@/components/WorkspaceProvider', () => ({
   }),
 }));
 
-vi.mock('@/lib/i18n', () => ({ useT: () => ({ t: (key: string) => key }) }));
+vi.mock('@/lib/i18n', () => ({ useT: () => ({ t: (key: string, params?: Record<string, string | number>) => ({
+  'RawUpload.status.queued': 'Queued',
+  'RawUpload.status.uploading': 'Uploading',
+  'RawUpload.status.accepted': 'Accepted',
+  'RawUpload.status.created': 'Created',
+  'RawUpload.status.alreadyExists': 'Already exists',
+  'RawUpload.status.replaced': 'Replaced',
+  'RawUpload.status.failed': 'Failed',
+  'RawUpload.retry': 'Retry',
+  'RawUpload.retryFile': `Retry ${params?.filename ?? ''}`,
+  'RawUpload.uploadSummary': `${params?.created ?? 0} created, ${params?.existing ?? 0} already exists, ${params?.accepted ?? 0} accepted, ${params?.replaced ?? 0} replaced, ${params?.failed ?? 0} failed, ${params?.pending ?? 0} in progress`,
+}[key] ?? key) }) }));
 vi.mock('next/navigation', () => ({ useSearchParams: () => new URLSearchParams() }));
 
 import { RawClient } from '@/components/RawClient';
@@ -113,7 +124,7 @@ it('keeps multiple-file selection and queues every file at the raw root without 
     fireEvent.change(uploadInput(), { target: { files: [firstUpload, secondUpload] } });
   });
 
-  expect(await screen.findByText('2 created, 0 already exists, 0 failed')).toBeDefined();
+  expect(await screen.findByText('2 created, 0 already exists, 0 accepted, 0 replaced, 0 failed, 0 in progress')).toBeDefined();
   await waitFor(() => expect(mocks.uploadRawFile).toHaveBeenCalledTimes(2));
   expect(mocks.uploadRawFile).toHaveBeenNthCalledWith(1, firstUpload, expect.any(Function), 'project-a');
   expect(mocks.uploadRawFile).toHaveBeenNthCalledWith(2, secondUpload, expect.any(Function), 'project-a');

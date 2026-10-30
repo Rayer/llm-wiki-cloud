@@ -45,6 +45,7 @@ _CAUSE_STAGES = {
     'frontend-vercel-pull', 'frontend-vercel-build', 'frontend-vercel-deploy',
     'frontend-deployment-reconcile', 'auth-config-materialize', 'pipeline-config-object-read',
     'pipeline-config-object-delete', 'pipeline-config-prepare', 'bff-config-publish',
+    'document-import-job-describe',
     'latest-checkpoint', 'unknown',
 }
 _ARTIFACT_CAUSE_PREFIX = 'LWC_ARTIFACT_CAUSE '

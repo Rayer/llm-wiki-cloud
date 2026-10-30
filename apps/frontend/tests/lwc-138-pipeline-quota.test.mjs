@@ -172,7 +172,8 @@ test('PipelineClient wires quota line, disabled Run, status fetch, and checklist
   // The shared upload panel reports created files so Home can refresh quota status.
   assert.match(pipelineClient, /onQueueSettled=\{handleUploadQueueSettled\}/);
   assert.match(pipelineClient, /handleUploadQueueSettled[\s\S]*?refreshPipelineStatus/);
-  assert.match(rawUploadPanel, /result\.status === 'created'/);
+  assert.match(rawUploadPanel, /rawResult\?\.status === 'created'/);
+  assert.match(rawUploadPanel, /if \(documentResult\) void refreshNavCounts\(\)/);
   // Demo early-return remains belt-and-suspenders on click.
   assert.match(pipelineClient, /handleRunPipeline[\s\S]*?isDemoSession/);
   // Toast path for API/race errors.

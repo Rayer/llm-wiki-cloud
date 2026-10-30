@@ -8,6 +8,8 @@ const workspace = vi.hoisted(() => ({ currentProject: { id: 'main-synthetic-proj
 vi.mock('@/components/WorkspaceProvider', () => ({ useWorkspace: () => workspace }));
 vi.mock('@/lib/i18n', () => ({ useT: () => ({ t: (key: string) => key }) }));
 vi.mock('@/components/NavigationBlocker', () => ({ NavigationLink: ({ children }: { children: React.ReactNode }) => <span>{children}</span> }));
+vi.mock('next/navigation', () => ({ usePathname: () => '/sources', useSearchParams: () => new URLSearchParams() }));
+vi.mock('@/components/DocumentImportsPanel', () => ({ DocumentImportsPanel: () => null }));
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 it('real SourceListClient raw-preview response retains the existing backend diagnostic ID', async () => {
