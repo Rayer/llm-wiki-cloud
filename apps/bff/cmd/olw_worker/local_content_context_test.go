@@ -157,7 +157,7 @@ func TestLocalPublicationAuthorityCarriesSameDigestAndFencesLateAttempt(t *testi
 	}
 	completion := contentcontext.SummaryCompletion{
 		Text: "summary from first local publication", PromptRevision: contentcontext.SummaryPromptRevision,
-		ProfileID: "fast-profile", ProfileRevision: 1, Role: contentcontext.SummaryRole,
+		ProfileSource: "personal", ProfileID: "fast-profile", ProfileRevision: 1, Role: contentcontext.SummaryRole,
 		RequestedModel: "fast-model", ReturnedModel: "fast-model-v2",
 		InputDigest: strings.Repeat("b", 64), SelectionVersion: contentcontext.SummarySelectionVersion,
 	}

@@ -146,7 +146,7 @@ func testPublication(generation string, digestByte byte, manifestIdentity string
 
 func testSummaryCompletion(text string) SummaryCompletion {
 	return SummaryCompletion{
-		Text: text, PromptRevision: SummaryPromptRevision, ProfileID: "profile-1", ProfileRevision: 2,
+		Text: text, PromptRevision: SummaryPromptRevision, ProfileSource: "personal", ProfileID: "profile-1", ProfileRevision: 2,
 		Role: SummaryRole, RequestedModel: "model-requested", ReturnedModel: "model-returned",
 		InputDigest: strings.Repeat("e", 64), SelectionVersion: SummarySelectionVersion,
 	}

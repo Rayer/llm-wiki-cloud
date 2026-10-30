@@ -35,6 +35,43 @@ type contentContextSummaryClient interface {
 	Close()
 }
 
+type contentContextFastIdentity struct {
+	source          string
+	profileID       string
+	profileRevision int64
+	provider        string
+	protocol        string
+	model           string
+}
+
+type bootstrapContentContextSummaryClient struct {
+	client *llm.Client
+}
+
+func (c *bootstrapContentContextSummaryClient) Complete(ctx context.Context, systemPrompt, input string) (llm.CompletionResult, error) {
+	if c == nil || c.client == nil {
+		return llm.CompletionResult{}, errors.New("platform Fast client is unavailable")
+	}
+	text, returnedModel, err := c.client.ChatWithMetadata(ctx, systemPrompt, input)
+	if err != nil {
+		return llm.CompletionResult{}, err
+	}
+	identity, ok := c.client.ModelIdentity()
+	if !ok || identity.Provider == "" || identity.Model == "" || returnedModel == "" {
+		return llm.CompletionResult{}, errors.New("platform Fast identity is unavailable")
+	}
+	return llm.CompletionResult{Text: text, Metadata: llm.CompletionMetadata{
+		Provider: identity.Provider, Protocol: string(llm.ProtocolOpenAIChatCompletions),
+		Role: string(llm.ProfileRoleFast), RequestedModel: identity.Model, ReturnedModel: returnedModel,
+	}}, nil
+}
+
+func (c *bootstrapContentContextSummaryClient) Close() {
+	if c != nil {
+		c.client = nil
+	}
+}
+
 var newContentContextSummaryClient = func(profile pipelineLLMProfile) (contentContextSummaryClient, error) {
 	models := normalizePipelineLLMModels(profile)
 	return llm.NewProfileClient(llm.ProfileConfig{
@@ -43,6 +80,20 @@ var newContentContextSummaryClient = func(profile pipelineLLMProfile) (contentCo
 	}, string(profile.APIKey), llm.ProfileClientOptions{
 		Timeout: contentContextModelTimeout, MaxOutputTokens: contentContextMaxOutputTokens,
 	})
+}
+
+var newBootstrapContentContextSummaryClient = func(apiKey string) (contentContextSummaryClient, llm.ModelIdentity, error) {
+	client := llm.NewClientWithOptions(apiKey, llm.ClientOptions{
+		Model: suggestedQueryModel, RequestTimeoutSeconds: int(contentContextModelTimeout / time.Second),
+	})
+	if client == nil {
+		return nil, llm.ModelIdentity{}, errors.New("platform Fast client is unavailable")
+	}
+	identity, ok := client.ModelIdentity()
+	if !ok || identity.Provider == "" || identity.Model == "" {
+		return nil, llm.ModelIdentity{}, errors.New("platform Fast identity is unavailable")
+	}
+	return &bootstrapContentContextSummaryClient{client: client}, identity, nil
 }
 
 var loadContentContextSummaryInput = pinnedSummaryInput
@@ -306,12 +357,7 @@ func runClaimedContentContextSummary(ctx context.Context, cfg workerConfig, repo
 		return failCloudContentContextSummary(ctx, repository, authority, cfg, claim, "input_invalid", err)
 	}
 
-	profile, ok := contentContextFastProfile(cfg)
-	if !ok {
-		return failCloudContentContextSummary(ctx, repository, authority, cfg, claim, "provider_unavailable", errors.New("Project Fast profile is unavailable"))
-	}
-	models := normalizePipelineLLMModels(profile)
-	summaryClient, err := newContentContextSummaryClient(profile)
+	summaryClient, identity, err := newContentContextFastClient(ctx, cfg)
 	if err != nil {
 		return failCloudContentContextSummary(ctx, repository, authority, cfg, claim, "provider_unavailable", err)
 	}
@@ -324,15 +370,16 @@ func runClaimedContentContextSummary(ctx context.Context, cfg workerConfig, repo
 		return failCloudContentContextSummary(ctx, repository, authority, cfg, claim, contentContextProviderErrorClass(err), err)
 	}
 	text, err := contentcontext.ParseSummaryOutput([]byte(result.Text))
-	if err != nil || result.Metadata.ProfileID != profile.ID || result.Metadata.ProfileRevision != profile.Revision ||
-		result.Metadata.Role != string(llm.ProfileRoleFast) || result.Metadata.RequestedModel != models.Fast || result.Metadata.ReturnedModel == "" {
+	if err != nil || result.Metadata.ProfileID != identity.profileID || result.Metadata.ProfileRevision != identity.profileRevision ||
+		result.Metadata.Provider != identity.provider || result.Metadata.Protocol != identity.protocol ||
+		result.Metadata.Role != string(llm.ProfileRoleFast) || result.Metadata.RequestedModel != identity.model || result.Metadata.ReturnedModel == "" {
 		if err == nil {
 			err = errors.New("Fast summary response metadata is invalid")
 		}
 		return failCloudContentContextSummary(ctx, repository, authority, cfg, claim, "summary_invalid", err)
 	}
 	completion := contentcontext.SummaryCompletion{
-		Text: text, PromptRevision: contentcontext.SummaryPromptRevision,
+		Text: text, PromptRevision: contentcontext.SummaryPromptRevision, ProfileSource: identity.source,
 		ProfileID: result.Metadata.ProfileID, ProfileRevision: result.Metadata.ProfileRevision,
 		Role: result.Metadata.Role, RequestedModel: result.Metadata.RequestedModel,
 		ReturnedModel: result.Metadata.ReturnedModel, InputDigest: metadata.InputDigest,
@@ -355,21 +402,68 @@ func validSummaryInputMetadata(metadata contentcontext.SummaryInputMetadata, cla
 	return digestOK && claimOK && inputDigestOK && digest == claimDigest
 }
 
-func contentContextFastProfile(cfg workerConfig) (pipelineLLMProfile, bool) {
-	if cfg.ActiveLLMProfile != nil {
-		models := normalizePipelineLLMModels(*cfg.ActiveLLMProfile)
-		if models.Fast != "" {
-			return *cfg.ActiveLLMProfile, true
+func newContentContextFastClient(ctx context.Context, cfg workerConfig) (contentContextSummaryClient, contentContextFastIdentity, error) {
+	switch cfg.PipelineProfileSource {
+	case "personal", "shared":
+		profile, err := contentContextFastProfile(ctx, cfg)
+		if err != nil {
+			return nil, contentContextFastIdentity{}, err
 		}
+		client, err := newContentContextSummaryClient(profile)
+		if err != nil {
+			return nil, contentContextFastIdentity{}, err
+		}
+		models := normalizePipelineLLMModels(profile)
+		return client, contentContextFastIdentity{
+			source: cfg.PipelineProfileSource, profileID: profile.ID, profileRevision: profile.Revision,
+			provider: profile.Provider, protocol: string(profile.Protocol), model: models.Fast,
+		}, nil
+	case "bootstrap":
+		if !cfg.BootstrapLLMSource || cfg.SharedProfilePool || len(cfg.ProfileCandidates) != 0 {
+			return nil, contentContextFastIdentity{}, errors.New("Project bootstrap source identity is invalid")
+		}
+		client, model, err := newBootstrapContentContextSummaryClient(cfg.APIKey)
+		if err != nil {
+			return nil, contentContextFastIdentity{}, err
+		}
+		return client, contentContextFastIdentity{
+			source: "bootstrap", provider: model.Provider,
+			protocol: string(llm.ProtocolOpenAIChatCompletions), model: model.Model,
+		}, nil
+	default:
+		return nil, contentContextFastIdentity{}, errors.New("Project LLM source is unavailable")
 	}
-	if len(cfg.ProfileCandidates) == 0 {
-		return pipelineLLMProfile{}, false
+}
+
+func contentContextFastProfile(ctx context.Context, cfg workerConfig) (pipelineLLMProfile, error) {
+	if cfg.BootstrapLLMSource {
+		return pipelineLLMProfile{}, errors.New("bootstrap source has no Project profile")
 	}
-	models := normalizePipelineLLMModels(cfg.ProfileCandidates[0])
-	if models.Fast == "" {
-		return pipelineLLMProfile{}, false
+	switch cfg.PipelineProfileSource {
+	case "personal":
+		if cfg.SharedProfilePool || len(cfg.ProfileCandidates) != 1 {
+			return pipelineLLMProfile{}, errors.New("Project personal Fast profile is unavailable")
+		}
+		return cfg.ProfileCandidates[0], nil
+	case "shared":
+		if !cfg.SharedProfilePool || len(cfg.ProfileCandidates) == 0 {
+			return pipelineLLMProfile{}, errors.New("Project shared Fast profile is unavailable")
+		}
+		eligible, err := revalidatePipelineProfileCandidates(ctx, cfg, cfg.ProfileCandidates)
+		if err != nil {
+			return pipelineLLMProfile{}, fmt.Errorf("Project shared Fast eligibility could not be proven: %w", err)
+		}
+		if cfg.ActiveLLMProfile != nil {
+			for _, candidate := range eligible {
+				if samePipelineProfileIdentity(*cfg.ActiveLLMProfile, candidate) {
+					return candidate, nil
+				}
+			}
+		}
+		return eligible[0], nil
+	default:
+		return pipelineLLMProfile{}, errors.New("Project profile source is unavailable")
 	}
-	return cfg.ProfileCandidates[0], true
 }
 
 func contentContextProviderErrorClass(err error) string {

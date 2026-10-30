@@ -267,6 +267,7 @@ func resolveSuggestedQueriesSource(ctx context.Context, cfg workerConfig) (worke
 	if err != nil {
 		return workerConfig{}, errors.New("Project LLM source is unavailable to suggested-query generation")
 	}
+	cfg.PipelineProfileSource = response.Source
 	cfg.ProfileCandidates = response.Profiles
 	cfg.SharedProfilePool = response.Source == "shared"
 	cfg.BootstrapLLMSource = response.Source == "bootstrap"

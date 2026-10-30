@@ -55,6 +55,7 @@ type workerConfig struct {
 	PipelineBindingsPath         string
 	ProfileResolverURL           string
 	ProfileResolverAudience      string
+	PipelineProfileSource        string
 	ProfileCandidates            []pipelineLLMProfile
 	ActiveLLMProfile             *pipelineLLMProfile
 	SharedProfilePool            bool
@@ -401,6 +402,7 @@ func runWorkerBatch(ctx context.Context, cfg workerConfig, rawCommands string) (
 		if resolveErr != nil {
 			return errors.New("Project LLM source is unavailable to Pipeline")
 		}
+		cfg.PipelineProfileSource = profileResponse.Source
 		cfg.ProfileCandidates = profileResponse.Profiles
 		cfg.SharedProfilePool = profileResponse.Source == "shared"
 		cfg.BootstrapLLMSource = profileResponse.Source == "bootstrap"

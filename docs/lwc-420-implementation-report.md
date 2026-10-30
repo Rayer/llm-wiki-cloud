@@ -1,23 +1,27 @@
 # LWC-420 r2 implementation report
 
-## Scope
+## Scope and integration
 
-This report tracks the isolated LWC-420 r2 work in the Project context worktree. The worker adds a bounded local publication descriptor inside the existing local publish journal; it does not introduce a cloud generation or archive. Local Query identity remains explicitly legacy, while the Project context GET and authenticated MCP metadata use an optional publication reader that validates the descriptor against the committed concepts bytes.
+This work implements publication-derived Project content context for local and cloud publishing, read-only Project GET/UI and authenticated MCP metadata. It keeps summary generation outside the knowledge publication result, preserves the legacy local Query identity, and never runs inference from GET.
 
-The descriptor captures the bounded selection-v1 summary input in the same journal transaction as `cache/concepts.jsonl`. A same-digest publication advances the current local transaction identity while preserving the original summary source identity, input, and metadata. The local worker uses the existing vault lease for reconciliation, claim, input validation, and finalization; model work runs after the publication lease is released. Summary failures remain outside the knowledge publication result.
+The exact LWC-445 description commit `c66e6f863cee77c4d2aedce25b6747a4abf8b4c5` and exact final LWC-443 resolver commit `c182182f8ce488599a0d7ba4ffdfdf03f1fe30c6` are integrated. LWC-443 supplies the response-preserving `resolvePipelineLLMProfileResponseWithCredentials` interface and `revalidatePipelineProfileCandidates`; 420 consumes those immutable interfaces without copying resolver code or introducing another profile authority.
 
-## Local checks completed
+The content summary binds the claimed work to the resolver's actual `bootstrap`, `personal`, or `shared` source. Personal and shared summaries use the original pinned Fast profile identity and credentials; shared candidates are eligibility-checked after claim while retaining the pinned model revision. Bootstrap uses the platform Fast client identity and stores no fabricated profile ID or revision. The source is persisted alongside the actual summary identity and exposed to GET, UI, and MCP consumers.
 
-- `FIRESTORE_EMULATOR_HOST=127.0.0.1:8585 go test ./cmd/olw_worker ./internal/localfs ./internal/contentcontext ./internal/cache -count=1` passed.
-- Focused local publication, Firestore carry-forward/fencing, local GET/MCP readback, and precommit no-inference tests passed.
-- Frontend `npm test` passed after the 446 merge: 568/568 Node tests and 621/621 component tests; `npm run typecheck` passed.
-- After integrating source-stable LWC-443 commit `446b613a91faf39255408404bc980dc88d1b038a`, `FIRESTORE_EMULATOR_HOST=127.0.0.1:8585 go test ./cmd/olw_worker ./internal/localfs ./internal/contentcontext ./internal/cache ./internal/llm ./internal/queryruntime -count=1` passed; a rerun of `./cmd/olw_worker ./internal/contentcontext` also passed after adding the digest-work identity assertion.
-- `FIRESTORE_EMULATOR_HOST=127.0.0.1:8585 go test ./internal/handler/v1 -count=1` still has the known held LWC-443 failure: `TestProfileRuntimeConnectedManualThenCompileTagging/retained-candidate-exhaustion-retries-through-activation` reports `calls=3` at `profile_runtime_e2e_test.go:385`.
-- The post-merge Project context handler/MCP readback tests passed with `FIRESTORE_EMULATOR_HOST=127.0.0.1:8585 go test ./internal/handler/v1 -run 'ContentContext|ProjectContent' -count=1`.
-- Final LWC-445 head `c66e6f863cee77c4d2aedce25b6747a4abf8b4c5` is integrated; `npm exec vitest run tests/project-description-editor.test.tsx` passed (6 tests).
+Same-digest carry-forward preserves the original work, lease, retry count, and source generation while advancing the latest publication target. Different-digest work fences old attempts. Summary/provider/storage failures remain nonblocking for knowledge publication and preserve last-good output. The MCP and UI paths read the same authenticated Project context, and the GET path has no LLM call.
 
-## Pending immutable dependency
+## Verification
 
-The final LWC-445 description head `c66e6f863cee77c4d2aedce25b6747a4abf8b4c5` is integrated. Its editor change preserves edits made while a latest-revision request is in flight; `npm exec vitest run tests/project-description-editor.test.tsx` passed (6 tests).
+- Focused emulator-backed worker, content-context, handler, carry-forward, fencing, and shared eligibility tests passed:
+  `FIRESTORE_EMULATOR_HOST=127.0.0.1:8585 go test ./cmd/olw_worker ./internal/contentcontext ./internal/handler/v1 -run 'ContentContext|SummaryWork|PublicationCarryForward|PipelineQuotaFallbackRevalidatesEligibility' -count=1`.
+- Broad emulator-backed Go run passed `cmd/olw_worker`, `internal/localfs`, `internal/contentcontext`, `internal/cache`, `internal/llm`, and `internal/queryruntime`. `internal/handler/v1` had one known LWC-443 failure: `TestProfileRuntimeConnectedManualThenCompileTagging/retained-candidate-exhaustion-retries-through-activation` reports `calls=3` at `profile_runtime_e2e_test.go:385`. Project context handler/MCP tests passed in the focused run above.
+- Frontend `npm test` passed 570/570 Node tests and 621/621 component tests; `npm run typecheck` passed.
+- `git diff --check` passed.
 
-The source-stable LWC-443 commit `446b613a91faf39255408404bc980dc88d1b038a` is integrated as an exact commit. It supplies `revalidatePipelineProfileCandidates(ctx, cfg, pinned)`, which checks current shared-pool eligibility and returns original pinned candidates. The outer worker remains the sole owner of credential cleanup so Fast credentials remain available through local/cloud summary finalization. This checkpoint is unreviewed and does not yet supply the response-preserving resolver wrapper proving actual source plus platform Fast identity needed by 420; the current 420 summary selector is not treated as final. Do not add a copied 443 wrapper, invent a profile selector, or enable a bootstrap adapter without that proof. The next discriminating check is the exact parent-supplied 443 wrapper/final head; bind its proven shared, personal, or bootstrap result to the claimed SummaryWork, add 420-owned eligibility/identity tests, and rerun worker, handler, and consumer checks.
+## Qualification limits
+
+No external provider call, production deployment, live-data write, or external Bot/multiconnector client qualification was performed. The last item requires the separately authorized parent DEV/client qualification. The handler retry failure remains assigned to the LWC-443 lane and is not changed by this 420 work.
+
+## Review status
+
+This report records local implementation and QA only. Parent retains merge and DEV authority; the worker remains available for review or CI repair requests.

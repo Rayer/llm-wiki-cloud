@@ -64,6 +64,7 @@ type SummaryClaim struct {
 type SummaryCompletion struct {
 	Text             string
 	PromptRevision   string
+	ProfileSource    string
 	ProfileID        string
 	ProfileRevision  int64
 	Role             string
@@ -248,7 +249,7 @@ func (r *FirestoreRepository) Complete(ctx context.Context, ownerID, projectID s
 			next.LastGood = &LastGood{
 				Text: completion.Text, SourceGeneration: claim.SourceGeneration,
 				ConceptsSHA256: claim.ConceptsSHA256, GeneratedAt: now,
-				PromptRevision: completion.PromptRevision, ProfileID: completion.ProfileID,
+				PromptRevision: completion.PromptRevision, ProfileSource: completion.ProfileSource, ProfileID: completion.ProfileID,
 				ProfileRevision: completion.ProfileRevision, Role: completion.Role,
 				RequestedModel: completion.RequestedModel, ReturnedModel: completion.ReturnedModel,
 				InputDigest: completion.InputDigest, SelectionVersion: completion.SelectionVersion,
@@ -605,8 +606,10 @@ func claimMatches(state StateDocument, claim SummaryClaim, publication Publicati
 }
 
 func validateCompletion(completion SummaryCompletion) error {
+	profileIdentityValid := completion.ProfileSource == "bootstrap" && completion.ProfileID == "" && completion.ProfileRevision == 0 ||
+		(completion.ProfileSource == "personal" || completion.ProfileSource == "shared") && completion.ProfileID != "" && completion.ProfileRevision >= 1
 	if strings.TrimSpace(completion.Text) == "" || len([]rune(completion.Text)) > 1000 ||
-		completion.PromptRevision != SummaryPromptRevision || completion.ProfileID == "" || completion.ProfileRevision < 1 ||
+		completion.PromptRevision != SummaryPromptRevision || !profileIdentityValid ||
 		completion.Role != SummaryRole || completion.RequestedModel == "" || completion.ReturnedModel == "" ||
 		!validSHA256(completion.InputDigest) || completion.SelectionVersion != SummarySelectionVersion {
 		return errors.New("invalid content-context summary completion")

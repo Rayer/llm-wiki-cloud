@@ -63,7 +63,7 @@ func validReadyStateDocument() StateDocument {
 		SummaryWork: &SummaryWorkRecord{WorkID: SummaryWorkID("owner", "project", digest, SummaryPromptRevision, SummarySelectionVersion),
 			ConceptsSHA256: digest, SourceGeneration: publication.Generation, Status: StatusReady},
 		LastGood: &LastGood{Text: completion.Text, SourceGeneration: publication.Generation, ConceptsSHA256: digest,
-			GeneratedAt: now, PromptRevision: completion.PromptRevision, ProfileID: completion.ProfileID,
+			GeneratedAt: now, PromptRevision: completion.PromptRevision, ProfileSource: completion.ProfileSource, ProfileID: completion.ProfileID,
 			ProfileRevision: completion.ProfileRevision, Role: completion.Role, RequestedModel: completion.RequestedModel,
 			ReturnedModel: completion.ReturnedModel, InputDigest: completion.InputDigest, SelectionVersion: completion.SelectionVersion},
 	}

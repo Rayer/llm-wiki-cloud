@@ -22,8 +22,9 @@ export type ProjectContentSummary = {
   concepts_sha256: string;
   generated_at: string;
   prompt_revision: string;
-  profile_id: string;
-  profile_revision: number;
+  profile_source: 'bootstrap' | 'personal' | 'shared';
+  profile_id?: string;
+  profile_revision?: number;
   role: string;
   requested_model: string;
   returned_model: string;
@@ -241,21 +242,31 @@ export async function getProjectContentContext(projectId: string): Promise<Proje
 
   const record = payload as Record<string, unknown>;
   const summary = record.summary;
+  const summaryRecord = summary && typeof summary === 'object' && !Array.isArray(summary)
+    ? summary as Record<string, unknown>
+    : null;
+  const profileSource = summaryRecord?.profile_source;
+  const profileID = summaryRecord?.profile_id;
+  const profileRevision = summaryRecord?.profile_revision;
+  const validProfileIdentity = (
+    (profileSource === 'personal' || profileSource === 'shared')
+    && typeof profileID === 'string' && profileID.trim() !== ''
+    && typeof profileRevision === 'number' && Number.isInteger(profileRevision) && profileRevision > 0
+  ) || (profileSource === 'bootstrap' && profileID === undefined && profileRevision === undefined);
   const validSummary = summary === null || (
-    typeof summary === 'object'
-    && !Array.isArray(summary)
-    && typeof (summary as Record<string, unknown>).text === 'string'
-    && typeof (summary as Record<string, unknown>).source_generation === 'string'
-    && typeof (summary as Record<string, unknown>).concepts_sha256 === 'string'
-    && typeof (summary as Record<string, unknown>).generated_at === 'string'
-    && typeof (summary as Record<string, unknown>).prompt_revision === 'string'
-    && typeof (summary as Record<string, unknown>).profile_id === 'string'
-    && typeof (summary as Record<string, unknown>).profile_revision === 'number'
-    && typeof (summary as Record<string, unknown>).role === 'string'
-    && typeof (summary as Record<string, unknown>).requested_model === 'string'
-    && typeof (summary as Record<string, unknown>).returned_model === 'string'
-    && typeof (summary as Record<string, unknown>).input_digest === 'string'
-    && typeof (summary as Record<string, unknown>).selection_version === 'string'
+    summaryRecord !== null
+    && typeof summaryRecord.text === 'string'
+    && typeof summaryRecord.source_generation === 'string'
+    && typeof summaryRecord.concepts_sha256 === 'string'
+    && typeof summaryRecord.generated_at === 'string'
+    && typeof summaryRecord.prompt_revision === 'string'
+    && (profileSource === 'bootstrap' || profileSource === 'personal' || profileSource === 'shared')
+    && validProfileIdentity
+    && typeof summaryRecord.role === 'string'
+    && typeof summaryRecord.requested_model === 'string'
+    && typeof summaryRecord.returned_model === 'string'
+    && typeof summaryRecord.input_digest === 'string'
+    && typeof summaryRecord.selection_version === 'string'
   );
   if (
     record.project_id !== targetProjectId

@@ -115,7 +115,7 @@ func TestFirestoreRepositorySummaryIsProjectedToAuthenticatedMCPMetadata(t *test
 	}
 	completion := contentcontext.SummaryCompletion{
 		Text: "Published engineering and product topics", PromptRevision: contentcontext.SummaryPromptRevision,
-		ProfileID: "selected-profile", ProfileRevision: 5, Role: contentcontext.SummaryRole,
+		ProfileSource: "personal", ProfileID: "selected-profile", ProfileRevision: 5, Role: contentcontext.SummaryRole,
 		RequestedModel: "fast-requested", ReturnedModel: "fast-returned",
 		InputDigest: testContentContextDigest('e'), SelectionVersion: contentcontext.SummarySelectionVersion,
 	}

@@ -56,8 +56,9 @@ type LastGood struct {
 	ConceptsSHA256   string    `json:"concepts_sha256" firestore:"concepts_sha256"`
 	GeneratedAt      time.Time `json:"generated_at" firestore:"generated_at"`
 	PromptRevision   string    `json:"prompt_revision" firestore:"prompt_revision"`
-	ProfileID        string    `json:"profile_id" firestore:"profile_id"`
-	ProfileRevision  int64     `json:"profile_revision" firestore:"profile_revision"`
+	ProfileSource    string    `json:"profile_source" firestore:"profile_source"`
+	ProfileID        string    `json:"profile_id,omitempty" firestore:"profile_id"`
+	ProfileRevision  int64     `json:"profile_revision,omitempty" firestore:"profile_revision"`
 	Role             string    `json:"role" firestore:"role"`
 	RequestedModel   string    `json:"requested_model" firestore:"requested_model"`
 	ReturnedModel    string    `json:"returned_model" firestore:"returned_model"`
@@ -113,9 +114,11 @@ func (d StateDocument) Validate() error {
 		return errors.New("content-context attempt has no summary work")
 	}
 	if d.LastGood != nil {
+		profileIdentityValid := d.LastGood.ProfileSource == "bootstrap" && d.LastGood.ProfileID == "" && d.LastGood.ProfileRevision == 0 ||
+			(d.LastGood.ProfileSource == "personal" || d.LastGood.ProfileSource == "shared") && d.LastGood.ProfileID != "" && d.LastGood.ProfileRevision >= 1
 		if strings.TrimSpace(d.LastGood.Text) == "" || utf8.RuneCountInString(d.LastGood.Text) > 1000 ||
 			d.LastGood.SourceGeneration == "" || !validSHA256(d.LastGood.ConceptsSHA256) || d.LastGood.GeneratedAt.IsZero() ||
-			d.LastGood.PromptRevision == "" || d.LastGood.ProfileID == "" || d.LastGood.ProfileRevision < 1 ||
+			d.LastGood.PromptRevision == "" || !profileIdentityValid ||
 			d.LastGood.Role != SummaryRole || d.LastGood.RequestedModel == "" || d.LastGood.ReturnedModel == "" ||
 			!validSHA256(d.LastGood.InputDigest) || d.LastGood.SelectionVersion != SummarySelectionVersion {
 			return errors.New("invalid content-context last-good summary")
