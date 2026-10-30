@@ -168,7 +168,7 @@ func validPublishDirectory(name, prefix string) bool {
 
 func validPublishDestination(destination string) bool {
 	switch destination {
-	case "wiki", "wiki.toml", "synto.toml", "cache/id_map.json", "cache/concepts.jsonl", "cache/dormant_concepts.jsonl", "cache/raw_status.json", "cache/suggested_queries.json", ".olw/state.db", ".synto/state.db", ".synto/INDEX.json":
+	case "wiki", "wiki.toml", "synto.toml", "cache/id_map.json", "cache/concepts.jsonl", "cache/dormant_concepts.jsonl", "cache/raw_status.json", "cache/suggested_queries.json", ".olw/state.db", ".olw/content-context-publication.json", ".synto/state.db", ".synto/INDEX.json":
 		return true
 	}
 	const prefix = "cache/pipeline-"
@@ -239,7 +239,7 @@ func stageWorkspaceOutputs(workspace, vault, executionID string) (string, error)
 	if err := copyOneIfExists(workspaceRoot, stageRoot, "synto.toml"); err != nil {
 		return fail(err)
 	}
-	for _, name := range []string{"cache/id_map.json", "cache/concepts.jsonl", "cache/dormant_concepts.jsonl", "cache/raw_status.json", "cache/suggested_queries.json", ".olw/state.db", ".synto/state.db", ".synto/INDEX.json"} {
+	for _, name := range []string{"cache/id_map.json", "cache/concepts.jsonl", "cache/dormant_concepts.jsonl", "cache/raw_status.json", "cache/suggested_queries.json", ".olw/state.db", ".synto/state.db", ".synto/INDEX.json", ".olw/content-context-publication.json"} {
 		if err := copyOneIfExists(workspaceRoot, stageRoot, name); err != nil {
 			return fail(err)
 		}
@@ -393,7 +393,7 @@ func publishStagedOutputs(vault, stage string) (runErr error) {
 		return err
 	}
 	journal := publishJournalRecord{Stage: stage, Backup: backup}
-	for _, destination := range []string{"wiki", "wiki.toml", "synto.toml", "cache/id_map.json", "cache/concepts.jsonl", "cache/dormant_concepts.jsonl", "cache/raw_status.json", "cache/suggested_queries.json", ".olw/state.db", ".synto/state.db", ".synto/INDEX.json"} {
+	for _, destination := range []string{"wiki", "wiki.toml", "synto.toml", "cache/id_map.json", "cache/concepts.jsonl", "cache/dormant_concepts.jsonl", "cache/raw_status.json", "cache/suggested_queries.json", ".olw/state.db", ".synto/state.db", ".synto/INDEX.json", ".olw/content-context-publication.json"} {
 		journal.Entries = append(journal.Entries, publishEntry{Destination: destination, Stage: filepath.Join(stage, destination), Backup: filepath.Join(backup, destination)})
 	}
 	cacheEntries, err := r.OpenRoot(stage)

@@ -16,6 +16,32 @@ import {
 export const LAST_PROJECT_KEY = 'llm-wiki-last-project';
 export const MAX_PROJECT_NAME_LENGTH = 64;
 
+export type ProjectContentSummary = {
+  text: string;
+  source_generation: string;
+  concepts_sha256: string;
+  generated_at: string;
+  prompt_revision: string;
+  profile_source: 'bootstrap' | 'personal' | 'shared';
+  profile_id?: string;
+  profile_revision?: number;
+  role: string;
+  requested_model: string;
+  returned_model: string;
+  input_digest: string;
+  selection_version: string;
+};
+
+export type ProjectContentContext = {
+  project_id: string;
+  status: string;
+  current_generation: string | null;
+  current_concepts_sha256: string | null;
+  summary: ProjectContentSummary | null;
+  stale: boolean;
+  error_class?: string | null;
+};
+
 export type ProjectDescription = {
   projectId: string;
   description: string;
@@ -198,6 +224,63 @@ export async function renameProject(projectId: string, name: string): Promise<st
     throw new Error('Rename response did not include a project name.');
   }
   return nextName;
+}
+
+export async function getProjectContentContext(projectId: string): Promise<ProjectContentContext> {
+  const targetProjectId = safeProjectRouteSegment(projectId);
+  const response = await apiFetch(
+    `/api/v1/projects/${encodeURIComponent(targetProjectId)}/content-context`,
+    { projectId: targetProjectId },
+  );
+  const payload: unknown = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(apiError(payload, `Unable to load Project content context (${response.status})`));
+  }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw new Error('Project content context response is invalid.');
+  }
+
+  const record = payload as Record<string, unknown>;
+  const summary = record.summary;
+  const summaryRecord = summary && typeof summary === 'object' && !Array.isArray(summary)
+    ? summary as Record<string, unknown>
+    : null;
+  const profileSource = summaryRecord?.profile_source;
+  const profileID = summaryRecord?.profile_id;
+  const profileRevision = summaryRecord?.profile_revision;
+  const validProfileIdentity = (
+    (profileSource === 'personal' || profileSource === 'shared')
+    && typeof profileID === 'string' && profileID.trim() !== ''
+    && typeof profileRevision === 'number' && Number.isInteger(profileRevision) && profileRevision > 0
+  ) || (profileSource === 'bootstrap' && profileID === undefined && profileRevision === undefined);
+  const validSummary = summary === null || (
+    summaryRecord !== null
+    && typeof summaryRecord.text === 'string'
+    && typeof summaryRecord.source_generation === 'string'
+    && typeof summaryRecord.concepts_sha256 === 'string'
+    && typeof summaryRecord.generated_at === 'string'
+    && typeof summaryRecord.prompt_revision === 'string'
+    && (profileSource === 'bootstrap' || profileSource === 'personal' || profileSource === 'shared')
+    && validProfileIdentity
+    && typeof summaryRecord.role === 'string'
+    && typeof summaryRecord.requested_model === 'string'
+    && typeof summaryRecord.returned_model === 'string'
+    && typeof summaryRecord.input_digest === 'string'
+    && typeof summaryRecord.selection_version === 'string'
+  );
+  if (
+    record.project_id !== targetProjectId
+    || typeof record.status !== 'string'
+    || (record.current_generation !== null && typeof record.current_generation !== 'string')
+    || (record.current_concepts_sha256 !== null && typeof record.current_concepts_sha256 !== 'string')
+    || !validSummary
+    || typeof record.stale !== 'boolean'
+    || (record.error_class !== undefined && record.error_class !== null && typeof record.error_class !== 'string')
+  ) {
+    throw new Error('Project content context response is invalid.');
+  }
+
+  return record as ProjectContentContext;
 }
 
 export {

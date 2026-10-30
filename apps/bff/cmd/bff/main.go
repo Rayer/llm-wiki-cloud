@@ -578,6 +578,7 @@ func newProductionRouter(
 
 	v1.Use(auth.ProjectMiddleware())
 	{
+		v1.GET("/projects/:pid/content-context", hV1.GetContentContext)
 		v1.GET("/projects/:pid/llm-binding", hV1.ProjectLLMBinding)
 		v1.PUT("/projects/:pid/llm-binding", hV1.SetProjectLLMBinding)
 		syncRaw := v1.Group("/sync/raw")

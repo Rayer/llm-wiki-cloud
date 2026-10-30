@@ -267,6 +267,7 @@ func resolveSuggestedQueriesSource(ctx context.Context, cfg workerConfig) (worke
 	if err != nil {
 		return workerConfig{}, errors.New("Project LLM source is unavailable to suggested-query generation")
 	}
+	cfg.PipelineProfileSource = response.Source
 	cfg.ProfileCandidates = response.Profiles
 	cfg.SharedProfilePool = response.Source == "shared"
 	cfg.BootstrapLLMSource = response.Source == "bootstrap"
@@ -359,7 +360,8 @@ func samePipelineProfileIdentity(left, right pipelineLLMProfile) bool {
 func runWorkerBatchAtVaultWithProfilePool(ctx context.Context, cfg workerConfig, commands [][]string, vault, workspace string, snapshots []sourceSnapshot, materialize bool) (string, error) {
 	pinnedProfiles := cfg.ProfileCandidates
 	profiles := pinnedProfiles
-	defer func() { clearPipelineProfileKeys(pinnedProfiles) }()
+	// The outer worker owns these pinned credentials through publication
+	// finalization, which may use the same Fast snapshot for content context.
 	if !cfg.SharedProfilePool || len(profiles) == 0 {
 		if len(profiles) > 0 {
 			cfg.ActiveLLMProfile = &profiles[0]

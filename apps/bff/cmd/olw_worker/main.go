@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/rayer/llm-wiki-bff/internal/annotation"
+	"github.com/rayer/llm-wiki-bff/internal/auth"
 	conceptcache "github.com/rayer/llm-wiki-bff/internal/cache"
 	"github.com/rayer/llm-wiki-bff/internal/generation"
 	"github.com/rayer/llm-wiki-bff/internal/llm"
@@ -54,6 +55,7 @@ type workerConfig struct {
 	PipelineBindingsPath         string
 	ProfileResolverURL           string
 	ProfileResolverAudience      string
+	PipelineProfileSource        string
 	ProfileCandidates            []pipelineLLMProfile
 	ActiveLLMProfile             *pipelineLLMProfile
 	SharedProfilePool            bool
@@ -400,6 +402,7 @@ func runWorkerBatch(ctx context.Context, cfg workerConfig, rawCommands string) (
 		if resolveErr != nil {
 			return errors.New("Project LLM source is unavailable to Pipeline")
 		}
+		cfg.PipelineProfileSource = profileResponse.Source
 		cfg.ProfileCandidates = profileResponse.Profiles
 		cfg.SharedProfilePool = profileResponse.Source == "shared"
 		cfg.BootstrapLLMSource = profileResponse.Source == "bootstrap"
@@ -697,6 +700,18 @@ func runWorkerBatchWorkspace(ctx context.Context, cfg workerConfig, commands [][
 	}
 	workspace := ""
 	terminalAttempted := false
+	if auth.ValidPathSegment(cfg.UserID) && auth.ValidPathSegment(cfg.ProjectID) {
+		defer func() {
+			if !workspacePublished {
+				return
+			}
+			runCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), contentContextRunTimeout)
+			defer cancel()
+			if err := runLocalContentContext(runCtx, cfg, vault); err != nil {
+				reportContentContextReconcileFailure(err)
+			}
+		}()
+	}
 	recordTerminal := func(failure error, published bool) {
 		if failure == nil || terminalAttempted {
 			return
@@ -705,9 +720,11 @@ func runWorkerBatchWorkspace(ctx context.Context, cfg workerConfig, commands [][
 		_ = recordLocalWorkerFailureLog(workspace, vault, cfg, failure, published)
 	}
 	defer func() {
-		if err := localWorkspaceBatchHooks.releaseVaultLease(lease); err != nil && runErr == nil {
-			runErr = newWorkerFailure(nil, failureStageLeaseCleanup, failureClassIO, "", err)
-			recordTerminal(runErr, true)
+		if lease != nil {
+			if err := localWorkspaceBatchHooks.releaseVaultLease(lease); err != nil && runErr == nil {
+				runErr = newWorkerFailure(nil, failureStageLeaseCleanup, failureClassIO, "", err)
+				recordTerminal(runErr, true)
+			}
 		}
 	}()
 	defer func() {
@@ -717,6 +734,26 @@ func runWorkerBatchWorkspace(ctx context.Context, cfg workerConfig, commands [][
 	}()
 	if err := localWorkspaceBatchHooks.recoverInterruptedPublish(vault); err != nil {
 		return preserveWorkerFailure(err, failureStageGenerationPublish, failureClassIO)
+	}
+	if recoveryNeeded, recoveryErr := localContentContextRecoveryNeeded(ctx, cfg, vault); recoveryErr != nil {
+		reportContentContextReconcileFailure(recoveryErr)
+	} else if recoveryNeeded {
+		if err := localWorkspaceBatchHooks.releaseVaultLease(lease); err != nil {
+			return preserveWorkerFailure(err, failureStageLeaseCleanup, failureClassIO)
+		}
+		lease = nil
+		recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), contentContextRunTimeout)
+		if err := runLocalContentContext(recoveryCtx, cfg, vault); err != nil {
+			reportContentContextReconcileFailure(err)
+		}
+		cancel()
+		lease, err = localWorkspaceBatchHooks.acquireVaultLease(vault, cfg.ExecutionID)
+		if err != nil {
+			return err
+		}
+		if err := revalidateCommittedLocalContentContext(vault, cfg); err != nil {
+			reportContentContextReconcileFailure(err)
+		}
 	}
 	snapshots, err := localWorkspaceBatchHooks.snapshotSources(vault)
 	if err != nil {
@@ -766,6 +803,11 @@ func runWorkerBatchWorkspace(ctx context.Context, cfg workerConfig, commands [][
 			return errors.Join(failure, preserveWorkerFailure(recordErr, failureStageReceiptRecording, failureClassRecordingFailure))
 		}
 		return failure
+	}
+	if auth.ValidPathSegment(cfg.UserID) && auth.ValidPathSegment(cfg.ProjectID) {
+		if err := prepareLocalContentContextDescriptor(workspace, vault, cfg); err != nil {
+			warnContentContextFailure("publication_descriptor_unavailable")
+		}
 	}
 	publicationOutcome = "unknown"
 	_, publishSpan := observability.StartWorkerSpan(ctx, "pipeline.worker.publish")

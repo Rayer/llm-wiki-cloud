@@ -108,11 +108,15 @@ func (h *Handler) MCPHandler() http.Handler {
 			}
 			return nil
 		}
-		h.serveAuthenticatedMCP(h.mcpSDKHandler(identity), identity, w, r)
+		h.serveAuthenticatedMCP(h.mcpSDKHandlerWithContext(r.Context(), identity), identity, w, r)
 	})
 }
 
 func (h *Handler) mcpSDKHandler(identity mcpProjectKeyIdentity) http.Handler {
+	return h.mcpSDKHandlerWithContext(context.Background(), identity)
+}
+
+func (h *Handler) mcpSDKHandlerWithContext(ctx context.Context, identity mcpProjectKeyIdentity) http.Handler {
 	capabilities := identity.capabilities
 	metadata := h.mcpConfig
 	instructions := ""
@@ -124,6 +128,13 @@ func (h *Handler) mcpSDKHandler(identity mcpProjectKeyIdentity) http.Handler {
 		queryDescription = metadata.ToolDescriptions.QueryProject
 		addRawDescription = metadata.ToolDescriptions.AddRaw
 		importURLDescription = metadata.ToolDescriptions.ImportURL
+	}
+	if h.firestore != nil && h.firestore.Raw() != nil && h.store != nil {
+		projectContext := h.authenticatedMCPProjectContext(ctx, identity)
+		instructions = appendMCPProjectContext(instructions, projectContext)
+		queryDescription = appendMCPProjectContextHint(queryDescription, projectContext)
+		addRawDescription = appendMCPProjectContextHint(addRawDescription, projectContext)
+		importURLDescription = appendMCPProjectContextHint(importURLDescription, projectContext)
 	}
 	serverOptions := &mcp.ServerOptions{
 		Instructions: instructions,
@@ -210,9 +221,8 @@ func (h *Handler) mcpSDKHandler(identity mcpProjectKeyIdentity) http.Handler {
 }
 
 func (h *Handler) mcpAuthenticatedHandler(identity mcpProjectKeyIdentity) http.Handler {
-	sdkAuthenticated := h.mcpSDKHandler(identity)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		h.serveAuthenticatedMCP(sdkAuthenticated, identity, w, r)
+		h.serveAuthenticatedMCP(h.mcpSDKHandlerWithContext(r.Context(), identity), identity, w, r)
 	})
 }
 
