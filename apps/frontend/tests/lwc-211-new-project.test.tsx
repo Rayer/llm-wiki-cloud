@@ -150,7 +150,7 @@ describe('LWC-406 project creation', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Create project' }));
 
     await waitFor(() => expect(mocks.addProject).toHaveBeenCalledTimes(1));
-    expect(mocks.addProject).toHaveBeenCalledWith('Research');
+    expect(mocks.addProject).toHaveBeenCalledWith('Research', '', expect.any(String));
     expect(mocks.push).toHaveBeenCalledWith('/profile');
     expect(mocks.closeNewProject).toHaveBeenCalledTimes(1);
   });

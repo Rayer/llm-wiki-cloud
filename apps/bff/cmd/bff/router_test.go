@@ -76,6 +76,8 @@ func TestBFFDoesNotOwnIdentityRoutes(t *testing.T) {
 		{http.MethodGet, "/api/v1/exports"},
 		{http.MethodGet, "/api/v1/exports/:exportID/status"},
 		{http.MethodPost, "/api/v1/exports/:exportID/download"},
+		{http.MethodGet, "/api/v1/projects/:pid/description"},
+		{http.MethodPut, "/api/v1/projects/:pid/description"},
 		{http.MethodGet, "/api/v1/projects/:pid/profile"},
 		{http.MethodPut, "/api/v1/projects/:pid/profile"},
 		{http.MethodPost, "/api/v1/projects/:pid/profile/candidates/:candidateID/confirm"},

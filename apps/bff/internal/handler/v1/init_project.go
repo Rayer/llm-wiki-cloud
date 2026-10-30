@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
@@ -20,14 +21,17 @@ import (
 )
 
 type initProjectRequest struct {
-	Name string `json:"name"`
+	Name        string          `json:"name"`
+	Description json.RawMessage `json:"description"`
 }
 
 type initProjectResponse struct {
-	ProjectID string `json:"project_id" firestore:"project_id"`
-	Name      string `json:"name" firestore:"name"`
-	Status    string `json:"status" firestore:"status"`
-	StatusURL string `json:"status_url" firestore:"status_url"`
+	ProjectID           string `json:"project_id" firestore:"project_id"`
+	Name                string `json:"name" firestore:"name"`
+	Description         string `json:"description,omitempty" firestore:"description"`
+	DescriptionRevision int64  `json:"description_revision,omitempty" firestore:"description_revision"`
+	Status              string `json:"status" firestore:"status"`
+	StatusURL           string `json:"status_url" firestore:"status_url"`
 }
 
 type projectStatusResponse struct {
@@ -46,13 +50,18 @@ func (h *Handler) InitProject(c *gin.Context) {
 	}
 
 	var req initProjectRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := decodeInitProjectJSON(c.Request.Body, &req); err != nil {
 		c.JSON(http.StatusBadRequest, handler.ErrorResponse{Error: "invalid JSON: " + err.Error()})
 		return
 	}
 	name, err := normalizeProjectName(req.Name)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, handler.ErrorResponse{Error: "name must be 1-64 characters"})
+		return
+	}
+	description, err := optionalInitProjectDescription(req.Description)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, handler.ErrorResponse{Error: "description must be valid text of at most 1000 characters"})
 		return
 	}
 
@@ -92,8 +101,10 @@ func (h *Handler) InitProject(c *gin.Context) {
 		return
 	}
 	resp := newInitProjectResponse(projectID, name)
+	resp.Description = description
+	resp.DescriptionRevision = 1
 
-	if err := createInitProjectDocs(ctx, fs, projects, userID, projectID, name, idempotencyKey, resp); err != nil {
+	if err := createInitProjectDocs(ctx, fs, projects, userID, projectID, name, description, idempotencyKey, resp); err != nil {
 		if errors.Is(err, errIdempotencyConflict) {
 			snap, getErr := projects.Doc(projectDocID(userID, idempotencyKey)).Get(ctx)
 			if getErr != nil {
@@ -169,9 +180,9 @@ func projectDocID(userID, value string) string {
 
 var errIdempotencyConflict = errors.New("idempotency conflict")
 
-func createInitProjectDocs(ctx context.Context, fs *firestore.Client, projects *firestore.CollectionRef, userID, projectID, name, idempotencyKey string, resp initProjectResponse) error {
-	now := time.Now()
-	projectData := initProjectData(projectID, name, idempotencyKey, now)
+func createInitProjectDocs(ctx context.Context, fs *firestore.Client, projects *firestore.CollectionRef, userID, projectID, name, description, idempotencyKey string, resp initProjectResponse) error {
+	now := time.Now().UTC()
+	projectData := initProjectData(projectID, name, description, idempotencyKey, now)
 	projectData["user_id"] = userID
 
 	projectRef := projects.Doc(projectDocID(userID, projectID))
@@ -192,13 +203,15 @@ func createInitProjectDocs(ctx context.Context, fs *firestore.Client, projects *
 			return err
 		}
 		return tx.Create(keyRef, map[string]interface{}{
-			"project_id":      resp.ProjectID,
-			"user_id":         userID,
-			"status":          resp.Status,
-			"status_url":      resp.StatusURL,
-			"name":            resp.Name,
-			"created_at":      now,
-			"idempotency_key": idempotencyKey,
+			"project_id":           resp.ProjectID,
+			"user_id":              userID,
+			"status":               resp.Status,
+			"status_url":           resp.StatusURL,
+			"name":                 resp.Name,
+			"description":          resp.Description,
+			"description_revision": resp.DescriptionRevision,
+			"created_at":           now,
+			"idempotency_key":      idempotencyKey,
 		})
 	})
 }
@@ -212,10 +225,13 @@ func newInitProjectResponse(projectID, name string) initProjectResponse {
 	}
 }
 
-func initProjectData(projectID, name, idempotencyKey string, now time.Time) map[string]interface{} {
+func initProjectData(projectID, name, description, idempotencyKey string, now time.Time) map[string]interface{} {
 	projectData := map[string]interface{}{
 		"project_id":             projectID,
 		"name":                   name,
+		"description":            description,
+		"description_revision":   int64(1),
+		"description_updated_at": now,
 		"status":                 "ready",
 		"created_at":             now,
 		"auto_pipeline_enabled":  true,
@@ -235,8 +251,29 @@ func initProjectResponseFromData(data map[string]interface{}) (initProjectRespon
 		return initProjectResponse{}, fmt.Errorf("missing cached response fields")
 	}
 	return initProjectResponse{
-		ProjectID: projectID,
-		Status:    statusValue,
-		StatusURL: statusURL,
+		ProjectID:           projectID,
+		Name:                stringValue(data["name"]),
+		Description:         stringValue(data["description"]),
+		DescriptionRevision: integerValue(data["description_revision"]),
+		Status:              statusValue,
+		StatusURL:           statusURL,
 	}, nil
+}
+
+func stringValue(value interface{}) string {
+	result, _ := value.(string)
+	return result
+}
+
+func integerValue(value interface{}) int64 {
+	switch result := value.(type) {
+	case int:
+		return int64(result)
+	case int32:
+		return int64(result)
+	case int64:
+		return result
+	default:
+		return 0
+	}
 }
