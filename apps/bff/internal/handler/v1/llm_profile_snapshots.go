@@ -430,6 +430,12 @@ func profileConfigurationDigest(profile llmProfileDocument) string {
 }
 
 func sealProfileOperationSnapshot(snapshot *llm.OperationProfileSnapshot) {
+	if snapshot.Source == "bootstrap" && snapshot.Profiles == nil {
+		// Firestore may decode an empty array as a nil slice. Preserve the
+		// producer's canonical [] digest for the explicitly pinned bootstrap
+		// source when a durable operation is resumed.
+		snapshot.Profiles = []llm.ProfileRevisionReference{}
+	}
 	snapshot.ConfigDigest = ""
 	snapshot.CredentialUsed = false
 	data, _ := json.Marshal(snapshot)
