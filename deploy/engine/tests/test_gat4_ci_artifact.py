@@ -125,6 +125,107 @@ class GateAuthCiArtifactTests(unittest.TestCase):
         expected_source = {**source_id}
         return package_zip, envelope, expected_source, manifest, source_tar, image_prefix, make_zip
 
+    def cloud_build_readback(self, manifest, source_tar, *, standard_sha256=False):
+        build = manifest["build"]
+        source = build["source"]
+        source_bytes = artifact._deterministic_gzip(source_tar)
+        source_sha256 = hashlib.sha256(source_bytes).digest()
+        source_md5 = hashlib.md5(source_bytes).digest()
+        encode_sha256 = base64.b64encode if standard_sha256 else base64.urlsafe_b64encode
+        storage_source = {key: source[key] for key in ("bucket", "object", "generation")}
+        source_hash_path = (f"gs://{source['bucket']}/{source['object']}"
+                            f"#{source['generation']}")
+        image_tag = build["substitutions"]["_IMAGE"]
+        config = artifact._build_config(
+            artifact._tree_files(source_tar), image_tag, manifest["product_version"])
+        return {
+            "id": build["build_id"],
+            "projectId": build["project_id"],
+            "name": (f"projects/{build['project_number']}/locations/{build['location']}"
+                     f"/builds/{build['build_id']}"),
+            "status": "SUCCESS",
+            "serviceAccount": build["service_account"],
+            "source": {"storageSource": storage_source},
+            "sourceProvenance": {
+                "resolvedStorageSource": storage_source,
+                "fileHashes": {source_hash_path: {"fileHash": [
+                    {"type": "SHA256", "value": encode_sha256(source_sha256).decode("ascii")},
+                    {"type": "MD5", "value": base64.urlsafe_b64encode(source_md5).decode("ascii")},
+                ]}},
+            },
+            "substitutions": build["substitutions"],
+            "steps": config["expanded"]["steps"],
+            "images": [image_tag],
+            "options": {"logging": "CLOUD_LOGGING_ONLY",
+                        "sourceProvenanceHash": ["SHA256"],
+                        "workerRelease": "legacy"},
+            "results": {"images": [{"name": image_tag,
+                                     "digest": manifest["artifact"]["image_digest"]}]},
+        }
+
+    def test_cloud_build_readback_accepts_native_multihash_and_strictly_binds_inputs(self):
+        _, _, _, manifest, source_tar, _, _ = self.fixture()
+        for standard_sha256 in (False, True):
+            with self.subTest(standard_sha256=standard_sha256):
+                raw = self.cloud_build_readback(
+                    manifest, source_tar, standard_sha256=standard_sha256)
+                artifact.validate_cloud_build(raw, manifest)
+
+        valid = self.cloud_build_readback(manifest, source_tar)
+        cases = []
+        duplicate = copy.deepcopy(valid)
+        path = next(iter(duplicate["sourceProvenance"]["fileHashes"]))
+        entries = duplicate["sourceProvenance"]["fileHashes"][path]["fileHash"]
+        entries.append(copy.deepcopy(entries[0]))
+        cases.append((duplicate, "duplicated"))
+
+        contradictory = copy.deepcopy(valid)
+        path = next(iter(contradictory["sourceProvenance"]["fileHashes"]))
+        contradictory["sourceProvenance"]["fileHashes"][path]["fileHash"].append({
+            "type": "SHA256", "value": base64.urlsafe_b64encode(b"x" * 32).decode("ascii"),
+        })
+        cases.append((contradictory, "duplicated"))
+
+        malformed = copy.deepcopy(valid)
+        path = next(iter(malformed["sourceProvenance"]["fileHashes"]))
+        malformed["sourceProvenance"]["fileHashes"][path]["fileHash"][0]["value"] = "A+_="
+        cases.append((malformed, "Base64 alphabets"))
+
+        unknown_algorithm = copy.deepcopy(valid)
+        path = next(iter(unknown_algorithm["sourceProvenance"]["fileHashes"]))
+        unknown_algorithm["sourceProvenance"]["fileHashes"][path]["fileHash"][1]["type"] = "SHA512"
+        cases.append((unknown_algorithm, "algorithm"))
+
+        malformed_md5 = copy.deepcopy(valid)
+        path = next(iter(malformed_md5["sourceProvenance"]["fileHashes"]))
+        malformed_md5["sourceProvenance"]["fileHashes"][path]["fileHash"][1]["value"] = "bad*base64"
+        cases.append((malformed_md5, "malformed"))
+
+        wrong_locator = copy.deepcopy(valid)
+        wrong_locator["source"]["storageSource"]["object"] = "sources/other/source.tar.gz"
+        cases.append((wrong_locator, "source locator"))
+
+        wrong_generation = copy.deepcopy(valid)
+        wrong_generation["sourceProvenance"]["resolvedStorageSource"]["generation"] = "99"
+        cases.append((wrong_generation, "source locator"))
+
+        wrong_steps = copy.deepcopy(valid)
+        wrong_steps["steps"][0]["args"][2] = "APP_VERSION=9.9.9"
+        cases.append((wrong_steps, "executed steps"))
+
+        wrong_image = copy.deepcopy(valid)
+        wrong_image["images"] = [artifact.IMAGE_PREFIX + ":" + "f" * 40]
+        cases.append((wrong_image, "configured image"))
+
+        wrong_worker_release = copy.deepcopy(valid)
+        wrong_worker_release["options"]["workerRelease"] = "regular"
+        cases.append((wrong_worker_release, "unconfigured non-default option"))
+
+        for raw, expected in cases:
+            with self.subTest(expected=expected, raw=raw):
+                with self.assertRaisesRegex(artifact.ArtifactError, expected):
+                    artifact.validate_cloud_build(raw, manifest)
+
     def test_package_verifies_external_envelope_and_same_inner_source_payload(self):
         package_zip, envelope, source, manifest, source_tar, image_prefix, _ = self.fixture()
         checked = artifact.verify_package(package_zip, envelope, source,

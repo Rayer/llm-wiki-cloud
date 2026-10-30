@@ -380,6 +380,58 @@ def verify_package(package_zip: bytes, envelope: dict, expected_source: dict,
     return manifest
 
 
+def _decode_provenance_hash(value, expected_size: int) -> bytes:
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9+/=_-]+", value):
+        raise ArtifactError("Cloud Build source provenance hash is malformed")
+    urlsafe = any(character in value for character in "-_")
+    standard = any(character in value for character in "+/")
+    if urlsafe and standard:
+        raise ArtifactError("Cloud Build source provenance hash mixes Base64 alphabets")
+    unpadded = value.rstrip("=")
+    padding = len(value) - len(unpadded)
+    required_padding = (-len(unpadded)) % 4
+    if (len(unpadded) % 4 == 1 or padding not in (0, required_padding) or
+            (padding and len(value) % 4)):
+        raise ArtifactError("Cloud Build source provenance hash has invalid padding")
+    try:
+        decoded = base64.b64decode(
+            unpadded + "=" * required_padding, altchars=b"-_", validate=True)
+    except ValueError as exc:
+        raise ArtifactError("Cloud Build source provenance hash is malformed") from exc
+    encode = base64.urlsafe_b64encode if urlsafe else base64.b64encode
+    canonical = encode(decoded).decode("ascii")
+    if (len(decoded) != expected_size or
+            value not in (canonical, canonical.rstrip("="))):
+        raise ArtifactError("Cloud Build source provenance hash is noncanonical")
+    return decoded
+
+
+def _validate_source_provenance_hashes(provenance: dict, source_hash_path: str,
+                                       expected_sha256: bytes) -> None:
+    hashes = provenance.get("fileHashes")
+    source_hashes = hashes.get(source_hash_path) if isinstance(hashes, dict) else None
+    entries = source_hashes.get("fileHash") if isinstance(source_hashes, dict) else None
+    if (not isinstance(hashes, dict) or set(hashes) != {source_hash_path} or
+            not isinstance(source_hashes, dict) or set(source_hashes) != {"fileHash"} or
+            not isinstance(entries, list) or not entries):
+        raise ArtifactError("Cloud Build source provenance hash differs from the package")
+
+    seen = set()
+    sha256 = None
+    for entry in entries:
+        if not isinstance(entry, dict) or set(entry) != {"type", "value"}:
+            raise ArtifactError("Cloud Build source provenance hash differs from the package")
+        algorithm = entry.get("type")
+        if algorithm not in ("SHA256", "MD5") or algorithm in seen:
+            raise ArtifactError("Cloud Build source provenance hash algorithm is invalid or duplicated")
+        seen.add(algorithm)
+        decoded = _decode_provenance_hash(entry.get("value"), 32 if algorithm == "SHA256" else 16)
+        if algorithm == "SHA256":
+            sha256 = decoded
+    if sha256 is None or sha256 != expected_sha256:
+        raise ArtifactError("Cloud Build source provenance hash differs from the package")
+
+
 def validate_cloud_build(raw: dict, manifest: dict) -> None:
     """Reconcile the read-back Cloud Build record with the verified package."""
     build = manifest["build"]
@@ -408,17 +460,10 @@ def validate_cloud_build(raw: dict, manifest: dict) -> None:
             any(str(resolved.get(key, "")) != source[key] for key in fields)):
         raise ArtifactError("Cloud Build source locator or generation differs from the package")
 
-    hashes = provenance.get("fileHashes")
     source_hash_path = f"gs://{source['bucket']}/{source['object']}#{source['generation']}"
-    source_hashes = hashes.get(source_hash_path) if isinstance(hashes, dict) else None
-    entries = source_hashes.get("fileHash") if isinstance(source_hashes, dict) else None
-    expected_hash = base64.b64encode(bytes.fromhex(source["sha256"].removeprefix("sha256:"))).decode("ascii")
-    if (not isinstance(hashes, dict) or set(hashes) != {source_hash_path} or
-            not isinstance(source_hashes, dict) or set(source_hashes) != {"fileHash"} or
-            not isinstance(entries, list) or len(entries) != 1 or
-            not isinstance(entries[0], dict) or set(entries[0]) != {"type", "value"} or
-            entries[0].get("type") != "SHA256" or entries[0].get("value") != expected_hash):
-        raise ArtifactError("Cloud Build source provenance hash differs from the package")
+    _validate_source_provenance_hashes(
+        provenance, source_hash_path,
+        bytes.fromhex(source["sha256"].removeprefix("sha256:")))
 
     substitutions = raw.get("substitutions")
     custom = ({key: value for key, value in substitutions.items() if key.startswith("_")}
@@ -452,7 +497,7 @@ def validate_cloud_build(raw: dict, manifest: dict) -> None:
                                            for key, value in expected_options.items()):
         raise ArtifactError("Cloud Build options differ from the package")
     defaults = {"requestedVerifyOption": "NOT_REQUIRED", "substitutionOption": "MUST_MATCH",
-                "logStreamingOption": "STREAM_ON"}
+                "logStreamingOption": "STREAM_ON", "workerRelease": "legacy"}
     if any(key not in expected_options and value not in (None, "", [], {}) and defaults.get(key) != value
            for key, value in options.items()):
         raise ArtifactError("Cloud Build contains an unconfigured non-default option")
