@@ -9,6 +9,15 @@ import (
 
 const StateSchemaVersion = 1
 
+type Status string
+
+const (
+	StatusMissing Status = "missing"
+	StatusPending Status = "pending"
+	StatusReady   Status = "ready"
+	StatusFailed  Status = "failed"
+)
+
 type StateDocument struct {
 	SchemaVersion     int                `json:"schema_version" firestore:"schema_version"`
 	TargetGeneration  string             `json:"target_generation" firestore:"target_generation"`

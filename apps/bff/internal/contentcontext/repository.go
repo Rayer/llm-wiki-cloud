@@ -29,6 +29,14 @@ var (
 	ErrAttemptRejected    = errors.New("content-context attempt is no longer current")
 )
 
+// Publication identifies a confirmed Project publication read while the
+// existing publisher fence is held.
+type Publication struct {
+	Generation       string
+	ConceptsDigest   string
+	ManifestIdentity string
+}
+
 // PublicationAuthority is implemented by the worker around the existing
 // project publication lock. Its fence covers only the state transaction and
 // manifest comparisons; the summary model call runs outside this callback.
