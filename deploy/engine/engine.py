@@ -718,8 +718,13 @@ class Engine:
                         source_mode == 'independent'):
                     require(isinstance(self.plan.get('auth_source'), dict),
                             'independent-auth-source-required')
-                artifact = (self.prepare_container(c) if c in ('auth', 'bff')
-                            else self.provider.prepare(c))
+                if c == 'auth' and source_mode == 'independent':
+                    artifact, build = self.provider.prepare_independent_auth()
+                    self.state['builds'][c] = build
+                    self.save()
+                else:
+                    artifact = (self.prepare_container(c) if c in ('auth', 'bff')
+                                else self.provider.prepare(c))
                 receipt = {'schema': 2, 'component': c, 'identity': self.plan['identities'][c],
                            'build_sha': self.plan['source'], 'artifact': artifact,
                            'target_config': digest(self.plan['normalized']['frontend']) if c == 'frontend' else None}

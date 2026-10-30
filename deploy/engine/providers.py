@@ -18,6 +18,7 @@ import tomllib
 
 from support import (ROOT, Breakpoint, InputShapeError, digest, read, require, run,
                      release_source_mode, safe_error_message, structured_cause, write)
+import gat4_ci_artifact
 sys.path.insert(0, str(ROOT / 'deploy/components'))
 import auth_config
 import frontend_build_config
@@ -817,6 +818,71 @@ class Providers:
                 (source_root / 'VERSION').is_file(),
                 'independent-auth-source-module-invalid')
         return source, source_root
+
+    def prepare_independent_auth(self):
+        source = self.plan.get('auth_source')
+        require(isinstance(source, dict) and
+                set(source) == {'repository_id', 'revision', 'tree_sha256',
+                                'artifact_id', 'run_id', 'run_attempt'},
+                'independent-auth-source-required')
+        try:
+            repository_id = int(source['repository_id'].removeprefix('github:'))
+            manifest = gat4_ci_artifact.load_package(
+                os.environ.get('GATEAUTH_CI_PACKAGE_PATH', ''),
+                os.environ.get('GATEAUTH_CI_ENVELOPE_PATH', ''),
+                {
+                    'repository_id': repository_id,
+                    'revision': source['revision'],
+                    'tree_sha256': source['tree_sha256'],
+                    'artifact_id': str(source['artifact_id']),
+                    'run_id': source['run_id'],
+                    'run_attempt': source['run_attempt'],
+                },
+                self.p['gcp']['project_id'],
+                self.p['gcp']['artifact_registry'] + '/' + self.profiles['auth']['image'],
+            )
+        except (gat4_ci_artifact.ArtifactError, AttributeError, OSError, TypeError, ValueError):
+            raise Breakpoint('independent-auth-artifact-incompatible', stage='auth-artifact-verify') from None
+
+        build = manifest['build']
+        require(build['project_id'] == self.p['gcp']['project_id'] and
+                build['location'] == CLOUD_BUILD_LOCATION and
+                build['project_number'] == self.gcp_project_number(),
+                'independent-auth-build-project-mismatch')
+        build_id = build['build_id']
+        try:
+            raw = json.loads(run([
+                'gcloud', 'builds', 'describe', build_id,
+                '--project', build['project_id'], '--region', build['location'],
+                '--format=json', '--quiet',
+            ], timeout=BUILD_READ_TIMEOUT_SECONDS, stage='auth-build-readback'))
+        except (Breakpoint, TypeError, ValueError) as exc:
+            if isinstance(exc, Breakpoint):
+                raise
+            raise Breakpoint('independent-auth-build-readback-invalid', stage='auth-build-readback') from None
+
+        record, reason = self._build_record('auth', raw, status='SUCCESS',
+                                             poll_outcome='succeeded', expected_id=build_id)
+        require(reason is None and raw.get('status') == 'SUCCESS',
+                'independent-auth-build-identity-mismatch')
+        expected_tag = (self.p['gcp']['artifact_registry'] + '/' +
+                        self.profiles['auth']['image'] + ':' + source['revision'])
+        substitutions = raw.get('substitutions')
+        require(isinstance(substitutions, dict) and
+                substitutions.get('_IMAGE') == expected_tag and
+                substitutions.get('_GIT_SHA') == source['revision'] and
+                substitutions.get('_APP_VERSION') == manifest['product_version'] and
+                substitutions.get('_GIT_BRANCH') == 'main',
+                'independent-auth-build-input-mismatch')
+        result = raw.get('results')
+        images = result.get('images') if isinstance(result, dict) else None
+        matching = [item for item in images or []
+                    if isinstance(item, dict) and item.get('name') == expected_tag]
+        require(len(matching) == 1 and
+                matching[0].get('digest') == manifest['artifact']['image_digest'],
+                'independent-auth-build-image-mismatch')
+        record.update(status='SUCCESS', last_observed_status='SUCCESS', poll_outcome='succeeded')
+        return {'image': manifest['artifact']['image']}, record
 
     def _build_source_environment(self, c):
         if c != 'auth':

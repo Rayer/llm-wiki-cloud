@@ -112,11 +112,11 @@ jobs:
           persist-credentials: false
       - name: Validate executor checkout
         run: test "$(git rev-parse HEAD)" = "$EXECUTOR_SHA"
-      - name: Resolve immutable GateAuth source identity
+      - name: Download and verify immutable GateAuth CI package
         id: gateauth-source
         if: inputs.operation == 'release' && inputs.environment == 'development' && inputs.release_source_mode == 'independent' && contains(format(',{0},', inputs.components), ',auth,')
         env:
-          GH_TOKEN: ${{ github.token }}
+          GATEAUTH_SOURCE_READ_TOKEN: ${{ secrets.GATEAUTH_SOURCE_READ_TOKEN }}
           AUTH_REPOSITORY_ID: ${{ inputs.auth_repository_id }}
           AUTH_REVISION: ${{ inputs.auth_revision }}
           AUTH_TREE_SHA256: ${{ inputs.auth_tree_sha256 }}
@@ -132,45 +132,15 @@ jobs:
             echo "Independent Auth source inputs are incomplete or malformed." >&2
             exit 1
           }
-          repository_json="$(gh api "/repositories/$AUTH_REPOSITORY_ID")"
-          repository_name="$(jq -er --argjson id "$AUTH_REPOSITORY_ID" 'select(.id == $id) | .full_name' <<<"$repository_json")"
-          run_json="$(gh api "repos/$repository_name/actions/runs/$AUTH_RUN_ID")"
-          jq -e --argjson repo_id "$AUTH_REPOSITORY_ID" --argjson run_id "$AUTH_RUN_ID" \
-            --argjson attempt "$AUTH_RUN_ATTEMPT" --arg revision "$AUTH_REVISION" \
-            '.repository.id == $repo_id and .id == $run_id and .run_attempt == $attempt and
-             .head_sha == $revision and .status == "completed" and .conclusion == "success"' \
-            <<<"$run_json" >/dev/null || { echo "Auth source run identity does not match the pinned tuple." >&2; exit 1; }
-          artifact_json="$(gh api "repos/$repository_name/actions/artifacts/$AUTH_ARTIFACT_ID")"
-          jq -e --argjson run_id "$AUTH_RUN_ID" '.expired == false and .workflow_run.id == $run_id' \
-            <<<"$artifact_json" >/dev/null || { echo "Auth source artifact does not belong to the pinned successful run." >&2; exit 1; }
-          echo "repository_name=$repository_name" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        if: inputs.operation == 'release' && inputs.environment == 'development' && inputs.release_source_mode == 'independent' && contains(format(',{0},', inputs.components), ',auth,')
-        with:
-          repository: ${{ steps.gateauth-source.outputs.repository_name }}
-          ref: ${{ inputs.auth_revision }}
-          path: auth-source-checkout
-          persist-credentials: false
-          fetch-depth: 1
-      - name: Verify and stage exact GateAuth source tree
-        if: inputs.operation == 'release' && inputs.environment == 'development' && inputs.release_source_mode == 'independent' && contains(format(',{0},', inputs.components), ',auth,')
-        env:
-          AUTH_REVISION: ${{ inputs.auth_revision }}
-          AUTH_TREE_SHA256: ${{ inputs.auth_tree_sha256 }}
-        run: |
-          set -Eeuo pipefail
-          checkout="$GITHUB_WORKSPACE/auth-source-checkout"
-          source_root="$RUNNER_TEMP/gateauth-source"
-          test "$(git -C "$checkout" rev-parse HEAD)" = "$AUTH_REVISION"
-          test -z "$(git -C "$checkout" status --porcelain)"
-          rm -rf "$source_root"
-          mkdir -p "$source_root"
-          git -C "$checkout" archive "$AUTH_REVISION" | tar -x -C "$source_root"
-          actual_tree="$(python3 scripts/gat4-local/artifact.py tree-digest --root "$source_root")"
-          test "$actual_tree" = "$AUTH_TREE_SHA256"
-          grep -Fxq 'module github.com/rayer/gateauth' "$source_root/go.mod"
-          rm -rf "$checkout"
-          printf 'AUTH_SOURCE_ROOT=%s\n' "$source_root" >> "$GITHUB_ENV"
+          package="$RUNNER_TEMP/gateauth-ci-package.zip"
+          envelope="$RUNNER_TEMP/gateauth-ci-envelope.json"
+          python3 deploy/engine/gat4_ci_artifact.py download \
+            --repository-id "$AUTH_REPOSITORY_ID" --revision "$AUTH_REVISION" \
+            --tree-sha256 "$AUTH_TREE_SHA256" --artifact-id "$AUTH_ARTIFACT_ID" \
+            --run-id "$AUTH_RUN_ID" --run-attempt "$AUTH_RUN_ATTEMPT" \
+            --package "$package" --envelope "$envelope"
+          printf 'GATEAUTH_CI_PACKAGE_PATH=%s\n' "$package" >> "$GITHUB_ENV"
+          printf 'GATEAUTH_CI_ENVELOPE_PATH=%s\n' "$envelope" >> "$GITHUB_ENV"
       - name: Select independent DEV receipt producer
         if: inputs.environment == 'development' && inputs.release_source_mode == 'independent'
         run: echo "GAT4_DEV_RECEIPT_SOURCE_METADATA_FILE=$RUNNER_TEMP/release/dev-source-metadata.json" >> "$GITHUB_ENV"
