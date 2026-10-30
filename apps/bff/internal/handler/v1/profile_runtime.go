@@ -17,6 +17,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/profilederive"
 	"github.com/rayer/llm-wiki-bff/internal/profileruntime"
 	"github.com/rayer/llm-wiki-bff/internal/profiletags"
+	"github.com/rayer/llm-wiki-bff/internal/sourceautomation"
 	"google.golang.org/api/idtoken"
 	"google.golang.org/api/iterator"
 	"google.golang.org/grpc/codes"
@@ -276,8 +277,14 @@ func validProfileRuntimeIdentity(w profileruntime.Work) bool {
 	if !auth.ValidPathSegment(w.UserID) || !auth.ValidPathSegment(w.ProjectID) || !auth.ValidPathSegment(w.ID) {
 		return false
 	}
-	if w.Kind == "pipeline" {
+	if w.Kind == "pipeline" || w.Kind == "pipeline_automation" {
 		return w.Revision >= 0
+	}
+	if w.Kind == "pipeline_automation_scan" {
+		return w.UserID == "system" && w.ProjectID == "automation" && w.Revision > 0
+	}
+	if w.Kind == "source_commit_reconcile" {
+		return w.Revision == 0
 	}
 	return w.Revision > 0 && (w.Kind == "derive" || w.Kind == "tag" || w.Kind == "compile")
 }
@@ -336,6 +343,31 @@ func (d *ProfileDispatcher) finish(ctx context.Context, repo *firestoreProfileRe
 	return settledStatus, nil
 }
 func (d *ProfileDispatcher) execute(ctx context.Context, repo *firestoreProfileRepository, w profileruntime.Work) error {
+	if w.Kind == "source_commit_reconcile" {
+		journal := d.Handler.sourceCommitJournal()
+		if journal == nil {
+			return errProfileRuntimeWaiting
+		}
+		_, err := journal.ReconcileSourceCommit(ctx, sourceautomation.Ref{
+			OwnerID: w.UserID, ProjectID: w.ProjectID, OperationID: w.ID,
+		})
+		if err == nil || errors.Is(err, sourceautomation.ErrInvalidSourceCommit) || errors.Is(err, sourceautomation.ErrSourceCommitConflict) {
+			return err
+		}
+		// Reconciliation owns transient Firestore and raw-storage failures. Keep
+		// its durable work pending until the read succeeds or the prepared event's
+		// missing-object grace window closes.
+		return errProfileRuntimeWaiting
+	}
+	if w.Kind == "pipeline_automation_scan" {
+		return d.executePipelineAutomationScan(ctx, repo, w)
+	}
+	if w.Kind == "pipeline_automation" {
+		if _, err := d.Handler.AuthorizeProject(ctx, w.UserID, w.ProjectID, ProjectEdit); err != nil {
+			return err
+		}
+		return d.executePipelineAutomation(ctx, repo, w)
+	}
 	if _, err := d.Handler.AuthorizeProject(ctx, w.UserID, w.ProjectID, ProjectEdit); err != nil {
 		return err
 	}

@@ -223,6 +223,7 @@ func ensureDefaultProject(ctx context.Context, fs *firestore.Client, owner, proj
 			projectRef := projects.Doc(projectDocID(owner, projectID))
 			if err := tx.Create(projectRef, map[string]interface{}{
 				"user_id": owner, "project_id": projectID, "name": name, "status": "ready", "created_at": createdAt,
+				"auto_pipeline_enabled": true, "auto_pipeline_revision": int64(1),
 			}); err != nil {
 				return err
 			}

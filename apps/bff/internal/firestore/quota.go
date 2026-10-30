@@ -58,11 +58,25 @@ type QuotaReservation struct {
 	ConsumedBootstrapGuidance      *profileartifacts.BootstrapGuidanceRef
 	ActiveCandidateID              string
 	ActiveContentGeneration        string
+	SourceFingerprint              string
+	SourceRevision                 int64
+	AutomationProjectRevision      int64
+	AutomationAdminRevision        int64
 	IntentErrorStage               string
 	IntentErrorCode                string
 	IntentErrorMessage             string
 	CreatedAt                      time.Time
 	UpdatedAt                      time.Time
+}
+
+// PipelineAutomationAdmission binds an automatic run to the committed source
+// inventory it is expected to consume. The two switches and failure fence are
+// rechecked transactionally by ReserveQuotaForPipelineAutomation.
+type PipelineAutomationAdmission struct {
+	SourceFingerprint string
+	SourceRevision    int64
+	ProjectRevision   int64
+	AdminRevision     int64
 }
 
 // PipelineProfileRequirement is the saved Profile input bound to one accepted run.
@@ -326,7 +340,7 @@ func (c *Client) ReserveQuota(
 ) (snap pipelinequota.Snapshot, reserved bool, err error) {
 	return c.reservePipelineQuota(ctx, reservationID, userID, projectID, limits, now, mode,
 		pipelinequota.TriggerManual, "manual", "", isDemo, alreadyRunning,
-		newRawFiles, rawDirtyFiles, annotationDirtyFiles, false, "")
+		newRawFiles, rawDirtyFiles, annotationDirtyFiles, false, "", nil)
 }
 
 // ReserveQuotaForPipelineIntent freezes the saved Profile and active guidance
@@ -342,7 +356,7 @@ func (c *Client) ReserveQuotaForPipelineIntent(
 ) (snap pipelinequota.Snapshot, reserved bool, err error) {
 	return c.reservePipelineQuota(ctx, reservationID, userID, projectID, limits, now, mode,
 		pipelinequota.TriggerManual, "manual", "", isDemo, alreadyRunning,
-		newRawFiles, rawDirtyFiles, annotationDirtyFiles, true, "")
+		newRawFiles, rawDirtyFiles, annotationDirtyFiles, true, "", nil)
 }
 
 // ReserveQuotaForPipelineIntentRetry creates a new quota attempt from the exact
@@ -350,7 +364,12 @@ func (c *Client) ReserveQuotaForPipelineIntent(
 func (c *Client) ReserveQuotaForPipelineIntentRetry(ctx context.Context, reservationID, sourceReservationID, userID, projectID string, limits pipelinequota.Limits, now time.Time, mode pipelinequota.ExecutionMode, isDemo, alreadyRunning bool, newRawFiles, rawDirtyFiles, annotationDirtyFiles int) (pipelinequota.Snapshot, bool, error) {
 	return c.reservePipelineQuota(ctx, reservationID, userID, projectID, limits, now, mode,
 		pipelinequota.TriggerManual, "manual", "", isDemo, alreadyRunning,
-		newRawFiles, rawDirtyFiles, annotationDirtyFiles, true, sourceReservationID)
+		newRawFiles, rawDirtyFiles, annotationDirtyFiles, true, sourceReservationID, nil)
+}
+
+func (c *Client) ReserveQuotaForPipelineAutomation(ctx context.Context, reservationID, userID, projectID string, limits pipelinequota.Limits, now time.Time, isDemo, alreadyRunning bool, newRawFiles, rawDirtyFiles, annotationDirtyFiles int, admission PipelineAutomationAdmission) (pipelinequota.Snapshot, bool, error) {
+	return c.reservePipelineQuota(ctx, reservationID, userID, projectID, limits, now, pipelinequota.ModeIncremental,
+		pipelinequota.TriggerSourceCommit, "none", "", isDemo, alreadyRunning, newRawFiles, rawDirtyFiles, annotationDirtyFiles, true, "", &admission)
 }
 
 // ReserveScheduledQuota reserves the independent once-per-UTC-day scheduled
@@ -390,7 +409,7 @@ func (c *Client) ReserveScheduledQuotaWithAttempt(
 	}
 	return c.reservePipelineQuota(ctx, reservationID, userID, projectID, limits, now, mode,
 		pipelinequota.TriggerScheduledDaily, "scheduled_daily", attemptID, isDemo, alreadyRunning,
-		newRawFiles, rawDirtyFiles, annotationDirtyFiles, false, "")
+		newRawFiles, rawDirtyFiles, annotationDirtyFiles, false, "", nil)
 }
 
 func (c *Client) reservePipelineQuota(
@@ -406,6 +425,7 @@ func (c *Client) reservePipelineQuota(
 	newRawFiles, rawDirtyFiles, annotationDirtyFiles int,
 	captureProfileIntent bool,
 	retryReservationID string,
+	automationAdmission *PipelineAutomationAdmission,
 ) (snap pipelinequota.Snapshot, reserved bool, err error) {
 	reservationID = strings.TrimSpace(reservationID)
 	if reservationID == "" || strings.ContainsAny(reservationID, "/\\") {
@@ -426,6 +446,51 @@ func (c *Client) reservePipelineQuota(
 		quotaData, readErr := readQuotaDataTx(tx, quotaRef)
 		if readErr != nil {
 			return readErr
+		}
+		var automationProjectRef *firestore.DocumentRef
+		var automationProjectData map[string]interface{}
+		var automationProjectRevision, automationAdminRevision, automationSourceRevision int64
+		if automationAdmission != nil {
+			automationProjectRef = Collection(c.fs, "projects").Doc(userID + "_" + projectID)
+			projectSnapshot, projectErr := tx.Get(automationProjectRef)
+			if status.Code(projectErr) == codes.NotFound {
+				return nil
+			}
+			if projectErr != nil {
+				return projectErr
+			}
+			adminRef := Collection(c.fs, "system").Doc("pipeline_automation")
+			adminSnapshot, adminErr := tx.Get(adminRef)
+			if adminErr != nil && status.Code(adminErr) != codes.NotFound {
+				return adminErr
+			}
+			automationProjectData = projectSnapshot.Data()
+			if automationProjectData["user_id"] != userID || automationProjectData["project_id"] != projectID || automationProjectData["status"] != "ready" {
+				return nil
+			}
+			projectEnabled, _ := automationProjectData["auto_pipeline_enabled"].(bool)
+			adminEnabled := false
+			if adminSnapshot != nil && adminSnapshot.Exists() {
+				adminData := adminSnapshot.Data()
+				adminEnabled, _ = adminData["allow_auto_pipeline"].(bool)
+				automationAdminRevision = int64FromFirestore(adminData["revision"])
+			}
+			if !projectEnabled || !adminEnabled || strings.TrimSpace(automationAdmission.SourceFingerprint) == "" ||
+				(automationProjectData["pipeline_failure_blocked_fingerprint"] == automationAdmission.SourceFingerprint &&
+					int64FromFirestore(automationProjectData["pipeline_failure_blocked_admin_revision"]) == automationAdminRevision) ||
+				automationProjectData["pipeline_auto_consumed_fingerprint"] == automationAdmission.SourceFingerprint {
+				return nil
+			}
+			automationProjectRevision = int64FromFirestore(automationProjectData["auto_pipeline_revision"])
+			automationSourceRevision = int64FromFirestore(automationProjectData["pipeline_source_revision"])
+			if automationProjectRevision != automationAdmission.ProjectRevision ||
+				automationAdminRevision != automationAdmission.AdminRevision ||
+				automationSourceRevision != automationAdmission.SourceRevision {
+				return nil
+			}
+			if newRawFiles+rawDirtyFiles == 0 {
+				return nil
+			}
 		}
 		runsToday, dayKey, lastRunAt := quotaStateFromData(quotaData)
 		lastRunAt = normalizeQuotaTime(lastRunAt)
@@ -507,7 +572,9 @@ func (c *Client) reservePipelineQuota(
 			quotaUpdates["day_key"] = today
 			quotaUpdates["runs_today"] = newRuns
 		}
-		quotaUpdates["last_run_at"] = now
+		if budgetClass != "none" {
+			quotaUpdates["last_run_at"] = now
+		}
 		if captureProfileIntent {
 			quotaUpdates["last_pipeline_intent_id"] = reservationID
 		}
@@ -550,6 +617,12 @@ func (c *Client) reservePipelineQuota(
 			reservationData["intent_updated_at"] = now
 			reservationData["updated_at"] = now
 		}
+		if automationAdmission != nil {
+			reservationData["source_fingerprint"] = automationAdmission.SourceFingerprint
+			reservationData["source_revision"] = automationSourceRevision
+			reservationData["auto_pipeline_project_revision"] = automationProjectRevision
+			reservationData["auto_pipeline_admin_revision"] = automationAdminRevision
+		}
 		if trigger == pipelinequota.TriggerScheduledDaily && existingBudget != nil && existingBudget.Exists() {
 			if err := tx.Set(reservationRef, reservationData); err != nil {
 				return err
@@ -563,6 +636,17 @@ func (c *Client) reservePipelineQuota(
 				"reservation_id": reservationID, "used": true, "result": "pending",
 				"execution_id": "", "updated_at": now,
 			}, firestore.MergeAll); err != nil {
+				return err
+			}
+		}
+		if automationAdmission != nil {
+			if err := tx.Update(automationProjectRef, []firestore.Update{
+				{Path: "pipeline_automation_status", Value: "preparing"},
+				{Path: "pipeline_automation_source_revision", Value: automationSourceRevision},
+				{Path: "pipeline_automation_updated_at", Value: now},
+				{Path: "pipeline_automation_failure_stage", Value: firestore.Delete},
+				{Path: "pipeline_automation_failure_code", Value: firestore.Delete},
+			}); err != nil {
 				return err
 			}
 		}
@@ -899,6 +983,42 @@ func (c *Client) BeginPipelineIntentInvocation(ctx context.Context, reservationI
 		if reservation.IntentStatus != "ready" || reservation.SettlementStatus != "pending" || reservation.ExecutionID != "" {
 			return nil
 		}
+		var autoProjectRef *firestore.DocumentRef
+		var autoProjectSnapshot *firestore.DocumentSnapshot
+		autoPauseReason := ""
+		automationProjectEnabled, automationAdminEnabled := false, false
+		if reservation.Trigger == pipelinequota.TriggerSourceCommit {
+			autoProjectRef = Collection(c.fs, "projects").Doc(userID + "_" + projectID)
+			var projectErr error
+			autoProjectSnapshot, projectErr = tx.Get(autoProjectRef)
+			if projectErr != nil {
+				return projectErr
+			}
+			adminSnapshot, adminErr := tx.Get(Collection(c.fs, "system").Doc("pipeline_automation"))
+			if adminErr != nil && status.Code(adminErr) != codes.NotFound {
+				return adminErr
+			}
+			projectData := autoProjectSnapshot.Data()
+			automationProjectEnabled, _ = projectData["auto_pipeline_enabled"].(bool)
+			adminRevision := int64(0)
+			if adminSnapshot != nil && adminSnapshot.Exists() {
+				automationAdminEnabled, _ = adminSnapshot.Data()["allow_auto_pipeline"].(bool)
+				adminRevision = int64FromFirestore(adminSnapshot.Data()["revision"])
+			}
+			switch {
+			case !automationAdminEnabled:
+				autoPauseReason = "admin_disabled"
+			case !automationProjectEnabled:
+				autoPauseReason = "project_disabled"
+			case int64FromFirestore(projectData["auto_pipeline_revision"]) != reservation.AutomationProjectRevision || adminRevision != reservation.AutomationAdminRevision:
+				autoPauseReason = "switch_revision_changed"
+			case int64FromFirestore(projectData["pipeline_source_revision"]) != reservation.SourceRevision:
+				autoPauseReason = "source_revision_changed"
+			case reservation.SourceFingerprint != "" && projectData["pipeline_failure_blocked_fingerprint"] == reservation.SourceFingerprint &&
+				int64FromFirestore(projectData["pipeline_failure_blocked_admin_revision"]) == reservation.AutomationAdminRevision:
+				autoPauseReason = "failure_fence"
+			}
+		}
 		quotaRef := Collection(c.fs, pipelineQuotaCollection).Doc(QuotaDocID(userID, projectID))
 		quotaData, err := readQuotaDataTx(tx, quotaRef)
 		if err != nil {
@@ -909,12 +1029,56 @@ func (c *Client) BeginPipelineIntentInvocation(ctx context.Context, reservationI
 			return nil
 		}
 		now := time.Now().UTC()
+		if autoPauseReason != "" {
+			if err := tx.Update(quotaRef, []firestore.Update{
+				{Path: "active_reservation_id", Value: firestore.Delete},
+				{Path: "active_trigger", Value: firestore.Delete},
+				{Path: "updated_at", Value: now},
+			}); err != nil {
+				return err
+			}
+			if err := tx.Update(reservationRef, []firestore.Update{
+				{Path: "settlement_status", Value: "released"}, {Path: "outcome", Value: "AUTOMATION_PAUSED"},
+				{Path: "intent_status", Value: "cancelled"}, {Path: "intent_error_stage", Value: "automation_admission"},
+				{Path: "intent_error_code", Value: autoPauseReason}, {Path: "intent_error_message", Value: "Automatic processing was paused before Pipeline start."},
+				{Path: "intent_updated_at", Value: now}, {Path: "settled_at", Value: now}, {Path: "updated_at", Value: now},
+			}); err != nil {
+				return err
+			}
+			if autoProjectRef != nil {
+				statusValue := "paused"
+				if autoPauseReason == "source_revision_changed" && automationProjectEnabled && automationAdminEnabled {
+					currentRevision := int64FromFirestore(autoProjectSnapshot.Data()["pipeline_source_revision"])
+					if err := enqueuePipelineAutomationWork(tx, c.fs, userID, projectID, currentRevision, now); err != nil {
+						return err
+					}
+					statusValue = "pending"
+				}
+				if err := tx.Update(autoProjectRef, []firestore.Update{
+					{Path: "pipeline_automation_status", Value: statusValue},
+					{Path: "pipeline_automation_updated_at", Value: now},
+				}); err != nil {
+					return err
+				}
+			}
+			reservation.IntentStatus, reservation.SettlementStatus = "cancelled", "released"
+			claimed = false
+			return nil
+		}
 		if err := tx.Update(reservationRef, []firestore.Update{
 			{Path: "intent_status", Value: "invoking"},
 			{Path: "intent_updated_at", Value: now},
 			{Path: "updated_at", Value: now},
 		}); err != nil {
 			return err
+		}
+		if autoProjectRef != nil {
+			if err := tx.Update(autoProjectRef, []firestore.Update{
+				{Path: "pipeline_automation_status", Value: "running"},
+				{Path: "pipeline_automation_updated_at", Value: now},
+			}); err != nil {
+				return err
+			}
 		}
 		reservation.IntentStatus = "invoking"
 		claimed = true
@@ -1004,6 +1168,13 @@ func failPipelineIntentReservationInTransaction(ctx context.Context, tx *firesto
 		reservation.IntentStatus != expectedStatus || reservation.SettlementStatus != "pending" || reservation.ExecutionID != "" {
 		return errors.New("pipeline intent is not a confirmed pre-invocation failure")
 	}
+	var projectRef *firestore.DocumentRef
+	if reservation.Trigger == pipelinequota.TriggerSourceCommit {
+		projectRef = Collection(fs, "projects").Doc(reservation.UserID + "_" + reservation.ProjectID)
+		if _, err := tx.Get(projectRef); err != nil {
+			return err
+		}
+	}
 	if _, err := releaseQuotaReservationInTransaction(ctx, tx, fs, reservation.ID, reservation.AttemptID); err != nil {
 		return err
 	}
@@ -1011,14 +1182,27 @@ func failPipelineIntentReservationInTransaction(ctx context.Context, tx *firesto
 		message = "Pipeline preparation failed. Review the Profile and retry this run."
 	}
 	now := time.Now().UTC()
-	return tx.Update(reservationRef, []firestore.Update{
+	if err := tx.Update(reservationRef, []firestore.Update{
 		{Path: "intent_status", Value: "failed"},
 		{Path: "intent_error_stage", Value: stage},
 		{Path: "intent_error_code", Value: code},
 		{Path: "intent_error_message", Value: message},
 		{Path: "intent_updated_at", Value: now},
 		{Path: "updated_at", Value: now},
-	})
+	}); err != nil {
+		return err
+	}
+	if projectRef != nil {
+		return tx.Update(projectRef, []firestore.Update{
+			{Path: "pipeline_failure_blocked_fingerprint", Value: reservation.SourceFingerprint},
+			{Path: "pipeline_failure_blocked_admin_revision", Value: reservation.AutomationAdminRevision},
+			{Path: "pipeline_automation_status", Value: "failed"},
+			{Path: "pipeline_automation_failure_stage", Value: stage},
+			{Path: "pipeline_automation_failure_code", Value: code},
+			{Path: "pipeline_automation_updated_at", Value: now},
+		})
+	}
+	return nil
 }
 
 func (c *Client) updatePipelineIntent(ctx context.Context, reservationID, attemptID, userID, projectID string, expected []string, fields map[string]interface{}) error {
@@ -1138,6 +1322,24 @@ func SettleQuotaReservationInTransactionWithResult(ctx context.Context, tx *fire
 			return "", false, err
 		}
 	}
+	var autoProjectRef *firestore.DocumentRef
+	var autoProjectData map[string]interface{}
+	autoAdminEnabled := false
+	if reservation.Trigger == pipelinequota.TriggerSourceCommit {
+		autoProjectRef = Collection(fs, "projects").Doc(reservation.UserID + "_" + reservation.ProjectID)
+		projectSnapshot, projectErr := tx.Get(autoProjectRef)
+		if projectErr != nil {
+			return "", false, projectErr
+		}
+		autoProjectData = projectSnapshot.Data()
+		adminSnapshot, adminErr := tx.Get(Collection(fs, "system").Doc("pipeline_automation"))
+		if adminErr != nil && status.Code(adminErr) != codes.NotFound {
+			return "", false, adminErr
+		}
+		if adminSnapshot != nil && adminSnapshot.Exists() {
+			autoAdminEnabled, _ = adminSnapshot.Data()["allow_auto_pipeline"].(bool)
+		}
+	}
 
 	state := strings.ToUpper(strings.TrimSpace(executionStatus))
 	settlement := "not_applicable"
@@ -1215,7 +1417,52 @@ func SettleQuotaReservationInTransactionWithResult(ctx context.Context, tx *fire
 			return "", false, err
 		}
 	}
+	if autoProjectRef != nil {
+		updates := []firestore.Update{{Path: "pipeline_automation_updated_at", Value: now}}
+		switch state {
+		case "SUCCEEDED":
+			updates = append(updates,
+				firestore.Update{Path: "pipeline_auto_consumed_fingerprint", Value: reservation.SourceFingerprint},
+				firestore.Update{Path: "pipeline_auto_consumed_source_revision", Value: reservation.SourceRevision},
+				firestore.Update{Path: "pipeline_automation_status", Value: "published"},
+				firestore.Update{Path: "pipeline_failure_blocked_fingerprint", Value: firestore.Delete},
+				firestore.Update{Path: "pipeline_failure_blocked_admin_revision", Value: firestore.Delete},
+				firestore.Update{Path: "pipeline_automation_failure_stage", Value: firestore.Delete},
+				firestore.Update{Path: "pipeline_automation_failure_code", Value: firestore.Delete},
+			)
+		case "FAILED":
+			updates = append(updates,
+				firestore.Update{Path: "pipeline_failure_blocked_fingerprint", Value: reservation.SourceFingerprint},
+				firestore.Update{Path: "pipeline_failure_blocked_admin_revision", Value: reservation.AutomationAdminRevision},
+				firestore.Update{Path: "pipeline_automation_status", Value: "failed"},
+				firestore.Update{Path: "pipeline_automation_failure_stage", Value: "pipeline"},
+				firestore.Update{Path: "pipeline_automation_failure_code", Value: "pipeline_failed"},
+			)
+		case "CANCELLED":
+			updates = append(updates, firestore.Update{Path: "pipeline_automation_status", Value: "cancelled"})
+		}
+		currentRevision := int64FromFirestore(autoProjectData["pipeline_source_revision"])
+		projectEnabled, _ := autoProjectData["auto_pipeline_enabled"].(bool)
+		if currentRevision > reservation.SourceRevision && projectEnabled && autoAdminEnabled && state != "CANCELLED" {
+			if err := enqueuePipelineAutomationWork(tx, fs, reservation.UserID, reservation.ProjectID, currentRevision, now); err != nil {
+				return "", false, err
+			}
+			updates = append(updates, firestore.Update{Path: "pipeline_automation_status", Value: "pending"})
+		}
+		if err := tx.Update(autoProjectRef, updates); err != nil {
+			return "", false, err
+		}
+	}
 	return settlement, true, nil
+}
+
+func enqueuePipelineAutomationWork(tx *firestore.Transaction, fs *firestore.Client, userID, projectID string, revision int64, due time.Time) error {
+	id := "source-" + fmt.Sprint(revision)
+	workID := sha256.Sum256([]byte(userID + "\x00" + projectID + "\x00pipeline_automation\x00" + id))
+	return tx.Set(Collection(fs, "profile_runtime_work").Doc(hex.EncodeToString(workID[:])), map[string]interface{}{
+		"user_id": userID, "project_id": projectID, "kind": "pipeline_automation", "revision": revision, "id": id,
+		"candidate_id": "", "due": due, "pending": true, "attempts": 0, "token": "", "lease_until": time.Time{}, "status": "pending",
+	})
 }
 
 func quotaReservationFromData(id string, data map[string]interface{}) QuotaReservation {
@@ -1245,6 +1492,10 @@ func quotaReservationFromData(id string, data map[string]interface{}) QuotaReser
 	reservation.ConsumedBootstrapGuidance = bootstrapGuidanceRefFromFirestore(data["consumed_bootstrap_guidance"])
 	reservation.ActiveCandidateID, _ = data["active_candidate_id"].(string)
 	reservation.ActiveContentGeneration, _ = data["active_content_generation"].(string)
+	reservation.SourceFingerprint, _ = data["source_fingerprint"].(string)
+	reservation.SourceRevision = int64FromFirestore(data["source_revision"])
+	reservation.AutomationProjectRevision = int64FromFirestore(data["auto_pipeline_project_revision"])
+	reservation.AutomationAdminRevision = int64FromFirestore(data["auto_pipeline_admin_revision"])
 	reservation.IntentErrorStage, _ = data["intent_error_stage"].(string)
 	reservation.IntentErrorCode, _ = data["intent_error_code"].(string)
 	reservation.IntentErrorMessage, _ = data["intent_error_message"].(string)

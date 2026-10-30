@@ -192,9 +192,10 @@ func TestMCPMetadataLegacySchema2BehaviorStaysPrivate(t *testing.T) {
 	for _, item := range items {
 		tool := item.(map[string]any)
 		want := map[string]string{
-			"query_project": mcpQueryProjectToolDescription,
-			"add_raw":       mcpAddRawToolDescription,
-			"import_url":    mcpImportURLToolDescription,
+			"query_project":   mcpQueryProjectToolDescription,
+			"pipeline_status": mcpPipelineStatusToolDescription,
+			"add_raw":         mcpAddRawToolDescription,
+			"import_url":      mcpImportURLToolDescription,
 		}[tool["name"].(string)]
 		if tool["description"] != want {
 			t.Fatalf("legacy schema2 description for %q = %v", tool["name"], tool["description"])
@@ -324,9 +325,9 @@ func assertMCPMetadataTools(t *testing.T, result map[string]any, metadata *confi
 	if !ok {
 		t.Fatalf("tools/list result = %#v", result)
 	}
-	wantCount := 1
+	wantCount := 2
 	if writer {
-		wantCount = 3
+		wantCount = 4
 	}
 	if len(items) != wantCount {
 		t.Fatalf("tools/list returned %d tools, want %d", len(items), wantCount)
@@ -341,9 +342,10 @@ func assertMCPMetadataTools(t *testing.T, result map[string]any, metadata *confi
 		name, _ := tool["name"].(string)
 		names[name] = true
 		wantDescription := map[string]string{
-			"query_project": metadata.ToolDescriptions.QueryProject,
-			"add_raw":       metadata.ToolDescriptions.AddRaw,
-			"import_url":    metadata.ToolDescriptions.ImportURL,
+			"query_project":   metadata.ToolDescriptions.QueryProject,
+			"pipeline_status": mcpPipelineStatusToolDescription,
+			"add_raw":         metadata.ToolDescriptions.AddRaw,
+			"import_url":      metadata.ToolDescriptions.ImportURL,
 		}[name]
 		if wantDescription == "" || tool["description"] != wantDescription {
 			t.Fatalf("tool %q description = %v, want configured text", name, tool["description"])
@@ -352,7 +354,7 @@ func assertMCPMetadataTools(t *testing.T, result map[string]any, metadata *confi
 			querySchema, _ = json.Marshal(tool["inputSchema"])
 		}
 	}
-	if !names["query_project"] || (writer && (!names["add_raw"] || !names["import_url"])) ||
+	if !names["query_project"] || !names["pipeline_status"] || (writer && (!names["add_raw"] || !names["import_url"])) ||
 		(!writer && (names["add_raw"] || names["import_url"])) || len(querySchema) == 0 {
 		t.Fatalf("tools/list names or code-owned schema = %v schema=%s", names, querySchema)
 	}

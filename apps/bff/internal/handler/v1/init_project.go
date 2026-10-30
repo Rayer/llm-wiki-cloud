@@ -234,6 +234,8 @@ func initProjectData(projectID, name, description, idempotencyKey string, now ti
 		"description_updated_at": now,
 		"status":                 "ready",
 		"created_at":             now,
+		"auto_pipeline_enabled":  true,
+		"auto_pipeline_revision": int64(1),
 	}
 	if idempotencyKey != "" {
 		projectData["idempotency_key"] = idempotencyKey
