@@ -10,6 +10,9 @@ const mocks = vi.hoisted(() => ({
   triggerPipeline: vi.fn(),
   updateProjectPipelineAutomation: vi.fn(),
   uploadRawFile: vi.fn(),
+  scrapeUrl: vi.fn(),
+  acceptScrapeCandidate: vi.fn(),
+  resolveScrapeCandidate: vi.fn(),
 }));
 
 vi.mock('@/lib/api', async () => ({
@@ -20,6 +23,9 @@ vi.mock('@/lib/api', async () => ({
   triggerPipeline: mocks.triggerPipeline,
   updateProjectPipelineAutomation: mocks.updateProjectPipelineAutomation,
   uploadRawFile: mocks.uploadRawFile,
+  scrapeUrl: mocks.scrapeUrl,
+  acceptScrapeCandidate: mocks.acceptScrapeCandidate,
+  resolveScrapeCandidate: mocks.resolveScrapeCandidate,
 }));
 
 vi.mock('@/components/WorkspaceProvider', () => ({
@@ -51,6 +57,22 @@ function intentStatus(projectId: string, state: string, intentId = `intent-${pro
     },
   };
 }
+
+const urlCandidate = {
+  status: 'preview', message: 'Review the candidate.', candidate_id: 'url-candidate',
+  candidate_revision: 'url-revision', expires_at: '2026-10-31T12:00:00Z',
+  preview: {
+    title: 'Example article', source_url: 'https://example.com/article', markdown: '# Example article\n\nReadable body.',
+    metadata: { title: 'Example article', source: 'https://example.com/article', created: '2026-10-31' },
+    candidate_sha256: 'candidate-digest', provider: 'deepseek-fetch',
+  },
+};
+
+const storedUrl = {
+  status: 'stored', message: 'saved', preview: urlCandidate.preview,
+  storage: { path: 'raw/Example-article.md', sha256: 'stored-digest', status: 'created' },
+  processing_status: 'pending', source_revision: 1,
+};
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -91,6 +113,9 @@ beforeEach(() => {
     filename: 'source.md', path: 'raw/source.md', bytes: 18, sha256: 'source-digest',
     status: 'created', processing_status: 'pending', source_revision: 1, commit_status: 'saved',
   });
+  mocks.scrapeUrl.mockResolvedValue(urlCandidate);
+  mocks.acceptScrapeCandidate.mockResolvedValue(storedUrl);
+  mocks.resolveScrapeCandidate.mockResolvedValue(storedUrl);
 });
 
 afterEach(() => {
@@ -271,9 +296,8 @@ it('discovers delayed upload admission and a chained intent while Pipeline stays
   expect(mocks.getPipelineStatus).toHaveBeenCalledWith('project-a', 'execution-project-a', 'intent-2');
   await tickPipelinePoll();
   await screen.findByText('Pipeline complete');
-  await tickAutomationPoll();
   await waitFor(() => expect(intervals.size).toBe(0));
-  expect(mocks.getPipelineStatus).toHaveBeenCalledTimes(10);
+	expect(mocks.getPipelineStatus.mock.calls.filter(([, executionId]) => Boolean(executionId))).toHaveLength(4);
   expect(mocks.uploadRawFile).toHaveBeenCalledTimes(1);
 });
 
@@ -323,8 +347,114 @@ it('follows backlog admission to failure after enabling Project automation', asy
   await tickPipelinePoll();
   await screen.findByText('Pipeline needs attention');
   await waitFor(() => expect(screen.getByTestId('pipeline-automation-failure').textContent).toContain('backlog_pipeline_failed'));
-  await tickAutomationPoll();
   await waitFor(() => expect(intervals.size).toBe(0));
+});
+
+it.each(['accept', 'resolve'] as const)('discovers a URL-saved source after delayed admission via %s without remount', async (saveMode) => {
+  let automationStatus = 'idle';
+  let sourceRevision = 0;
+  let processedRevision = 0;
+  let admitted = false;
+  let statusReads = 0;
+  let executionPolls = 0;
+  const setPending = () => {
+    automationStatus = 'pending';
+    sourceRevision = 1;
+  };
+  mocks.getProjectPipelineAutomation.mockImplementation(async () => ({
+    enabled: true, revision: 1, admin_allowed: true, effective_enabled: true,
+    backlog_scan_status: 'idle', pipeline_status: automationStatus,
+    source_revision: sourceRevision, processed_revision: processedRevision,
+  }));
+  mocks.getPipelineStatus.mockImplementation(async (projectId: string, executionId?: string, intentId?: string) => {
+    if (executionId || intentId) {
+      executionPolls += 1;
+      automationStatus = executionPolls === 1 ? 'running' : 'published';
+      if (executionPolls > 1) processedRevision = 1;
+      return intentStatus(projectId, executionPolls === 1 ? 'compiling' : 'succeeded', 'url-intent');
+    }
+    statusReads += 1;
+    return admitted ? intentStatus(projectId, 'preparing', 'url-intent') : { project_id: projectId, quota };
+  });
+  if (saveMode === 'accept') {
+    mocks.acceptScrapeCandidate.mockImplementation(async () => {
+      setPending();
+      return storedUrl;
+    });
+  } else {
+    mocks.acceptScrapeCandidate.mockResolvedValueOnce({
+      status: 'uncertain', message: 'Save status is uncertain.', candidate_id: 'url-candidate', candidate_revision: 'url-revision',
+    });
+    mocks.resolveScrapeCandidate.mockImplementation(async () => {
+      setPending();
+      return storedUrl;
+    });
+  }
+
+  render(<PipelineClient />);
+  await screen.findByTestId('pipeline-automation-settings');
+  await waitFor(() => expect(statusReads).toBe(1));
+  const urlInput = screen.getByPlaceholderText('https://example.com/article');
+  fireEvent.change(urlInput, { target: { value: 'https://example.com/article' } });
+  const urlForm = urlInput.closest('form');
+  expect(urlForm).not.toBeNull();
+  await act(async () => { fireEvent.submit(urlForm as HTMLFormElement); });
+  await screen.findByRole('dialog');
+  fireEvent.click(screen.getByRole('button', { name: 'Save this exact candidate' }));
+  if (saveMode === 'resolve') {
+    fireEvent.click(await screen.findByRole('button', { name: 'Check save status' }));
+  }
+  await screen.findByText('saved');
+  await waitFor(() => expect(intervals.size).toBe(1));
+
+  await tickAutomationPoll();
+  expect(screen.queryByText('Pipeline compiling…')).toBeNull();
+  admitted = true;
+  await tickAutomationPoll();
+  await screen.findByText('Pipeline compiling…');
+  await tickPipelinePoll();
+  await screen.findByText('Pipeline complete');
+  await waitFor(() => expect(intervals.size).toBe(0));
+  expect(mocks.triggerPipeline).not.toHaveBeenCalled();
+});
+
+it('discovers initially pending source work before an intent exists and follows it to publication', async () => {
+  let admitted = false;
+  let automationStatus = 'pending';
+  let processedRevision = 0;
+  let statusReads = 0;
+  let executionPolls = 0;
+  mocks.getProjectPipelineAutomation.mockImplementation(async () => ({
+    enabled: true, revision: 1, admin_allowed: true, effective_enabled: true,
+    backlog_scan_status: 'idle', pipeline_status: automationStatus,
+    source_revision: 1, processed_revision: processedRevision,
+  }));
+  mocks.getPipelineStatus.mockImplementation(async (projectId: string, executionId?: string, intentId?: string) => {
+    if (executionId || intentId) {
+      executionPolls += 1;
+      automationStatus = executionPolls === 1 ? 'running' : 'published';
+      if (executionPolls > 1) processedRevision = 1;
+      return intentStatus(projectId, executionPolls === 1 ? 'compiling' : 'succeeded', 'initial-backlog-intent');
+    }
+    statusReads += 1;
+    return admitted
+      ? intentStatus(projectId, 'preparing', 'initial-backlog-intent')
+      : { project_id: projectId, quota };
+  });
+
+  render(<PipelineClient />);
+  await screen.findByTestId('pipeline-automation-settings');
+  await waitFor(() => expect(statusReads).toBe(1));
+  await waitFor(() => expect(intervals.size).toBe(1));
+  await tickAutomationPoll();
+  expect(screen.queryByText('Pipeline compiling…')).toBeNull();
+  admitted = true;
+  await tickAutomationPoll();
+  await screen.findByText('Pipeline compiling…');
+  await tickPipelinePoll();
+  await screen.findByText('Pipeline complete');
+  await waitFor(() => expect(intervals.size).toBe(0));
+  expect(mocks.triggerPipeline).not.toHaveBeenCalled();
 });
 
 it('ignores a late recovery read after switching Projects', async () => {
