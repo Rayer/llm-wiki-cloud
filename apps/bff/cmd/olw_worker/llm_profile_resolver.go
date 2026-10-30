@@ -60,97 +60,109 @@ func resolvePipelineLLMProfiles(ctx context.Context, cfg workerConfig) ([]pipeli
 }
 
 func resolvePipelineLLMProfilesWithCredentials(ctx context.Context, cfg workerConfig, includeCredentials bool) ([]pipelineLLMProfile, bool, error) {
+	result, err := resolvePipelineLLMProfileResponseWithCredentials(ctx, cfg, includeCredentials)
+	if err != nil {
+		return nil, false, err
+	}
+	return result.Profiles, result.Source == "shared", nil
+}
+
+// resolvePipelineLLMProfileResponseWithCredentials preserves the resolver's
+// actual source and immutable envelope identity for callers that need them.
+// The profiles-only helpers above remain the compatibility API for existing
+// worker consumers.
+func resolvePipelineLLMProfileResponseWithCredentials(ctx context.Context, cfg workerConfig, includeCredentials bool) (pipelineLLMProfileResponse, error) {
 	parsed, err := url.Parse(strings.TrimSpace(cfg.ProfileResolverURL))
 	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" ||
 		parsed.Path != "/internal/pipeline/llm-profile" ||
 		(parsed.Scheme != "https" && !(cfg.LocalCloudScope != "" && parsed.Scheme == "http" && (parsed.Hostname() == "127.0.0.1" || parsed.Hostname() == "localhost"))) {
-		return nil, false, errors.New("invalid Pipeline profile resolver")
+		return pipelineLLMProfileResponse{}, errors.New("invalid Pipeline profile resolver")
 	}
 	client := &http.Client{Timeout: 10 * time.Second}
 	if cfg.LocalCloudScope == "" {
 		if cfg.ProfileResolverAudience == "" {
-			return nil, false, errors.New("Pipeline profile resolver identity is unavailable")
+			return pipelineLLMProfileResponse{}, errors.New("Pipeline profile resolver identity is unavailable")
 		}
 		client, err = idtoken.NewClient(ctx, cfg.ProfileResolverAudience)
 		if err != nil {
-			return nil, false, errors.New("Pipeline profile resolver identity is unavailable")
+			return pipelineLLMProfileResponse{}, errors.New("Pipeline profile resolver identity is unavailable")
 		}
 	}
 	client.Timeout = 10 * time.Second
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	body, err := json.Marshal(pipelineLLMProfileResolverRequest{ReservationID: cfg.PipelineReservationID, UserID: cfg.UserID, ProjectID: cfg.ProjectID, IncludeCredentials: includeCredentials})
 	if err != nil {
-		return nil, false, errors.New("Pipeline profile request is invalid")
+		return pipelineLLMProfileResponse{}, errors.New("Pipeline profile request is invalid")
 	}
 	defer clear(body)
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, parsed.String(), bytes.NewReader(body))
 	if err != nil {
-		return nil, false, errors.New("Pipeline profile request is invalid")
+		return pipelineLLMProfileResponse{}, errors.New("Pipeline profile request is invalid")
 	}
 	request.Header.Set("Content-Type", "application/json")
 	response, err := client.Do(request)
 	if err != nil {
-		return nil, false, errors.New("Pipeline profile resolution failed")
+		return pipelineLLMProfileResponse{}, errors.New("Pipeline profile resolution failed")
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return nil, false, errors.New("Pipeline profile resolution failed")
+		return pipelineLLMProfileResponse{}, errors.New("Pipeline profile resolution failed")
 	}
 	raw, err := io.ReadAll(io.LimitReader(response.Body, maxPipelineProfileResponseBytes+1))
 	if err != nil || len(raw) > maxPipelineProfileResponseBytes {
 		clear(raw)
-		return nil, false, errors.New("Pipeline profile response is invalid")
+		return pipelineLLMProfileResponse{}, errors.New("Pipeline profile response is invalid")
 	}
 	defer clear(raw)
 	var envelope map[string]json.RawMessage
 	if json.Unmarshal(raw, &envelope) != nil {
-		return nil, false, errors.New("Pipeline profile response is invalid")
+		return pipelineLLMProfileResponse{}, errors.New("Pipeline profile response is invalid")
 	}
 	if _, hasVersion := envelope["schema_version"]; !hasVersion {
 		legacy, legacyErr := decodeExactBaseLegacyPipelineProfileResponse(raw)
 		if legacyErr != nil {
-			return nil, false, legacyErr
+			return pipelineLLMProfileResponse{}, legacyErr
 		}
-		return legacy.Profiles, legacy.Source == "shared", nil
+		return legacy, nil
 	}
 	var result pipelineLLMProfileResponse
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if decoder.Decode(&result) != nil || decoder.Decode(new(any)) != io.EOF {
 		clearPipelineProfileKeys(result.Profiles)
-		return nil, false, errors.New("Pipeline profile response is invalid")
+		return pipelineLLMProfileResponse{}, errors.New("Pipeline profile response is invalid")
 	}
 	if result.SchemaVersion != 2 || !validProfileSnapshotDigest(result.SnapshotDigest) || result.RoleMapVersion != 1 {
 		clearPipelineProfileKeys(result.Profiles)
-		return nil, false, errors.New("Pipeline profile snapshot is invalid")
+		return pipelineLLMProfileResponse{}, errors.New("Pipeline profile snapshot is invalid")
 	}
 	switch result.Source {
 	case "bootstrap":
 		if len(result.Profiles) != 0 {
 			clearPipelineProfileKeys(result.Profiles)
-			return nil, false, errors.New("Pipeline bootstrap profile response is invalid")
+			return pipelineLLMProfileResponse{}, errors.New("Pipeline bootstrap profile response is invalid")
 		}
-		return nil, false, nil
+		return result, nil
 	case "personal":
 		if len(result.Profiles) != 1 {
 			clearPipelineProfileKeys(result.Profiles)
-			return nil, false, errors.New("Pipeline personal profile response is invalid")
+			return pipelineLLMProfileResponse{}, errors.New("Pipeline personal profile response is invalid")
 		}
 	case "shared":
 		if len(result.Profiles) == 0 {
 			clearPipelineProfileKeys(result.Profiles)
-			return nil, false, errors.New("Pipeline shared pool is empty")
+			return pipelineLLMProfileResponse{}, errors.New("Pipeline shared pool is empty")
 		}
 	default:
 		clearPipelineProfileKeys(result.Profiles)
-		return nil, false, errors.New("Pipeline profile source is invalid")
+		return pipelineLLMProfileResponse{}, errors.New("Pipeline profile source is invalid")
 	}
 	for index := range result.Profiles {
 		profile := &result.Profiles[index]
 		if profile.SchemaVersion == 1 {
 			if profile.Model == "" || profile.Models != (pipelineLLMModels{}) || profile.SnapshotDigest != result.SnapshotDigest || profile.RoleMapVersion != result.RoleMapVersion {
 				clearPipelineProfileKeys(result.Profiles)
-				return nil, false, errors.New("legacy Pipeline profile is invalid")
+				return pipelineLLMProfileResponse{}, errors.New("legacy Pipeline profile is invalid")
 			}
 			profile.Models = pipelineLLMModels{Fast: profile.Model, Heavy: profile.Model}
 			profile.Model = ""
@@ -158,14 +170,14 @@ func resolvePipelineLLMProfilesWithCredentials(ctx context.Context, cfg workerCo
 		} else if profile.SchemaVersion != 2 || profile.SnapshotDigest != result.SnapshotDigest || profile.RoleMapVersion != result.RoleMapVersion ||
 			profile.Model != "" || profile.Models.Fast == "" || profile.Models.Heavy == "" {
 			clearPipelineProfileKeys(result.Profiles)
-			return nil, false, errors.New("Pipeline profile role models are invalid")
+			return pipelineLLMProfileResponse{}, errors.New("Pipeline profile role models are invalid")
 		}
 		if err := validatePipelineLLMProfile(*profile); err != nil {
 			clearPipelineProfileKeys(result.Profiles)
-			return nil, false, err
+			return pipelineLLMProfileResponse{}, err
 		}
 	}
-	return result.Profiles, result.Source == "shared", nil
+	return result, nil
 }
 
 // decodeExactBaseLegacyPipelineProfileResponse accepts only the wire emitted
@@ -251,13 +263,13 @@ func resolveSuggestedQueriesSource(ctx context.Context, cfg workerConfig) (worke
 	if cfg.PipelineReservationID == "" || cfg.UserID == "" || cfg.ProjectID == "" || cfg.ProfileResolverURL == "" {
 		return workerConfig{}, errors.New("Project LLM source is unavailable to suggested-query generation")
 	}
-	profiles, shared, err := resolvePipelineLLMProfiles(ctx, cfg)
+	response, err := resolvePipelineLLMProfileResponseWithCredentials(ctx, cfg, true)
 	if err != nil {
 		return workerConfig{}, errors.New("Project LLM source is unavailable to suggested-query generation")
 	}
-	cfg.ProfileCandidates = profiles
-	cfg.SharedProfilePool = shared
-	cfg.BootstrapLLMSource = len(profiles) == 0 && !shared
+	cfg.ProfileCandidates = response.Profiles
+	cfg.SharedProfilePool = response.Source == "shared"
+	cfg.BootstrapLLMSource = response.Source == "bootstrap"
 	cfg.ActiveLLMProfile = nil
 	if len(cfg.ProfileCandidates) > 0 {
 		cfg.ActiveLLMProfile = &cfg.ProfileCandidates[0]

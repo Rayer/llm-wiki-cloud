@@ -396,18 +396,19 @@ func runWorkerBatch(ctx context.Context, cfg workerConfig, rawCommands string) (
 		if cfg.ProfileResolverURL == "" {
 			return errors.New("Pipeline profile resolver is unavailable")
 		}
-		profiles, shared, resolveErr := resolvePipelineLLMProfiles(ctx, cfg)
+		profileResponse, resolveErr := resolvePipelineLLMProfileResponseWithCredentials(ctx, cfg, true)
 		if resolveErr != nil {
 			return errors.New("Project LLM source is unavailable to Pipeline")
 		}
-		cfg.ProfileCandidates, cfg.SharedProfilePool = profiles, shared
-		cfg.BootstrapLLMSource = len(profiles) == 0 && !shared
+		cfg.ProfileCandidates = profileResponse.Profiles
+		cfg.SharedProfilePool = profileResponse.Source == "shared"
+		cfg.BootstrapLLMSource = profileResponse.Source == "bootstrap"
 		defer func() {
 			for i := range cfg.ProfileCandidates {
 				clear(cfg.ProfileCandidates[i].APIKey)
 			}
 		}()
-		if shared && len(profiles) > 1 {
+		if cfg.SharedProfilePool && len(cfg.ProfileCandidates) > 1 {
 			markerDir, markerErr := os.MkdirTemp("", "lwc-profile-pool-markers-*")
 			if markerErr != nil {
 				return errors.New("Pipeline quota marker is unavailable")
