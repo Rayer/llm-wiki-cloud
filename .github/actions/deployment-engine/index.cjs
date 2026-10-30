@@ -1,6 +1,7 @@
 // A JavaScript action receives the Actions runtime artifact credentials. Child
 // processes inherit them; nothing copies credentials into logs or artifacts.
 const {spawnSync} = require('node:child_process');
+const fs = require('node:fs');
 const path = require('node:path');
 const temp = process.env.RUNNER_TEMP;
 const executorSha = process.env.EXECUTOR_SHA;
@@ -10,20 +11,29 @@ function run(command, args) {
   if (result.error || result.status !== 0) process.exit(result.status || 1);
 }
 const entry = ['deploy/engine/engine.py'];
-if (process.env.INPUT_OPERATION === 'prepare') {
-  const args=[];
-  for (const [id,dir,flag] of [[process.env.REUSE_ID,'reuse','--reuse'],[process.env.DEV_ID,'dev','--dev']]) {
-    if (!id) continue;
-    run('node',['deploy/engine/artifacts.cjs','download',id,path.join(temp,dir)]);
-    args.push(flag,path.join(temp,dir));
+function retainedDirectory(id, name) {
+  if (!id || id === '0') return null;
+  const directory=path.join(temp,name);
+  const marker=path.join(temp,`gat4-${name}-artifact-id`);
+  if (fs.existsSync(marker)) {
+    if (fs.readFileSync(marker,'utf8').trim() !== id || !fs.existsSync(directory)) process.exit(1);
+    return directory;
   }
-  if(process.env.DEV_ID) args.push('--dev-reference',process.env.DEV_ID);
-  const command=[...entry,'prepare','--directory',path.join(temp,'release'),
+  if (fs.existsSync(directory)) process.exit(1);
+  run('node',['deploy/engine/artifacts.cjs','download',id,directory]);
+  fs.writeFileSync(marker,`${id}\n`,{mode:0o600,flag:'wx'});
+  return directory;
+}
+function admissionArgs(operation, directory, reuse, dev) {
+  const args=[...entry,operation,'--directory',directory,
     '--environment',process.env.TARGET,'--source',process.env.SOURCE,
     '--components',process.env.COMPONENTS,'--tag',process.env.RELEASE_TAG,
-    '--executor-sha',executorSha,...args];
+    '--executor-sha',executorSha];
+  if (reuse) args.push('--reuse',reuse);
+  if (dev) args.push('--dev',dev);
+  if(dev) args.push('--dev-reference',process.env.DEV_ID);
   if (process.env.GAT4_RELEASE_SOURCE_MODE)
-    command.push('--release-source-mode',process.env.GAT4_RELEASE_SOURCE_MODE);
+    args.push('--release-source-mode',process.env.GAT4_RELEASE_SOURCE_MODE);
   const authSource=[
     ['--auth-repository-id',process.env.AUTH_REPOSITORY_ID],
     ['--auth-revision',process.env.AUTH_REVISION],
@@ -33,8 +43,16 @@ if (process.env.INPUT_OPERATION === 'prepare') {
     ['--auth-run-attempt',process.env.AUTH_RUN_ATTEMPT],
   ];
   if(authSource.some(([,value])=>value && value !== '0')) {
-    for(const [flag,value] of authSource) command.push(flag,value || '');
+    for(const [flag,value] of authSource) args.push(flag,value || '');
   }
+  return args;
+}
+if (process.env.INPUT_OPERATION === 'auth-preflight' || process.env.INPUT_OPERATION === 'prepare') {
+  const reuse=retainedDirectory(process.env.REUSE_ID,'reuse');
+  const dev=retainedDirectory(process.env.DEV_ID,'dev');
+  const preflight=process.env.INPUT_OPERATION === 'auth-preflight';
+  const command=admissionArgs(preflight ? 'auth-preflight' : 'prepare',
+    path.join(temp,preflight ? 'gat4-auth-preflight' : 'release'),reuse,dev);
   run('python3',command);
 } else if (process.env.INPUT_OPERATION === 'runtime') {
   const op = process.env.OPERATION === 'release' ? 'deploy' : process.env.OPERATION;
