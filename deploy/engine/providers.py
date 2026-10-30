@@ -989,18 +989,19 @@ class Providers:
                          'NOW_ORG_ID', 'NOW_PROJECT_ID'):
                 i18n_env.pop(name, None)
             i18n_env.update({
-                'TMPDIR': '/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch',
                 'GOMAXPROCS': '2',
                 'GOFLAGS': '-p=2',
             })
+            i18n_script = Path(__file__).resolve().with_name('frontend_i18n.py')
+            i18n_root = i18n_script.parents[2]
             i18n_args = [
-                'python3', ROOT / 'deploy/engine/frontend_i18n.py',
-                '--root', ROOT, '--environment', self.p['environment'],
+                'python3', i18n_script,
+                '--root', i18n_root, '--environment', self.p['environment'],
                 '--source-sha', self.plan['source'], '--output', self.directory / 'frontend-i18n',
                 '--frontend-root', project_root, '--mode', 'auto',
             ]
             i18n_output = command('frontend-i18n-prepare', i18n_args,
-                                  env=i18n_env, cwd=ROOT, timeout=1100)
+                                  env=i18n_env, cwd=i18n_root, timeout=1100)
             try:
                 i18n_summary = json.loads([line for line in i18n_output.splitlines() if line.strip()][-1])
                 bundle_revision = i18n_summary['bundle_revision']
