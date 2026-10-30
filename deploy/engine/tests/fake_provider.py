@@ -121,7 +121,9 @@ elif tool == 'gcloud':
             if s.get('unreadable'): fail=True
             elif name not in s['resources']:
                 fail=True
-                failure_message='ERROR: (gcloud.run.jobs.describe) NOT_FOUND: Job does not exist.\n'
+                failure_message=(s.get('document_import_job_describe_stderr')
+                    if kind == 'jobs' and s.get('document_import_job_describe_stderr') else
+                    'ERROR: (gcloud.run.jobs.describe) NOT_FOUND: Job does not exist.\n')
             else: out=s['resources'][name]
         elif kind == 'jobs' and op == 'create':
             if name in s['resources']:
