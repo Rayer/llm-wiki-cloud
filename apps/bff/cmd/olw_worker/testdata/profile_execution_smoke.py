@@ -24,6 +24,11 @@ def run_adapter(profile, api_key="synthetic-profile-secret", marker=None, succes
     env_keys = ("LWC_PROFILE_CONFIG", "LWC_PROFILE_API_KEY", "LWC_PROFILE_QUOTA_MARKER_PATH", "LWC_PROFILE_CALL_SUCCESS_MARKER_PATH")
     old_env = {key: os.environ.get(key) for key in env_keys}
     try:
+        if "schema_version" not in profile:
+            profile = {
+                "schema_version": 1, "snapshot_digest": "a" * 64, "role_map_version": 1,
+                **profile,
+            }
         os.environ["LWC_PROFILE_CONFIG"] = json.dumps(profile)
         os.environ["LWC_PROFILE_API_KEY"] = api_key
         if marker is None:
@@ -60,12 +65,13 @@ def restore(old_env):
 def exercise_protocol(protocol):
     anthropic = protocol == "anthropic_messages"
     profile = {
+        "schema_version": 2, "snapshot_digest": "b" * 64, "role_map_version": 1,
         "id": "fixture-anthropic" if anthropic else "fixture-openai",
         "revision": 3,
         "provider": "anthropic" if anthropic else "openai",
         "protocol": protocol,
         "endpoint": "https://api.anthropic.com" if anthropic else "https://api.openai.com/v1",
-        "model": "fixture-model",
+        "models": {"fast": "fixture-fast-model", "heavy": "fixture-heavy-model"},
     }
     marker_dir = tempfile.TemporaryDirectory(prefix="lwc-profile-call-")
     success_marker = Path(marker_dir.name) / "success.marker"
@@ -82,14 +88,15 @@ def exercise_protocol(protocol):
             seen.append(request)
             if request.method == "GET":
                 return httpx.Response(200, json={"object": "list", "data": []})
+            requested_model = json.loads(request.content)["model"]
             if anthropic:
                 return httpx.Response(200, json={
-                    "id": "msg_fixture", "model": profile["model"],
+                    "id": "msg_fixture", "model": requested_model,
                     "content": [{"type": "text", "text": "fixture answer"}],
                     "stop_reason": "end_turn", "usage": {"input_tokens": 2, "output_tokens": 3},
                 })
             return httpx.Response(200, json={
-                "id": "chat_fixture", "model": profile["model"],
+                "id": "chat_fixture", "model": requested_model,
                 "choices": [{"message": {"content": "fixture answer"}, "finish_reason": "stop"}],
                 "usage": {"prompt_tokens": 2, "completion_tokens": 3},
             })
@@ -113,10 +120,17 @@ def exercise_protocol(protocol):
         else:
             assert request.url.path == "/v1/chat/completions", request.url
             assert request.headers.get("authorization") == "Bearer synthetic-openai-secret", list(request.headers.keys())
-        assert payload["model"] == profile["model"]
+        assert payload["model"] == profile["models"]["heavy"]
         assert payload["messages"][0]["content"] == "Synthetic profile protocol probe"
+        fast = router.endpoint("fast")
+        fast.client.require_healthy()
+        fast_answer = fast.client.generate("Synthetic fast role probe", model=fast.model, options=fast.options)
+        assert fast_answer == "fixture answer"
+        fast_payload = json.loads(seen[3].content)
+        assert fast_payload["model"] == profile["models"]["fast"]
+        assert seen[3].method == "POST" and seen[3].url.path == seen[1].url.path
         router.close()
-        print(f"PASS pinned Synto Project profile: {protocol} -> {request.url.path}")
+        print(f"PASS pinned Synto Project profile: {protocol} fast/heavy roles -> {fast_payload['model']}/{payload['model']}")
     finally:
         restore(old_env)
         marker_dir.cleanup()

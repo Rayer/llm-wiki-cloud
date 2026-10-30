@@ -80,13 +80,13 @@ beforeEach(() => {
   mocks.confirmNavigation.mockReturnValue(true);
   mocks.createLLMProfile.mockReset().mockResolvedValue({
     id: 'created-profile', name: 'New custom provider', provider: 'custom', protocol: 'openai_chat_completions',
-    endpoint: 'https://fixture.example/v1', model: 'fixture-model', revision: 1, secret_configured: false,
+    endpoint: 'https://fixture.example/v1', models: { fast: 'fixture-model', heavy: 'fixture-model' }, model: 'fixture-model', revision: 1, secret_configured: false,
   });
   mocks.getProfile.mockResolvedValue(emptyProfile('project-new'));
   mocks.getProjectLLMBinding.mockResolvedValue({ source: 'shared', revision: 1 });
   mocks.listLLMProfiles.mockResolvedValue([{
     id: 'provider-1', name: 'Private provider', provider: 'custom', protocol: 'openai_chat_completions',
-    endpoint: 'https://fixture.example/v1', model: 'fixture-model', revision: 1, secret_configured: true,
+    endpoint: 'https://fixture.example/v1', models: { fast: 'fixture-model', heavy: 'fixture-model' }, model: 'fixture-model', revision: 1, secret_configured: true,
   }]);
   mocks.saveProjectLLMBinding.mockReset().mockResolvedValue({ source: 'personal', profile_id: 'created-profile', revision: 2 });
   mocks.markProfileOnboardingPresented.mockReturnValue(true);
@@ -156,7 +156,8 @@ describe('LWC-406 optional Profile onboarding', () => {
     expect(within(accountSettingsDialog).getByRole('tab', { name: 'LLM Provider' }).getAttribute('aria-selected')).toBe('true');
     fireEvent.change(screen.getByRole('combobox', { name: 'Provider' }), { target: { value: 'custom' } });
     fireEvent.change(screen.getByRole('textbox', { name: 'Provider name' }), { target: { value: 'New custom provider' } });
-    fireEvent.change(screen.getByRole('textbox', { name: /Model Enter the model name/ }), { target: { value: 'fixture-model' } });
+    fireEvent.change(screen.getByLabelText('Fast model'), { target: { value: 'fixture-model' } });
+    fireEvent.change(screen.getByLabelText('Heavy model'), { target: { value: 'fixture-model' } });
     fireEvent.click(screen.getByRole('button', { name: 'Add provider' }));
 
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Account settings' })).toBeNull());

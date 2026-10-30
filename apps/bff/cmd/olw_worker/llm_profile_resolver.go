@@ -22,19 +22,29 @@ const maxPipelineProfileResponseBytes = 1 << 20
 const maxPipelineProfileAttempts = 32
 
 type pipelineLLMProfile struct {
-	ID       string       `json:"id"`
-	Revision int64        `json:"revision"`
-	Provider string       `json:"provider"`
-	Protocol llm.Protocol `json:"protocol"`
-	Endpoint string       `json:"endpoint"`
-	Model    string       `json:"model"`
-	APIKey   []byte       `json:"api_key,omitempty"`
+	SchemaVersion  int               `json:"schema_version"`
+	SnapshotDigest string            `json:"snapshot_digest"`
+	RoleMapVersion int               `json:"role_map_version"`
+	ID             string            `json:"id"`
+	Revision       int64             `json:"revision"`
+	Provider       string            `json:"provider"`
+	Protocol       llm.Protocol      `json:"protocol"`
+	Endpoint       string            `json:"endpoint"`
+	Model          string            `json:"model,omitempty"`
+	Models         pipelineLLMModels `json:"models,omitempty"`
+	APIKey         []byte            `json:"api_key,omitempty"`
+}
+
+type pipelineLLMModels struct {
+	Fast  string `json:"fast"`
+	Heavy string `json:"heavy"`
 }
 
 type pipelineLLMProfileResolverRequest struct {
-	ReservationID string `json:"reservation_id"`
-	UserID        string `json:"user_id"`
-	ProjectID     string `json:"project_id"`
+	ReservationID      string `json:"reservation_id"`
+	UserID             string `json:"user_id"`
+	ProjectID          string `json:"project_id"`
+	IncludeCredentials bool   `json:"include_credentials"`
 }
 
 func resolvePipelineLLMProfiles(ctx context.Context, cfg workerConfig) ([]pipelineLLMProfile, bool, error) {
@@ -56,7 +66,7 @@ func resolvePipelineLLMProfiles(ctx context.Context, cfg workerConfig) ([]pipeli
 	}
 	client.Timeout = 10 * time.Second
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	body, err := json.Marshal(pipelineLLMProfileResolverRequest{ReservationID: cfg.PipelineReservationID, UserID: cfg.UserID, ProjectID: cfg.ProjectID})
+	body, err := json.Marshal(pipelineLLMProfileResolverRequest{ReservationID: cfg.PipelineReservationID, UserID: cfg.UserID, ProjectID: cfg.ProjectID, IncludeCredentials: true})
 	if err != nil {
 		return nil, false, errors.New("Pipeline profile request is invalid")
 	}
@@ -81,14 +91,21 @@ func resolvePipelineLLMProfiles(ctx context.Context, cfg workerConfig) ([]pipeli
 	}
 	defer clear(raw)
 	var result struct {
-		Source   string               `json:"source"`
-		Profiles []pipelineLLMProfile `json:"profiles"`
+		SchemaVersion  int                  `json:"schema_version"`
+		SnapshotDigest string               `json:"snapshot_digest"`
+		RoleMapVersion int                  `json:"role_map_version"`
+		Source         string               `json:"source"`
+		Profiles       []pipelineLLMProfile `json:"profiles"`
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if decoder.Decode(&result) != nil || decoder.Decode(new(any)) != io.EOF {
 		clearPipelineProfileKeys(result.Profiles)
 		return nil, false, errors.New("Pipeline profile response is invalid")
+	}
+	if result.SchemaVersion != 2 || !validProfileSnapshotDigest(result.SnapshotDigest) || result.RoleMapVersion != 1 {
+		clearPipelineProfileKeys(result.Profiles)
+		return nil, false, errors.New("Pipeline profile snapshot is invalid")
 	}
 	switch result.Source {
 	case "bootstrap":
@@ -111,13 +128,39 @@ func resolvePipelineLLMProfiles(ctx context.Context, cfg workerConfig) ([]pipeli
 		clearPipelineProfileKeys(result.Profiles)
 		return nil, false, errors.New("Pipeline profile source is invalid")
 	}
-	for _, profile := range result.Profiles {
-		if err := validatePipelineLLMProfile(profile); err != nil {
+	for index := range result.Profiles {
+		profile := &result.Profiles[index]
+		if profile.SchemaVersion == 1 {
+			if profile.Model == "" || profile.Models != (pipelineLLMModels{}) || profile.SnapshotDigest != result.SnapshotDigest || profile.RoleMapVersion != result.RoleMapVersion {
+				clearPipelineProfileKeys(result.Profiles)
+				return nil, false, errors.New("legacy Pipeline profile is invalid")
+			}
+			profile.Models = pipelineLLMModels{Fast: profile.Model, Heavy: profile.Model}
+			profile.Model = ""
+			profile.SchemaVersion = 2
+		} else if profile.SchemaVersion != 2 || profile.SnapshotDigest != result.SnapshotDigest || profile.RoleMapVersion != result.RoleMapVersion ||
+			profile.Model != "" || profile.Models.Fast == "" || profile.Models.Heavy == "" {
+			clearPipelineProfileKeys(result.Profiles)
+			return nil, false, errors.New("Pipeline profile role models are invalid")
+		}
+		if err := validatePipelineLLMProfile(*profile); err != nil {
 			clearPipelineProfileKeys(result.Profiles)
 			return nil, false, err
 		}
 	}
 	return result.Profiles, result.Source == "shared", nil
+}
+
+func validProfileSnapshotDigest(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	for _, char := range value {
+		if !(char >= '0' && char <= '9') && !(char >= 'a' && char <= 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // resolveSuggestedQueriesSource resolves the Project-bound source before any
@@ -143,13 +186,23 @@ func resolveSuggestedQueriesSource(ctx context.Context, cfg workerConfig) (worke
 }
 
 func validatePipelineLLMProfile(profile pipelineLLMProfile) error {
-	client, err := llm.NewProfileClient(llm.ProfileConfig{ID: profile.ID, Revision: profile.Revision, Provider: profile.Provider,
-		Protocol: profile.Protocol, Endpoint: profile.Endpoint, Model: profile.Model}, string(profile.APIKey), llm.ProfileClientOptions{Timeout: 10 * time.Second})
-	if err != nil {
-		return errors.New("Pipeline profile configuration is invalid")
+	models := normalizePipelineLLMModels(profile)
+	for role, model := range map[llm.ProfileRole]string{llm.ProfileRoleFast: models.Fast, llm.ProfileRoleHeavy: models.Heavy} {
+		client, err := llm.NewProfileClient(llm.ProfileConfig{ID: profile.ID, Revision: profile.Revision, Role: role, Provider: profile.Provider,
+			Protocol: profile.Protocol, Endpoint: profile.Endpoint, Model: model}, string(profile.APIKey), llm.ProfileClientOptions{Timeout: 10 * time.Second})
+		if err != nil {
+			return errors.New("Pipeline profile configuration is invalid")
+		}
+		client.Close()
 	}
-	client.Close()
 	return nil
+}
+
+func normalizePipelineLLMModels(profile pipelineLLMProfile) pipelineLLMModels {
+	if profile.Models.Fast != "" && profile.Models.Heavy != "" {
+		return profile.Models
+	}
+	return pipelineLLMModels{Fast: profile.Model, Heavy: profile.Model}
 }
 
 func clearPipelineProfileKeys(profiles []pipelineLLMProfile) {
@@ -190,18 +243,9 @@ func runWorkerBatchAtVaultWithProfilePool(ctx context.Context, cfg workerConfig,
 		if attempt+1 >= maxPipelineProfileAttempts {
 			return workspace, errors.Join(err, errors.New("shared Pipeline profile attempt limit reached"))
 		}
-		if cfg.ProfileResolverURL != "" && cfg.PipelineReservationID != "" {
-			fresh, shared, resolveErr := resolvePipelineLLMProfiles(ctx, cfg)
-			if resolveErr != nil {
-				return workspace, errors.Join(err, errors.New("shared Pipeline fallback eligibility could not be revalidated"))
-			}
-			if !shared {
-				clearPipelineProfileKeys(fresh)
-				return workspace, errors.Join(err, errors.New("Project LLM source changed during shared Pipeline execution"))
-			}
-			clearPipelineProfileKeys(profiles)
-			profiles = fresh
-		}
+		// The resolver response pins the binding, shared pool and profile revisions
+		// for this reservation. Keep this immutable candidate set for pre-work
+		// quota fallback; a resumed worker resolves the same reservation again.
 		index = -1
 		for candidateIndex := range profiles {
 			if _, alreadyAttempted := attempted[profiles[candidateIndex].ID]; !alreadyAttempted {

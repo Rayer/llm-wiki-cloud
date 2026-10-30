@@ -277,6 +277,8 @@ func TestTrialDemoRestrictionCoversProfileAndExportForExactUserIDs(t *testing.T)
 
 	for _, route := range []struct{ method, path string }{
 		{http.MethodPost, "/api/v1/llm/profiles"},
+		{http.MethodPost, "/api/v1/llm/profiles/discover-models"},
+		{http.MethodPost, "/api/v1/llm/profiles/test-message"},
 		{http.MethodPut, "/api/v1/llm/profiles/profile-a"},
 		{http.MethodDelete, "/api/v1/llm/profiles/profile-a"},
 		{http.MethodGet, "/api/v1/projects/project-a/profile"},

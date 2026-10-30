@@ -67,6 +67,8 @@ export type LLMProfile = {
   provider: 'openai' | 'xai' | 'anthropic' | 'custom';
   protocol: 'openai_chat_completions' | 'anthropic_messages';
   endpoint: string;
+  models: LLMProfileModels;
+  /** Legacy read-only alias for the Heavy role. */
   model: string;
   revision: number;
   secret_configured: boolean;
@@ -76,6 +78,8 @@ export type LLMProfile = {
   available_to_public?: boolean;
   priority?: number;
 };
+
+export type LLMProfileModels = { fast: string; heavy: string };
 
 export type ProjectLLMBinding = {
   source: 'shared' | 'personal';
@@ -89,6 +93,8 @@ export type LLMProfileInput = {
   provider: LLMProfile['provider'];
   protocol: LLMProfile['protocol'];
   endpoint: string;
+  models: LLMProfileModels;
+  /** Legacy compatibility alias; must equal models.heavy. */
   model: string;
   api_key?: string;
   credential_reference?: string;
@@ -98,6 +104,21 @@ export type LLMProfileInput = {
   available_to_public?: boolean;
   priority?: number;
 };
+
+export type LLMProfileOperationInput = {
+  profile_id?: string;
+  revision?: number;
+  provider: LLMProfile['provider'];
+  protocol: LLMProfile['protocol'];
+  endpoint: string;
+  models: LLMProfileModels;
+  role: 'fast' | 'heavy';
+  api_key?: string;
+  credential_reference?: string;
+};
+
+export type LLMProfileDiscoveryResult = { ok: true; role: 'fast' | 'heavy'; models: string[] };
+export type LLMProfileTestResult = { ok: true; role: 'fast' | 'heavy'; model: string; returned_model?: string; text: string };
 
 export type WikiEntry = {
   slug: string;
@@ -569,6 +590,14 @@ export async function deleteLLMProfile(profileId: string): Promise<void> {
   await llmProfileRequest<void>(`/api/v1/llm/profiles/${encodeURIComponent(profileId)}`, { method: 'DELETE' });
 }
 
+export async function discoverLLMProfileModels(input: LLMProfileOperationInput): Promise<LLMProfileDiscoveryResult> {
+  return llmProfileRequest<LLMProfileDiscoveryResult>('/api/v1/llm/profiles/discover-models', { method: 'POST', body: input });
+}
+
+export async function testLLMProfileMessage(input: LLMProfileOperationInput): Promise<LLMProfileTestResult> {
+  return llmProfileRequest<LLMProfileTestResult>('/api/v1/llm/profiles/test-message', { method: 'POST', body: input });
+}
+
 export type DeploymentLLMCredentialReference = { reference: string; label: string };
 export type AdminLLMProfiles = {
   profiles: LLMProfile[];
@@ -593,6 +622,14 @@ export async function updateAdminLLMProfile(profileId: string, input: LLMProfile
 
 export async function deleteAdminLLMProfile(profileId: string): Promise<void> {
   await llmProfileRequest<void>(`/api/v1/admin/llm/profiles/${encodeURIComponent(profileId)}`, { method: 'DELETE' });
+}
+
+export async function discoverAdminLLMProfileModels(input: LLMProfileOperationInput): Promise<LLMProfileDiscoveryResult> {
+  return llmProfileRequest<LLMProfileDiscoveryResult>('/api/v1/admin/llm/profiles/discover-models', { method: 'POST', body: input });
+}
+
+export async function testAdminLLMProfileMessage(input: LLMProfileOperationInput): Promise<LLMProfileTestResult> {
+  return llmProfileRequest<LLMProfileTestResult>('/api/v1/admin/llm/profiles/test-message', { method: 'POST', body: input });
 }
 
 export async function getProjectLLMBinding(projectId: string): Promise<ProjectLLMBinding> {

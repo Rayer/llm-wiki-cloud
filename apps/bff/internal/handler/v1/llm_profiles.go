@@ -31,7 +31,13 @@ const (
 	userLLMProfilesCollection    = "llm_profiles"
 	sharedLLMProfilesCollection  = "llm_shared_profiles"
 	sharedLLMPoolStateCollection = "llm_shared_profile_state"
+	profileRevisionCollection    = "revisions"
 )
+
+type llmProfileModels struct {
+	Fast  string `firestore:"fast" json:"fast"`
+	Heavy string `firestore:"heavy" json:"heavy"`
+}
 
 type sharedLLMPoolState struct {
 	Initialized bool      `firestore:"initialized"`
@@ -50,55 +56,58 @@ type deploymentCredentialOption struct {
 }
 
 type llmProfileDocument struct {
-	ID                  string    `firestore:"id"`
-	OwnerID             string    `firestore:"owner_id"`
-	Name                string    `firestore:"name"`
-	Provider            string    `firestore:"provider"`
-	Protocol            string    `firestore:"protocol"`
-	Endpoint            string    `firestore:"endpoint"`
-	Model               string    `firestore:"model"`
-	Revision            int64     `firestore:"revision"`
-	CredentialRevision  int64     `firestore:"credential_revision"`
-	CredentialOrigin    string    `firestore:"credential_origin"`
-	CredentialReference string    `firestore:"credential_reference"`
-	EncryptedAPIKey     string    `firestore:"encrypted_api_key"`
-	SecretConfigured    bool      `firestore:"secret_configured"`
-	Enabled             bool      `firestore:"enabled"`
-	Public              bool      `firestore:"public"`
-	Priority            int       `firestore:"priority"`
-	BoundProjects       []string  `firestore:"bound_projects"`
-	UpdatedAt           time.Time `firestore:"updated_at"`
+	ID                  string           `firestore:"id"`
+	OwnerID             string           `firestore:"owner_id"`
+	Name                string           `firestore:"name"`
+	Provider            string           `firestore:"provider"`
+	Protocol            string           `firestore:"protocol"`
+	Endpoint            string           `firestore:"endpoint"`
+	Model               string           `firestore:"model"`
+	Models              llmProfileModels `firestore:"models,omitempty"`
+	Revision            int64            `firestore:"revision"`
+	CredentialRevision  int64            `firestore:"credential_revision"`
+	CredentialOrigin    string           `firestore:"credential_origin"`
+	CredentialReference string           `firestore:"credential_reference"`
+	EncryptedAPIKey     string           `firestore:"encrypted_api_key"`
+	SecretConfigured    bool             `firestore:"secret_configured"`
+	Enabled             bool             `firestore:"enabled"`
+	Public              bool             `firestore:"public"`
+	Priority            int              `firestore:"priority"`
+	BoundProjects       []string         `firestore:"bound_projects"`
+	UpdatedAt           time.Time        `firestore:"updated_at"`
 }
 
 type llmProfileView struct {
-	ID                  string `json:"id"`
-	Name                string `json:"name"`
-	Provider            string `json:"provider"`
-	Protocol            string `json:"protocol"`
-	Endpoint            string `json:"endpoint"`
-	Model               string `json:"model"`
-	Revision            int64  `json:"revision"`
-	SecretConfigured    bool   `json:"secret_configured"`
-	CredentialOrigin    string `json:"credential_origin,omitempty"`
-	CredentialReference string `json:"credential_reference,omitempty"`
-	Enabled             bool   `json:"enabled,omitempty"`
-	Public              bool   `json:"available_to_public,omitempty"`
-	Priority            int    `json:"priority,omitempty"`
+	ID                  string           `json:"id"`
+	Name                string           `json:"name"`
+	Provider            string           `json:"provider"`
+	Protocol            string           `json:"protocol"`
+	Endpoint            string           `json:"endpoint"`
+	Model               string           `json:"model"`
+	Models              llmProfileModels `json:"models"`
+	Revision            int64            `json:"revision"`
+	SecretConfigured    bool             `json:"secret_configured"`
+	CredentialOrigin    string           `json:"credential_origin,omitempty"`
+	CredentialReference string           `json:"credential_reference,omitempty"`
+	Enabled             bool             `json:"enabled,omitempty"`
+	Public              bool             `json:"available_to_public,omitempty"`
+	Priority            int              `json:"priority,omitempty"`
 }
 
 type llmProfileInput struct {
-	Name                string `json:"name"`
-	Provider            string `json:"provider"`
-	Protocol            string `json:"protocol"`
-	Endpoint            string `json:"endpoint"`
-	Model               string `json:"model"`
-	APIKey              string `json:"api_key,omitempty"`
-	CredentialReference string `json:"credential_reference,omitempty"`
-	ClearAPIKey         bool   `json:"clear_api_key,omitempty"`
-	Revision            int64  `json:"revision"`
-	Enabled             *bool  `json:"enabled,omitempty"`
-	Public              *bool  `json:"available_to_public,omitempty"`
-	Priority            *int   `json:"priority,omitempty"`
+	Name                string          `json:"name"`
+	Provider            string          `json:"provider"`
+	Protocol            string          `json:"protocol"`
+	Endpoint            string          `json:"endpoint"`
+	Model               string          `json:"model"`
+	Models              json.RawMessage `json:"models"`
+	APIKey              string          `json:"api_key,omitempty"`
+	CredentialReference string          `json:"credential_reference,omitempty"`
+	ClearAPIKey         bool            `json:"clear_api_key,omitempty"`
+	Revision            int64           `json:"revision"`
+	Enabled             *bool           `json:"enabled,omitempty"`
+	Public              *bool           `json:"available_to_public,omitempty"`
+	Priority            *int            `json:"priority,omitempty"`
 }
 
 type llmBindingInput struct {
@@ -115,19 +124,24 @@ type llmBindingView struct {
 }
 
 type pipelineLLMProfile struct {
-	ID       string       `json:"id"`
-	Revision int64        `json:"revision"`
-	Provider string       `json:"provider"`
-	Protocol llm.Protocol `json:"protocol"`
-	Endpoint string       `json:"endpoint"`
-	Model    string       `json:"model"`
-	APIKey   []byte       `json:"api_key,omitempty"`
+	SchemaVersion  int              `json:"schema_version"`
+	SnapshotDigest string           `json:"snapshot_digest"`
+	RoleMapVersion int              `json:"role_map_version"`
+	ID             string           `json:"id"`
+	Revision       int64            `json:"revision"`
+	Provider       string           `json:"provider"`
+	Protocol       llm.Protocol     `json:"protocol"`
+	Endpoint       string           `json:"endpoint"`
+	Model          string           `json:"model,omitempty"`
+	Models         llmProfileModels `json:"models,omitempty"`
+	APIKey         []byte           `json:"api_key,omitempty"`
 }
 
 type pipelineLLMProfileRequest struct {
-	ReservationID string `json:"reservation_id"`
-	UserID        string `json:"user_id"`
-	ProjectID     string `json:"project_id"`
+	ReservationID      string `json:"reservation_id"`
+	UserID             string `json:"user_id"`
+	ProjectID          string `json:"project_id"`
+	IncludeCredentials bool   `json:"include_credentials"`
 }
 
 func (h *Handler) SetBYOKCredentialBox(box *byok.CredentialBox) { h.byokCredentialBox = box }
@@ -194,7 +208,7 @@ func (h *Handler) PipelineLLMProfile(c *gin.Context) {
 		}
 	}
 	var request pipelineLLMProfileRequest
-	bindErr := c.ShouldBindJSON(&request)
+	bindErr := decodeStrictLLMJSON(c, maxLLMProfileRequestBytes, &request)
 	reservationValid := auth.ValidPathSegment(request.ReservationID)
 	userValid := auth.ValidPathSegment(request.UserID)
 	projectValid := auth.ValidPathSegment(request.ProjectID)
@@ -222,7 +236,7 @@ func (h *Handler) PipelineLLMProfile(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Project profile resolution is not authorized"})
 		return
 	}
-	source, profiles, err := h.resolvePipelineLLMProfiles(c.Request.Context(), request.UserID, request.ProjectID)
+	source, profiles, snapshot, err := h.resolvePipelineProfileOperationWire(c.Request.Context(), request.ReservationID, request.UserID, request.ProjectID, request.IncludeCredentials)
 	if err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Project LLM source is unavailable"})
 		return
@@ -237,14 +251,18 @@ func (h *Handler) PipelineLLMProfile(c *gin.Context) {
 			attribute.Int64("llm.profile.revision", profiles[0].Revision),
 			attribute.String("llm.provider", profiles[0].Provider),
 			attribute.String("llm.protocol", string(profiles[0].Protocol)),
-			attribute.String("llm.model", profiles[0].Model),
+			attribute.String("llm.model.fast", profiles[0].Models.Fast),
+			attribute.String("llm.model.heavy", profiles[0].Models.Heavy),
 		)
 	}
 	trace.SpanFromContext(c.Request.Context()).SetAttributes(attrs...)
 	response := struct {
-		Source   string               `json:"source"`
-		Profiles []pipelineLLMProfile `json:"profiles"`
-	}{Source: source, Profiles: profiles}
+		SchemaVersion  int                  `json:"schema_version"`
+		SnapshotDigest string               `json:"snapshot_digest"`
+		RoleMapVersion int                  `json:"role_map_version"`
+		Source         string               `json:"source"`
+		Profiles       []pipelineLLMProfile `json:"profiles"`
+	}{SchemaVersion: 2, SnapshotDigest: snapshot.ConfigDigest, RoleMapVersion: snapshot.RoleMapVersion, Source: source, Profiles: profiles}
 	body, err := json.Marshal(response)
 	if err != nil {
 		for i := range profiles {
@@ -349,12 +367,16 @@ func (h *Handler) pipelineProfileForRecord(record llmProfileDocument, owner stri
 	if h.byokCredentialBox == nil {
 		return pipelineLLMProfile{}, errLLMProfileUnavailable
 	}
+	models, ok := llmProfileRoleModels(record)
+	if !ok {
+		return pipelineLLMProfile{}, errLLMProfileUnavailable
+	}
 	key, err := h.profileCredential(record, owner)
 	if err != nil {
 		return pipelineLLMProfile{}, errLLMProfileUnavailable
 	}
-	return pipelineLLMProfile{ID: record.ID, Revision: record.Revision, Provider: record.Provider,
-		Protocol: llm.Protocol(record.Protocol), Endpoint: record.Endpoint, Model: record.Model, APIKey: key}, nil
+	return pipelineLLMProfile{SchemaVersion: 2, ID: record.ID, Revision: record.Revision, Provider: record.Provider,
+		Protocol: llm.Protocol(record.Protocol), Endpoint: record.Endpoint, Models: models, APIKey: key}, nil
 }
 
 func (h *Handler) profileCredential(record llmProfileDocument, owner string) ([]byte, error) {
@@ -404,6 +426,9 @@ func (h *Handler) UserLLMProfiles(c *gin.Context) {
 	for _, doc := range docs {
 		var record llmProfileDocument
 		if doc.DataTo(&record) == nil && record.OwnerID == owner {
+			if _, ok := llmProfileRoleModels(record); !ok {
+				continue
+			}
 			profiles = append(profiles, viewLLMProfile(record, false))
 		}
 	}
@@ -436,6 +461,9 @@ func (h *Handler) AdminLLMProfiles(c *gin.Context) {
 	for _, doc := range docs {
 		var record llmProfileDocument
 		if doc.DataTo(&record) == nil {
+			if _, ok := llmProfileRoleModels(record); !ok {
+				continue
+			}
 			profiles = append(profiles, viewLLMProfile(record, true))
 		}
 	}
@@ -598,7 +626,7 @@ func (h *Handler) createLLMProfile(c *gin.Context, shared bool) {
 		return
 	}
 	var input llmProfileInput
-	if err := c.ShouldBindJSON(&input); err != nil {
+	if err := decodeLLMProfileJSON(c, &input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid LLM profile"})
 		return
 	}
@@ -613,16 +641,18 @@ func (h *Handler) createLLMProfile(c *gin.Context, shared bool) {
 		return
 	}
 	ref := h.llmProfileRef(owner, profileID, shared)
-	if shared {
-		err = h.firestore.Raw().RunTransaction(c.Request.Context(), func(ctx context.Context, tx *cloudfirestore.Transaction) error {
-			if err := tx.Create(ref, record); err != nil {
-				return err
-			}
+	err = h.firestore.Raw().RunTransaction(c.Request.Context(), func(ctx context.Context, tx *cloudfirestore.Transaction) error {
+		if err := tx.Create(ref, record); err != nil {
+			return err
+		}
+		if err := tx.Create(profileRevisionRef(ref, record.Revision), record); err != nil {
+			return err
+		}
+		if shared {
 			return tx.Set(h.sharedLLMPoolStateRef(), sharedLLMPoolState{Initialized: true, UpdatedAt: time.Now().UTC()})
-		})
-	} else {
-		_, err = ref.Create(c.Request.Context(), record)
-	}
+		}
+		return nil
+	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not save LLM profile"})
 		return
@@ -647,7 +677,7 @@ func (h *Handler) updateLLMProfile(c *gin.Context, shared bool) {
 		return
 	}
 	var input llmProfileInput
-	if err := c.ShouldBindJSON(&input); err != nil || input.Revision < 1 {
+	if err := decodeLLMProfileJSON(c, &input); err != nil || input.Revision < 1 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid LLM profile update"})
 		return
 	}
@@ -672,6 +702,9 @@ func (h *Handler) updateLLMProfile(c *gin.Context, shared bool) {
 		updated.BoundProjects = current.BoundProjects
 		next = updated
 		if err := tx.Set(ref, updated); err != nil {
+			return err
+		}
+		if err := tx.Create(profileRevisionRef(ref, updated.Revision), updated); err != nil {
 			return err
 		}
 		if shared {
@@ -732,11 +765,14 @@ func (h *Handler) deleteLLMProfile(c *gin.Context, shared bool) {
 
 func (h *Handler) buildLLMProfile(owner, profileID string, input llmProfileInput, current *llmProfileDocument, shared bool) (llmProfileDocument, error) {
 	name := strings.TrimSpace(input.Name)
-	model := strings.TrimSpace(input.Model)
+	models, err := profileInputModels(input, current)
+	if err != nil {
+		return llmProfileDocument{}, err
+	}
 	provider := strings.ToLower(strings.TrimSpace(input.Provider))
 	protocol := llm.Protocol(strings.TrimSpace(input.Protocol))
 	endpoint := strings.TrimSpace(input.Endpoint)
-	if len(name) < 1 || len(name) > 100 || len(model) < 1 || len(model) > 200 {
+	if len(name) < 1 || len(name) > 100 {
 		return llmProfileDocument{}, errLLMProfileInvalid
 	}
 	if endpoint == "" {
@@ -788,7 +824,7 @@ func (h *Handler) buildLLMProfile(owner, profileID string, input llmProfileInput
 	if provider != "custom" && key == "" && !input.ClearAPIKey && (current == nil || !current.SecretConfigured) {
 		return llmProfileDocument{}, errLLMProfileKeyRequired
 	}
-	resolved := llm.ProfileConfig{ID: profileID, Revision: maxInt64(1, input.Revision+1), Provider: provider, Protocol: protocol, Endpoint: endpoint, Model: model}
+	resolved := llm.ProfileConfig{ID: profileID, Revision: maxInt64(1, input.Revision+1), Role: llm.ProfileRoleHeavy, Provider: provider, Protocol: protocol, Endpoint: endpoint, Model: models.Heavy}
 	validationKey := key
 	if validationKey == "" && current != nil && current.SecretConfigured && !input.ClearAPIKey {
 		// Validate the nonsecret settings without decrypting or replacing the
@@ -799,6 +835,13 @@ func (h *Handler) buildLLMProfile(owner, profileID string, input llmProfileInput
 		validationKey = "configured-secret-placeholder"
 	}
 	validator, err := llm.NewProfileClient(resolved, validationKey, llm.ProfileClientOptions{})
+	if err != nil {
+		return llmProfileDocument{}, errLLMProfileInvalid
+	}
+	validator.Close()
+	fastValidator := resolved
+	fastValidator.Role, fastValidator.Model = llm.ProfileRoleFast, models.Fast
+	validator, err = llm.NewProfileClient(fastValidator, validationKey, llm.ProfileClientOptions{})
 	if err != nil {
 		return llmProfileDocument{}, errLLMProfileInvalid
 	}
@@ -855,7 +898,7 @@ func (h *Handler) buildLLMProfile(owner, profileID string, input llmProfileInput
 	if priority < 0 || priority > 100000 {
 		return llmProfileDocument{}, errLLMProfileInvalid
 	}
-	return llmProfileDocument{ID: profileID, OwnerID: owner, Name: name, Provider: provider, Protocol: string(protocol), Endpoint: endpoint, Model: model,
+	return llmProfileDocument{ID: profileID, OwnerID: owner, Name: name, Provider: provider, Protocol: string(protocol), Endpoint: endpoint, Model: models.Heavy, Models: models,
 		Revision: revision, CredentialRevision: credentialRevision, CredentialOrigin: credentialOrigin, CredentialReference: credentialReference,
 		EncryptedAPIKey: ciphertext, SecretConfigured: secretConfigured, Enabled: enabled, Public: public, Priority: priority, UpdatedAt: time.Now().UTC()}, nil
 }
@@ -921,93 +964,89 @@ func (h *Handler) resolveProjectLLMProfile(ctx context.Context, owner, project s
 	}
 	defer clear(keyBytes)
 	key := string(keyBytes)
-	return llm.ProfileConfig{ID: record.ID, Revision: record.Revision, Provider: record.Provider, Protocol: llm.Protocol(record.Protocol), Endpoint: record.Endpoint, Model: record.Model}, key, nil
+	models, ok := llmProfileRoleModels(record)
+	if !ok {
+		return llm.ProfileConfig{}, "", errLLMProfileUnavailable
+	}
+	return llm.ProfileConfig{ID: record.ID, Revision: record.Revision, Role: llm.ProfileRoleHeavy, Provider: record.Provider, Protocol: llm.Protocol(record.Protocol), Endpoint: record.Endpoint, Model: models.Heavy}, key, nil
 }
 
 func (h *Handler) projectLLMClient(ctx context.Context, owner, project string) (llm.ProjectChatClient, string, error) {
+	clients, source, err := h.projectLLMRoleClients(ctx, owner, project)
+	return clients.Fast, source, err
+}
+
+func (h *Handler) projectLLMRoleClients(ctx context.Context, owner, project string) (llm.ProjectRoleClients, string, error) {
 	if h.firestore == nil || h.firestore.Raw() == nil {
-		return nil, "bootstrap", nil
+		return llm.ProjectRoleClients{}, "bootstrap", nil
 	}
-	if _, err := h.AuthorizeProject(ctx, owner, project, ProjectRead); err != nil {
-		return nil, "", err
+	var operation llm.OperationProfileSnapshot
+	err := h.firestore.Raw().RunTransaction(ctx, func(ctx context.Context, tx *cloudfirestore.Transaction) error {
+		var captureErr error
+		operation, captureErr = h.captureProfileOperationSnapshotTx(ctx, tx, owner, project, ProjectRead)
+		return captureErr
+	})
+	if err != nil {
+		return llm.ProjectRoleClients{}, "", err
 	}
-	bindingSnapshot, err := h.projectLLMBindingRef(owner, project).Get(ctx)
-	source := "shared"
-	var binding llmBindingView
-	if status.Code(err) != codes.NotFound {
-		if err != nil {
-			return nil, "", err
-		}
-		if err := bindingSnapshot.DataTo(&binding); err != nil {
-			return nil, "", errLLMProfileUnavailable
-		}
-		source = h.effectiveProjectLLMSource(owner, binding.Source)
+	if operation.Source == "bootstrap" {
+		return llm.ProjectRoleClients{}, "bootstrap", nil
+	}
+	profiles, err := h.profileRecordsForOperationSnapshot(ctx, owner, operation)
+	if err != nil {
+		return llm.ProjectRoleClients{}, operation.Source, err
+	}
+	roles, err := h.profileRoleClientsForRecords(ctx, owner, operation.Source, profiles)
+	return roles, operation.Source, err
+}
+
+func (h *Handler) profileRoleClientsForRecords(ctx context.Context, owner, source string, profiles []llmProfileDocument) (llm.ProjectRoleClients, error) {
+	if len(profiles) == 0 {
+		return llm.ProjectRoleClients{}, errLLMProfileUnavailable
 	}
 	if source == "personal" {
-		if !auth.ValidPathSegment(binding.ProfileID) {
-			return nil, source, errLLMProfileUnavailable
-		}
-		snapshot, err := h.userLLMProfileRef(owner, binding.ProfileID).Get(ctx)
+		fast, err := h.profileClientForRole(profiles[0], owner, llm.ProfileRoleFast)
 		if err != nil {
-			return nil, source, errLLMProfileUnavailable
+			return llm.ProjectRoleClients{}, err
 		}
-		var profile llmProfileDocument
-		if err := snapshot.DataTo(&profile); err != nil || profile.OwnerID != owner || !profile.Enabled {
-			return nil, source, errLLMProfileUnavailable
+		heavy, err := h.profileClientForRole(profiles[0], owner, llm.ProfileRoleHeavy)
+		if err != nil {
+			fast.Close()
+			return llm.ProjectRoleClients{}, err
 		}
-		client, err := h.profileClientFor(profile, owner)
-		return client, source, err
+		return llm.ProjectRoleClients{Fast: fast, Heavy: heavy}, nil
 	}
 	if source != "shared" {
-		return nil, source, errLLMProfileUnavailable
+		return llm.ProjectRoleClients{}, errLLMProfileUnavailable
 	}
-	collection := scopedfirestore.Collection(h.firestore.Raw(), sharedLLMProfilesCollection)
-	all, err := collection.Documents(ctx).GetAll()
-	if err != nil {
-		return nil, source, errLLMProfileUnavailable
-	}
-	if len(all) == 0 {
-		initialized, err := h.sharedLLMPoolInitialized(ctx)
-		if err != nil {
-			return nil, source, errLLMProfileUnavailable
-		}
-		if initialized {
-			return nil, source, errLLMSharedPoolUnavailable
-		}
-		return nil, "bootstrap", nil
-	}
-	profiles := make([]llmProfileDocument, 0, len(all))
-	for _, doc := range all {
-		var profile llmProfileDocument
-		if doc.DataTo(&profile) != nil || profile.OwnerID != "platform" {
-			return nil, source, errLLMProfileUnavailable
-		}
-		if profile.Enabled && profile.Public {
-			profiles = append(profiles, profile)
-		}
-	}
-	if len(profiles) == 0 {
-		return nil, source, errLLMSharedPoolUnavailable
-	}
-	sort.Slice(profiles, func(i, j int) bool {
-		if profiles[i].Priority == profiles[j].Priority {
-			return profiles[i].ID < profiles[j].ID
-		}
-		return profiles[i].Priority < profiles[j].Priority
-	})
-	clients := make([]*llm.ProfileClient, 0, len(profiles))
-	for _, profile := range profiles {
-		client, err := h.profileClientFor(profile, "platform")
-		if err != nil {
-			for _, created := range clients {
-				created.Close()
+	state := &llm.ProfileOperationState{}
+	build := func(role llm.ProfileRole) ([]*llm.ProfileClient, error) {
+		clients := make([]*llm.ProfileClient, 0, len(profiles))
+		for _, profile := range profiles {
+			client, err := h.profileClientForRole(profile, "platform", role)
+			if err != nil {
+				for _, existing := range clients {
+					existing.Close()
+				}
+				return nil, err
 			}
-			return nil, source, errLLMProfileUnavailable
+			clients = append(clients, client)
 		}
-		clients = append(clients, client)
+		return clients, nil
 	}
-	pool, err := llm.NewProfilePoolClient(clients, func(checkCtx context.Context, resolved llm.ProfileConfig) error {
-		snapshot, err := collection.Doc("platform_" + resolved.ID).Get(checkCtx)
+	fastClients, err := build(llm.ProfileRoleFast)
+	if err != nil {
+		return llm.ProjectRoleClients{}, err
+	}
+	heavyClients, err := build(llm.ProfileRoleHeavy)
+	if err != nil {
+		for _, client := range fastClients {
+			client.Close()
+		}
+		return llm.ProjectRoleClients{}, err
+	}
+	check := func(checkCtx context.Context, resolved llm.ProfileConfig) error {
+		snapshot, err := scopedfirestore.Collection(h.firestore.Raw(), sharedLLMProfilesCollection).Doc("platform_" + resolved.ID).Get(checkCtx)
 		if err != nil {
 			return errLLMProfileChanged
 		}
@@ -1016,14 +1055,26 @@ func (h *Handler) projectLLMClient(ctx context.Context, owner, project string) (
 			return errLLMProfileChanged
 		}
 		return nil
-	})
+	}
+	fast, err := llm.NewProfilePoolClientWithState(fastClients, check, state)
 	if err != nil {
-		for _, client := range clients {
+		for _, client := range fastClients {
 			client.Close()
 		}
-		return nil, source, errLLMSharedPoolUnavailable
+		for _, client := range heavyClients {
+			client.Close()
+		}
+		return llm.ProjectRoleClients{}, errLLMSharedPoolUnavailable
 	}
-	return pool, source, nil
+	heavy, err := llm.NewProfilePoolClientWithState(heavyClients, check, state)
+	if err != nil {
+		fast.Close()
+		for _, client := range heavyClients {
+			client.Close()
+		}
+		return llm.ProjectRoleClients{}, errLLMSharedPoolUnavailable
+	}
+	return llm.ProjectRoleClients{Fast: fast, Heavy: heavy}, nil
 }
 
 func (h *Handler) sharedLLMPoolStateRef() *cloudfirestore.DocumentRef {
@@ -1056,7 +1107,18 @@ func (h *Handler) effectiveProjectLLMSource(owner, source string) string {
 }
 
 func (h *Handler) profileClientFor(profile llmProfileDocument, owner string) (*llm.ProfileClient, error) {
+	return h.profileClientForRole(profile, owner, llm.ProfileRoleFast)
+}
+
+func (h *Handler) profileClientForRole(profile llmProfileDocument, owner string, role llm.ProfileRole) (*llm.ProfileClient, error) {
+	if role != llm.ProfileRoleFast && role != llm.ProfileRoleHeavy {
+		return nil, errLLMProfileUnavailable
+	}
 	if h.byokCredentialBox == nil {
+		return nil, errLLMProfileUnavailable
+	}
+	models, ok := llmProfileRoleModels(profile)
+	if !ok {
 		return nil, errLLMProfileUnavailable
 	}
 	keyBytes, err := h.profileCredential(profile, owner)
@@ -1065,8 +1127,12 @@ func (h *Handler) profileClientFor(profile llmProfileDocument, owner string) (*l
 	}
 	defer clear(keyBytes)
 	key := string(keyBytes)
-	client, err := llm.NewProfileClient(llm.ProfileConfig{ID: profile.ID, Revision: profile.Revision, Provider: profile.Provider,
-		Protocol: llm.Protocol(profile.Protocol), Endpoint: profile.Endpoint, Model: profile.Model}, key, llm.ProfileClientOptions{})
+	model := models.Fast
+	if role == llm.ProfileRoleHeavy {
+		model = models.Heavy
+	}
+	client, err := llm.NewProfileClient(llm.ProfileConfig{ID: profile.ID, Revision: profile.Revision, Role: role, Provider: profile.Provider,
+		Protocol: llm.Protocol(profile.Protocol), Endpoint: profile.Endpoint, Model: model}, key, llm.ProfileClientOptions{})
 	if err != nil {
 		return nil, errLLMProfileUnavailable
 	}
@@ -1074,8 +1140,12 @@ func (h *Handler) profileClientFor(profile llmProfileDocument, owner string) (*l
 }
 
 func viewLLMProfile(record llmProfileDocument, admin bool) llmProfileView {
+	models, ok := llmProfileRoleModels(record)
+	if !ok {
+		models = llmProfileModels{}
+	}
 	view := llmProfileView{ID: record.ID, Name: record.Name, Provider: record.Provider, Protocol: record.Protocol,
-		Endpoint: record.Endpoint, Model: record.Model, Revision: record.Revision, SecretConfigured: record.SecretConfigured}
+		Endpoint: record.Endpoint, Model: models.Heavy, Models: models, Revision: record.Revision, SecretConfigured: record.SecretConfigured}
 	if admin {
 		view.Enabled, view.Public, view.Priority = record.Enabled, record.Public, record.Priority
 		if record.SecretConfigured {
@@ -1092,15 +1162,17 @@ func viewLLMProfile(record llmProfileDocument, admin bool) llmProfileView {
 }
 
 var (
-	errLLMProfileInvalid        = errors.New("invalid LLM profile")
-	errLLMProfileKeyRequired    = errors.New("API key is required for this provider")
-	errLLMProfileNotFound       = errors.New("LLM profile not found")
-	errLLMProfileConflict       = errors.New("LLM profile was changed; reload before saving")
-	errLLMProfileInUse          = errors.New("LLM profile is assigned to a Project")
-	errLLMProfileUnavailable    = errors.New("LLM profile is unavailable")
-	errLLMProfileDisabled       = errors.New("LLM profile is disabled")
-	errLLMSharedPoolUnavailable = errors.New("shared LLM pool is unavailable")
-	errLLMProfileChanged        = errors.New("LLM profile availability changed")
+	errLLMProfileInvalid               = errors.New("invalid LLM profile")
+	errLLMProfileKeyRequired           = errors.New("API key is required for this provider")
+	errLLMProfileNotFound              = errors.New("LLM profile not found")
+	errLLMProfileConflict              = errors.New("LLM profile was changed; reload before saving")
+	errLLMProfileRoleModelsRequired    = errors.New("refresh the profile before saving its role models")
+	errLLMProfileInUse                 = errors.New("LLM profile is assigned to a Project")
+	errLLMProfileUnavailable           = errors.New("LLM profile is unavailable")
+	errLLMProfileDisabled              = errors.New("LLM profile is disabled")
+	errLLMSharedPoolUnavailable        = errors.New("shared LLM pool is unavailable")
+	errLLMProfileChanged               = errors.New("LLM profile availability changed")
+	errLLMProfileCredentialUnavailable = errors.New("deployment credential is unavailable for the saved operation")
 )
 
 func writeLLMProfileError(c *gin.Context, err error) {
@@ -1113,6 +1185,10 @@ func writeLLMProfileError(c *gin.Context, err error) {
 		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 	case errors.Is(err, errLLMProfileConflict):
 		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+	case errors.Is(err, errLLMProfileRoleModelsRequired):
+		c.JSON(http.StatusConflict, gin.H{"error_code": "role_models_required", "error": err.Error()})
+	case errors.Is(err, errLLMProfileCredentialUnavailable):
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error_code": "credential_unavailable", "error": "The saved operation cannot prove the configured deployment credential."})
 	case errors.Is(err, errLLMProfileKeyRequired):
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 	case errors.Is(err, errLLMProfileInvalid):

@@ -1060,14 +1060,19 @@ func prepareOLWEnvironment(cfg workerConfig) ([]string, error) {
 		env = append(env, "SYNTO_API_KEY="+cfg.APIKey, "DEEPSEEK_API_KEY="+cfg.APIKey)
 	}
 	if cfg.ActiveLLMProfile != nil {
+		models := normalizePipelineLLMModels(*cfg.ActiveLLMProfile)
 		profile, err := json.Marshal(struct {
-			ID       string       `json:"id"`
-			Revision int64        `json:"revision"`
-			Provider string       `json:"provider"`
-			Protocol llm.Protocol `json:"protocol"`
-			Endpoint string       `json:"endpoint"`
-			Model    string       `json:"model"`
-		}{cfg.ActiveLLMProfile.ID, cfg.ActiveLLMProfile.Revision, cfg.ActiveLLMProfile.Provider, cfg.ActiveLLMProfile.Protocol, cfg.ActiveLLMProfile.Endpoint, cfg.ActiveLLMProfile.Model})
+			SchemaVersion  int               `json:"schema_version"`
+			SnapshotDigest string            `json:"snapshot_digest"`
+			RoleMapVersion int               `json:"role_map_version"`
+			ID             string            `json:"id"`
+			Revision       int64             `json:"revision"`
+			Provider       string            `json:"provider"`
+			Protocol       llm.Protocol      `json:"protocol"`
+			Endpoint       string            `json:"endpoint"`
+			Models         pipelineLLMModels `json:"models"`
+		}{2, cfg.ActiveLLMProfile.SnapshotDigest, cfg.ActiveLLMProfile.RoleMapVersion, cfg.ActiveLLMProfile.ID, cfg.ActiveLLMProfile.Revision, cfg.ActiveLLMProfile.Provider,
+			cfg.ActiveLLMProfile.Protocol, cfg.ActiveLLMProfile.Endpoint, models})
 		if err != nil {
 			return nil, errors.New("serialize Pipeline profile selection")
 		}
@@ -1517,8 +1522,9 @@ var suggestedQueryProvider = func(cfg workerConfig) suggestedqueries.Provider {
 		return unavailableSuggestedQueryProvider{}
 	}
 	profile := cfg.ActiveLLMProfile
+	models := normalizePipelineLLMModels(*profile)
 	client, err := llm.NewProfileClient(llm.ProfileConfig{ID: profile.ID, Revision: profile.Revision, Provider: profile.Provider,
-		Protocol: profile.Protocol, Endpoint: profile.Endpoint, Model: profile.Model}, string(profile.APIKey), llm.ProfileClientOptions{})
+		Role: llm.ProfileRoleFast, Protocol: profile.Protocol, Endpoint: profile.Endpoint, Model: models.Fast}, string(profile.APIKey), llm.ProfileClientOptions{})
 	if err != nil {
 		return unavailableSuggestedQueryProvider{}
 	}
@@ -1581,8 +1587,9 @@ type suggestedQueryProfileClient interface {
 }
 
 var newSuggestedQueryProfileClient = func(profile pipelineLLMProfile) (suggestedQueryProfileClient, error) {
+	models := normalizePipelineLLMModels(profile)
 	return llm.NewProfileClient(llm.ProfileConfig{ID: profile.ID, Revision: profile.Revision, Provider: profile.Provider,
-		Protocol: profile.Protocol, Endpoint: profile.Endpoint, Model: profile.Model}, string(profile.APIKey), llm.ProfileClientOptions{Timeout: 10 * time.Second})
+		Role: llm.ProfileRoleFast, Protocol: profile.Protocol, Endpoint: profile.Endpoint, Model: models.Fast}, string(profile.APIKey), llm.ProfileClientOptions{Timeout: 10 * time.Second})
 }
 
 var suggestedQueryProfileResolver = resolvePipelineLLMProfiles
@@ -1660,17 +1667,8 @@ func (p *resolvedSuggestedQueryPool) Chat(ctx context.Context, systemPrompt, use
 		}
 		lastQuota = callErr
 		p.attempted[profile.ID] = struct{}{}
-		fresh, shared, resolveErr := p.resolver(ctx, p.cfg)
-		if resolveErr != nil {
-			clearPipelineProfileKeys(fresh)
-			return "", errors.Join(callErr, errors.New("shared suggested-query fallback could not revalidate the Project source"))
-		}
-		if !shared {
-			clearPipelineProfileKeys(fresh)
-			return "", errors.Join(callErr, errors.New("Project LLM source changed during shared suggested-query fallback"))
-		}
-		clearPipelineProfileKeys(p.profiles)
-		p.profiles = fresh
+		// The candidate list came from the reservation's immutable snapshot.
+		// Keep it fixed for this pre-work quota fallback.
 	}
 	return "", errors.New("shared suggested-query profile attempt limit reached")
 }
@@ -1685,7 +1683,7 @@ func (p *resolvedSuggestedQueryPool) ModelIdentity() (llm.ModelIdentity, bool) {
 		return llm.ModelIdentity{}, false
 	}
 	profile := p.profiles[0]
-	return llm.ModelIdentity{Provider: profile.Provider, Model: profile.Model}, true
+	return llm.ModelIdentity{Provider: profile.Provider, Model: normalizePipelineLLMModels(profile).Fast}, true
 }
 
 func (p *resolvedSuggestedQueryPool) ProfileIdentity() llm.ProfileIdentity {
@@ -1698,7 +1696,7 @@ func (p *resolvedSuggestedQueryPool) ProfileIdentity() llm.ProfileIdentity {
 		return llm.ProfileIdentity{}
 	}
 	profile := p.profiles[0]
-	return llm.ProfileIdentity{ID: profile.ID, Revision: profile.Revision, Provider: profile.Provider, Protocol: string(profile.Protocol), Model: profile.Model}
+	return llm.ProfileIdentity{ID: profile.ID, Revision: profile.Revision, Role: string(llm.ProfileRoleFast), Provider: profile.Provider, Protocol: string(profile.Protocol), Model: normalizePipelineLLMModels(profile).Fast}
 }
 
 func (p *resolvedSuggestedQueryPool) GenerationMetadata() suggestedqueries.GenerationMetadata {

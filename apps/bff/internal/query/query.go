@@ -217,10 +217,12 @@ type RuntimeConfigIdentity struct {
 	ExpansionProvider          string  `json:"expansion_provider"`
 	ExpansionImplementation    string  `json:"expansion_implementation"`
 	ExpansionModel             string  `json:"expansion_model"`
+	ExpansionReturnedModel     string  `json:"expansion_returned_model,omitempty"`
 	ExpansionReasoning         string  `json:"expansion_reasoning"`
 	ExpansionTemperature       float64 `json:"expansion_temperature"`
 	SynthesisImplementation    string  `json:"synthesis_implementation"`
 	SynthesisModel             string  `json:"synthesis_model"`
+	SynthesisReturnedModel     string  `json:"synthesis_returned_model,omitempty"`
 	SynthesisReasoning         string  `json:"synthesis_reasoning"`
 	SynthesisTemperature       float64 `json:"synthesis_temperature"`
 	SelectionLimit             int     `json:"selection_limit"`
@@ -234,6 +236,10 @@ type RuntimeConfigIdentity struct {
 	LLMProfileID               string  `json:"llm_profile_id,omitempty"`
 	LLMProfileRevision         int64   `json:"llm_profile_revision,omitempty"`
 	LLMProtocol                string  `json:"llm_protocol,omitempty"`
+	LLMFastProfileID           string  `json:"llm_fast_profile_id,omitempty"`
+	LLMFastProfileRevision     int64   `json:"llm_fast_profile_revision,omitempty"`
+	LLMHeavyProfileID          string  `json:"llm_heavy_profile_id,omitempty"`
+	LLMHeavyProfileRevision    int64   `json:"llm_heavy_profile_revision,omitempty"`
 }
 
 // RuntimeConfigReadback is the sanitized global identity of a sealed runtime.
