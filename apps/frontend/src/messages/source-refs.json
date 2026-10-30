@@ -312,6 +312,12 @@
         "error"
       ]
     },
+    "Profile.contentContext.unknownStatus": {
+      "kind": "literal",
+      "params": [
+        "status"
+      ]
+    },
     "Profile.errors.confirmation": {
       "kind": "literal",
       "params": [
