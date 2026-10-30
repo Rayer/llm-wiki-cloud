@@ -128,10 +128,18 @@ auth_mutate() {
   if [[ "$ENVIRONMENT" == development ]]; then
     revalidate_before_provider
     journal_pending auth
-    if ! image=$(auth_build_image); then
-      journal_transition auth unknown
-      write_component_result auth failed '{}' image_build_failed
-      return 1
+    if [[ "${GAT4_RELEASE_SOURCE_MODE:-}" == independent ]]; then
+      if ! image=$(image_for auth); then
+        journal_transition auth unknown
+        write_component_result auth failed '{}' immutable_image_receipt_invalid
+        return 1
+      fi
+    else
+      if ! image=$(auth_build_image); then
+        journal_transition auth unknown
+        write_component_result auth failed '{}' image_build_failed
+        return 1
+      fi
     fi
     validate_image_value auth "$image"
     mutation_accepted auth

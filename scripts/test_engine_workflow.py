@@ -39,15 +39,38 @@ class EngineWorkflowContract(unittest.TestCase):
         release = workflow['jobs']['release']
         self.assertEqual(release['env']['GAT4_RELEASE_SOURCE_MODE'], '${{ inputs.release_source_mode }}')
         self.assertEqual(release['env']['GAT4_DEV_RECEIPT_MODE'], '${{ inputs.release_source_mode }}')
-        resolve = next(step for step in release['steps']
-                       if step.get('name') == 'Resolve immutable GateAuth source identity')
-        self.assertIn('inputs.release_source_mode == \'independent\'', resolve['if'])
-        self.assertEqual(resolve['env']['AUTH_REPOSITORY_ID'], '${{ inputs.auth_repository_id }}')
-        checkout = next(step for step in release['steps']
-                        if step.get('name') == 'Verify and stage exact GateAuth source tree')
-        self.assertIn('archive "$AUTH_REVISION"', checkout['run'])
-        self.assertIn('tree-digest --root "$source_root"', checkout['run'])
+        package = next(step for step in release['steps']
+                       if step.get('name') == 'Download and verify immutable GateAuth CI package')
+        self.assertIn('inputs.release_source_mode == \'independent\'', package['if'])
+        preflight = next(step for step in release['steps']
+                         if step.get('name') == 'Validate retained Auth receipt before private package fetch')
+        prepare = next(step for step in release['steps']
+                       if step.get('name') == 'Resolve explicit receipt references and prepare selected artifacts')
+        self.assertEqual(preflight['with']['operation'], 'auth-preflight')
+        self.assertNotIn('GATEAUTH_SOURCE_READ_TOKEN', preflight.get('env', {}))
+        self.assertIn("steps.gat4-preflight.outputs.needs_auth_ci_package == 'true'", package['if'])
+        action_metadata = yaml.safe_load((ROOT / '.github/actions/deployment-engine/action.yml').read_text())
+        self.assertIn('needs_auth_ci_package', action_metadata['outputs'])
+        self.assertLess(release['steps'].index(preflight), release['steps'].index(package))
+        self.assertLess(release['steps'].index(package), release['steps'].index(prepare))
+        self.assertEqual(package['env']['AUTH_REPOSITORY_ID'], '${{ inputs.auth_repository_id }}')
+        self.assertEqual(package['env']['GATEAUTH_SOURCE_READ_TOKEN'],
+                         '${{ secrets.GATEAUTH_SOURCE_READ_TOKEN }}')
+        self.assertIn('gat4_ci_artifact.py download', package['run'])
+        self.assertIn('GATEAUTH_CI_PACKAGE_PATH=', package['run'])
+        self.assertFalse(any(step.get('with', {}).get('repository') ==
+                             '${{ steps.gateauth-source.outputs.repository_name }}'
+                             for step in release['steps']))
+        auth_script = (ROOT / 'deploy/components/auth.sh').read_text()
+        auth_mutate = auth_script[auth_script.index('auth_mutate() {'):auth_script.index('\nauth_verify() {')]
+        independent = auth_mutate.split('if [[ "${GAT4_RELEASE_SOURCE_MODE:-}" == independent ]]', 1)[1].split('else', 1)[0]
+        self.assertIn('image=$(image_for auth)', independent)
+        self.assertNotIn('auth_build_image', independent)
         action = (ROOT / '.github/actions/deployment-engine/index.cjs').read_text()
+        engine = (ROOT / 'deploy/engine/engine.py').read_text()
+        self.assertIn("'auth-preflight'", action)
+        self.assertIn('auth_package_preflight', engine)
+        self.assertIn('validate_auth_component_receipt(candidate, \'independent\')', engine)
         for flag in ('--auth-repository-id', '--auth-revision', '--auth-tree-sha256',
                      '--auth-artifact-id', '--auth-run-id', '--auth-run-attempt'):
             self.assertIn(flag, action)

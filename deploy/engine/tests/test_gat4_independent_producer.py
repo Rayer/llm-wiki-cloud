@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import copy
+import base64
+import hashlib
 import io
 import importlib.util
 import json
@@ -26,6 +28,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "deploy/components"))
 import engine
 import receipt_contract
+import gat4_ci_artifact
 from support import read, write
 artifact_spec = importlib.util.spec_from_file_location(
     "gat4_artifact", ROOT / "scripts/gat4-local/artifact.py"
@@ -128,6 +131,19 @@ class IndependentProducerTests(unittest.TestCase):
     def make_auth_source(self, root: Path) -> tuple[Path, dict]:
         checkout = root / "auth-checkout"
         shutil.copytree(ROOT / "gateauth", checkout)
+        (checkout / "cloudbuild.yaml").unlink()
+        (checkout / "cloudbuild.json").write_text(json.dumps({
+            "substitutions": {key: "" for key in gat4_ci_artifact.BUILD_SUBSTITUTION_KEYS},
+            "steps": [{"name": "gcr.io/cloud-builders/docker", "args": [
+                "build", "--build-arg", "APP_VERSION=${_APP_VERSION}",
+                "--build-arg", "GIT_SHA=${_GIT_SHA}", "--build-arg", "GIT_BRANCH=${_GIT_BRANCH}",
+                "--build-arg", "GIT_TAG=${_GIT_TAG}", "--tag", "${_IMAGE}",
+                "--file", "Dockerfile", "."], "waitFor": ["-"]}],
+            "images": ["${_IMAGE}"],
+            "options": {"logging": "CLOUD_LOGGING_ONLY", "sourceProvenanceHash": ["SHA256"]},
+        }, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+        schema = checkout / "contracts/gateauth-ci-build-v1.schema.json"
+        schema.write_text("{}\n", encoding="utf-8")
         subprocess.run(["git", "init", "--quiet", str(checkout)], check=True)
         subprocess.run(["git", "-C", str(checkout), "add", "."], check=True)
         subprocess.run([
@@ -141,12 +157,13 @@ class IndependentProducerTests(unittest.TestCase):
         archive = subprocess.check_output(
             ["git", "-C", str(checkout), "archive", "--format=tar", revision]
         )
+        (root / "source.tar").write_bytes(archive)
         source_root = root / "auth-source"
         source_root.mkdir()
         with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as bundle:
             bundle.extractall(source_root, filter="data")
         source = {
-            "repository_id": "github:202",
+            "repository_id": f"github:{gat4_ci_artifact.REPOSITORY_ID}",
             "revision": revision,
             "tree_sha256": tree_digest(source_root),
             "artifact_id": "9001",
@@ -154,6 +171,98 @@ class IndependentProducerTests(unittest.TestCase):
             "run_attempt": 1,
         }
         return source_root, source
+
+    def make_ci_package(self, root: Path, auth_source: dict, normalized: dict):
+        source_tar = (root / "source.tar").read_bytes()
+        files = gat4_ci_artifact._tree_files(source_tar)
+        image_prefix = gat4_ci_artifact.IMAGE_PREFIX
+        image_tag = f"{image_prefix}:{auth_source['revision']}"
+        image_digest = "sha256:" + "c" * 64
+        build_id = "11111111-2222-3333-4444-555555555555"
+        generation = "1740000000000000"
+        build_input_digest, build_inputs = gat4_ci_artifact._inputs_digest(
+            source_tar, files, auth_source["revision"], image_prefix, "1.0.0",
+            auth_source["run_id"], auth_source["run_attempt"], generation)
+        config = gat4_ci_artifact._build_config(files, image_tag, "1.0.0")
+        storage = build_inputs["source"].copy()
+        storage.pop("sha256")
+        source_hash_path = f"gs://{storage['bucket']}/{storage['object']}#{storage['generation']}"
+        build = {
+            "id": build_id,
+            "projectId": normalized["gcp"]["project_id"],
+            "name": f"projects/{normalized['gcp']['project_id']}/locations/global/builds/{build_id}",
+            "status": "SUCCESS",
+            "source": {"storageSource": storage},
+            "sourceProvenance": {
+                "resolvedStorageSource": storage,
+                "fileHashes": {source_hash_path: {"fileHash": [{
+                    "type": "SHA256",
+                    "value": base64.b64encode(hashlib.sha256(
+                        gat4_ci_artifact._deterministic_gzip(source_tar)).digest()).decode("ascii"),
+                }]}},
+            },
+            "serviceAccount": gat4_ci_artifact.BUILD_SERVICE_ACCOUNT,
+            "substitutions": {
+                "_IMAGE": image_tag,
+                "_APP_VERSION": "1.0.0",
+                "_GIT_SHA": auth_source["revision"],
+                "_GIT_BRANCH": "main",
+                "_GIT_TAG": "",
+            },
+            "steps": config["expanded"]["steps"],
+            "images": config["expanded"]["images"],
+            "options": config["expanded"]["options"],
+            "results": {"images": [{"name": image_tag, "digest": image_digest}]},
+        }
+        build_path = root / "cloud-build.json"
+        write(build_path, build)
+        manifest = {
+            "schema": "gateauth-ci-build-v1",
+            "component": "auth",
+            "product_version": "1.0.0",
+            "source": {
+                "repository_id": auth_source["repository_id"],
+                "revision": auth_source["revision"],
+                "tree_sha256": auth_source["tree_sha256"],
+            },
+            "ci": {"workflow_id": 100, "run_id": auth_source["run_id"],
+                   "run_attempt": auth_source["run_attempt"]},
+            "payload": {"source_archive_file": "source.tar",
+                        "source_archive_sha256": gat4_ci_artifact.sha256_bytes(source_tar),
+                        "source_archive_bytes": len(source_tar)},
+            "build": {
+                "project_id": normalized["gcp"]["project_id"],
+                "project_number": "580854833715",
+                "location": "global",
+                "build_id": build_id,
+                "status": "SUCCESS",
+                "inputs_digest": build_input_digest,
+                **build_inputs,
+            },
+            "artifact": {"image": f"{image_prefix}@{image_digest}",
+                         "image_digest": image_digest},
+            "contracts": {"auth_config_schema_versions": [1, 2, 3],
+                          "lwc_consumer_schema_version": 1},
+        }
+        zip_path = root / "gateauth-ci-package.zip"
+        import zipfile
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_STORED) as package:
+            package.writestr("source.tar", source_tar)
+            package.writestr("build-manifest.json", json.dumps(
+                manifest, sort_keys=True, separators=(",", ":")).encode())
+        zip_bytes = zip_path.read_bytes()
+        envelope = {
+            "repository_id": gat4_ci_artifact.REPOSITORY_ID,
+            "run_id": auth_source["run_id"],
+            "run_attempt": auth_source["run_attempt"],
+            "artifact_id": int(auth_source["artifact_id"]),
+            "artifact_sha256": gat4_ci_artifact.sha256_bytes(zip_bytes),
+            "artifact_bytes": len(zip_bytes),
+            "workflow_id": 100,
+        }
+        envelope_path = root / "gateauth-ci-envelope.json"
+        write(envelope_path, envelope)
+        return zip_path, envelope_path, build_path, image_digest
 
     def make_lwc_successor(self, root: Path, parent_sha: str) -> tuple[str, dict[str, str]]:
         object_directory = root / "lwc-test-objects"
@@ -228,16 +337,13 @@ with Path(os.environ["GAT4_PROVIDER_TRAP_LOG"]).open("a") as stream:
     stream.write(json.dumps({{"argv": args, "source_sha": os.environ.get("SOURCE_SHA"),
         "source_ref": os.environ.get("SOURCE_REF"),
         "auth_source_root": os.environ.get("AUTH_SOURCE_ROOT")}}) + "\\n")
-build_id = "11111111-2222-3333-4444-555555555555"
-project = os.environ.get("FAKE_GCP_PROJECT", "fixture-project")
 if args[:2] == ["builds", "submit"]:
-    print(json.dumps({{"id": build_id, "projectId": project, "location": "global",
-        "name": f"projects/{{project}}/locations/global/builds/{{build_id}}", "status": "WORKING"}}))
+    print("canonical Auth build must not be submitted for an independent CI image", file=sys.stderr)
+    raise SystemExit(97)
 elif args[:2] == ["builds", "describe"]:
-    print(json.dumps({{"id": build_id, "projectId": project, "location": "global",
-        "name": f"projects/{{project}}/locations/global/builds/{{build_id}}", "status": "SUCCESS"}}))
+    print(Path(os.environ["GAT4_PROVIDER_BUILD_JSON"]).read_text())
 elif args[:4] == ["artifacts", "docker", "images", "describe"]:
-    print("sha256:{"c" * 64}")
+    print(os.environ["GAT4_IMAGE_DIGEST"])
 else:
     print("unexpected provider command", file=sys.stderr)
     raise SystemExit(98)
@@ -255,6 +361,8 @@ else:
             plan = self.admit_plan(directory, name="auth", source_sha=lwc_sha,
                                    components=["auth"], auth_source=auth_source)
             normalized = plan["normalized"]
+            package_path, envelope_path, build_path, image_digest = self.make_ci_package(
+                root, auth_source, normalized)
             binary, provider_log = self.fake_gcloud(root)
             artifact_trap_log = self.install_artifact_transport_trap(binary, root)
             metadata_path = directory / "dev-source-metadata.json"
@@ -263,7 +371,10 @@ else:
                 "TMPDIR": os.environ.get("TMPDIR", "/tmp"),
                 "GAT4_PROVIDER_TRAP_LOG": str(provider_log),
                 "GAT4_ARTIFACT_TRANSPORT_TRAP_LOG": str(artifact_trap_log),
-                "AUTH_SOURCE_ROOT": str(source_root),
+                "GATEAUTH_CI_PACKAGE_PATH": str(package_path),
+                "GATEAUTH_CI_ENVELOPE_PATH": str(envelope_path),
+                "GAT4_PROVIDER_BUILD_JSON": str(build_path),
+                "GAT4_IMAGE_DIGEST": image_digest,
                 "GITHUB_REPOSITORY_ID": "101",
                 "GITHUB_RUN_ID": "1003",
                 "GITHUB_RUN_ATTEMPT": "1",
@@ -276,11 +387,66 @@ else:
             with patch.dict(os.environ, env, clear=False):
                 run = engine.Engine(directory)
                 run.provider.gcp_project_number = lambda: "580854833715"
+                valid_build = read(build_path)
+                self.assertNotIn("location", valid_build)
+
+                def move_hash_to_unrelated_source(value):
+                    hashes = value["sourceProvenance"]["fileHashes"]
+                    hash_record = hashes.pop(next(iter(hashes)))
+                    hashes["gs://unrelated-bucket/unrelated-source.tar.gz#1"] = hash_record
+
+                def change_hash_generation(value):
+                    hashes = value["sourceProvenance"]["fileHashes"]
+                    path = next(iter(hashes))
+                    hash_record = hashes.pop(path)
+                    hashes[path.rsplit("#", 1)[0] + "#99"] = hash_record
+
+                identity_mutations = (
+                    lambda value: value.update(projectId="other-project"),
+                    lambda value: value.update(id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+                    lambda value: value.update(name=value["name"].replace(
+                        "projects/llm-wiki-cloud", "projects/other-project")),
+                    lambda value: value.update(name=value["name"].replace(
+                        f"/builds/{valid_build['id']}", "/builds/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")),
+                    lambda value: value.update(name=value["name"].replace(
+                        "locations/global", "locations/us-east1")),
+                    lambda value: value.update(location="us-east1"),
+                )
+                input_mutations = (
+                    lambda value: value["source"]["storageSource"].update(object="sources/other/source.tar.gz"),
+                    lambda value: value["source"]["storageSource"].update(generation="99"),
+                    lambda value: value["sourceProvenance"]["resolvedStorageSource"].update(generation="99"),
+                    move_hash_to_unrelated_source,
+                    change_hash_generation,
+                    lambda value: next(iter(value["sourceProvenance"]["fileHashes"].values()))[
+                        "fileHash"][0].update(value="invalid"),
+                    lambda value: value["steps"][0]["args"].__setitem__(2, "APP_VERSION=9.9.9"),
+                    lambda value: value["substitutions"].update(_APP_VERSION="9.9.9"),
+                    lambda value: value["substitutions"].update(_GIT_TAG="unexpected-tag"),
+                    lambda value: value["substitutions"].update(_UNEXPECTED="value"),
+                )
+                for mutate in identity_mutations + input_mutations:
+                    changed = copy.deepcopy(valid_build)
+                    mutate(changed)
+                    write(build_path, changed)
+                    with self.assertRaises(engine.Breakpoint):
+                        run.provider.prepare_independent_auth()
+                write(build_path, valid_build)
+                auth_submit_calls = []
+
+                def reject_canonical_auth_submit(component):
+                    auth_submit_calls.append(component)
+                    raise AssertionError("independent Auth prepare reached canonical submit_build")
+
+                run.provider.submit_build = reject_canonical_auth_submit
                 run.prepare()
+                self.assertEqual(auth_submit_calls, [])
 
             auth_receipt = read(directory / "receipts/auth.json")
             dev_receipt = read(directory / "images/dev-receipt.json")
             run.provider.usable = lambda _component, _artifact: None
+            self.assertTrue(auth_receipt["artifact"]["image"].startswith(
+                gat4_ci_artifact.IMAGE_PREFIX + "@"))
             self.assertEqual(auth_receipt["schema"], 3)
             self.assertEqual(auth_receipt["build_sha"], lwc_sha)
             self.assertEqual(auth_receipt["auth_source"], {
@@ -335,17 +501,13 @@ else:
                 expected_components=["auth"],
             )
             calls = [json.loads(line) for line in provider_log.read_text().splitlines()]
-            build = next(call for call in calls if call["argv"][:2] == ["builds", "submit"])
-            self.assertEqual(build["argv"][2], str(source_root))
-            self.assertEqual(build["source_sha"], auth_source["revision"])
-            self.assertEqual(build["source_ref"], "")
-            self.assertEqual(build["auth_source_root"], str(source_root))
-            self.assertIn("/llm-wiki-auth:" + auth_source["revision"],
-                          next(value for value in build["argv"] if value.startswith("--substitutions=")))
-            self.assertIn("_GIT_SHA=" + auth_source["revision"],
-                          next(value for value in build["argv"] if value.startswith("--substitutions=")))
-            self.assertTrue(all("auth-source" in call["auth_source_root"]
-                                for call in calls if call["auth_source_root"]))
+            self.assertFalse(any(call["argv"][:2] == ["builds", "submit"] for call in calls),
+                             "canonical consumer rebuilt the independent Auth image")
+            self.assertEqual(
+                sum(call["argv"][:2] == ["builds", "describe"] for call in calls),
+                len(identity_mutations) + len(input_mutations) + 1)
+            self.assertTrue(any(call["argv"][:4] == ["artifacts", "docker", "images", "describe"]
+                                for call in calls), "canonical consumer skipped registry digest readback")
 
             newer_lwc_sha, test_git_env = self.make_lwc_successor(root, lwc_sha)
             object_env_patch = patch.dict(os.environ, test_git_env, clear=False)
@@ -360,17 +522,20 @@ else:
             selected_auth_engine.provider.gcp_project_number = lambda: "580854833715"
             auth_build_calls = []
 
-            def reject_auth_rebuild(component):
-                auth_build_calls.append(component)
+            def reject_auth_rebuild():
+                auth_build_calls.append("auth")
                 raise AssertionError("selected Auth reuse unexpectedly started a new Auth build")
 
-            selected_auth_engine.prepare_container = reject_auth_rebuild
+            selected_auth_engine.provider.prepare_independent_auth = reject_auth_rebuild
             provider_calls_before_reuse = [json.loads(line) for line in provider_log.read_text().splitlines()]
             with patch.dict(os.environ, {
                 "PATH": str(binary) + os.pathsep + os.environ["PATH"],
                 "TMPDIR": os.environ.get("TMPDIR", "/tmp"),
                 "GAT4_PROVIDER_TRAP_LOG": str(provider_log),
                 "GAT4_ARTIFACT_TRANSPORT_TRAP_LOG": str(artifact_trap_log),
+                "GAT4_IMAGE_DIGEST": image_digest,
+                "GATEAUTH_CI_PACKAGE_PATH": "",
+                "GATEAUTH_CI_ENVELOPE_PATH": "",
                 **GITHUB_TEST_ENV,
                 "GITHUB_REPOSITORY_ID": "101",
                 "GITHUB_RUN_ID": "1005",
@@ -381,6 +546,15 @@ else:
                     selected_auth_release / "dev-source-metadata.json"),
                 "FAKE_GCP_PROJECT": normalized["gcp"]["project_id"],
             }, clear=False):
+                untrusted_reuse = root / "untrusted-auth-reuse"
+                shutil.copytree(directory, untrusted_reuse)
+                untrusted_receipt = read(untrusted_reuse / "receipts/auth.json")
+                untrusted_receipt["schema"] = 2
+                write(untrusted_reuse / "receipts/auth.json", untrusted_receipt)
+                with self.assertRaisesRegex(engine.Breakpoint, "artifact-auth-receipt-incompatible"):
+                    selected_auth_engine.auth_package_preflight(reuse=untrusted_reuse)
+                self.assertFalse(selected_auth_engine.auth_package_preflight(reuse=directory),
+                                 "verified compatible receipt should skip remote package fetch")
                 selected_auth_engine.prepare(reuse=directory)
                 self.assertEqual(selected_auth_engine.barrier()["auth"], auth_receipt["artifact"])
             self.assertEqual(selected_auth_plan["selected"], ["auth"])
@@ -391,6 +565,73 @@ else:
             self.assertEqual(selected_auth_receipt["auth_source"], auth_receipt["auth_source"])
             self.assertEqual(selected_auth_receipt["build"], auth_receipt["build"])
             self.assertEqual(selected_auth_receipt["artifact"], auth_receipt["artifact"])
+
+            real_node = shutil.which("node")
+            python = sys.executable
+            self.assertTrue(real_node and python, "Node and the current Python interpreter are required for the action-path fixture")
+            action_bin = root / "action-bin"
+            action_bin.mkdir()
+            shutil.copy2(binary / "gcloud", action_bin / "gcloud")
+            (action_bin / "python3").symlink_to(python)
+            action_download_log = root / "action-retained-download.log"
+            action_node = action_bin / "node"
+            action_node.write_text(
+                "#!/usr/bin/env python3\n"
+                "import os, shutil, sys\n"
+                "if len(sys.argv) >= 5 and sys.argv[1].endswith('/artifacts.cjs') and sys.argv[2] == 'download':\n"
+                "  with open(os.environ['GAT4_ACTION_DOWNLOAD_LOG'], 'a') as stream: stream.write(sys.argv[3] + '\\n')\n"
+                "  shutil.copytree(os.environ['GAT4_REUSE_SOURCE_DIR'], sys.argv[4])\n"
+                "else:\n"
+                f"  os.execv({real_node!r}, [{real_node!r}, *sys.argv[1:]])\n",
+                encoding="utf-8")
+            action_node.chmod(0o755)
+            action_temp = root / "action-runner-temp"
+            preflight_dir = action_temp / "gat4-auth-preflight"
+            action_release = action_temp / "release"
+            preflight_dir.mkdir(parents=True)
+            action_release.mkdir(parents=True)
+            write(preflight_dir / "plan.json", selected_auth_plan)
+            write(action_release / "plan.json", selected_auth_plan)
+            action_output = root / "action-output.txt"
+            action_env = dict(os.environ)
+            self.clear_github_runtime(action_env)
+            action_env.update({
+                "PATH": str(action_bin) + os.pathsep + os.environ["PATH"],
+                "RUNNER_TEMP": str(action_temp), "EXECUTOR_SHA": selected_auth_plan["executor_sha"],
+                "TARGET": "development", "SOURCE": newer_lwc_sha, "COMPONENTS": "auth",
+                "RELEASE_TAG": selected_auth_plan["tag"], "REUSE_ID": "9100",
+                "DEV_ID": "0", "INPUT_OPERATION": "auth-preflight", "GITHUB_OUTPUT": str(action_output),
+                "GAT4_RELEASE_SOURCE_MODE": "independent", "GAT4_DEV_RECEIPT_MODE": "independent",
+                "AUTH_REPOSITORY_ID": str(gat4_ci_artifact.REPOSITORY_ID),
+                "AUTH_REVISION": auth_source["revision"], "AUTH_TREE_SHA256": auth_source["tree_sha256"],
+                "AUTH_ARTIFACT_ID": auth_source["artifact_id"],
+                "AUTH_RUN_ID": str(auth_source["run_id"]),
+                "AUTH_RUN_ATTEMPT": str(auth_source["run_attempt"]),
+                "GITHUB_REPOSITORY_ID": "101", "GITHUB_RUN_ID": "1006", "GITHUB_RUN_ATTEMPT": "1",
+                "GAT4_DEV_RECEIPT_SOURCE_METADATA_FILE": str(action_release / "dev-source-metadata.json"),
+                "GAT4_PROVIDER_TRAP_LOG": str(provider_log),
+                "GAT4_ACTION_DOWNLOAD_LOG": str(action_download_log),
+                "GAT4_REUSE_SOURCE_DIR": str(directory), "GAT4_IMAGE_DIGEST": image_digest,
+                "FAKE_GCP_PROJECT": normalized["gcp"]["project_id"],
+                "GATEAUTH_CI_PACKAGE_PATH": "", "GATEAUTH_CI_ENVELOPE_PATH": "",
+                **GITHUB_TEST_ENV,
+            })
+            action_env.pop("GATEAUTH_SOURCE_READ_TOKEN", None)
+            action_path = ROOT / ".github/actions/deployment-engine/index.cjs"
+            subprocess.run([real_node, str(action_path)], cwd=ROOT, env=action_env,
+                           check=True, capture_output=True, text=True, timeout=180)
+            self.assertIn("needs_auth_ci_package=false", action_output.read_text())
+            action_env["INPUT_OPERATION"] = "prepare"
+            subprocess.run([real_node, str(action_path)], cwd=ROOT, env=action_env,
+                           check=True, capture_output=True, text=True, timeout=180)
+            self.assertEqual(action_download_log.read_text().splitlines(), ["9100"])
+            action_receipt = read(action_release / "receipts/auth.json")
+            self.assertEqual(action_receipt["artifact"], auth_receipt["artifact"])
+            with patch.dict(os.environ, action_env, clear=False):
+                self.assertEqual(engine.Engine(action_release).barrier()["auth"], auth_receipt["artifact"])
+            self.assertFalse(any(json.loads(line)["argv"][:2] == ["builds", "submit"]
+                                 for line in provider_log.read_text().splitlines()))
+
             selected_auth_dev = read(selected_auth_release / "images/dev-receipt.json")
             receipt_contract.validate_receipt_pair(
                 selected_auth_receipt, selected_auth_dev, "independent",
@@ -400,9 +641,9 @@ else:
                 expected_components=["auth"],
             )
             provider_calls_after_reuse = [json.loads(line) for line in provider_log.read_text().splitlines()]
-            self.assertEqual(sum(call["argv"][:2] == ["builds", "submit"]
+            self.assertEqual(sum(call["argv"][:2] == ["builds", "describe"]
                                  for call in provider_calls_after_reuse),
-                             sum(call["argv"][:2] == ["builds", "submit"]
+                             sum(call["argv"][:2] == ["builds", "describe"]
                                  for call in provider_calls_before_reuse))
 
             bff_release = root / "bff-release"
@@ -426,6 +667,7 @@ else:
             with patch.dict(os.environ, {
                 "PATH": str(binary) + os.pathsep + os.environ["PATH"],
                 "GAT4_ARTIFACT_TRANSPORT_TRAP_LOG": str(artifact_trap_log),
+                "GAT4_IMAGE_DIGEST": image_digest,
                 **GITHUB_TEST_ENV,
                 "GITHUB_REPOSITORY_ID": "101",
                 "GITHUB_RUN_ID": "1004",

@@ -45,6 +45,25 @@ class ReceiptContractTests(unittest.TestCase):
             auth, dev, "independent", expected_lwc_source=dev["source"]["lwc"],
             expected_auth_source=dev["source"]["auth"], expected_components=["auth"]))
 
+    def test_independent_ci_auth_repository_is_exact_and_retained_legacy_receipts_stay_valid(self):
+        auth = fixture("auth-receipt-v3-independent.json")
+        dev = fixture("dev-receipt-v2-independent.json")
+        new_image = "asia-east1-docker.pkg.dev/llm-wiki-cloud/gateauth-ci-images/gateauth@sha256:" + "c" * 64
+        auth["artifact"]["image"] = new_image
+        dev["images"]["auth"] = new_image
+        self.assertTrue(receipt_contract.validate_receipt_pair(auth, dev, "independent"))
+
+        for image in (
+            "evil.example/other/gateauth@sha256:" + "c" * 64,
+            "evil.example/cloud-run-images/llm-wiki-auth@sha256:" + "c" * 64,
+        ):
+            rejected = copy.deepcopy(dev)
+            rejected["images"]["auth"] = image
+            with self.subTest(image=image), self.assertRaisesRegex(
+                    receipt_contract.ReceiptError, "unsupported independent"):
+                receipt_contract.validate_dev_receipt(
+                    rejected, "independent", rejected["source"]["lwc"])
+
     def test_independent_auth_source_mixing_and_missing_fields_fail_closed(self):
         auth = fixture("auth-receipt-v3-independent.json")
         dev = fixture("dev-receipt-v2-independent.json")
