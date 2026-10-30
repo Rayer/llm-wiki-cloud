@@ -32,6 +32,7 @@ export function ProjectDescriptionEditor({ projectId }: { projectId: string }) {
   const tRef = useRef(t);
   const [saved, setSaved] = useState<ProjectDescription | null>(null);
   const [draft, setDraft] = useState('');
+  const draftRef = useRef(draft);
   const [loadState, setLoadState] = useState<'loading' | 'ready' | 'failed'>('loading');
   const [loadingError, setLoadingError] = useState('');
   const [saving, setSaving] = useState(false);
@@ -54,6 +55,10 @@ export function ProjectDescriptionEditor({ projectId }: { projectId: string }) {
   useLayoutEffect(() => {
     tRef.current = t;
   }, [t]);
+
+  useLayoutEffect(() => {
+    draftRef.current = draft;
+  }, [draft]);
 
   useLayoutEffect(() => {
     currentScopeRef.current = currentScope;
@@ -128,13 +133,15 @@ export function ProjectDescriptionEditor({ projectId }: { projectId: string }) {
   const refreshLatest = useCallback(async () => {
     const scope = currentScope;
     const sequence = ++sequenceRef.current;
+    const draftAtRequest = draft;
+    const normalizedDraftAtRequest = normalizeProjectDescription(draftAtRequest);
     setLatestLoading(true);
     setLatestError('');
     try {
       const result = await getProjectDescription(scope.projectId);
       if (!requestIsCurrent(scope, sequence)) return;
       setLatest(result);
-      if (result.description === normalizedDraft) {
+      if (result.description === normalizedDraftAtRequest && draftRef.current === draftAtRequest) {
         setSaved(result);
         setDraft(result.description);
         updateProjectDescription(scope.projectId, result.description, result.revision);
@@ -146,7 +153,7 @@ export function ProjectDescriptionEditor({ projectId }: { projectId: string }) {
     } finally {
       if (requestIsCurrent(scope, sequence)) setLatestLoading(false);
     }
-  }, [currentScope, normalizedDraft, requestIsCurrent, updateProjectDescription]);
+  }, [currentScope, draft, requestIsCurrent, updateProjectDescription]);
 
   const save = useCallback(async () => {
     if (!saved || !dirty || !valid || saving || conflict) return;
