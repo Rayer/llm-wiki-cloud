@@ -1,0 +1,10 @@
+.git/
+.build/
+**/node_modules/
+**/.next/
+apps/frontend/
+apps/bff/.gocache/
+apps/bff/bin/
+apps/bff/**/*.test
+apps/bff/**/*.out
+**/__pycache__/

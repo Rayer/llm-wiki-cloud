@@ -28,24 +28,26 @@ const (
 
 var (
 	allowedEnvironments                 = map[string]struct{}{"development": {}, "production": {}}
-	allowedComponents                   = []string{"auth", "bff", "worker", "exportjob", "frontend"}
-	componentSet                        = map[string]struct{}{"auth": {}, "bff": {}, "worker": {}, "exportjob": {}, "frontend": {}}
+	allowedComponents                   = []string{"auth", "bff", "worker", "exportjob", "documentimport", "frontend"}
+	componentSet                        = map[string]struct{}{"auth": {}, "bff": {}, "worker": {}, "exportjob": {}, "documentimport": {}, "frontend": {}}
 	secretRefPattern                    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 	secretValuePattern                  = regexp.MustCompile(`(?i)(?:github_pat_|ghp_|xox[baprs]-|-----begin|sk-[A-Za-z0-9])`)
 	secretVersionPattern                = regexp.MustCompile(`^[1-9][0-9]*$`)
 	profileRuntimeServiceAccountPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z0-9.-]+\.iam\.gserviceaccount\.com$`)
+	documentImportJobNamePattern        = regexp.MustCompile(`^[a-z][a-z0-9-]{0,61}[a-z0-9]$`)
 	pipelineDemoUserIDPattern           = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 	demoEmailPattern                    = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`)
 	demoRolePattern                     = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
 )
 
 type EnvironmentConfig struct {
-	GCP       GCPConfig       `yaml:"gcp"`
-	Auth      AuthConfig      `yaml:"auth"`
-	BFF       BFFConfig       `yaml:"bff"`
-	Worker    WorkerConfig    `yaml:"worker"`
-	ExportJob ExportJobConfig `yaml:"export_job"`
-	Frontend  FrontendConfig  `yaml:"frontend"`
+	GCP               GCPConfig               `yaml:"gcp"`
+	Auth              AuthConfig              `yaml:"auth"`
+	BFF               BFFConfig               `yaml:"bff"`
+	Worker            WorkerConfig            `yaml:"worker"`
+	ExportJob         ExportJobConfig         `yaml:"export_job"`
+	DocumentImportJob DocumentImportJobConfig `yaml:"document_import_job"`
+	Frontend          FrontendConfig          `yaml:"frontend"`
 }
 
 type GCPConfig struct {
@@ -92,6 +94,7 @@ type BFFConfig struct {
 	Bucket                       string                  `yaml:"-" json:"bucket,omitempty"`
 	FirestoreDatabaseID          string                  `yaml:"-" json:"firestore_database_id,omitempty"`
 	PipelineJobURL               string                  `yaml:"-" json:"pipeline_job_url,omitempty"`
+	DocumentImportJobURL         string                  `yaml:"-" json:"document_import_job_url,omitempty"`
 	AuthServiceURL               string                  `yaml:"-" json:"auth_service_url,omitempty"`
 	MCPResourceOrigin            string                  `yaml:"-" json:"mcp_resource_origin,omitempty"`
 	AllowedOrigins               []string                `yaml:"-" json:"allowed_origins,omitempty"`
@@ -165,6 +168,7 @@ type BFFSourceProjection struct {
 	MCPResourceOrigin            string                         `json:"mcp_resource_origin"`
 	MCP                          runtimeconfig.BFFMCP           `json:"mcp"`
 	PipelineJobURL               string                         `json:"pipeline_job_url"`
+	DocumentImportJobURL         string                         `json:"document_import_job_url,omitempty"`
 	ExportJobURL                 string                         `json:"export_job_url"`
 	ExportSigningServiceAccount  string                         `json:"export_signing_service_account"`
 	AllowedOrigins               []string                       `json:"allowed_origins"`
@@ -230,6 +234,23 @@ type ExportJobConfig struct {
 	MaxRetries            int    `yaml:"max_retries" json:"max_retries"`
 	Parallelism           int    `yaml:"parallelism" json:"parallelism"`
 	Tasks                 int    `yaml:"tasks" json:"tasks"`
+}
+
+// DocumentImportJobConfig is a provider-free projection of the isolated
+// converter Job target. Its runtime identity must not receive provider secrets.
+type DocumentImportJobConfig struct {
+	Enabled               bool   `yaml:"enabled" json:"enabled"`
+	JobName               string `yaml:"job_name" json:"job_name,omitempty"`
+	RuntimeServiceAccount string `yaml:"runtime_service_account" json:"runtime_service_account,omitempty"`
+	Bucket                string `yaml:"bucket" json:"bucket,omitempty"`
+	FirestoreDatabaseID   string `yaml:"firestore_database_id" json:"firestore_database_id,omitempty"`
+	Location              string `yaml:"location" json:"location,omitempty"`
+	JobTimeout            string `yaml:"job_timeout" json:"job_timeout"`
+	MaxRetries            int    `yaml:"max_retries" json:"max_retries"`
+	Parallelism           int    `yaml:"parallelism" json:"parallelism"`
+	Tasks                 int    `yaml:"tasks" json:"tasks"`
+	CPU                   int    `yaml:"cpu" json:"cpu"`
+	Memory                string `yaml:"memory" json:"memory"`
 }
 
 type FrontendConfig struct {
@@ -337,18 +358,19 @@ type QueryConfigIdentity struct {
 }
 
 type Normalized struct {
-	Environment string              `json:"environment"`
-	ConfigPath  string              `json:"config_path"`
-	Selected    []string            `json:"selected_components"`
-	GCP         GCPConfig           `json:"gcp"`
-	Auth        AuthConfig          `json:"auth"`
-	BFF         BFFConfig           `json:"bff"`
-	Worker      WorkerConfig        `json:"worker"`
-	ExportJob   ExportJobConfig     `json:"export_job"`
-	Frontend    FrontendConfig      `json:"frontend"`
-	QueryConfig QueryConfigIdentity `json:"query_config"`
-	Components  map[string]any      `json:"components"`
-	Evidence    Evidence            `json:"evidence"`
+	Environment       string                  `json:"environment"`
+	ConfigPath        string                  `json:"config_path"`
+	Selected          []string                `json:"selected_components"`
+	GCP               GCPConfig               `json:"gcp"`
+	Auth              AuthConfig              `json:"auth"`
+	BFF               BFFConfig               `json:"bff"`
+	Worker            WorkerConfig            `json:"worker"`
+	ExportJob         ExportJobConfig         `json:"export_job"`
+	DocumentImportJob DocumentImportJobConfig `json:"document_import_job"`
+	Frontend          FrontendConfig          `json:"frontend"`
+	QueryConfig       QueryConfigIdentity     `json:"query_config"`
+	Components        map[string]any          `json:"components"`
+	Evidence          Evidence                `json:"evidence"`
 }
 
 type Evidence struct {
@@ -541,11 +563,24 @@ func loadWithInputs(environment, configPath, components, bffInputsPath, authInpu
 		if component == "exportjob" && !config.ExportJob.Enabled {
 			return Normalized{}, errors.New("exportjob is disabled until its environment runtime resources are provisioned and read back")
 		}
+		if component == "documentimport" && environment != "development" {
+			return Normalized{}, errors.New("documentimport is enabled only for the reviewed development environment")
+		}
+		if component == "documentimport" && !config.DocumentImportJob.Enabled {
+			return Normalized{}, errors.New("documentimport is disabled until its environment runtime resources are provisioned and read back")
+		}
 	}
 	for _, component := range selected {
 		if component == "exportjob" && !contains(selected, "bff") {
 			return Normalized{}, errors.New("exportjob deployment must include bff so its invocation URL is configured from the same reviewed plan")
 		}
+		if component == "documentimport" && !contains(selected, "bff") {
+			return Normalized{}, errors.New("documentimport deployment must include bff so its invocation URL is configured from the same reviewed plan")
+		}
+	}
+	if requireBFFInputs && config.DocumentImportJob.Enabled &&
+		config.BFF.DocumentImportJobURL != documentImportRunURL(config.GCP.ProjectID, config.DocumentImportJob.Location, config.DocumentImportJob.JobName) {
+		return Normalized{}, errors.New("BFF document import URL does not match the reviewed Job target")
 	}
 	var query QueryConfigIdentity
 	if config.BFF.RuntimeInputs != nil {
@@ -560,7 +595,7 @@ func loadWithInputs(environment, configPath, components, bffInputsPath, authInpu
 		ConfigPath:  filepath.ToSlash(filepath.Join("deploy", "environments", environment+".yaml")),
 		Selected:    selected,
 		GCP:         config.GCP, Auth: config.Auth, BFF: config.BFF,
-		Worker: config.Worker, ExportJob: config.ExportJob, Frontend: config.Frontend, QueryConfig: query,
+		Worker: config.Worker, ExportJob: config.ExportJob, DocumentImportJob: config.DocumentImportJob, Frontend: config.Frontend, QueryConfig: query,
 		Components: componentInputs(config, query, selected),
 	}
 	fingerprintInput := result
@@ -604,7 +639,7 @@ func loadBFFInputDescriptor(path, environment string) (BFFSourceProjection, erro
 	if schemaVersion == 3 {
 		versionKey = "auth_consumer"
 	}
-	if len(fields) != len(required)+1 {
+	if len(fields) != len(required)+1 && len(fields) != len(required)+2 {
 		return BFFSourceProjection{}, errors.New("generated BFF input descriptor has an invalid shape")
 	}
 	for _, key := range required {
@@ -639,6 +674,9 @@ func loadBFFInputDescriptor(path, environment string) (BFFSourceProjection, erro
 	}
 	if !validFrontendRuntimeURL(projection.MCPResourceOrigin, environment) {
 		return BFFSourceProjection{}, errors.New("generated BFF MCP resource origin is invalid for the selected environment")
+	}
+	if projection.DocumentImportJobURL != "" && !validDocumentImportRunURL(projection.DocumentImportJobURL, environment) {
+		return BFFSourceProjection{}, errors.New("generated BFF document import Job URL is invalid")
 	}
 	if err := runtimeconfig.ValidateBFFMCP(projection.MCP); err != nil {
 		return BFFSourceProjection{}, err
@@ -738,6 +776,10 @@ func validateBFFDescriptorShape(fields map[string]json.RawMessage, schemaVersion
 		!strings.EqualFold(strings.TrimSpace(string(fields["local"])), "null") {
 		return errors.New("generated BFF input descriptor has an invalid nested shape")
 	}
+	if raw, ok := fields["document_import_job_url"]; ok &&
+		!strings.EqualFold(strings.TrimSpace(string(raw)), "null") && len(raw) > 0 && raw[0] != '"' {
+		return errors.New("generated BFF document import Job URL has an invalid shape")
+	}
 	if schemaVersion == 2 {
 		if !exact(fields["jwt_secret_reference"], "source", "env_name", "resource") {
 			return errors.New("generated BFF JWT reference has an invalid shape")
@@ -763,6 +805,7 @@ func applyBFFInputDescriptor(config *EnvironmentConfig, inputs BFFSourceProjecti
 	bff.Bucket = inputs.Bucket
 	bff.FirestoreDatabaseID = inputs.FirestoreDatabaseID
 	bff.PipelineJobURL = inputs.PipelineJobURL
+	bff.DocumentImportJobURL = inputs.DocumentImportJobURL
 	bff.AuthServiceURL = inputs.AuthServiceURL
 	bff.MCPResourceOrigin = inputs.MCPResourceOrigin
 	bff.AllowedOrigins = inputs.AllowedOrigins
@@ -933,6 +976,37 @@ func validateConfigForEnvironment(environment string, config EnvironmentConfig) 
 	return validateConfigForSelection(environment, config, false)
 }
 
+func validDocumentImportJobName(value string) bool {
+	return documentImportJobNamePattern.MatchString(value)
+}
+
+func documentImportRunURL(project, location, job string) string {
+	return fmt.Sprintf("https://run.googleapis.com/v2/projects/%s/locations/%s/jobs/%s:run", project, location, job)
+}
+
+func validDocumentImportRunURL(value, environment string) bool {
+	const prefix = "https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/"
+	if !strings.HasPrefix(value, prefix) || strings.ContainsAny(value, "?#\\\r\n\t ") {
+		return false
+	}
+	job := strings.TrimSuffix(strings.TrimPrefix(value, prefix), ":run")
+	if !validDocumentImportJobName(job) || value != documentImportRunURL("llm-wiki-cloud", "asia-east1", job) {
+		return false
+	}
+	if environment == "development" {
+		return strings.HasSuffix(job, "-dev")
+	}
+	return environment == "production" && !strings.HasSuffix(job, "-dev")
+}
+
+func validDocumentImportTarget(job DocumentImportJobConfig, environment string, gcp GCPConfig, worker WorkerConfig, database string) bool {
+	return job.Enabled && environment == "development" && validDocumentImportJobName(job.JobName) &&
+		profileRuntimeServiceAccountPattern.MatchString(job.RuntimeServiceAccount) && job.Bucket != "" &&
+		job.FirestoreDatabaseID != "" && job.Location == gcp.Region && job.JobTimeout == "180s" &&
+		job.MaxRetries == 0 && job.Parallelism == 1 && job.Tasks == 1 && job.CPU == 1 &&
+		job.Memory == "1Gi" && job.Bucket == worker.Bucket && job.FirestoreDatabaseID == database
+}
+
 func validateConfigForSelection(environment string, config EnvironmentConfig, hasBFFInputs bool) error {
 	return validateConfigForSelectedComponents(environment, config, hasBFFInputs, false)
 }
@@ -992,6 +1066,11 @@ func validateConfigForSelectedComponents(environment string, config EnvironmentC
 			if strings.TrimSpace(config.BFF.SecretReferences.JWT) == "" {
 				return errors.New("missing required field bff.secret_references.jwt")
 			}
+		}
+	}
+	if config.DocumentImportJob.Enabled {
+		if !validDocumentImportTarget(config.DocumentImportJob, environment, config.GCP, config.Worker, config.Auth.FirestoreDatabaseID) {
+			return errors.New("document_import_job target or bounded runtime settings are invalid")
 		}
 	}
 	if config.GCP.ProjectID != "llm-wiki-cloud" || config.GCP.Region != "asia-east1" {
@@ -1233,7 +1312,7 @@ func componentInputs(config EnvironmentConfig, query QueryConfigIdentity, select
 			if config.BFF.SecretReferences.TypeSafeJevAPIKey != nil {
 				secretReferences["typesafe_jev_api_key"] = config.BFF.SecretReferences.TypeSafeJevAPIKey
 			}
-			bff := map[string]any{"service_name": config.BFF.ServiceName, "runtime_service_account": config.BFF.RuntimeServiceAccount, "network": config.BFF.Network, "subnet": config.BFF.Subnet, "vpc_egress": config.BFF.VPCEgress, "ingress": config.BFF.Ingress, "max_instances": config.BFF.MaxInstances, "bucket": config.BFF.Bucket, "firestore_database_id": config.BFF.FirestoreDatabaseID, "pipeline_job_name": config.BFF.PipelineJobName, "pipeline_job_location": config.BFF.PipelineJobLocation, "pipeline_job_url": config.BFF.PipelineJobURL, "auth_service_url": config.BFF.AuthServiceURL, "mcp_resource_origin": config.BFF.MCPResourceOrigin, "allowed_origins": config.BFF.AllowedOrigins, "dev_jwt": false, "query_config": query, "secret_references": secretReferences, "config_secret_resource": config.BFF.ConfigSecretResource, "pipeline_daily_limit": config.BFF.PipelineDailyLimit, "pipeline_min_new_raw": config.BFF.PipelineMinNewRaw, "runtime_inputs": config.BFF.RuntimeInputs}
+			bff := map[string]any{"service_name": config.BFF.ServiceName, "runtime_service_account": config.BFF.RuntimeServiceAccount, "network": config.BFF.Network, "subnet": config.BFF.Subnet, "vpc_egress": config.BFF.VPCEgress, "ingress": config.BFF.Ingress, "max_instances": config.BFF.MaxInstances, "bucket": config.BFF.Bucket, "firestore_database_id": config.BFF.FirestoreDatabaseID, "pipeline_job_name": config.BFF.PipelineJobName, "pipeline_job_location": config.BFF.PipelineJobLocation, "pipeline_job_url": config.BFF.PipelineJobURL, "document_import_job_url": config.BFF.DocumentImportJobURL, "auth_service_url": config.BFF.AuthServiceURL, "mcp_resource_origin": config.BFF.MCPResourceOrigin, "allowed_origins": config.BFF.AllowedOrigins, "dev_jwt": false, "query_config": query, "secret_references": secretReferences, "config_secret_resource": config.BFF.ConfigSecretResource, "pipeline_daily_limit": config.BFF.PipelineDailyLimit, "pipeline_min_new_raw": config.BFF.PipelineMinNewRaw, "runtime_inputs": config.BFF.RuntimeInputs}
 			if config.BFF.RuntimeInputs != nil {
 				bff["pipeline_schedule"] = config.BFF.RuntimeInputs.PipelineSchedule
 			}
@@ -1255,6 +1334,8 @@ func componentInputs(config EnvironmentConfig, query QueryConfigIdentity, select
 			components[name] = map[string]any{"job_name": config.Worker.JobName, "runtime_service_account": config.Worker.RuntimeServiceAccount, "bucket": config.Worker.Bucket, "location": config.Worker.Location, "args": config.Worker.Args, "secret_references": map[string]any{"deepseek_api_key": config.Worker.SecretReferences.DeepSeekAPIKey}}
 		case "exportjob":
 			components[name] = config.ExportJob
+		case "documentimport":
+			components[name] = config.DocumentImportJob
 		case "frontend":
 			components[name] = map[string]any{"project_name": config.Frontend.ProjectName, "team_slug": config.Frontend.TeamSlug, "repository": config.Frontend.Repository, "root_directory": config.Frontend.RootDirectory, "stable_aliases": config.Frontend.StableAliases, "config_schema_version": config.Frontend.ConfigSchemaVersion, "config_url": config.Frontend.ConfigURL}
 		}

@@ -33,6 +33,29 @@ func TestRejectsUnsafeRelativePaths(t *testing.T) {
 	}
 }
 
+func TestDeleteFileRequiresExactGeneration(t *testing.T) {
+	client := New(t.TempDir()).WithScope("u", "p")
+	ctx := context.Background()
+	const objectPath = ".lwc/document-imports/document-1/original"
+
+	generation, err := client.WriteFileIfGeneration(ctx, []byte("original"), objectPath, 0)
+	if err != nil {
+		t.Fatalf("WriteFileIfGeneration() error = %v", err)
+	}
+	if err := client.DeleteFile(ctx, objectPath, generation+1); !errors.Is(err, store.ErrGenerationMismatch) {
+		t.Fatalf("DeleteFile(stale generation) error = %v, want generation mismatch", err)
+	}
+	if _, gotGeneration, err := client.ReadFileWithGeneration(ctx, objectPath); err != nil || gotGeneration != generation {
+		t.Fatalf("stale delete changed object: generation=%d err=%v", gotGeneration, err)
+	}
+	if err := client.DeleteFile(ctx, objectPath, generation); err != nil {
+		t.Fatalf("DeleteFile() error = %v", err)
+	}
+	if _, _, err := client.ReadFileWithGeneration(ctx, objectPath); !errors.Is(err, store.ErrObjectNotExist) && !errors.Is(err, storage.ErrObjectNotExist) {
+		t.Fatalf("ReadFileWithGeneration() error = %v, want object not exist", err)
+	}
+}
+
 func TestListProjectsScansIndexFiles(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, root, "users/u/projects/demo/index.md", "# Demo")

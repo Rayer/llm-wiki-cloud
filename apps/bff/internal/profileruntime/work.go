@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"cloud.google.com/go/firestore"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 const WorkCollection = "profile_runtime_work"
@@ -30,6 +32,7 @@ type Work struct {
 	Token           string                       `firestore:"token"`
 	LeaseUntil      time.Time                    `firestore:"lease_until"`
 	Status          string                       `firestore:"status"`
+	DocumentID      string                       `firestore:"document_id,omitempty"`
 	ProfileSnapshot llm.OperationProfileSnapshot `firestore:"llm_profile_snapshot,omitempty"`
 }
 
@@ -42,4 +45,26 @@ func WorkID(w Work) string {
 func Enqueue(tx *firestore.Transaction, client *firestore.Client, w Work) error {
 	w.Pending, w.Status = true, "pending"
 	return tx.Set(scopedfirestore.Collection(client, WorkCollection).Doc(WorkID(w)), w)
+}
+
+// Requeue preserves the existing retry budget and does not steal an active
+// lease when a document worker schedules source-save recovery.
+func Requeue(tx *firestore.Transaction, client *firestore.Client, w Work, now time.Time) error {
+	ref := scopedfirestore.Collection(client, WorkCollection).Doc(WorkID(w))
+	snapshot, err := tx.Get(ref)
+	if err != nil && status.Code(err) != codes.NotFound {
+		return err
+	}
+	if err == nil {
+		var prior Work
+		if err := snapshot.DataTo(&prior); err != nil {
+			return err
+		}
+		if prior.Pending && prior.LeaseUntil.After(now) {
+			return nil
+		}
+		w.Attempts = prior.Attempts
+	}
+	w.Pending, w.Status, w.Token, w.LeaseUntil = true, "pending", "", time.Time{}
+	return tx.Set(ref, w)
 }

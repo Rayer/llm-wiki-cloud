@@ -207,6 +207,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
                 const active = isActive(item.href, item.exact);
                 const Icon = item.icon;
                 const count = item.countKey ? navCounts[item.countKey] : null;
+                const failures = item.href === '/sources' ? navCounts.documentImportFailures : null;
                 return (
                   <NavigationLink
                     key={item.href}
@@ -227,6 +228,11 @@ function ShellContent({ children }: { children: React.ReactNode }) {
                     {count !== null ? (
                       <Badge variant="muted" className="ml-auto shrink-0 tabular-nums">
                         {count}
+                      </Badge>
+                    ) : null}
+                    {failures !== null && failures > 0 ? (
+                      <Badge variant="draft" className="ml-1 shrink-0 tabular-nums" aria-label={t('Source.documentImport.navBadge', { count: failures })}>
+                        {failures}
                       </Badge>
                     ) : null}
                   </NavigationLink>

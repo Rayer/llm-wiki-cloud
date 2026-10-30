@@ -19,7 +19,7 @@ from providers import Providers, CLOUD_BUILD_LOCATION
 from receipt_contract import (ReceiptError, validate_auth_component_receipt,
                               validate_dev_receipt, validate_receipt_pair)
 
-ORDER = ('exportjob', 'auth', 'bff', 'worker', 'frontend')
+ORDER = ('documentimport', 'exportjob', 'auth', 'bff', 'worker', 'frontend')
 PROFILES = read(ROOT / 'deploy/engine/profiles.json')
 RELEASE_IDENTITY_FIELDS = ('source', 'branch', 'tag', 'normalized', 'identities',
                            'dev_reference', 'selected')
@@ -620,7 +620,7 @@ class Engine:
         precreate_statuses = {'SUBMITTING', 'SUBMIT_UNKNOWN', 'SUBMIT_REJECTED',
                               'IDENTITY_INVALID'}
         for component, build in builds.items():
-            if (component not in ('auth', 'bff') or component not in retained_plan['selected'] or
+            if (component not in ('auth', 'bff', 'documentimport') or component not in retained_plan['selected'] or
                     not isinstance(build, dict) or build.get('status') not in checkpoint_statuses or
                     not isinstance(build.get('identity_verified'), bool)):
                 raise Breakpoint('stage1-checkpoint-invalid', 'failed', False,
@@ -780,12 +780,12 @@ class Engine:
                     self.state['builds'][c] = build
                     self.save()
                 else:
-                    artifact = (self.prepare_container(c) if c in ('auth', 'bff')
+                    artifact = (self.prepare_container(c) if c in ('auth', 'bff', 'documentimport')
                                 else self.provider.prepare(c))
                 receipt = {'schema': 2, 'component': c, 'identity': self.plan['identities'][c],
                            'build_sha': self.plan['source'], 'artifact': artifact,
                            'target_config': digest(self.plan['normalized']['frontend']) if c == 'frontend' else None}
-                if c in ('auth', 'bff'):
+                if c in ('auth', 'bff', 'documentimport'):
                     receipt['build'] = self.safe_build_record(self.state['builds'][c])
                 if (c == 'auth' and source_mode == 'independent' and
                         isinstance(self.plan.get('auth_source'), dict)):
@@ -976,9 +976,9 @@ class Engine:
             entry['status'] = 'rollback_pending'
             self.save()
             try:
-                if not self.provider.observe(c, entry['prior'], {}, True):
+                if not self.provider.observe(c, entry['prior'], entry.get('candidate', {}), True):
                     try:
-                        self.provider.rollback(c, entry['prior'])
+                        self.provider.rollback(c, entry['prior'], entry.get('candidate', {}))
                     except Breakpoint:
                         # A timeout can be accepted; verified readback is authoritative.
                         pass
@@ -1028,6 +1028,9 @@ class Engine:
                 continue
             require(entry['status'] not in ('rollback_pending', 'rollback_unknown', 'rollback_failed'), 'recovery-must-be-reconciled')
             changed.append(c)
+            if c == 'documentimport':
+                entry['candidate'].setdefault('create_if_absent', entry['prior'].get('absent') is True)
+                self.save()
             was_pending = entry['status'] in ('pending', 'unknown')
             entry['status'] = 'pending'
             self.state['status'] = 'deploying'
@@ -1041,7 +1044,7 @@ class Engine:
                         entry['status'] = 'verified'
                         self.save()
                         continue
-                    if c in ('worker', 'exportjob'):
+                    if c in ('worker', 'exportjob', 'documentimport'):
                         raise Breakpoint('pending-job-mismatch', 'failed', True, 'rollback')
                     require(bool(entry['candidate']), 'mutation-result-unknown')
                 deploy_error = None

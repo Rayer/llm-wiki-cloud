@@ -388,7 +388,7 @@ class EngineWorkflowContract(unittest.TestCase):
 
     def test_profiles_and_real_component_operations(self):
         profiles=json.loads((ROOT/'deploy/engine/profiles.json').read_text())
-        self.assertEqual(set(profiles),{'auth','bff','worker','exportjob','frontend'})
+        self.assertEqual(set(profiles),{'auth','bff','worker','exportjob','documentimport','frontend'})
         for c,p in profiles.items():
             self.assertGreater(p['revision'],0);self.assertTrue(p['inputs'])
         s=(ROOT/'deploy/engine/providers.py').read_text()
@@ -396,7 +396,11 @@ class EngineWorkflowContract(unittest.TestCase):
             self.assertIn('def '+op+'(',s)
         self.assertIn("'--skip-domain'",s)
         self.assertIn('range(12)',s);self.assertIn('time.sleep(5)',s)
-        for op in ("'create'", "'delete'", "'execute'"):
-            self.assertNotIn(op,s)
+        creation = s[s.index('    def document_import_create('):s.index('    def service_matches(')]
+        self.assertIn("'jobs', 'create'", creation)
+        rollback = s[s.index('    def rollback('):]
+        self.assertIn("if c == 'documentimport' and prior.get('absent') is True:", rollback)
+        self.assertIn("self.cloud(c, 'jobs', 'delete', name, mutation=True)", rollback)
+        self.assertNotIn("'jobs', 'execute'", s)
 
 if __name__=='__main__':unittest.main()

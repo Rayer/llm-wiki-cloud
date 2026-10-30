@@ -118,8 +118,42 @@ elif tool == 'gcloud':
             if s.get('unreadable'): fail=True
             else: out=s['revisions'][name]
         elif op == 'describe':
-            if s.get('unreadable') or name not in s['resources']: fail=True
+            if s.get('unreadable'): fail=True
+            elif name not in s['resources']:
+                fail=True
+                failure_message='ERROR: (gcloud.run.jobs.describe) NOT_FOUND: Job does not exist.\n'
             else: out=s['resources'][name]
+        elif kind == 'jobs' and op == 'create':
+            if name in s['resources']:
+                fail=True
+                failure_message='ERROR: (gcloud.run.jobs.create) ALREADY_EXISTS: Job exists.\n'
+            else:
+                env_arg=flag('--set-env-vars','').removeprefix('^|^')
+                env=[dict(name=pair.split('=',1)[0],value=pair.split('=',1)[1])
+                     for pair in env_arg.split('|') if pair]
+                labels=dict(pair.split('=',1) for pair in flag('--labels','').split(',') if pair)
+                container={'image':flag('--image'),'env':env,
+                           'resources':{'limits':{'cpu':flag('--cpu'),'memory':flag('--memory')}}}
+                spec={'serviceAccountName':flag('--service-account'),'containers':[container],
+                      'timeoutSeconds':flag('--task-timeout').removesuffix('s'),
+                      'maxRetries':int(flag('--max-retries'))}
+                s['resources'][name]={'metadata':{'name':name,'labels':labels},'spec':{'template':{'spec':{
+                    'parallelism':int(flag('--parallelism')),'taskCount':int(flag('--tasks')),
+                    'template':{'spec':spec}}}}}
+                s.setdefault('iam_policies',{})[name]=copy.deepcopy(s.get('document_import_create_policy',
+                    {'etag':'etag-1','bindings':[]}))
+                out=s['resources'][name]
+        elif kind == 'jobs' and op == 'get-iam-policy':
+            out=s.get('iam_policies',{}).get(name,{'etag':'etag-0','bindings':[]})
+        elif kind == 'jobs' and op == 'set-iam-policy':
+            policy=json.loads(Path(a[4]).read_text())
+            old=s.get('iam_policies',{}).get(name,{'etag':'etag-0','bindings':[]})
+            policy['etag']='etag-'+str(int(old['etag'].removeprefix('etag-'))+1)
+            s.setdefault('iam_policies',{})[name]=policy
+            out=policy
+        elif kind == 'jobs' and op == 'delete':
+            s['resources'].pop(name,None)
+            s.get('iam_policies',{}).pop(name,None)
         elif op == 'replace':
             body=json.loads(Path(name).read_text()); name=body['metadata']['name']
             retained=body['spec']['template']['metadata']['name']

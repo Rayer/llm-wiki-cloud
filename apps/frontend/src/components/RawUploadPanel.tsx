@@ -2,12 +2,12 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FileUp, Loader2, RotateCcw } from 'lucide-react';
-import { RAW_UPLOAD_MAX_BYTES, uploadRawFile, type RawUploadResult } from '@/lib/api';
+import { RAW_UPLOAD_MAX_BYTES, getDocumentImport, uploadRawFile, type DocumentImportRecord, type RawFileUploadResult, type RawUploadResult } from '@/lib/api';
 import { useT } from '@/lib/i18n';
 import { useWorkspace } from './WorkspaceProvider';
 import { Badge } from './ui/Badge';
 
-type UploadItemStatus = 'queued' | 'uploading' | 'created' | 'already_exists' | 'replaced' | 'failed';
+type UploadItemStatus = 'queued' | 'uploading' | 'accepted' | 'created' | 'already_exists' | 'replaced' | 'failed';
 
 type UploadItem = {
   id: string;
@@ -17,7 +17,10 @@ type UploadItem = {
   status: UploadItemStatus;
   progress: number;
   error?: string;
-  result?: RawUploadResult;
+  result?: RawFileUploadResult;
+  document?: DocumentImportRecord;
+  submissionID?: string;
+  batchID?: string;
 };
 
 export type RawUploadsSettled = { changed: boolean; projectId: string };
@@ -42,15 +45,16 @@ type UploadProject = { id: string; name: string };
 
 const UPLOAD_CONCURRENCY = 3;
 const RAW_ACCEPT =
-  '.md,.txt,.html,.htm,.csv,.json,.xml,.yaml,.yml,.toml,.ini,.cfg,.log,.rst,.org,.tex';
+  '.md,.txt,.html,.htm,.csv,.json,.xml,.yaml,.yml,.toml,.ini,.cfg,.log,.rst,.org,.tex,.pdf,.docx,.pptx,.xlsx,.xls';
 const RAW_UPLOAD_FILENAME = /^[^/\x00]+\.(md|txt|html?|csv|json|xml|ya?ml|toml|ini|cfg|log|rst|org|tex)$/;
+const DOCUMENT_IMPORT_FILENAME = /\.(pdf|docx|pptx|xlsx|xls)$/i;
 
 let uploadItemId = 0;
 
 function folderCandidateError(file: File): string | undefined {
   if (file.size === 0) return 'RawUpload.emptyFile';
   if (file.size > RAW_UPLOAD_MAX_BYTES) return 'RawUpload.fileTooLarge';
-  if (file.name === '.md' || !RAW_UPLOAD_FILENAME.test(file.name)) return 'RawUpload.unsupportedFile';
+  if (file.name === '.md' || (!RAW_UPLOAD_FILENAME.test(file.name) && !DOCUMENT_IMPORT_FILENAME.test(file.name))) return 'RawUpload.unsupportedFile';
   if (file.name.includes('\\') || (file.name.length > 1 && file.name[1] === ':') || [...file.name].some((character) => {
     const codePoint = character.codePointAt(0) ?? 0;
     return codePoint < 32 || (codePoint >= 127 && codePoint <= 159);
@@ -63,7 +67,9 @@ function formatBytes(bytes: number, locale: 'zh-TW' | 'zh-CN' | 'en'): string {
   return `${bytes.toLocaleString(locale === 'zh-TW' ? 'zh-TW' : locale === 'zh-CN' ? 'zh-CN' : 'en-US')} B`;
 }
 
-function automationStatusLabel(status: string, t: (key: string) => string): string {
+type Translator = (key: string, params?: Record<string, string | number>) => string;
+
+function automationStatusLabel(status: string, t: Translator): string {
   const copy: Record<string, [string, string]> = {
     pending: ['Pipeline.automationQueued', 'Saved and waiting for automatic processing; not yet published or searchable.'],
     not_started_disabled: ['Pipeline.automationDisabledPending', 'Saved; automatic processing is disabled by the Admin or Project switch.'],
@@ -75,30 +81,33 @@ function automationStatusLabel(status: string, t: (key: string) => string): stri
   return translated === key ? fallback : translated;
 }
 
-function uploadStatusLabel(status: UploadItemStatus, t: (key: string) => string): string {
+function uploadStatusLabel(status: UploadItemStatus, t: Translator): string {
   switch (status) {
     case 'queued':
-      return t('RawUpload.statusQueued');
+      return t('RawUpload.status.queued');
     case 'uploading':
-      return t('RawUpload.statusUploading');
+      return t('RawUpload.status.uploading');
+    case 'accepted':
+      return t('RawUpload.status.accepted');
     case 'created':
-      return t('RawUpload.statusCreated');
+      return t('RawUpload.status.created');
     case 'already_exists':
-      return t('RawUpload.statusAlreadyExists');
+      return t('RawUpload.status.alreadyExists');
     case 'replaced':
-      return t('RawUpload.statusReplaced');
+      return t('RawUpload.status.replaced');
     case 'failed':
-      return t('RawUpload.statusFailed');
+      return t('RawUpload.status.failed');
   }
 }
 
-function summarizeUploads(items: UploadItem[], t: (key: string, params?: Record<string, string | number>) => string): string {
+function summarizeUploads(items: UploadItem[], t: Translator): string {
   const created = items.filter((item) => item.status === 'created').length;
   const existing = items.filter((item) => item.status === 'already_exists').length;
+  const accepted = items.filter((item) => item.status === 'accepted').length;
   const replaced = items.filter((item) => item.status === 'replaced').length;
   const failed = items.filter((item) => item.status === 'failed').length;
   const pending = items.filter((item) => item.status === 'queued' || item.status === 'uploading').length;
-  return t('RawUpload.summary', { created, existing, replaced, failed, pending });
+  return t('RawUpload.uploadSummary', { created, existing, accepted, replaced, failed, pending });
 }
 
 export function RawUploadPanel({
@@ -171,6 +180,11 @@ export function RawUploadPanel({
 
         void (async () => {
           try {
+            const submissionID = next.submissionID ?? (DOCUMENT_IMPORT_FILENAME.test(next.file.name) ? crypto.randomUUID() : undefined);
+            if (submissionID && !next.submissionID) {
+              uploadItemsRef.current = uploadItemsRef.current.map((item) => item.id === next.id ? { ...item, submissionID } : item);
+            }
+            const uploadOptions = submissionID ? [submissionID, next.batchID] as const : [];
             const result = await uploadRawFile(next.file, (progress) => {
               if (!mountedRef.current) return;
               const current = uploadItemsRef.current.find((item) => item.id === next.id);
@@ -179,19 +193,20 @@ export function RawUploadPanel({
                 item.id === next.id ? { ...item, progress } : item,
               );
               setUploadItems(uploadItemsRef.current);
-            }, next.projectId);
+            }, next.projectId, ...uploadOptions);
             if (!mountedRef.current) return;
             settledProjectIdsRef.current.add(next.projectId);
-            if (result.status === 'created') createdProjectIdsRef.current.add(next.projectId);
-            if (result.status === 'created' || result.status === 'replaced') {
-              changedProjectIdsRef.current.add(next.projectId);
-            }
+            const documentResult = 'document_id' in result ? result : null;
+            const rawResult = documentResult ? null : result as RawUploadResult;
+            if (rawResult?.status === 'created') createdProjectIdsRef.current.add(next.projectId);
+            if (rawResult?.status === 'created' || rawResult?.status === 'replaced') changedProjectIdsRef.current.add(next.projectId);
             uploadItemsRef.current = uploadItemsRef.current.map((item) =>
               item.id === next.id
-                ? { ...item, status: result.status, progress: 100, result, error: undefined }
+                ? { ...item, status: documentResult ? 'accepted' : rawResult!.status, progress: 100, result, document: documentResult ?? undefined, submissionID, error: undefined }
                 : item,
             );
             setUploadItems(uploadItemsRef.current);
+            if (documentResult) void refreshNavCounts();
           } catch (err) {
             if (!mountedRef.current) return;
             uploadItemsRef.current = uploadItemsRef.current.map((item) =>
@@ -199,7 +214,7 @@ export function RawUploadPanel({
                 ? {
                     ...item,
                     status: 'failed',
-                    error: err instanceof Error ? err.message : 'Upload failed',
+                    error: err instanceof Error ? err.message : t('RawUpload.uploadFailed'),
                   }
                 : item,
             );
@@ -231,7 +246,7 @@ export function RawUploadPanel({
     };
 
     queueMicrotask(pump);
-  }, [refreshNavCounts]);
+  }, [refreshNavCounts, t]);
 
   const enqueueFiles = useCallback((fileList: FileList | File[], project: UploadProject | null) => {
     if (isDemoSession) {
@@ -241,6 +256,7 @@ export function RawUploadPanel({
 
     const files = Array.from(fileList);
     if (files.length === 0 || !project) return;
+    const batchID = crypto.randomUUID();
 
     const projectNameKey = (projectId: string, filename: string) => `${projectId}\0${filename}`;
     const knownNames = new Set(uploadItemsRef.current
@@ -249,7 +265,7 @@ export function RawUploadPanel({
     const next = [...uploadItemsRef.current];
     for (const file of files) {
       const nameKey = projectNameKey(project.id, file.name);
-      if (knownNames.has(nameKey)) {
+      if (knownNames.has(nameKey) && !DOCUMENT_IMPORT_FILENAME.test(file.name)) {
         next.push({
           id: `upload-${++uploadItemId}`,
           file,
@@ -257,7 +273,7 @@ export function RawUploadPanel({
           projectName: project.name,
           status: 'failed',
           progress: 0,
-          error: 'duplicate filename in batch (first file wins)',
+          error: t('RawUpload.duplicateFilenameInBatch'),
         });
         continue;
       }
@@ -269,6 +285,8 @@ export function RawUploadPanel({
         projectName: project.name,
         status: 'queued',
         progress: 0,
+        submissionID: DOCUMENT_IMPORT_FILENAME.test(file.name) ? crypto.randomUUID() : undefined,
+        batchID: DOCUMENT_IMPORT_FILENAME.test(file.name) ? batchID : undefined,
       });
     }
 
@@ -276,7 +294,7 @@ export function RawUploadPanel({
     setUploadItems(next);
     setFileLabel(files.length === 1 ? files[0].name : `${files.length} files selected`);
     pumpUploadQueue();
-  }, [isDemoSession, onBlocked, pumpUploadQueue]);
+  }, [isDemoSession, onBlocked, pumpUploadQueue, t]);
 
   useEffect(() => {
     if (uploadItems.some((item) => item.status === 'queued')) pumpUploadQueue();
@@ -315,7 +333,7 @@ export function RawUploadPanel({
     selectedBasenameCounts.set(candidate.file.name, (selectedBasenameCounts.get(candidate.file.name) ?? 0) + 1);
   }
   const selectedByBasename = new Set(
-    [...selectedBasenameCounts].filter(([, count]) => count > 1).map(([name]) => name),
+    [...selectedBasenameCounts].filter(([name, count]) => count > 1 && !DOCUMENT_IMPORT_FILENAME.test(name)).map(([name]) => name),
   );
   const hasSelectedCollisions = selectedByBasename.size > 0;
   const canConfirmFolder = selectedCandidates.length > 0
@@ -355,7 +373,30 @@ export function RawUploadPanel({
   }, [canConfirmFolder, currentProject, enqueueFiles, selectedCandidates]);
 
   const uploading = uploadItems.some((item) => item.status === 'queued' || item.status === 'uploading');
-  const uploadSummary = useMemo(() => summarizeUploads(uploadItems, t), [uploadItems, t]);
+  const uploadSummary = useMemo(() => summarizeUploads(uploadItems, t), [t, uploadItems]);
+  const pendingDocumentPollKey = uploadItems
+    .filter((item) => item.document && item.document.conversion_state !== 'failed'
+      && !(item.document.conversion_state === 'succeeded' && ['saved', 'failed'].includes(item.document.source_state)))
+    .map((item) => item.id).join(',');
+
+  useEffect(() => {
+    if (!pendingDocumentPollKey) return;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      for (const item of uploadItemsRef.current.filter((current) => pendingDocumentPollKey.split(',').includes(current.id) && current.document)) {
+        void getDocumentImport(item.projectId, item.document!.document_id).then((record) => {
+          if (!mountedRef.current) return;
+          uploadItemsRef.current = uploadItemsRef.current.map((current) => current.id === item.id ? { ...current, document: record } : current);
+          setUploadItems(uploadItemsRef.current);
+          if (record.source_state === 'saved') {
+            changedProjectIdsRef.current.add(item.projectId);
+            void refreshNavCounts();
+          }
+        }).catch(() => {});
+      }
+    }, document.visibilityState === 'visible' ? 5000 : 15000);
+    return () => window.clearInterval(timer);
+  }, [pendingDocumentPollKey, refreshNavCounts]);
 
   return (
     <section className="rounded-[var(--radius-md)] border border-white/10 bg-zinc-950/50 p-4" aria-labelledby={`${inputId}-title`}>
@@ -532,8 +573,13 @@ export function RawUploadPanel({
                 <div className="min-w-0 flex-1">
                   <p className="truncate font-medium text-zinc-200" title={item.file.name}>{item.file.name}</p>
                   <p className="text-zinc-500">{t('RawUpload.projectLabel', { project: item.projectName, id: item.projectId })}</p>
-                  {item.result ? <p className="truncate text-zinc-400" title={item.result.path} data-testid="upload-path">{item.result.path}</p> : null}
-                  {item.result?.processing_status ? (
+                  {item.document ? <p className="truncate text-zinc-400" title={item.document.document_id}>{t('RawUpload.documentStatus', {
+                    id: item.document.document_id,
+                    conversion: t(`Source.documentImport.state.${item.document.conversion_state}`),
+                    source: t(`Source.documentImport.sourceState.${item.document.source_state}`),
+                  })}</p> : null}
+                  {item.result && 'path' in item.result ? <p className="truncate text-zinc-400" title={item.result.path} data-testid="upload-path">{item.result.path}</p> : null}
+                  {item.result && 'processing_status' in item.result && item.result.processing_status ? (
                     <p className="mt-0.5 text-emerald-200/90" data-testid="upload-processing-status" role="status">
                       {automationStatusLabel(item.result.processing_status, t)}
                     </p>
@@ -566,7 +612,7 @@ export function RawUploadPanel({
                       disabled={isDemoSession}
                       className="rounded p-1 text-zinc-400 transition hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
                       aria-label={t('RawUpload.retryFile', { filename: item.file.name })}
-                      title={t('Shell.retry')}
+                      title={t('RawUpload.retry')}
                     >
                       <RotateCcw className="size-3.5" />
                     </button>

@@ -13,7 +13,7 @@ test('Home and Raw share the multi-file raw upload queue', async () => {
   assert.match(uploadPanel, /UPLOAD_CONCURRENCY\s*=\s*3/);
   assert.match(uploadPanel, /already_exists/);
   assert.match(uploadPanel, /upload-summary/);
-  assert.match(uploadPanel, /duplicate filename in batch/);
+  assert.match(uploadPanel, /RawUpload\.duplicateFilenameInBatch/);
   assert.match(uploadPanel, /Retry/);
   assert.match(uploadPanel, /uploadRawFile/);
 });

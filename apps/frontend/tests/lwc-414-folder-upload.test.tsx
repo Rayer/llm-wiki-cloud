@@ -25,7 +25,20 @@ const mocks = vi.hoisted(() => ({
   isDemoSession: false,
   refreshNavCounts: vi.fn(async () => undefined),
   uploadRawFile: vi.fn(),
-  translate: (key: string, params?: Record<string, string | number>) => { void params; return key; },
+  translate: (key: string, params?: Record<string, string | number>) => key === 'RawUpload.retryFile'
+    ? `Retry ${params?.filename ?? ''}`
+    : key === 'RawUpload.fileProgress'
+      ? `${params?.filename ?? ''}: ${params?.status ?? ''} ${params?.progress ?? 0}%`
+    : ({
+      'RawUpload.status.queued': 'Queued',
+      'RawUpload.status.uploading': 'Uploading',
+      'RawUpload.status.accepted': 'Accepted',
+      'RawUpload.status.created': 'Created',
+      'RawUpload.status.alreadyExists': 'Already exists',
+      'RawUpload.status.replaced': 'Replaced',
+      'RawUpload.status.failed': 'Failed',
+      'RawUpload.retry': 'Retry',
+    }[key] ?? key),
 }));
 
 vi.mock('@/lib/api', async () => ({

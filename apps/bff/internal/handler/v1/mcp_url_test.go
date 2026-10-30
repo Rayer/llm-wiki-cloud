@@ -151,7 +151,7 @@ func TestMCPImportURLUsesStrictScopedIntakeAndConfiguredRawLink(t *testing.T) {
 	for _, tool := range discovered.Tools {
 		toolNames[tool.Name] = true
 	}
-	if len(toolNames) != 4 || !toolNames["query_project"] || !toolNames["pipeline_status"] || !toolNames["add_raw"] || !toolNames["import_url"] {
+	if len(toolNames) != 6 || !toolNames["query_project"] || !toolNames["get_document_import"] || !toolNames["pipeline_status"] || !toolNames["add_raw"] || !toolNames["import_url"] || !toolNames["import_document"] {
 		t.Fatalf("MCP SDK discovered tools = %v", toolNames)
 	}
 

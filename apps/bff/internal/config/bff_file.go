@@ -33,6 +33,7 @@ type BFFFile struct {
 	// the former no-instructions, legacy-description, zero-TTL behavior.
 	MCP                          *BFFMCP             `json:"mcp,omitempty"`
 	PipelineJobURL               string              `json:"pipeline_job_url"`
+	DocumentImportJobURL         string              `json:"document_import_job_url,omitempty"`
 	ExportJobURL                 string              `json:"export_job_url"`
 	ExportSigningServiceAccount  string              `json:"export_signing_service_account"`
 	AllowedOrigins               []string            `json:"allowed_origins"`
@@ -248,7 +249,7 @@ func DecodeBFFFile(data []byte) (BFFFile, error) {
 	}
 	version := 0
 	_ = json.Unmarshal(fields["schema_version"], &version)
-	if err := requireJSONKeysWithOptional(fields, bffRequiredKeysForVersion(version), []string{"mcp_resource_origin", "mcp", "byok_credential_encryption_key", "deepseek_api_key_reference", "pipeline_worker_service_account"}); err != nil {
+	if err := requireJSONKeysWithOptional(fields, bffRequiredKeysForVersion(version), []string{"mcp_resource_origin", "mcp", "byok_credential_encryption_key", "deepseek_api_key_reference", "pipeline_worker_service_account", "document_import_job_url"}); err != nil {
 		return BFFFile{}, err
 	}
 	if err := validateBFFNestedShapes(fields); err != nil {
@@ -344,6 +345,7 @@ func validateBFFJSONTypes(fields map[string]json.RawMessage, version int) error 
 		{"firestore_database_id", "string", false},
 		{"auth_service_url", "string", false},
 		{"pipeline_job_url", "string", false},
+		{"document_import_job_url", "string", false},
 		{"export_job_url", "string", false},
 		{"export_signing_service_account", "string", false},
 		{"allowed_origins", "string_array", false},
@@ -371,6 +373,9 @@ func validateBFFJSONTypes(fields map[string]json.RawMessage, version int) error 
 			continue
 		}
 		if field.name == "pipeline_worker_service_account" && fields[field.name] == nil {
+			continue
+		}
+		if field.name == "document_import_job_url" && fields[field.name] == nil {
 			continue
 		}
 		if field.name == "deepseek_api_key_reference" && fields[field.name] == nil {
@@ -726,6 +731,9 @@ func validateBFFFile(file BFFFile) error {
 	if err := validatePipelineJobURL(file.PipelineJobURL); err != nil {
 		return errors.New("BFF config pipeline_job_url is invalid")
 	}
+	if file.DocumentImportJobURL != "" && !validDocumentImportJobURL(file.DocumentImportJobURL, file.Environment, file.GCPProject) {
+		return errors.New("BFF config document_import_job_url is invalid")
+	}
 	if (file.ExportJobURL == "") != (file.ExportSigningServiceAccount == "") {
 		return errors.New("BFF config export settings are incomplete")
 	}
@@ -824,6 +832,30 @@ func validateBFFFile(file BFFFile) error {
 	return nil
 }
 
+func validDocumentImportJobURL(rawURL, environment, project string) bool {
+	if validatePipelineJobURL(rawURL) != nil {
+		return false
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	parts := strings.Split(u.Path, "/")
+	if len(parts) != 8 || parts[1] != "v2" || parts[2] != "projects" || parts[3] != project ||
+		parts[4] != "locations" || parts[5] != "asia-east1" || parts[6] != "jobs" ||
+		!strings.HasSuffix(parts[7], ":run") {
+		return false
+	}
+	job := strings.TrimSuffix(parts[7], ":run")
+	if !regexp.MustCompile(`^[a-z][a-z0-9-]{0,61}[a-z0-9]$`).MatchString(job) {
+		return false
+	}
+	if environment == "dev" {
+		return strings.HasSuffix(job, "-dev")
+	}
+	return environment == "prod" && !strings.HasSuffix(job, "-dev")
+}
+
 func validateRuntimeURL(raw string, local bool) error {
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" || u.User != nil || u.Fragment != "" || u.RawQuery != "" || (u.Scheme != "https" && !(local && u.Scheme == "http" && (u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1"))) {
@@ -897,7 +929,7 @@ func configFromBFFFile(file BFFFile, port string) Config {
 		TypeSafeAPIKey:          file.TypeSafeAPIKey, BYOKCredentialEncryptionKey: file.BYOKCredentialEncryptionKey,
 		LLMProvider: file.LLM.Provider, LLMBaseURL: file.LLM.BaseURL,
 		LLMRequestTimeoutSeconds: file.LLM.RequestTimeoutSeconds, LLMModel: llm.CanonicalDeepSeekModel(file.LLM.Model),
-		JWTSecret: file.JWTSecret, PipelineJobURL: file.PipelineJobURL, ExportJobURL: file.ExportJobURL,
+		JWTSecret: file.JWTSecret, PipelineJobURL: file.PipelineJobURL, DocumentImportJobURL: file.DocumentImportJobURL, ExportJobURL: file.ExportJobURL,
 		ExportSigningServiceAccount: file.ExportSigningServiceAccount, AllowedOrigins: file.AllowedOrigins,
 		AllowedHosts: file.AllowedHosts, PipelineDailyLimit: file.PipelineDailyLimit,
 		PipelineCooldownSeconds: file.PipelineCooldownSeconds, PipelineMinNewRaw: file.PipelineMinNewRaw,

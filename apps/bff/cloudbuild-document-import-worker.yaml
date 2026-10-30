@@ -1,0 +1,15 @@
+substitutions:
+  _IMAGE: ""
+  _SOURCE_SHA: ""
+
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -f
+      - apps/document-import-worker/Dockerfile
+      - --label=org.opencontainers.image.revision=${_SOURCE_SHA}
+      - -t
+      - ${_IMAGE}
+      - .
+images: ['${_IMAGE}']

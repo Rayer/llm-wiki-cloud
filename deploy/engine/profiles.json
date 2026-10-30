@@ -41,6 +41,16 @@
       "apps/bff/Dockerfile.exportjob"
     ]
   },
+  "documentimport": {
+    "revision": 1,
+    "package": "./cmd/document_import_worker",
+    "image": "llm-wiki-document-import-worker",
+    "inputs": [
+      ".gcloudignore",
+      "apps/document-import-worker",
+      "apps/bff/cloudbuild-document-import-worker.yaml"
+    ]
+  },
   "frontend": {
     "revision": 1,
     "inputs": [

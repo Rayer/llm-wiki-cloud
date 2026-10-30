@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"cloud.google.com/go/firestore"
+	"github.com/rayer/llm-wiki-bff/internal/documentimport"
 	internalfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"github.com/rayer/llm-wiki-bff/internal/llm"
 	"github.com/rayer/llm-wiki-bff/internal/localfs"
@@ -974,6 +975,164 @@ func TestProfileRuntimeAbandonedLastLeaseBecomesVisibleFailure(t *testing.T) {
 	state, err := f.repo.GetProfile(f.ctx, last.UserID, last.ProjectID)
 	if err != nil || state.DerivationStatus == nil || *state.DerivationStatus != profileDerivationFailed || state.DerivationErrorCode == nil || *state.DerivationErrorCode != "runtime_retry_exhausted" || state.Active != nil {
 		t.Fatalf("exhausted state: %+v %v", state, err)
+	}
+}
+
+type documentImportStarterFunc func(context.Context, string, string, string, string) (string, error)
+
+func (f documentImportStarterFunc) Start(ctx context.Context, userID, projectID, documentID, attemptID string) (string, error) {
+	return f(ctx, userID, projectID, documentID, attemptID)
+}
+
+func TestDocumentImportDispatcherRecoversAcceptedAndExpiredWorkerLeases(t *testing.T) {
+	f := newRuntimeFixture(t)
+	docRepo := f.dispatcher.Handler.documentImports.Repository
+	projectRef := f.repo.client.Collection("projects").Doc(projectDocID(f.user, f.project))
+	if _, err := projectRef.Set(f.ctx, map[string]any{"user_id": f.user, "project_id": f.project, "status": "ready"}, firestore.MergeAll); err != nil {
+		t.Fatal(err)
+	}
+	record, _, err := docRepo.Begin(f.ctx, documentimport.Record{
+		OwnerID: f.user, ProjectID: f.project, ClientSubmissionID: "document-recovery-submit01",
+		OriginalFilename: "fixture.txt", Bytes: 1, SHA256: strings.Repeat("a", 64),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = docRepo.CompleteAcceptance(f.ctx, f.user, f.project, record.DocumentID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.clock = time.Now().UTC().Add(time.Second)
+	work := profileruntime.Work{UserID: f.user, ProjectID: f.project, Kind: "document_import", Revision: record.Revision,
+		ID: record.AttemptID, DocumentID: record.DocumentID, Due: record.UpdatedAt, Pending: true, Status: "pending"}
+	workRef := f.repo.client.Collection(profileruntime.WorkCollection).Doc(profileruntime.WorkID(work))
+	starts := 0
+	f.dispatcher.Handler.SetDocumentImportStarter(documentImportStarterFunc(func(_ context.Context, _, _, _, _ string) (string, error) {
+		starts++
+		return fmt.Sprintf("execution-%d", starts), nil
+	}))
+	setDue := func() {
+		t.Helper()
+		if _, err := workRef.Update(f.ctx, []firestore.Update{{Path: "due", Value: f.clock}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dispatch := func() {
+		t.Helper()
+		if _, err := f.dispatcher.Dispatch(f.ctx, 8); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// A successful Job acceptance without a worker claim must leave recoverable work.
+	dispatch()
+	if got := f.work(t, workRef); !got.Pending || got.Attempts != 1 || starts != 1 {
+		t.Fatalf("accepted but unclaimed job was consumed: work=%+v starts=%d", got, starts)
+	}
+	setDue()
+	dispatch()
+	if got := f.work(t, workRef); !got.Pending || got.Attempts != 2 || starts != 2 {
+		t.Fatalf("accepted job was not retried with the same attempt: work=%+v starts=%d", got, starts)
+	}
+
+	// Active document worker leases hold the dispatcher retry budget until expiry.
+	if _, _, claimed, err := docRepo.Claim(f.ctx, f.user, f.project, record.DocumentID, record.AttemptID, 5*time.Minute); err != nil || !claimed {
+		t.Fatalf("claim document worker: claimed=%t err=%v", claimed, err)
+	}
+	setDue()
+	dispatch()
+	if got := f.work(t, workRef); !got.Pending || got.Attempts != 2 || got.Status != "waiting_worker" || starts != 2 {
+		t.Fatalf("active worker lease consumed a start attempt: work=%+v starts=%d", got, starts)
+	}
+	documentRef := f.repo.client.Collection("projects").Doc(projectDocID(f.user, f.project)).Collection("document_imports").Doc(record.DocumentID)
+	if _, err := documentRef.Update(f.ctx, []firestore.Update{{Path: "lease_until", Value: time.Now().UTC().Add(-time.Second)}}); err != nil {
+		t.Fatal(err)
+	}
+	f.clock = time.Now().UTC().Add(time.Second)
+	setDue()
+	dispatch()
+	if got := f.work(t, workRef); !got.Pending || got.Attempts != 3 || starts != 3 {
+		t.Fatalf("expired worker lease was not recovered: work=%+v starts=%d", got, starts)
+	}
+
+	// Exhaustion is bounded and visible without another user submission.
+	f.clock = f.clock.Add(profileruntime.LeaseDuration + time.Second)
+	setDue()
+	if _, err := f.dispatcher.Dispatch(f.ctx, 8); err != nil {
+		t.Fatal(err)
+	}
+	got := f.work(t, workRef)
+	record, err = docRepo.Get(f.ctx, f.user, f.project, record.DocumentID)
+	if err != nil || got.Pending || got.Status != "exhausted" || starts != 3 || record.ConversionState != documentimport.ConversionFailed {
+		t.Fatalf("recovery exhaustion work=%+v record=%+v starts=%d err=%v", got, record, starts, err)
+	}
+}
+
+func TestDocumentImportJobAcceptedBeforeWorkerClaimSettlesAttemptBudget(t *testing.T) {
+	f := newRuntimeFixture(t)
+	docRepo := f.dispatcher.Handler.documentImports.Repository
+	projectRef := f.repo.client.Collection("projects").Doc(projectDocID(f.user, f.project))
+	if _, err := projectRef.Set(f.ctx, map[string]any{"user_id": f.user, "project_id": f.project, "status": "ready"}, firestore.MergeAll); err != nil {
+		t.Fatal(err)
+	}
+	record, _, err := docRepo.Begin(f.ctx, documentimport.Record{
+		OwnerID: f.user, ProjectID: f.project, ClientSubmissionID: "document-claim-before-finish01",
+		OriginalFilename: "fixture.txt", Bytes: 1, SHA256: strings.Repeat("a", 64),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = docRepo.CompleteAcceptance(f.ctx, f.user, f.project, record.DocumentID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.clock = time.Now().UTC().Add(time.Second)
+	work := profileruntime.Work{UserID: f.user, ProjectID: f.project, Kind: "document_import", Revision: record.Revision,
+		ID: record.AttemptID, DocumentID: record.DocumentID, Due: f.clock, Pending: true, Status: "pending"}
+	workRef := f.repo.client.Collection(profileruntime.WorkCollection).Doc(profileruntime.WorkID(work))
+	starts := 0
+	f.dispatcher.Handler.SetDocumentImportStarter(documentImportStarterFunc(func(_ context.Context, userID, projectID, documentID, attemptID string) (string, error) {
+		starts++
+		_, _, claimed, err := docRepo.Claim(f.ctx, userID, projectID, documentID, attemptID, 5*time.Minute)
+		if err != nil || !claimed {
+			return "", fmt.Errorf("worker claim inside accepted Job Start: claimed=%t err=%v", claimed, err)
+		}
+		return fmt.Sprintf("execution-%d", starts), nil
+	}))
+	setDue := func() {
+		t.Helper()
+		f.clock = time.Now().UTC().Add(time.Second)
+		if _, err := workRef.Update(f.ctx, []firestore.Update{{Path: "due", Value: f.clock}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	expireWorker := func() {
+		t.Helper()
+		documentRef := f.repo.client.Collection("projects").Doc(projectDocID(f.user, f.project)).Collection("document_imports").Doc(record.DocumentID)
+		if _, err := documentRef.Update(f.ctx, []firestore.Update{{Path: "lease_until", Value: time.Now().UTC().Add(-time.Second)}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for attempt := 1; attempt <= profileruntime.MaxAttempts; attempt++ {
+		setDue()
+		if _, err := f.dispatcher.Dispatch(f.ctx, 8); err != nil {
+			t.Fatalf("dispatch accepted Job %d: %v", attempt, err)
+		}
+		got := f.work(t, workRef)
+		if !got.Pending || got.Attempts != attempt || got.Status != "waiting_worker" || starts != attempt {
+			t.Fatalf("accepted Job %d followed by immediate worker claim: work=%+v starts=%d", attempt, got, starts)
+		}
+		expireWorker()
+	}
+	setDue()
+	if _, err := f.dispatcher.Dispatch(f.ctx, 8); err != nil {
+		t.Fatalf("dispatch exhausted document work: %v", err)
+	}
+	got := f.work(t, workRef)
+	record, err = docRepo.Get(f.ctx, f.user, f.project, record.DocumentID)
+	if err != nil || got.Pending || got.Attempts != profileruntime.MaxAttempts || got.Status != "exhausted" || starts != profileruntime.MaxAttempts ||
+		record.ConversionState != documentimport.ConversionFailed || record.AttemptCount != profileruntime.MaxAttempts {
+		t.Fatalf("accepted-start crash exhaustion work=%+v record=%+v starts=%d err=%v", got, record, starts, err)
 	}
 }
 

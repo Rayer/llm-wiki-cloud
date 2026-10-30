@@ -420,14 +420,15 @@ class Providers:
         return project_number
 
     def cloud(self, c, *args, mutation=False):
-        key = 'export_job' if c == 'exportjob' else c
+        key = {'exportjob': 'export_job', 'documentimport': 'document_import_job'}.get(c, c)
         cfg = self.p[key]
         region = cfg.get('location', self.p['gcp']['region'])
         return run(['gcloud', 'run', *args, '--project', self.p['gcp']['project_id'],
                     '--region', region, '--format=json', '--quiet'], mutation=mutation)
 
     def resource(self, c):
-        cfg = self.p['export_job' if c == 'exportjob' else c]
+        cfg = {'exportjob': 'export_job', 'documentimport': 'document_import_job'}.get(c, c)
+        cfg = self.p[cfg]
         kind = 'services' if c in ('auth', 'bff') else 'jobs'
         return kind, cfg['service_name' if kind == 'services' else 'job_name']
 
@@ -902,8 +903,9 @@ class Providers:
                    GAT4_RELEASE_SOURCE_MODE=release_source_mode(self.plan) or '',
                    GITHUB_RUN_ID=os.environ.get('GITHUB_RUN_ID', '1'),
                    GITHUB_RUN_ATTEMPT=os.environ.get('GITHUB_RUN_ATTEMPT', '1'))
+        stage = 'document-import-build' if c == 'documentimport' else 'auth-build'
         output = run(['bash', ROOT / 'deploy/components' / (c + '.sh'), 'submit'], env=env,
-                     timeout=630, mutation=True, unknown_on_error=True, stage='auth-build')
+                     timeout=630, mutation=True, unknown_on_error=True, stage=stage)
         try:
             raw = json.loads(output)
         except (TypeError, ValueError):
@@ -991,8 +993,9 @@ class Providers:
                    GAT4_RELEASE_SOURCE_MODE=release_source_mode(self.plan) or '',
                    GITHUB_RUN_ID=os.environ.get('GITHUB_RUN_ID', '1'),
                    GITHUB_RUN_ATTEMPT=os.environ.get('GITHUB_RUN_ATTEMPT', '1'))
+        stage = 'document-import-build' if c == 'documentimport' else 'auth-build'
         image = run(['bash', ROOT / 'deploy/components' / (c + '.sh'), 'resolve'], env=env,
-                    timeout=60, stage='auth-build')
+                    timeout=60, stage=stage)
         self.valid_image(c, image)
         return {'image': image}
 
@@ -1153,6 +1156,10 @@ class Providers:
     def usable(self, c, artifact):
         if c != 'frontend':
             self.valid_image(c, artifact['image'])
+            if c == 'documentimport':
+                require(self.p.get('environment') == 'development' and
+                        self.p.get('document_import_job', {}).get('enabled') is True,
+                        'artifact-config-incompatible')
             if c == 'worker':
                 if artifact.get('pipeline_config') is None:
                     # Receipts created before Pipeline config delivery remain
@@ -1235,7 +1242,12 @@ class Providers:
             for d in aliases.values():
                 require(self.deployment(d)['readyState'] == 'READY', 'unusable-prior-deployment')
             return {'aliases': aliases}
-        raw = self.describe(c)
+        if c == 'documentimport':
+            raw = self.document_import_job_if_exists()
+            if raw is None:
+                return {'absent': True}
+        else:
+            raw = self.describe(c)
         if c in ('auth', 'bff'):
             traffic = raw['status']['traffic']
             require(len(traffic) == 1 and traffic[0]['percent'] == 100 and not traffic[0].get('tag'), 'unrepresentable-prior-traffic')
@@ -1255,7 +1267,15 @@ class Providers:
         require(re.fullmatch(r'.+@sha256:[0-9a-f]{64}', container['image']), 'mutable-prior-image')
         # Only fields this profile changes are retained. No plaintext credentials.
         prior = {'image': container['image']}
-        if c == 'worker':
+        if c == 'documentimport':
+            expected = self.document_import_job_config()
+            require(self.document_import_job_matches(raw, container['image'], expected),
+                    'document-import-job-config-incompatible')
+            member = 'serviceAccount:' + self.p['bff']['runtime_service_account']
+            require(self.document_import_policy_has(self.document_import_policy(), member),
+                    'document-import-job-invoker-binding-missing')
+            prior.update(expected)
+        elif c == 'worker':
             prior['env'] = [x for x in container.get('env', []) if x['name'] in (
                 'GCP_PROJECT', 'FIRESTORE_DATABASE_ID', auth_config.OTLP_ENDPOINT_ENV,
                 auth_config.DEV_FULL_TRACE_SAMPLING_ENV)]
@@ -1340,6 +1360,157 @@ class Providers:
                 valid_endpoint and valid_sampling and
                 str(t.get('timeoutSeconds')) == '82800' and t.get('maxRetries') == cfg['max_retries'] and
                 execution.get('parallelism') == cfg['parallelism'] and execution.get('taskCount') == cfg['tasks'])
+
+    def document_import_job_config(self):
+        cfg = self.p['document_import_job']
+        timeout = cfg['job_timeout']
+        require(isinstance(timeout, str) and re.fullmatch(r'[1-9][0-9]*s', timeout),
+                'document-import-job-config-incompatible')
+        return {
+            'service_account': cfg['runtime_service_account'],
+            'env': [
+                {'name': 'GCP_PROJECT', 'value': self.p['gcp']['project_id']},
+                {'name': 'FIRESTORE_DATABASE_ID', 'value': cfg['firestore_database_id']},
+                {'name': 'BUCKET', 'value': cfg['bucket']},
+            ],
+            'timeout_seconds': int(timeout[:-1]),
+            'max_retries': cfg['max_retries'],
+            'parallelism': cfg['parallelism'],
+            'tasks': cfg['tasks'],
+            'cpu': str(cfg['cpu']),
+            'memory': cfg['memory'],
+        }
+
+    def document_import_job_matches(self, raw, image, expected):
+        try:
+            template = self.job_template(raw)
+            execution = raw['spec']['template']['spec']
+            if len(template['containers']) != 1:
+                return False
+            container = template['containers'][0]
+            env = container.get('env', [])
+            limits = container.get('resources', {}).get('limits', {})
+            return (
+                container.get('image') == image and
+                template.get('serviceAccountName') == expected['service_account'] and
+                sorted(env, key=lambda item: item.get('name', '')) ==
+                sorted(expected['env'], key=lambda item: item['name']) and
+                str(template.get('timeoutSeconds')) == str(expected['timeout_seconds']) and
+                template.get('maxRetries') == expected['max_retries'] and
+                execution.get('parallelism') == expected['parallelism'] and
+                execution.get('taskCount') == expected['tasks'] and
+                limits.get('cpu') == expected['cpu'] and
+                limits.get('memory') == expected['memory'] and
+                not template.get('volumes')
+            )
+        except (KeyError, TypeError, ValueError):
+            return False
+
+    def document_import_job_if_exists(self):
+        try:
+            cfg = self.p['document_import_job']
+            raw = run(['gcloud', 'run', 'jobs', 'describe', cfg['job_name'],
+                       '--project', self.p['gcp']['project_id'], '--region', cfg['location'],
+                       '--format=json', '--quiet'], stage='document-import-job-describe')
+            return json.loads(raw)
+        except Breakpoint as exc:
+            message = ((exc.cause or {}).get('message') or '').lower()
+            if any(marker in message for marker in ('not_found', 'not found', 'does not exist')):
+                return None
+            raise
+
+    def document_import_owner(self):
+        return {'lwc-created-by-sha': self.plan['source'],
+                'lwc-created-by-run': self.plan['id'][:32]}
+
+    @staticmethod
+    def document_import_owner_matches(raw, owner):
+        labels = raw.get('metadata', {}).get('labels', {})
+        return isinstance(labels, dict) and all(labels.get(key) == value for key, value in owner.items())
+
+    def document_import_policy(self):
+        _, name = self.resource('documentimport')
+        try:
+            policy = json.loads(self.cloud('documentimport', 'jobs', 'get-iam-policy', name))
+        except (TypeError, ValueError):
+            raise Breakpoint('document-import-job-policy-unreadable') from None
+        require(isinstance(policy, dict) and isinstance(policy.get('etag'), str) and policy['etag'] and
+                isinstance(policy.get('bindings'), list) and
+                all(isinstance(binding, dict) and isinstance(binding.get('role'), str) and
+                    isinstance(binding.get('members'), list) and
+                    all(isinstance(member, str) for member in binding['members'])
+                    for binding in policy['bindings']), 'document-import-job-policy-unreadable')
+        return policy
+
+    @staticmethod
+    def document_import_policy_has(policy, member):
+        matches = [binding for binding in policy['bindings']
+                   if binding.get('role') == 'roles/run.jobsExecutorWithOverrides' and
+                   member in binding['members']]
+        return len(matches) == 1 and matches[0].get('condition') is None
+
+    @staticmethod
+    def document_import_policy_preserves(before, after):
+        def members(policy):
+            grouped = {}
+            for binding in policy['bindings']:
+                key = (binding.get('role'), json.dumps(binding.get('condition'), sort_keys=True))
+                grouped.setdefault(key, set()).update(binding.get('members', []))
+            return grouped
+        old, new = members(before), members(after)
+        return all(values <= new.get(key, set()) for key, values in old.items())
+
+    def ensure_document_import_invoker(self):
+        _, name = self.resource('documentimport')
+        member = 'serviceAccount:' + self.p['bff']['runtime_service_account']
+        before = self.document_import_policy()
+        if self.document_import_policy_has(before, member):
+            return
+        require(not any(binding.get('role') == 'roles/run.jobsExecutorWithOverrides' and
+                        member in binding['members'] for binding in before['bindings']),
+                'document-import-job-invoker-binding-condition-mismatch')
+        after = copy.deepcopy(before)
+        exact = next((binding for binding in after['bindings']
+                      if binding.get('role') == 'roles/run.jobsExecutorWithOverrides' and
+                      binding.get('condition') is None), None)
+        if exact:
+            exact.setdefault('members', []).append(member)
+        else:
+            after['bindings'].append({'role': 'roles/run.jobsExecutorWithOverrides', 'members': [member]})
+        with tempfile.TemporaryDirectory(prefix='lwc-document-import-iam-') as temporary:
+            path = Path(temporary) / 'policy.json'
+            path.write_text(json.dumps(after))
+            self.cloud('documentimport', 'jobs', 'set-iam-policy', name, path, mutation=True)
+        observed = self.document_import_policy()
+        require(observed['etag'] != before['etag'] and
+                self.document_import_policy_has(observed, member) and
+                self.document_import_policy_preserves(before, observed),
+                'document-import-job-policy-readback-mismatch')
+
+    def document_import_create(self, artifact, candidate, save):
+        _, name = self.resource('documentimport')
+        require(self.document_import_job_if_exists() is None,
+                'document-import-job-appeared-after-absent-snapshot')
+        owner = self.document_import_owner()
+        config = self.document_import_job_config()
+        env = '^|^' + '|'.join(entry['name'] + '=' + entry['value'] for entry in config['env'])
+        args = ['jobs', 'create', name, '--image', artifact['image'],
+                '--service-account', config['service_account'],
+                '--task-timeout', str(config['timeout_seconds']) + 's',
+                '--max-retries', str(config['max_retries']),
+                '--parallelism', str(config['parallelism']), '--tasks', str(config['tasks']),
+                '--cpu', config['cpu'], '--memory', config['memory'], '--set-env-vars', env,
+                '--labels', ','.join(key + '=' + value for key, value in owner.items())]
+        candidate.update(create_state='creating', create_owner=owner, image=artifact['image'])
+        save()
+        self.cloud('documentimport', *args, mutation=True)
+        raw = self.document_import_job_if_exists()
+        require(raw is not None and self.document_import_owner_matches(raw, owner) and
+                self.document_import_job_matches(raw, artifact['image'], config),
+                'document-import-created-job-readback-mismatch')
+        candidate['create_state'] = 'created'
+        save()
+        self.ensure_document_import_invoker()
 
     def service_matches(self, c, revision, image, bff_config_version=None, auth_config_version=None):
         if c == 'bff' and (not isinstance(bff_config_version, str) or
@@ -1453,7 +1624,14 @@ class Providers:
                     if output != artifact['config']:
                         return False
             return True
-        raw = self.describe(c)
+        if c == 'documentimport':
+            raw = self.document_import_job_if_exists()
+            if raw is None:
+                return prior and artifact.get('absent') is True
+            if prior and artifact.get('absent') is True:
+                return False
+        else:
+            raw = self.describe(c)
         if c in ('auth', 'bff'):
             traffic = raw['status']['traffic']
             if len(traffic) != 1 or traffic[0]['percent'] != 100 or traffic[0].get('tag'):
@@ -1513,6 +1691,11 @@ class Providers:
             return (self.export_matches(raw, expected_endpoint=artifact.get('otlp_endpoint'),
                                         expected_sampling=artifact.get('dev_full_trace_sampling'))
                     if prior else self.export_matches(raw))
+        if c == 'documentimport':
+            expected = artifact if prior else self.document_import_job_config()
+            member = 'serviceAccount:' + self.p['bff']['runtime_service_account']
+            return (self.document_import_job_matches(raw, artifact['image'], expected) and
+                    self.document_import_policy_has(self.document_import_policy(), member))
         env = [x for x in t['containers'][0].get('env', []) if x['name'] in (
             'GCP_PROJECT', 'FIRESTORE_DATABASE_ID', auth_config.OTLP_ENDPOINT_ENV,
             auth_config.DEV_FULL_TRACE_SAMPLING_ENV)]
@@ -1598,6 +1781,9 @@ class Providers:
                     self.api('/v2/deployments/'+candidate['deployment']+'/aliases', {'alias': alias})
             return
         kind, name = self.resource(c)
+        if c == 'documentimport' and candidate.get('create_if_absent') and candidate.get('create_state') != 'created':
+            self.document_import_create(artifact, candidate, save)
+            return
         args = [kind, 'update', name, '--image', artifact['image']]
         if c in ('auth', 'bff'):
             bff_config_version = None
@@ -1653,6 +1839,20 @@ class Providers:
 
     def reconcile_candidate(self, c, artifact, candidate, save):
         """Discover accepted creation before allowing continuation; never replay creation."""
+        if c == 'documentimport' and candidate.get('create_if_absent'):
+            raw = self.document_import_job_if_exists()
+            if raw is None:
+                return
+            owner = candidate.get('create_owner')
+            require(isinstance(owner, dict) and owner == self.document_import_owner() and
+                    self.document_import_owner_matches(raw, owner) and
+                    self.document_import_job_matches(raw, artifact['image'],
+                                                     self.document_import_job_config()),
+                    'pending-job-mismatch')
+            candidate.update(create_state='created', image=artifact['image'])
+            save()
+            self.ensure_document_import_invoker()
+            return
         if c in ('auth', 'bff') and not candidate.get('revision'):
             bff_config_version = None
             auth_config_version = None
@@ -1726,7 +1926,7 @@ class Providers:
             write(path, body)
             self.cloud(c, 'services', 'replace', path, mutation=True)
 
-    def rollback(self, c, prior):
+    def rollback(self, c, prior, candidate=None):
         if c == 'frontend':
             for alias, deployment in prior['aliases'].items():
                 require(self.deployment(deployment)['readyState'] == 'READY', 'prior-deployment-unusable')
@@ -1734,6 +1934,22 @@ class Providers:
                     self.api('/v2/deployments/'+deployment+'/aliases', {'alias': alias})
             return
         kind, name = self.resource(c)
+        if c == 'documentimport' and prior.get('absent') is True:
+            raw = self.document_import_job_if_exists()
+            if raw is None:
+                return
+            candidate = candidate or {}
+            owner = self.document_import_owner()
+            require(candidate.get('create_state') == 'created' and
+                    candidate.get('create_owner') == owner and
+                    self.document_import_owner_matches(raw, owner) and
+                    self.document_import_job_matches(raw, candidate.get('image'),
+                                                     self.document_import_job_config()),
+                    'document-import-created-job-identity-changed')
+            self.cloud(c, 'jobs', 'delete', name, mutation=True)
+            require(self.document_import_job_if_exists() is None,
+                    'document-import-created-job-remains-after-delete')
+            return
         if c in ('auth', 'bff'):
             revision = self.revision(c, prior['revision'])
             require(self.retained_service_image_matches(revision, prior['revision'], prior.get('image')),

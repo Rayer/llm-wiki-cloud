@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/rayer/llm-wiki-bff/internal/documentimport"
 	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"github.com/rayer/llm-wiki-bff/internal/handler"
 	"github.com/rayer/llm-wiki-bff/internal/observability"
@@ -114,6 +115,31 @@ func (h *Handler) RawUpload(c *gin.Context) {
 	filename := ""
 	if header != nil {
 		filename = header.Filename
+	}
+	if documentimport.IsSupportedFilename(filename) {
+		data, readErr := readDocumentImportBody(file)
+		if readErr != nil {
+			observability.FinishDataSpan(inputSpan, "rejected")
+			writeDocumentImportError(c, readErr)
+			return
+		}
+		observability.SetDataCount(inputSpan, "bytes", int64(len(data)))
+		observability.FinishDataSpan(inputSpan, "success")
+		submissionID := strings.TrimSpace(c.PostForm("client_submission_id"))
+		if submissionID == "" {
+			submissionID = strings.TrimSpace(c.GetHeader("Idempotency-Key"))
+		}
+		if !validSubmissionID(submissionID) {
+			observability.WriteDataJSON(c, http.StatusBadRequest, handler.ErrorResponse{Error: "client_submission_id is required"})
+			return
+		}
+		batchID := strings.TrimSpace(c.PostForm("batch_id"))
+		if batchID != "" && !validSubmissionID(batchID) {
+			observability.WriteDataJSON(c, http.StatusBadRequest, handler.ErrorResponse{Error: "batch_id is invalid"})
+			return
+		}
+		h.acceptDocumentImport(c, userID, projectID, submissionID, batchID, filename, data)
+		return
 	}
 	if err := validateRawUploadFilename(filename); err != nil {
 		observability.FinishDataSpan(inputSpan, "rejected")

@@ -117,7 +117,7 @@ it('keeps multiple-file selection and queues every file at the raw root without 
     fireEvent.change(uploadInput(), { target: { files: [firstUpload, secondUpload] } });
   });
 
-  expect(await screen.findByText('2 created · 0 already exists · 0 replaced · 0 failed · 0 in progress')).toBeDefined();
+  expect(await screen.findByText('2 created, 0 already exists, 0 accepted, 0 replaced, 0 failed, 0 in progress')).toBeDefined();
   await waitFor(() => expect(mocks.uploadRawFile).toHaveBeenCalledTimes(2));
   expect(mocks.uploadRawFile).toHaveBeenNthCalledWith(1, firstUpload, expect.any(Function), 'project-a');
   expect(mocks.uploadRawFile).toHaveBeenNthCalledWith(2, secondUpload, expect.any(Function), 'project-a');

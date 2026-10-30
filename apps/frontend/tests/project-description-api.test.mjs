@@ -35,11 +35,12 @@ test('createProject persists the optional description and stable idempotency key
 
   try {
     const project = await createProject(' Wiki ', 'Purpose', 'same-request-key');
+    const headers = new Headers(requestedInit.headers);
     assert.equal(requestedUrl, 'https://api.runtime.test/api/v1/init-project');
     assert.equal(requestedInit.method, 'POST');
-    assert.equal(requestedInit.headers?.Authorization, 'Bearer jwt-token');
-    assert.equal(requestedInit.headers?.['Idempotency-Key'], 'same-request-key');
-    assert.equal(requestedInit.headers?.['X-Project-ID'], undefined);
+    assert.equal(headers.get('Authorization'), 'Bearer jwt-token');
+    assert.equal(headers.get('Idempotency-Key'), 'same-request-key');
+    assert.equal(headers.has('X-Project-ID'), false);
     assert.equal(requestedInit.body, '{"name":"Wiki","project":"Wiki","project_name":"Wiki","description":"Purpose"}');
     assert.deepEqual(project, { id: 'project-a', name: 'Wiki', description: 'Purpose', descriptionRevision: 1 });
   } finally {

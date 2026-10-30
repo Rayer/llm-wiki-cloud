@@ -13,7 +13,8 @@ vi.mock('@/lib/i18n', () => ({ useT: () => ({ t: (key: string) => key }) }));
 vi.mock('@/components/NavigationBlocker', () => ({
   NavigationLink: ({ children, href }: { children: React.ReactNode; href: string }) => <a href={href}>{children}</a>,
 }));
-vi.mock('next/navigation', () => ({ useSearchParams: () => new URLSearchParams() }));
+vi.mock('next/navigation', () => ({ usePathname: () => '/sources', useSearchParams: () => new URLSearchParams() }));
+vi.mock('@/components/DocumentImportsPanel', () => ({ DocumentImportsPanel: () => null }));
 
 function consumer(kind: 'source' | 'concept') {
   return kind === 'source'
