@@ -1,10 +1,14 @@
 package contentcontext
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"strings"
@@ -137,6 +141,125 @@ func TestFirestoreRepositoryBoundsExpiredAttemptTakeover(t *testing.T) {
 	state, err := repository.Read(ctx, ownerID, projectID)
 	if err != nil || state.Status != StatusFailed || state.ErrorClass != "lease_expired" || state.SummaryWork == nil || state.SummaryWork.RetryCount != 1 {
 		t.Fatalf("expired claim budget state=%+v err=%v", state, err)
+	}
+}
+
+func TestFirestoreRepositoryReplaysOwnedPendingReadbackThroughSDK(t *testing.T) {
+	endpoint := strings.TrimSpace(os.Getenv("FIRESTORE_EMULATOR_HOST"))
+	if endpoint == "" {
+		t.Skip("FIRESTORE_EMULATOR_HOST is not set")
+	}
+	parsed, err := url.Parse("http://" + endpoint)
+	if err != nil || parsed.Host == "" {
+		t.Fatalf("invalid Firestore emulator host")
+	}
+	host, _, err := net.SplitHostPort(parsed.Host)
+	if err != nil || (host != "127.0.0.1" && host != "localhost" && host != "::1") {
+		t.Fatalf("Firestore emulator must use loopback")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	cloudProject := fmt.Sprintf("content-context-readback-%d", time.Now().UnixNano())
+	client, err := scopedfirestore.NewClientWithDatabaseAndScope(cloudProject, "(default)", "", "", "")
+	if err != nil {
+		t.Fatalf("create Firestore emulator client: %v", err)
+	}
+	defer client.Close()
+	ownerID, projectID := "owned-readback-owner", fmt.Sprintf("owned-readback-%d", time.Now().UnixNano())
+	repository := NewFirestoreRepository(client.Raw())
+	stateRef := scopedfirestore.Collection(client.Raw(), "projects").Doc(ownerID + "_" + projectID).Collection("content_context").Doc("state")
+	defer func() { _, _ = stateRef.Delete(context.Background()) }()
+
+	fields, err := os.ReadFile("testdata/qa_owned_pending_state_fields.json")
+	if err != nil {
+		t.Fatalf("read captured Firestore fields: %v", err)
+	}
+	seedCapturedContentContextFields := func() {
+		t.Helper()
+		body, err := json.Marshal(struct {
+			Fields json.RawMessage `json:"fields"`
+		}{Fields: fields})
+		if err != nil {
+			t.Fatalf("marshal captured fields: %v", err)
+		}
+		documentPath := fmt.Sprintf("projects/%s/content_context/state", url.PathEscape(ownerID+"_"+projectID))
+		endpointURL := fmt.Sprintf("http://%s/v1/projects/%s/databases/(default)/documents/%s", parsed.Host, cloudProject, documentPath)
+		request, err := http.NewRequestWithContext(ctx, http.MethodPatch, endpointURL, bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("create emulator document request: %v", err)
+		}
+		request.Header.Set("Content-Type", "application/json")
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatalf("write captured document to emulator: %v", err)
+		}
+		_, readErr := io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+		closeErr := response.Body.Close()
+		if readErr != nil || closeErr != nil {
+			t.Fatalf("read emulator response: read=%v close=%v", readErr, closeErr)
+		}
+		if response.StatusCode < 200 || response.StatusCode >= 300 {
+			t.Fatalf("write captured document status=%d", response.StatusCode)
+		}
+	}
+	seedCapturedContentContextFields()
+
+	state, err := repository.Read(ctx, ownerID, projectID)
+	if err != nil {
+		t.Fatalf("decode captured persisted state through SDK: %v", err)
+	}
+	if err := state.Validate(); err != nil || state.Status != StatusPending || state.SummaryWork == nil ||
+		state.SummaryWork.RetryCount != 0 || state.SummaryWork.Status != StatusPending || state.SummaryWork.LeaseUntil == nil ||
+		state.LastGood != nil || state.ErrorClass != "" || state.AttemptID == "" || state.AttemptStartedAt == nil || state.AttemptFinishedAt != nil {
+		t.Fatalf("captured pending state did not decode intact: validate=%v state=%+v", err, state)
+	}
+	if state.LatestPublication == nil || state.LatestPublication.Generation != state.TargetGeneration ||
+		state.LatestPublication.ConceptsSHA256 != state.TargetConceptsSHA ||
+		state.SummaryWork.SourceManifestIdentity != state.LatestPublication.ManifestIdentity {
+		t.Fatalf("captured publication identity changed during decode: %+v", state)
+	}
+
+	now := *state.AttemptStartedAt
+	repository.SetClockForTest(func() time.Time { return now })
+	authority := &testPublicationAuthority{publication: Publication{
+		Generation: state.LatestPublication.Generation, ConceptsDigest: state.LatestPublication.ConceptsSHA256,
+		ManifestIdentity: state.LatestPublication.ManifestIdentity,
+	}}
+	if claim, err := repository.Claim(ctx, ownerID, projectID, authority); err != nil || claim != nil {
+		t.Fatalf("active captured lease was reclaimed: claim=%+v err=%v", claim, err)
+	}
+	now = state.SummaryWork.LeaseUntil.Add(time.Second)
+	claim, err := repository.Claim(ctx, ownerID, projectID, authority)
+	if err != nil || claim == nil || claim.RetryCount != 1 || claim.WorkID != state.SummaryWork.WorkID {
+		t.Fatalf("expired captured claim takeover=%+v err=%v", claim, err)
+	}
+	completed, err := repository.Complete(ctx, ownerID, projectID, authority, *claim, testSummaryCompletion("replayed summary"))
+	if err != nil || !completed {
+		t.Fatalf("complete replayed state accepted=%t err=%v", completed, err)
+	}
+	state, err = repository.Read(ctx, ownerID, projectID)
+	if err != nil || state.Status != StatusReady || state.LastGood == nil || state.LastGood.Text != "replayed summary" || state.LastGood.SourceGeneration != claim.SourceGeneration {
+		t.Fatalf("replayed state did not complete through SDK: state=%+v err=%v", state, err)
+	}
+
+	seedCapturedContentContextFields()
+	state, err = repository.Read(ctx, ownerID, projectID)
+	if err != nil || state.Status != StatusPending || state.LastGood != nil {
+		t.Fatalf("reset captured state=%+v err=%v", state, err)
+	}
+	now = state.SummaryWork.LeaseUntil.Add(time.Second)
+	claim, err = repository.Claim(ctx, ownerID, projectID, authority)
+	if err != nil || claim == nil || claim.RetryCount != 1 {
+		t.Fatalf("failure-path captured claim=%+v err=%v", claim, err)
+	}
+	failed, err := repository.Fail(ctx, ownerID, projectID, authority, *claim, "provider_timeout")
+	if err != nil || !failed {
+		t.Fatalf("fail replayed state updated=%t err=%v", failed, err)
+	}
+	state, err = repository.Read(ctx, ownerID, projectID)
+	if err != nil || state.Status != StatusFailed || state.ErrorClass != "provider_timeout" || state.LastGood != nil {
+		t.Fatalf("replayed state did not fail through SDK: state=%+v err=%v", state, err)
 	}
 }
 
