@@ -353,6 +353,67 @@ func TestProfileSavePreflightAllowsFrontendPutOnlyFromConfiguredOrigins(t *testi
 	}
 }
 
+func TestDocumentImportDeletePreflightAllowsIfMatchOnlyFromConfiguredOrigins(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const allowedOrigin = "https://wiki.dev.rayer.idv.tw"
+	router := newProductionRouter(
+		config.Config{JWTSecret: "test-secret", AllowedOrigins: []string{allowedOrigin}},
+		false,
+		nil,
+		nil,
+		handlerv1.New(nil, nil, nil, nil, nil, nil),
+		&syssettings.FakeStore{Enabled: true},
+		nil,
+	)
+	preflight := func(origin string) *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodOptions, "/api/v1/projects/project-1/document-imports/document-1", nil)
+		req.Header.Set("Origin", origin)
+		req.Header.Set("Access-Control-Request-Method", http.MethodDelete)
+		req.Header.Set("Access-Control-Request-Headers", "authorization,content-type,x-project-id,if-match,x-unrelated-unsupported")
+		router.ServeHTTP(recorder, req)
+		return recorder
+	}
+
+	allowed := preflight(allowedOrigin)
+	if allowed.Code != http.StatusNoContent {
+		t.Fatalf("allowed document DELETE preflight status = %d, want %d", allowed.Code, http.StatusNoContent)
+	}
+	if got := allowed.Header().Get("Access-Control-Allow-Origin"); got != allowedOrigin {
+		t.Fatalf("Access-Control-Allow-Origin = %q, want %q", got, allowedOrigin)
+	}
+	if got := allowed.Header().Get("Access-Control-Allow-Credentials"); got != "true" {
+		t.Fatalf("Access-Control-Allow-Credentials = %q, want true", got)
+	}
+	methods := strings.Split(allowed.Header().Get("Access-Control-Allow-Methods"), ",")
+	for _, method := range []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
+		if !containsFold(methods, method) {
+			t.Errorf("Access-Control-Allow-Methods = %q, missing %s", allowed.Header().Get("Access-Control-Allow-Methods"), method)
+		}
+	}
+
+	allowHeaders := strings.Split(allowed.Header().Get("Access-Control-Allow-Headers"), ",")
+	for _, name := range []string{
+		"Content-Type", "Authorization", "X-Project-ID", "X-Wiki-ID", "X-Sync-Binding-ID",
+		"X-Content-SHA256", "X-Expected-Generation", "Idempotency-Key", "If-Match",
+	} {
+		if !containsFold(allowHeaders, name) {
+			t.Errorf("Access-Control-Allow-Headers = %q, missing %s", allowed.Header().Get("Access-Control-Allow-Headers"), name)
+		}
+	}
+	if containsFold(allowHeaders, "X-Unrelated-Unsupported") {
+		t.Fatalf("Access-Control-Allow-Headers unexpectedly allows unrelated header: %q", allowed.Header().Get("Access-Control-Allow-Headers"))
+	}
+
+	rejected := preflight("https://unlisted.example")
+	if got := rejected.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("unlisted origin received Access-Control-Allow-Origin %q", got)
+	}
+	if got := rejected.Header().Get("Access-Control-Allow-Credentials"); got != "" {
+		t.Fatalf("unlisted origin received Access-Control-Allow-Credentials %q", got)
+	}
+}
+
 func containsFold(values []string, want string) bool {
 	for _, value := range values {
 		if strings.EqualFold(strings.TrimSpace(value), want) {

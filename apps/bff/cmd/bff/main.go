@@ -522,7 +522,7 @@ func newProductionRouter(
 	r.Use(observability.AuthCORSObserver(cors.New(cors.Config{
 		AllowOrigins:     allowOrigins,
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowHeaders:     []string{"Content-Type", "Authorization", "X-Project-ID", "X-Wiki-ID", "X-Sync-Binding-ID", "X-Content-SHA256", "X-Expected-Generation", "Idempotency-Key"},
+		AllowHeaders:     []string{"Content-Type", "Authorization", "X-Project-ID", "X-Wiki-ID", "X-Sync-Binding-ID", "X-Content-SHA256", "X-Expected-Generation", "Idempotency-Key", "If-Match"},
 		ExposeHeaders:    []string{"X-Request-ID"},
 		AllowCredentials: true,
 	})))
