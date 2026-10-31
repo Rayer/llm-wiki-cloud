@@ -2049,11 +2049,11 @@ export async function updateProjectPipelineAutomation(projectId: string, enabled
 }
 
 export async function getAdminPipelineAutomation(): Promise<AdminPipelineAutomation> {
-  return parseAdminPipelineAutomation(await adminJson('/api/v1/settings/auto-pipeline'));
+  return parseAdminPipelineAutomation(await adminJson('/api/v1/admin/settings/auto-pipeline'));
 }
 
 export async function updateAdminPipelineAutomation(enabled: boolean, revision: number): Promise<AdminPipelineAutomation> {
-  const payload = await adminJson('/api/v1/settings/auto-pipeline', {
+  const payload = await adminJson('/api/v1/admin/settings/auto-pipeline', {
     method: 'PUT', json: true, body: JSON.stringify({ allow_auto_pipeline: enabled, revision }),
   });
   return parseAdminPipelineAutomation(payload);

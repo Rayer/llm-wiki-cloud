@@ -17,6 +17,7 @@ import {
   getAdminProjects,
   getAdminUsers,
   getAdminManagementCatalog,
+  getAdminPipelineAutomation,
   getBuildInfo,
   getConcept,
   getConcepts,
@@ -43,6 +44,7 @@ import {
   recompileAll,
   updateAdminUserManagementScope,
   updateAdminUserStatus,
+  updateAdminPipelineAutomation,
   uploadRawFile,
   updateSourceAnnotation,
 } from '../src/lib/api.ts';
@@ -193,6 +195,67 @@ test('buildProjectHeaders scopes authenticated requests to the selected project'
     'Content-Type': 'application/json',
     'X-Project-ID': 'project-1',
   });
+});
+
+test('Admin pipeline automation GET and PUT use the frozen LWCAdmin route and revisioned DTO', async () => {
+  configureApiAuth({
+    getAccessToken: () => 'fixture-admin-access-token',
+    refreshAccessToken: async () => null,
+    onUnauthorized: () => undefined,
+  });
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  const settings = { allow_auto_pipeline: true, revision: 7, backlog_scan_status: 'pending' };
+  globalThis.fetch = async (url, init = {}) => {
+    requests.push({ url: String(url), init });
+    return Response.json(settings);
+  };
+
+  try {
+    assert.deepEqual(await getAdminPipelineAutomation(), settings);
+    assert.deepEqual(await updateAdminPipelineAutomation(false, 7), settings);
+
+    assert.equal(requests.length, 2);
+    assert.equal(requests[0].url, 'https://api.runtime.test/api/v1/admin/settings/auto-pipeline');
+    assert.equal(requests[0].init.method ?? 'GET', 'GET');
+    assert.equal(new Headers(requests[0].init.headers).get('authorization'), 'Bearer fixture-admin-access-token');
+    assert.equal(new Headers(requests[0].init.headers).get('x-project-id'), null);
+    assert.equal(requests[1].url, 'https://api.runtime.test/api/v1/admin/settings/auto-pipeline');
+    assert.equal(requests[1].init.method, 'PUT');
+    assert.equal(new Headers(requests[1].init.headers).get('authorization'), 'Bearer fixture-admin-access-token');
+    assert.equal(new Headers(requests[1].init.headers).get('x-project-id'), null);
+    assert.equal(new Headers(requests[1].init.headers).get('content-type'), 'application/json');
+    assert.equal(requests[1].init.body, JSON.stringify({ allow_auto_pipeline: false, revision: 7 }));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('Admin pipeline automation preserves stale revision conflict responses', async () => {
+  configureApiAuth({
+    getAccessToken: () => 'fixture-admin-access-token',
+    refreshAccessToken: async () => null,
+    onUnauthorized: () => undefined,
+  });
+  const originalFetch = globalThis.fetch;
+  let request;
+  globalThis.fetch = async (url, init = {}) => {
+    request = { url: String(url), init };
+    return Response.json({ error: 'pipeline automation revision conflict' }, { status: 409 });
+  };
+
+  try {
+    await assert.rejects(
+      () => updateAdminPipelineAutomation(false, 6),
+      (error) => error instanceof ApiError && error.status === 409 && error.message === 'pipeline automation revision conflict',
+    );
+    assert.equal(request.url, 'https://api.runtime.test/api/v1/admin/settings/auto-pipeline');
+    assert.equal(request.init.method, 'PUT');
+    assert.equal(new Headers(request.init.headers).get('content-type'), 'application/json');
+    assert.equal(request.init.body, JSON.stringify({ allow_auto_pipeline: false, revision: 6 }));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('scrapeUrl sends URL and caller tags only to the selected Project and parses a structured conflict body', async () => {

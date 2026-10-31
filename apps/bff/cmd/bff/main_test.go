@@ -1145,6 +1145,79 @@ func TestAdminSettingsRouteRequiresAdminRole(t *testing.T) {
 	}
 }
 
+func TestAdminPipelineAutomationRouteMatchesFrozenPath(t *testing.T) {
+	router := newAdminRouteTestRouter(t)
+	adminToken, err := auth.GenerateAccessToken("admin-user", "admin", "test-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, method := range []string{http.MethodGet, http.MethodPut} {
+		body := ""
+		if method == http.MethodPut {
+			body = `{"allow_auto_pipeline":true,"revision":0}`
+		}
+		for _, path := range []string{"/api/v1/settings/auto-pipeline", "/api/v1/admin/settings/auto-pipeline"} {
+			request := httptest.NewRequest(method, path, strings.NewReader(body))
+			request.Header.Set("Authorization", "Bearer "+adminToken)
+			if method == http.MethodPut {
+				request.Header.Set("Content-Type", "application/json")
+			}
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+
+			if path == "/api/v1/settings/auto-pipeline" {
+				if response.Code != http.StatusNotFound {
+					t.Fatalf("legacy %s route status=%d body=%s, want 404", method, response.Code, response.Body.String())
+				}
+				continue
+			}
+			if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "pipeline automation settings unavailable") {
+				t.Fatalf("frozen %s route status=%d body=%s, want registered handler's unavailable response", method, response.Code, response.Body.String())
+			}
+		}
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/admin/settings/auto-pipeline", nil)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("missing credentials status=%d, want 401; body=%s", response.Code, response.Body.String())
+	}
+
+	userToken, err := auth.GenerateAccessToken("user-123", "", "test-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request = httptest.NewRequest(http.MethodGet, "/api/v1/admin/settings/auto-pipeline", nil)
+	request.Header.Set("Authorization", "Bearer "+userToken)
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("non-admin route status=%d, want 403; body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestAdminPipelineAutomationRouteRequiresLWCAdminScope(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	handler := handlerv1.New(nil, nil, nil, nil, nil, nil)
+	handler.SetConsumerVerifier(authAdminOnlyConsumerVerifier{adminTestConsumerVerifier{}})
+	router := gin.New()
+	registerAdminRoutes(router, config.Config{JWTSecret: "test-secret"}, handler, &syssettings.FakeStore{Enabled: true})
+
+	token, err := auth.GenerateAccessToken("admin-user", "admin", "test-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/admin/settings/auto-pipeline", nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "management scope required") {
+		t.Fatalf("AuthAdmin-only identity status=%d body=%s, want LWCAdmin scope rejection", response.Code, response.Body.String())
+	}
+}
+
 func newAdminRouteTestRouter(t *testing.T) *gin.Engine {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
@@ -1212,6 +1285,17 @@ func (s *adminRegistrationConsumerStub) UpdateManagementRegistrationSettings(_ c
 }
 
 type adminTestConsumerVerifier struct{}
+
+type authAdminOnlyConsumerVerifier struct{ adminTestConsumerVerifier }
+
+func (v authAdminOnlyConsumerVerifier) Verify(ctx context.Context, token, resource string) (authconsumer.Identity, error) {
+	identity, err := v.adminTestConsumerVerifier.Verify(ctx, token, resource)
+	if err != nil {
+		return authconsumer.Identity{}, err
+	}
+	identity.ManagementScopes = []string{auth.ManagementScopeAuthAdmin}
+	return identity, nil
+}
 
 func (adminTestConsumerVerifier) Verify(_ context.Context, token, _ string) (authconsumer.Identity, error) {
 	claims, err := auth.ValidateToken(token, "test-secret")
