@@ -565,12 +565,12 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
   );
 
   useLayoutEffect(() => {
-    if (!introIsPending) return;
+    if (!introIsPending || activeSettingsTab !== 'knowledge') return;
     if (markProfileOnboardingPresented(introOwnerId, projectId, sessionEpoch)) {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- reveal notice after the loaded Profile is committed
       setIntroVisibleFor(introKey);
     }
-  }, [introIsPending, introKey, introOwnerId, markProfileOnboardingPresented, projectId, sessionEpoch]);
+  }, [activeSettingsTab, introIsPending, introKey, introOwnerId, markProfileOnboardingPresented, projectId, sessionEpoch]);
 
   const showNewProjectIntro = introVisibleFor === introKey;
 

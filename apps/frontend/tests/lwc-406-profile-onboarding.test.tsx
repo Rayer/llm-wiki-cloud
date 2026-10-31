@@ -388,6 +388,48 @@ describe('LWC-406 optional Profile onboarding', () => {
     expect(mocks.saveProfile).not.toHaveBeenCalled();
   });
 
+  it('keeps the new Project intro pending until the knowledge settings panel is visible', async () => {
+    const pendingIntent = { ownerId: 'user-1', projectId: 'project-new', sessionEpoch: 1 };
+    mocks.profileOnboarding = pendingIntent;
+    mocks.markProfileOnboardingPresented.mockImplementation(() => {
+      mocks.profileOnboarding = null;
+      return true;
+    });
+
+    const firstEntry = render(<ProjectProfilePanel projectId="project-new" />);
+    await screen.findByRole('heading', { name: 'Project description' });
+    expect(document.getElementById('project-settings-panel-project-info')?.hidden).toBe(false);
+    expect(document.getElementById('project-settings-panel-knowledge')?.hidden).toBe(true);
+    expect(mocks.markProfileOnboardingPresented).not.toHaveBeenCalled();
+    expect(mocks.profileOnboarding).toEqual(pendingIntent);
+
+    firstEntry.unmount();
+    const reentered = render(<ProjectProfilePanel projectId="project-new" />);
+    await screen.findByRole('heading', { name: 'Project description' });
+    expect(mocks.markProfileOnboardingPresented).not.toHaveBeenCalled();
+    expect(mocks.profileOnboarding).toEqual(pendingIntent);
+
+    selectKnowledgeTab();
+    const intro = await screen.findByText('You can review how this project organizes information before adding data. These preferences are optional: change them later, or add data now without editing or saving anything.');
+    const knowledgePanel = document.getElementById('project-settings-panel-knowledge')!;
+    expect(knowledgePanel.hidden).toBe(false);
+    expect(knowledgePanel.contains(intro)).toBe(true);
+    expect(mocks.markProfileOnboardingPresented).toHaveBeenCalledOnce();
+    expect(mocks.markProfileOnboardingPresented).toHaveBeenCalledWith('user-1', 'project-new', 1);
+    expect(mocks.profileOnboarding).toBeNull();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Pipeline' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Knowledge generation settings' }));
+    expect(knowledgePanel.hidden).toBe(false);
+    expect(knowledgePanel.contains(intro)).toBe(true);
+    expect(mocks.markProfileOnboardingPresented).toHaveBeenCalledOnce();
+
+    reentered.rerender(<ProjectProfilePanel projectId="project-new" />);
+    expect(knowledgePanel.hidden).toBe(false);
+    expect(knowledgePanel.contains(intro)).toBe(true);
+    expect(mocks.markProfileOnboardingPresented).toHaveBeenCalledOnce();
+  });
+
   it('keeps the notice dismissed across rerender and revisit after presenting once', async () => {
     mocks.markProfileOnboardingPresented.mockImplementationOnce(() => true).mockReturnValue(false);
     const view = render(<ProjectProfilePanel projectId="project-new" />);
