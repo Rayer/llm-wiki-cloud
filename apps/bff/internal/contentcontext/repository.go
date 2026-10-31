@@ -18,10 +18,11 @@ import (
 )
 
 const (
-	SummaryPromptRevision = "project-summary-v1"
-	SummaryRole           = "fast"
-	SummaryAttemptLease   = 120 * time.Second
-	SummaryMaxClaims      = 2
+	SummaryPromptRevision       = "project-summary-v1"
+	SummaryRole                 = "fast"
+	SummaryAttemptLease         = 120 * time.Second
+	SummaryMaxClaims            = 2
+	firestoreTimestampPrecision = time.Microsecond
 )
 
 var (
@@ -565,6 +566,10 @@ func SummaryWorkID(ownerID, projectID, conceptsSHA256, promptRevision, selection
 }
 
 func claimState(state StateDocument, now time.Time) (StateDocument, SummaryClaim, bool) {
+	// Firestore stores timestamps at microsecond precision, rounding down. Use
+	// that same precision before constructing both the persisted lease and the
+	// in-memory claim that is later compared with the decoded lease.
+	now = now.UTC().Truncate(firestoreTimestampPrecision)
 	if state.Status != StatusPending || state.SummaryWork == nil || state.SummaryWork.Status != StatusPending {
 		return state, SummaryClaim{}, false
 	}
