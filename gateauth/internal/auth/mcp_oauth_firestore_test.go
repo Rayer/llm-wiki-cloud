@@ -465,13 +465,16 @@ func TestDailyBriefFixedResourceGrantIsAccountOwnedWithoutProject(t *testing.T) 
 	}
 	resources := config.LegacyAuthOAuthResources("https://bff.example.test")
 	resources = append(resources, config.AuthOAuthResource{
-		ID: "daily-brief", Kind: "fixed", Enabled: true, URI: "https://brief.rayer.idv.tw/mcp", Name: "Daily Brief",
+		ID: "daily-brief", Kind: "fixed", Enabled: true, URI: "https://brief.dev.rayer.idv.tw/mcp", Name: "Daily Brief",
 		Scopes:           []config.AuthOAuthScope{{Name: "brief:manage", Description: "Read and manage Daily Brief reports and annotations in your private account space."}},
 		AllowedScopeSets: [][]string{{"brief:manage"}}, DefaultScopeSet: []string{},
-		VerifierCallerServiceAccount: "brief-runtime@llm-wiki-cloud.iam.gserviceaccount.com",
+		VerifierCallerServiceAccount: "daily-brief-dev-runtime@daily-brief-service.iam.gserviceaccount.com",
 		VerifierAudience:             "https://llm-wiki-auth-dev-a5nkmux6pq-de.a.run.app",
 	})
 	service := NewMCPOAuthServiceWithPolicy(fs, databaseEnvironment, "dev", "https://auth.dev.rayer.idv.tw", "https://bff.example.test", "https://wiki.example.test", "fixture-jwt-secret", resources)
+	if _, _, _, _, ok := service.normalizeAuthorizationScope("https://brief.rayer.idv.tw/mcp", "brief:manage"); ok {
+		t.Fatal("DEV authorization policy accepted the Production Daily Brief resource")
+	}
 	clock := time.Now().UTC()
 	service.SetClock(func() time.Time { return clock })
 	defer func() {
@@ -499,7 +502,7 @@ func TestDailyBriefFixedResourceGrantIsAccountOwnedWithoutProject(t *testing.T) 
 	verifier := strings.Repeat("b", 43)
 	challengeBytes := sha256.Sum256([]byte(verifier))
 	challenge := base64.RawURLEncoding.EncodeToString(challengeBytes[:])
-	resource := "https://brief.rayer.idv.tw/mcp"
+	resource := "https://brief.dev.rayer.idv.tw/mcp"
 	consentURL, err := service.BeginAuthorization(ctx, client.ClientID, client.RedirectURIs[0], "code", challenge, "S256", "brief-state", resource, "brief:manage")
 	if err != nil {
 		t.Fatalf("begin fixed-resource authorization: %v", err)
