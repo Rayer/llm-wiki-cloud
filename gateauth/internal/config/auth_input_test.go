@@ -22,7 +22,7 @@ func validAuthInputSnapshotForTest() AuthInputSnapshot {
 	return inputs
 }
 
-func authOAuthResourcesForTest(syncOrigin string) []AuthOAuthResource {
+func authOAuthResourcesForTest(syncOrigin, environment string) []AuthOAuthResource {
 	return []AuthOAuthResource{
 		{
 			ID: "lwc-project", Kind: "project-template", Enabled: true,
@@ -32,7 +32,7 @@ func authOAuthResourcesForTest(syncOrigin string) []AuthOAuthResource {
 		},
 		{
 			ID: "daily-brief", Kind: "fixed", Enabled: false,
-			URI: "https://brief.rayer.idv.tw/mcp", Name: "Daily Brief",
+			URI: authDailyBriefResourceURI(environment), Name: "Daily Brief",
 			Scopes:           []AuthOAuthScope{{Name: "brief:manage", Description: "Read and manage Daily Brief reports and annotations in your private account space."}},
 			AllowedScopeSets: [][]string{{"brief:manage"}}, DefaultScopeSet: []string{},
 			VerifierAudience: "https://llm-wiki-auth-dev-a5nkmux6pq-de.a.run.app",
@@ -43,7 +43,7 @@ func authOAuthResourcesForTest(syncOrigin string) []AuthOAuthResource {
 func validAuthInputSnapshotV2ForTest() AuthInputSnapshot {
 	inputs := validAuthInputSnapshotForTest()
 	inputs.SchemaVersion = 2
-	inputs.OAuthResources = authOAuthResourcesForTest(inputs.SyncServiceURL)
+	inputs.OAuthResources = authOAuthResourcesForTest(inputs.SyncServiceURL, inputs.Environment)
 	inputs.ConfigID, _ = AuthInputConfigID(inputs)
 	return inputs
 }

@@ -73,12 +73,32 @@ func TestMCPOAuthGrantListRequiresExactlyOneRecognizedFilter(t *testing.T) {
 func TestDailyBriefCredentialVerifierFailsClosedAndRequiresVerifiedCaller(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	const audience = "https://auth.fixture.example.test"
+	const (
+		devResourceURI        = "https://brief.dev.rayer.idv.tw/mcp"
+		productionResourceURI = "https://brief.rayer.idv.tw/mcp"
+		supersededDevURI      = "https://brief-dev.rayer.idv.tw/mcp"
+		devCaller             = "daily-brief-dev-runtime@daily-brief-service.iam.gserviceaccount.com"
+		productionCaller      = "daily-brief-runtime@daily-brief-service.iam.gserviceaccount.com"
+	)
 	policy := config.AuthOAuthResource{
-		ID: "daily-brief", Kind: "fixed", Enabled: true, URI: "https://brief.rayer.idv.tw/mcp", Name: "Daily Brief",
-		VerifierCallerServiceAccount: "brief-runtime@llm-wiki-cloud.iam.gserviceaccount.com", VerifierAudience: audience,
+		ID: "daily-brief", Kind: "fixed", Enabled: true, URI: devResourceURI, Name: "Daily Brief",
+		Scopes:           []config.AuthOAuthScope{{Name: "brief:manage", Description: "Read and manage Daily Brief reports and annotations in your private account space."}},
+		AllowedScopeSets: [][]string{{"brief:manage"}}, DefaultScopeSet: []string{},
+		VerifierCallerServiceAccount: devCaller, VerifierAudience: audience,
 	}
-	cfg := config.Config{AuthOAuthResources: []config.AuthOAuthResource{policy}}
-	service := &MCPOAuthService{wireEnvironment: "dev"}
+	resources := append(config.LegacyAuthOAuthResources("https://bff.example.test"), policy)
+	cfg := config.Config{AuthEnvironment: "dev", AuthOAuthResources: resources}
+	service := NewMCPOAuthServiceWithPolicy(nil, "llm-wiki-cloud-dev", "dev", "https://auth.fixture.example.test",
+		"https://bff.example.test", "https://wiki.example.test", "fixture-jwt-secret", resources)
+	if !service.validStoredResource(devResourceURI, "", "brief:manage", true) {
+		t.Fatal("DEV verifier policy rejected the configured Daily Brief resource")
+	}
+	if service.validStoredResource(productionResourceURI, "", "brief:manage", true) {
+		t.Fatal("DEV verifier policy accepted the Production Daily Brief resource")
+	}
+	if service.validStoredResource(supersededDevURI, "", "brief:manage", true) {
+		t.Fatal("DEV verifier policy accepted the superseded hyphenated Daily Brief resource")
+	}
 	validated := 0
 	validator := func(_ context.Context, token, gotAudience string) (*idtoken.Payload, error) {
 		validated++
@@ -102,6 +122,8 @@ func TestDailyBriefCredentialVerifierFailsClosedAndRequiresVerifiedCaller(t *tes
 			payload.Claims["email_verified"] = false
 		case "wrong-email":
 			payload.Claims["email"] = "another-runtime@llm-wiki-cloud.iam.gserviceaccount.com"
+		case "production-caller":
+			payload.Claims["email"] = productionCaller
 		case "google-id-token":
 		default:
 			return nil, ErrMCPOAuthInvalid
@@ -140,7 +162,7 @@ func TestDailyBriefCredentialVerifierFailsClosedAndRequiresVerifiedCaller(t *tes
 	if valid.Code != http.StatusUnauthorized || validated != before+1 || strings.Contains(valid.Body.String(), validCredential) {
 		t.Fatalf("synthetic user token should reach Auth validation then fail closed: status=%d calls=%d body=%s", valid.Code, validated-before, valid.Body.String())
 	}
-	for _, invalid := range []string{"wrong-issuer", "wrong-audience", "legacy-dev-audience", "expired-caller", "unverified-email", "wrong-email"} {
+	for _, invalid := range []string{"wrong-issuer", "wrong-audience", "legacy-dev-audience", "expired-caller", "unverified-email", "wrong-email", "production-caller"} {
 		response := serve(validCredential, "", invalid)
 		if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "untrusted_caller") {
 			t.Errorf("caller %q status=%d body=%s", invalid, response.Code, response.Body.String())

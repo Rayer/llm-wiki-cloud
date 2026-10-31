@@ -2,6 +2,8 @@ import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import enMessages from '@/messages/en.json';
 import zhTWMessages from '@/messages/zh-TW.json';
+import { MCPOAuthApiError, dailyBriefMcpResourceURL } from '@/lib/mcp-oauth';
+import { clearRuntimeConfigForTests, loadRuntimeConfig } from '@/lib/runtime-config';
 
 const mocks = vi.hoisted(() => ({
   accessToken: 'web-session-token',
@@ -62,7 +64,6 @@ vi.mock('@/lib/mcp-oauth', async () => {
 const { act, cleanup, fireEvent, render, screen, waitFor, within } = await import('@testing-library/react');
 import { MCPOAuthConsentClient } from '@/components/MCPOAuthConsentClient';
 import AdvancedPage from '@/app/(workspace)/advanced/page';
-import { MCPOAuthApiError } from '@/lib/mcp-oauth';
 
 const transactionId = `lwc_mcp_tx_${'C'.repeat(43)}`;
 const consent = {
@@ -76,6 +77,19 @@ const consent = {
   expires_at: '2026-10-12T02:00:00Z',
 };
 const otherTransactionId = `lwc_mcp_tx_${'D'.repeat(43)}`;
+const runtimeConfigURL = 'https://config.fixture.test/frontend-config.json';
+
+async function loadAuthRuntimeConfig(authURL: string) {
+  clearRuntimeConfigForTests();
+  vi.stubEnv('NEXT_PUBLIC_CONFIG_URL', runtimeConfigURL);
+  const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+    schema_version: 1,
+    api_url: 'https://api.runtime.test',
+    auth_url: authURL,
+  }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+  vi.stubGlobal('fetch', fetchMock);
+  await loadRuntimeConfig();
+}
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -93,7 +107,8 @@ function mockLocationAssign() {
   return assign;
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  await loadAuthRuntimeConfig('https://auth.rayer.idv.tw');
   mocks.accessToken = 'web-session-token';
   mocks.sessionEpoch = 1;
   mocks.user = { id: 'user-one', email: 'owner@example.com' };
@@ -119,8 +134,11 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  clearRuntimeConfigForTests();
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
   vi.clearAllMocks();
+  vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
 
 describe('LWC-389 MCP OAuth frontend', () => {
@@ -235,6 +253,7 @@ describe('LWC-389 MCP OAuth frontend', () => {
   });
 
   it('keeps account-owned Daily Brief grant management reachable without an LWC Project', async () => {
+    await loadAuthRuntimeConfig('https://auth.rayer.idv.tw');
     mocks.project = null;
     mocks.listResourceGrants.mockResolvedValueOnce([{
       id: 'brief-grant-one', client_name: 'Daily Brief Web', project_id: '',
@@ -255,7 +274,26 @@ describe('LWC-389 MCP OAuth frontend', () => {
     expect(mocks.listGrants).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['Auth DEV', 'https://auth.dev.rayer.idv.tw', 'https://brief.dev.rayer.idv.tw/mcp'],
+    ['local Auth with disabled Brief policy', 'http://127.0.0.1:18081', 'https://brief.rayer.idv.tw/mcp'],
+  ])('selects the %s grant resource from loaded Auth runtime config', async (_name, authURL, resource) => {
+    await loadAuthRuntimeConfig(authURL);
+    mocks.project = null;
+    mocks.listResourceGrants.mockResolvedValueOnce([]);
+    render(<AdvancedPage />);
+    const accountPanel = screen.getAllByText('MCPOAuth.accountGrantsTitle')[0].closest('details')!;
+    fireEvent.click(accountPanel.querySelector('summary')!);
+    await waitFor(() => expect(mocks.listResourceGrants).toHaveBeenCalledWith(resource, 'web-session-token'));
+  });
+
+  it('does not default an unknown Auth endpoint to the production resource', async () => {
+    await loadAuthRuntimeConfig('https://auth.unknown.example.test');
+    expect(() => dailyBriefMcpResourceURL()).toThrow('Daily Brief resource is not configured for this Auth endpoint.');
+  });
+
   it('clears account-owned grant state when the signed-in account changes', async () => {
+    await loadAuthRuntimeConfig('https://auth.rayer.idv.tw');
     mocks.project = null;
     mocks.listResourceGrants.mockResolvedValueOnce([{
       id: 'brief-grant-one', client_name: 'First account client', project_id: '',
