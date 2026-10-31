@@ -9,7 +9,7 @@ import { Badge } from '@/components/ui/Badge';
 import { useWorkspace } from '@/components/WorkspaceProvider';
 import { useT } from '@/lib/i18n';
 import {
-  DAILY_BRIEF_MCP_RESOURCE,
+  dailyBriefMcpResourceURL,
   listMCPOAuthGrants,
   listMCPOAuthResourceGrants,
   mcpResourceURL,
@@ -44,7 +44,7 @@ function AccountGrantPanel({ accessToken, sessionEpoch, userId, t, locale }: {
     const key = contextKey;
     try {
       if (!accessToken) throw new Error('missing session');
-      const result = await listMCPOAuthResourceGrants(DAILY_BRIEF_MCP_RESOURCE, accessToken);
+      const result = await listMCPOAuthResourceGrants(dailyBriefMcpResourceURL(), accessToken);
       if (requestId !== requestIdRef.current || identityRef.current !== key) return;
       setGrants(result);
       setListKey(key);

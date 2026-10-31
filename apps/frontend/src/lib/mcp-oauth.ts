@@ -39,7 +39,8 @@ export type MCPOAuthGrant = {
   revoked_at?: string;
 };
 
-export const DAILY_BRIEF_MCP_RESOURCE = 'https://brief.rayer.idv.tw/mcp';
+const DAILY_BRIEF_DEV_MCP_RESOURCE = 'https://brief-dev.rayer.idv.tw/mcp';
+const DAILY_BRIEF_PROD_MCP_RESOURCE = 'https://brief.rayer.idv.tw/mcp';
 
 export class MCPOAuthApiError extends Error {
   constructor(message: string, readonly status: number) {
@@ -113,6 +114,16 @@ export async function listMCPOAuthResourceGrants(resource: string, accessToken: 
   const result = await request<{ grants?: unknown }>(`/grants?resource=${encodeURIComponent(resource)}`, accessToken);
   if (!Array.isArray(result.grants)) throw new MCPOAuthApiError('The MCP grant list was invalid.', 502);
   return result.grants as MCPOAuthGrant[];
+}
+
+export function dailyBriefMcpResourceURL(): string {
+  const authURL = new URL(getRuntimeConfig().auth_url);
+  if (authURL.origin === 'https://auth.dev.rayer.idv.tw') return DAILY_BRIEF_DEV_MCP_RESOURCE;
+  if (authURL.origin === 'https://auth.rayer.idv.tw') return DAILY_BRIEF_PROD_MCP_RESOURCE;
+  if (authURL.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(authURL.hostname)) {
+    return DAILY_BRIEF_PROD_MCP_RESOURCE;
+  }
+  throw new Error('Daily Brief resource is not configured for this Auth endpoint.');
 }
 
 export function revokeMCPOAuthGrant(grantId: string, accessToken: string): Promise<void> {

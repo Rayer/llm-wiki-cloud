@@ -40,6 +40,12 @@ func (r *fakeAuthReader) Access(_ context.Context, resource string) (string, []b
 }
 
 func authProjectionForTest(environment string) authSourceProjection {
+	briefURI := "https://brief.rayer.idv.tw/mcp"
+	briefAudience := "https://llm-wiki-auth-a5nkmux6pq-de.a.run.app"
+	if environment == "dev" {
+		briefURI = "https://brief-dev.rayer.idv.tw/mcp"
+		briefAudience = "https://llm-wiki-auth-dev-a5nkmux6pq-de.a.run.app"
+	}
 	projection := authSourceProjection{
 		SchemaVersion: 2, Environment: environment, Target: "auth", GCPProject: "llm-wiki-cloud",
 		FirestoreDatabaseID: "llm-wiki-cloud-" + environment, AuthServiceURL: "https://auth." + environment + ".example.test",
@@ -66,10 +72,10 @@ func authProjectionForTest(environment string) authSourceProjection {
 				AllowedScopeSets: [][]string{{"mcp:query"}, {"mcp:query", "mcp:raw:write"}}, DefaultScopeSet: []string{"mcp:query"},
 			},
 			{
-				ID: "daily-brief", Kind: "fixed", Enabled: false, URI: "https://brief.rayer.idv.tw/mcp", Name: "Daily Brief",
+				ID: "daily-brief", Kind: "fixed", Enabled: false, URI: briefURI, Name: "Daily Brief",
 				Scopes:           []config.AuthOAuthScope{{Name: "brief:manage", Description: "Read and manage Daily Brief reports and annotations in your private account space."}},
 				AllowedScopeSets: [][]string{{"brief:manage"}}, DefaultScopeSet: []string{},
-				VerifierAudience: "https://llm-wiki-auth-dev-a5nkmux6pq-de.a.run.app",
+				VerifierAudience: briefAudience,
 			},
 		},
 	}
@@ -132,6 +138,10 @@ func TestRealPklAuthPrepareProducesLocalFileAndCloudInputStages(t *testing.T) {
 	if localConfig.SyncServiceURL != "http://localhost:18080" {
 		t.Fatalf("local Auth resource binding=%q, want the selected BFF port", localConfig.SyncServiceURL)
 	}
+	if len(localConfig.AuthOAuthResources) != 2 || localConfig.AuthOAuthResources[1].Enabled ||
+		localConfig.AuthOAuthResources[1].URI != "https://brief.rayer.idv.tw/mcp" {
+		t.Fatalf("local disabled Brief policy changed: %#v", localConfig.AuthOAuthResources)
+	}
 	manifest, err := os.ReadFile(filepath.Join(localOutput, "auth", "success.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -163,15 +173,17 @@ func TestRealPklAuthPrepareProducesLocalFileAndCloudInputStages(t *testing.T) {
 			if projection.Environment != environment || projection.Target != "auth" || !projection.Google.Enabled {
 				t.Fatalf("unexpected Pkl Auth projection identity for %s", environment)
 			}
-			wantAudience, wantCaller := "", ""
+			wantAudience, wantCaller, wantResourceURI := "", "", ""
 			wantEnabled := false
 			if environment == "dev" {
 				wantAudience = "https://llm-wiki-auth-dev-a5nkmux6pq-de.a.run.app"
-				wantCaller = "daily-brief-runtime@daily-brief-service.iam.gserviceaccount.com"
+				wantCaller = "daily-brief-dev-runtime@daily-brief-service.iam.gserviceaccount.com"
+				wantResourceURI = "https://brief-dev.rayer.idv.tw/mcp"
 				wantEnabled = true
 			} else if environment == "prod" {
 				wantAudience = "https://llm-wiki-auth-a5nkmux6pq-de.a.run.app"
 				wantCaller = "daily-brief-runtime@daily-brief-service.iam.gserviceaccount.com"
+				wantResourceURI = "https://brief.rayer.idv.tw/mcp"
 				wantEnabled = true
 			}
 			if len(projection.OAuthResources) != 2 {
@@ -179,6 +191,9 @@ func TestRealPklAuthPrepareProducesLocalFileAndCloudInputStages(t *testing.T) {
 			}
 			if projection.OAuthResources[1].VerifierAudience != wantAudience {
 				t.Fatalf("%s Pkl Auth projection verifier audience=%q, want %q", environment, projection.OAuthResources[1].VerifierAudience, wantAudience)
+			}
+			if projection.OAuthResources[1].URI != wantResourceURI {
+				t.Fatalf("%s Pkl Auth projection resource URI=%q, want %q", environment, projection.OAuthResources[1].URI, wantResourceURI)
 			}
 			if projection.OAuthResources[1].Enabled != wantEnabled || projection.OAuthResources[1].VerifierCallerServiceAccount != wantCaller {
 				t.Fatalf("canonical %s Brief policy enabled=%t caller=%q; want enabled=%t caller=%q", environment,
@@ -207,7 +222,7 @@ func TestRealPklAuthPrepareProducesLocalFileAndCloudInputStages(t *testing.T) {
 			if inputs.OAuthResources[1].VerifierAudience != wantAudience {
 				t.Fatalf("%s Auth Stage 1 verifier audience=%q, want %q", environment, inputs.OAuthResources[1].VerifierAudience, wantAudience)
 			}
-			if inputs.OAuthResources[1].Enabled != wantEnabled || inputs.OAuthResources[1].VerifierCallerServiceAccount != wantCaller ||
+			if inputs.OAuthResources[1].URI != wantResourceURI || inputs.OAuthResources[1].Enabled != wantEnabled || inputs.OAuthResources[1].VerifierCallerServiceAccount != wantCaller ||
 				inputs.AuthSessionEnvironment != "llm-wiki-cloud-"+environment {
 				t.Fatalf("canonical %s Auth snapshot did not preserve Brief policy identity or changed its session namespace", environment)
 			}
@@ -224,6 +239,7 @@ func TestRealPklAuthPrepareProducesLocalFileAndCloudInputStages(t *testing.T) {
 			}
 			if canonicalRuntime.AuthEnvironment != environment || canonicalRuntime.ConfigID != inputs.ConfigID ||
 				len(canonicalRuntime.AuthOAuthResources) != 2 ||
+				canonicalRuntime.AuthOAuthResources[1].URI != wantResourceURI ||
 				canonicalRuntime.AuthOAuthResources[1].VerifierAudience != wantAudience ||
 				canonicalRuntime.AuthOAuthResources[1].Enabled != wantEnabled ||
 				canonicalRuntime.AuthOAuthResources[1].VerifierCallerServiceAccount != wantCaller {

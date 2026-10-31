@@ -34,8 +34,13 @@ var authOAuthIDPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,63}$`)
 var authOAuthScopePattern = regexp.MustCompile(`^[a-z][a-z0-9:_-]{0,63}$`)
 var authServiceAccountPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{4,62}@[a-z0-9.-]+\.iam\.gserviceaccount\.com$`)
 
-const authDailyBriefDevVerifierAudience = "https://llm-wiki-auth-dev-a5nkmux6pq-de.a.run.app"
-const authDailyBriefProdVerifierAudience = "https://llm-wiki-auth-a5nkmux6pq-de.a.run.app"
+const (
+	authDailyBriefDevVerifierAudience             = "https://llm-wiki-auth-dev-a5nkmux6pq-de.a.run.app"
+	authDailyBriefProdVerifierAudience            = "https://llm-wiki-auth-a5nkmux6pq-de.a.run.app"
+	authDailyBriefDevResourceURI                  = "https://brief-dev.rayer.idv.tw/mcp"
+	authDailyBriefProdResourceURI                 = "https://brief.rayer.idv.tw/mcp"
+	authDailyBriefDevVerifierCallerServiceAccount = "daily-brief-dev-runtime@daily-brief-service.iam.gserviceaccount.com"
+)
 
 type AuthFile struct {
 	SchemaVersion            int                           `json:"schema_version"`
@@ -458,9 +463,14 @@ func validateAuthOAuthResources(file AuthFile) error {
 			}
 			project = resource
 		case "fixed":
-			if resource.ID != "daily-brief" || resource.URI != "https://brief.rayer.idv.tw/mcp" ||
+			expectedURI := authDailyBriefResourceURI(file.Environment)
+			if resource.ID != "daily-brief" || expectedURI == "" || resource.URI != expectedURI ||
 				resource.Name != "Daily Brief" || !validAuthOAuthVerifierAudience(file.Environment, resource.VerifierAudience) {
 				return errors.New("Auth fixed OAuth resource binding is invalid")
+			}
+			if file.Environment == "dev" && resource.VerifierCallerServiceAccount != "" &&
+				resource.VerifierCallerServiceAccount != authDailyBriefDevVerifierCallerServiceAccount {
+				return errors.New("Auth DEV fixed OAuth verifier caller is invalid")
 			}
 			if resource.Enabled && (resource.VerifierAudience == "" ||
 				!authServiceAccountPattern.MatchString(resource.VerifierCallerServiceAccount)) {
@@ -484,6 +494,17 @@ func validateAuthOAuthResources(file AuthFile) error {
 		return errors.New("Auth Daily Brief consent description is invalid")
 	}
 	return nil
+}
+
+func authDailyBriefResourceURI(environment string) string {
+	switch environment {
+	case "dev":
+		return authDailyBriefDevResourceURI
+	case "local", "prod":
+		return authDailyBriefProdResourceURI
+	default:
+		return ""
+	}
 }
 
 func validateAuthPublicPolicy(scopes []AuthManagementScope, verifiers []AuthConsumerVerifier, projection AuthConsumerPublicProjection,

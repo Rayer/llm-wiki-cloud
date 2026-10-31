@@ -113,7 +113,7 @@ func TestDecodeAuthFileStrictSchemaAndGoogleModes(t *testing.T) {
 func TestSchema2AuthFileUsesStrictOAuthRegistryAndPreservesSchema1Defaults(t *testing.T) {
 	file := validAuthFileForTest()
 	file.SchemaVersion = 2
-	file.OAuthResources = authOAuthResourcesForTest(file.SyncServiceURL)
+	file.OAuthResources = authOAuthResourcesForTest(file.SyncServiceURL, file.Environment)
 	data, err := json.Marshal(file)
 	if err != nil {
 		t.Fatal(err)
@@ -150,7 +150,7 @@ func TestSchema2AuthFileUsesStrictOAuthRegistryAndPreservesSchema1Defaults(t *te
 	} {
 		t.Run(name, func(t *testing.T) {
 			bad := file
-			bad.OAuthResources = authOAuthResourcesForTest(bad.SyncServiceURL)
+			bad.OAuthResources = authOAuthResourcesForTest(bad.SyncServiceURL, bad.Environment)
 			mutate(&bad)
 			encoded, marshalErr := json.Marshal(bad)
 			if marshalErr != nil {
@@ -167,11 +167,67 @@ func TestSchema2AuthFileUsesStrictOAuthRegistryAndPreservesSchema1Defaults(t *te
 	}
 }
 
+func TestAuthDailyBriefBindingMatchesSelectedEnvironment(t *testing.T) {
+	for _, test := range []struct {
+		environment string
+		uri         string
+		swappedURI  string
+		audience    string
+	}{
+		{environment: "dev", uri: authDailyBriefDevResourceURI, swappedURI: authDailyBriefProdResourceURI, audience: authDailyBriefDevVerifierAudience},
+		{environment: "prod", uri: authDailyBriefProdResourceURI, swappedURI: authDailyBriefDevResourceURI, audience: authDailyBriefProdVerifierAudience},
+	} {
+		t.Run(test.environment, func(t *testing.T) {
+			file := validAuthFileForTest()
+			file.Environment = test.environment
+			file.OAuthResources = authOAuthResourcesForTest(file.SyncServiceURL, file.Environment)
+			file.OAuthResources[1].VerifierAudience = test.audience
+			if file.OAuthResources[1].URI != test.uri {
+				t.Fatalf("fixture URI=%q, want %q", file.OAuthResources[1].URI, test.uri)
+			}
+			if err := validateAuthOAuthResources(file); err != nil {
+				t.Fatalf("valid %s Daily Brief binding: %v", test.environment, err)
+			}
+
+			for name, uri := range map[string]string{
+				"swapped environment": test.swappedURI,
+				"unknown URI":         "https://brief-unknown.rayer.idv.tw/mcp",
+			} {
+				t.Run(name, func(t *testing.T) {
+					bad := file
+					bad.OAuthResources = append([]AuthOAuthResource(nil), file.OAuthResources...)
+					bad.OAuthResources[1].URI = uri
+					if err := validateAuthOAuthResources(bad); err == nil {
+						t.Fatalf("%s URI was accepted for %s", uri, test.environment)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestAuthDevDailyBriefRejectsProductionVerifierCaller(t *testing.T) {
+	file := validAuthFileForTest()
+	file.OAuthResources = authOAuthResourcesForTest(file.SyncServiceURL, file.Environment)
+	brief := &file.OAuthResources[1]
+	brief.Enabled = true
+	brief.VerifierAudience = authDailyBriefDevVerifierAudience
+	brief.VerifierCallerServiceAccount = authDailyBriefDevVerifierCallerServiceAccount
+	if err := validateAuthOAuthResources(file); err != nil {
+		t.Fatalf("valid DEV Daily Brief verifier caller: %v", err)
+	}
+
+	brief.VerifierCallerServiceAccount = "daily-brief-runtime@daily-brief-service.iam.gserviceaccount.com"
+	if err := validateAuthOAuthResources(file); err == nil {
+		t.Fatal("DEV accepted the production Daily Brief verifier caller")
+	}
+}
+
 func TestAuthVerifierAudienceUsesSelectedEnvironmentPolicy(t *testing.T) {
 	local := localAuthFileForTest()
 	local.SchemaVersion = 2
 	local.AuthSessionEnvironment = "llm-wiki-cloud-local"
-	local.OAuthResources = authOAuthResourcesForTest(local.SyncServiceURL)
+	local.OAuthResources = authOAuthResourcesForTest(local.SyncServiceURL, local.Environment)
 	local.OAuthResources[1].Enabled = true
 	local.OAuthResources[1].VerifierCallerServiceAccount = "fixture-runtime@llm-wiki-cloud.iam.gserviceaccount.com"
 	local.OAuthResources[1].VerifierAudience = "https://auth.fixture.example.test"
@@ -197,7 +253,7 @@ func TestAuthVerifierAudienceUsesSelectedEnvironmentPolicy(t *testing.T) {
 	prod.Environment = "prod"
 	prod.FirestoreDatabaseID = "llm-wiki-cloud-prod"
 	prod.AuthSessionEnvironment = "llm-wiki-cloud-prod"
-	prod.OAuthResources = authOAuthResourcesForTest(prod.SyncServiceURL)
+	prod.OAuthResources = authOAuthResourcesForTest(prod.SyncServiceURL, prod.Environment)
 	prod.OAuthResources[1].VerifierAudience = ""
 	encoded, _ = json.Marshal(prod)
 	if _, err := DecodeAuthFile(encoded); err != nil {
