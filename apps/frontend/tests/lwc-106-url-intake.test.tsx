@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { ApiError, type ScrapeResult } from '@/lib/api';
+import { NavigationBlockerProvider } from '@/components/NavigationBlocker';
 
 const mocks = vi.hoisted(() => ({
   currentProject: { id: 'project-a', name: 'Project A' } as { id: string; name: string } | null,
@@ -44,6 +45,10 @@ vi.mock('@/components/ExportPanel', () => ({ ExportPanel: () => null }));
 vi.mock('@/lib/i18n', () => ({ useT: () => ({ t: mocks.t }) }));
 
 import { PipelineClient } from '@/components/PipelineClient';
+
+function pipelineTree() {
+  return <NavigationBlockerProvider><PipelineClient /></NavigationBlockerProvider>;
+}
 
 const preview = {
   title: 'Example article',
@@ -107,22 +112,20 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-it('saves the Project switch by revision and explains that Admin approval still gates processing', async () => {
-  render(<PipelineClient />);
+it('keeps Project automation settings in Profile while Pipeline shows a status and settings guide', async () => {
+  render(pipelineTree());
 
-  const toggle = await screen.findByTestId('pipeline-automation-project-toggle') as HTMLInputElement;
-  expect(toggle.checked).toBe(false);
+  const status = await screen.findByTestId('pipeline-automation-settings');
   expect(screen.getByTestId('pipeline-automation-blocked').textContent).toContain('Automatic processing is disabled by the Admin.');
-  fireEvent.click(toggle);
-
-  await waitFor(() => expect(mocks.updateProjectPipelineAutomation).toHaveBeenCalledWith('project-a', true, 0));
-  await waitFor(() => expect(toggle.checked).toBe(true));
-  expect(screen.getByTestId('pipeline-automation-blocked').textContent).toContain('Automatic processing is disabled by the Admin.');
-  expect(screen.getByTestId('pipeline-automation-settings').textContent).toContain('Processing status: pending');
+  expect(status.textContent).toContain('Pipeline.automationSettingsGuide');
+  expect(within(status).getByRole('link', { name: 'Pipeline.automationSettingsGuide' }).getAttribute('href'))
+    .toBe('/profile#project-pipeline-automation');
+  expect(screen.queryByTestId('pipeline-automation-project-toggle')).toBeNull();
+  expect(mocks.updateProjectPipelineAutomation).not.toHaveBeenCalled();
 });
 
 it('renders a public URL candidate, binds the edited title, and links to the exact saved raw file without running Pipeline', async () => {
-  render(<PipelineClient />);
+  render(pipelineTree());
   submitUrl();
 
   expect(await screen.findByRole('dialog')).toBeDefined();
@@ -152,7 +155,7 @@ it('shows the bounded Fetch dependency diagnosis on an unavailable URL result', 
       upstream_status: 404,
     },
   });
-  render(<PipelineClient />);
+  render(pipelineTree());
   submitUrl();
 
   expect(await screen.findByText(/DeepSeek Fetch could not retrieve usable page content/)).toBeDefined();
@@ -176,7 +179,7 @@ it('shows the localized unchecked-quality warning before save and after acceptin
     preview: unchecked,
   });
 
-  render(<PipelineClient />);
+  render(pipelineTree());
   submitUrl();
 
   const warning = 'Pipeline.urlQualityCheckUnavailable';
@@ -198,7 +201,7 @@ it('keeps the unchecked-quality warning visible alongside an Accept conflict', a
     preview: unchecked,
   });
 
-  render(<PipelineClient />);
+  render(pipelineTree());
   submitUrl();
   expect(await screen.findByText('Pipeline.urlQualityCheckUnavailable')).toBeDefined();
   fireEvent.click(screen.getByRole('button', { name: 'Pipeline.urlConfirmCandidate' }));
@@ -216,7 +219,7 @@ it('resolves an uncertain accept outcome from the same candidate without refetch
   mocks.resolveScrapeCandidate.mockResolvedValueOnce({
     ...stored, storage: { path: 'raw/Example-article.md', sha256: 'stored-digest', status: 'replaced' },
   });
-  render(<PipelineClient />);
+  render(pipelineTree());
   submitUrl();
 
   expect(await screen.findByRole('dialog')).toBeDefined();
@@ -236,13 +239,13 @@ it('resolves an uncertain accept outcome from the same candidate without refetch
 it('discards a late URL result after the selected Project changes', async () => {
   let resolveScrape!: (result: ScrapeResult) => void;
   mocks.scrapeUrl.mockReturnValue(new Promise<ScrapeResult>((resolve) => { resolveScrape = resolve; }));
-  const view = render(<PipelineClient />);
+  const view = render(pipelineTree());
   submitUrl();
   await waitFor(() => expect(mocks.scrapeUrl).toHaveBeenCalledTimes(1));
 
   mocks.currentProject = { id: 'project-b', name: 'Project B' };
   window.localStorage.setItem('llm-wiki-last-project', 'project-b');
-  view.rerender(<PipelineClient />);
+  view.rerender(pipelineTree());
   resolveScrape(uncertain);
 
   await waitFor(() => expect(mocks.getPipelineStatus).toHaveBeenCalledWith('project-b'));
@@ -255,7 +258,7 @@ it('reports a definitive URL preview failure without claiming raw storage is unc
   mocks.scrapeUrl.mockImplementation(async () => {
     throw new ApiError('response lost after commit', 0);
   });
-  render(<PipelineClient />);
+  render(pipelineTree());
   submitUrl();
 
   expect((await screen.findByRole('alert')).textContent).toBe('Pipeline.urlPreviewUnavailable');
@@ -264,7 +267,7 @@ it('reports a definitive URL preview failure without claiming raw storage is unc
 
 it('reports an uncertain accept outcome and offers status resolution without refetching', async () => {
   mocks.acceptScrapeCandidate.mockResolvedValueOnce({ status: 'uncertain', message: 'Save status is uncertain.', candidate_id: 'opaque-candidate-id', candidate_revision: 'opaque-candidate-revision' });
-  render(<PipelineClient />);
+  render(pipelineTree());
   submitUrl();
   await screen.findByRole('button', { name: 'Pipeline.urlConfirmCandidate' });
   fireEvent.click(screen.getByRole('button', { name: 'Pipeline.urlConfirmCandidate' }));
@@ -276,7 +279,7 @@ it('reports an uncertain accept outcome and offers status resolution without ref
 
 it('keeps a definitive precommit rejection on the unavailable guidance', async () => {
   mocks.scrapeUrl.mockRejectedValueOnce(new ApiError('invalid request', 422));
-  render(<PipelineClient />);
+  render(pipelineTree());
   submitUrl();
 
   expect((await screen.findByRole('alert')).textContent).toBe('Pipeline.urlPreviewUnavailable');
@@ -289,7 +292,7 @@ it('keeps candidate persistence failures stage-specific without fetch or anti-bo
     failure_stage: 'candidate',
     message: 'The review candidate could not be stored; no raw article was changed.',
   });
-  render(<PipelineClient />);
+  render(pipelineTree());
   submitUrl();
 
   expect(await screen.findByText('The review candidate could not be stored; no raw article was changed.')).toBeDefined();

@@ -30,6 +30,11 @@ vi.mock('@/components/WorkspaceProvider', () => ({
 }));
 
 import { PipelineClient } from '@/components/PipelineClient';
+import { NavigationBlockerProvider } from '@/components/NavigationBlocker';
+
+function pipelineTree() {
+  return <NavigationBlockerProvider><PipelineClient /></NavigationBlockerProvider>;
+}
 
 const quota = {
   enforced: true,
@@ -87,7 +92,7 @@ function statusWithGuidance(projectId: string, revision: string): PipelineStatus
 }
 
 async function renderPipeline() {
-  const view = render(<PipelineClient />);
+  const view = render(pipelineTree());
   await screen.findByTestId('pipeline-compile-mode');
   return view;
 }
@@ -130,7 +135,7 @@ it('ignores a delayed full POST after switching Project, before it starts pollin
 
   mocks.currentProject = { id: 'project-b', name: 'Project B' };
   window.localStorage.setItem('llm-wiki-last-project', 'project-b');
-  view.rerender(<PipelineClient />);
+  view.rerender(pipelineTree());
   await waitFor(() => expect(mocks.getPipelineStatus).toHaveBeenCalledWith('project-b'));
 
   await act(async () => {
@@ -165,7 +170,7 @@ it('ignores a late Project A poll without stopping Project B polling', async () 
 
   mocks.currentProject = { id: 'project-b', name: 'Project B' };
   window.localStorage.setItem('llm-wiki-last-project', 'project-b');
-  view.rerender(<PipelineClient />);
+  view.rerender(pipelineTree());
   await waitFor(() => expect(mocks.getPipelineStatus).toHaveBeenCalledWith('project-b'));
   await startFullRecompile('project-b');
   await waitFor(() => expect(mocks.getPipelineStatus).toHaveBeenCalledWith('project-b', 'execution-b'));
@@ -194,11 +199,11 @@ it('uses a context generation so an old A response cannot apply after A to B to 
 
   mocks.currentProject = { id: 'project-b', name: 'Project B' };
   window.localStorage.setItem('llm-wiki-last-project', 'project-b');
-  view.rerender(<PipelineClient />);
+  view.rerender(pipelineTree());
   await waitFor(() => expect(mocks.getPipelineStatus).toHaveBeenCalledWith('project-b'));
   mocks.currentProject = { id: 'project-a', name: 'Project A' };
   window.localStorage.setItem('llm-wiki-last-project', 'project-a');
-  view.rerender(<PipelineClient />);
+  view.rerender(pipelineTree());
   await waitFor(() => expect(mocks.getPipelineStatus.mock.calls.filter(([id]) => id === 'project-a').length).toBeGreaterThan(1));
 
   await act(async () => {
@@ -229,7 +234,7 @@ it('does not let a late A capability refresh replace B capability after A comple
 
   mocks.currentProject = { id: 'project-b', name: 'Project B' };
   window.localStorage.setItem('llm-wiki-last-project', 'project-b');
-  view.rerender(<PipelineClient />);
+  view.rerender(pipelineTree());
   await waitFor(() => expect(mocks.getRecompileAllCapability).toHaveBeenCalledWith('project-b'));
   const fullButton = await screen.findByRole('button', { name: '開始全面重編譯' });
   await waitFor(() => expect(fullButton.hasAttribute('disabled')).toBe(true));
@@ -253,7 +258,7 @@ it('does not show an old Project failure after switching context', async () => {
   await startFullRecompile();
   mocks.currentProject = { id: 'project-b', name: 'Project B' };
   window.localStorage.setItem('llm-wiki-last-project', 'project-b');
-  view.rerender(<PipelineClient />);
+  view.rerender(pipelineTree());
   await waitFor(() => expect(mocks.getRecompileAllCapability).toHaveBeenCalledWith('project-b'));
   await startFullRecompile('project-b');
   await waitFor(() => expect(mocks.recompileAll).toHaveBeenCalledTimes(2));
@@ -285,7 +290,7 @@ it('ignores a delayed upload status refresh after switching Projects', async () 
 
   mocks.currentProject = { id: 'project-b', name: 'Project B' };
   window.localStorage.setItem('llm-wiki-last-project', 'project-b');
-  view.rerender(<PipelineClient />);
+  view.rerender(pipelineTree());
   expect(await screen.findByText(/B-CURRENT-REVISION/)).toBeDefined();
 
   await act(async () => {
@@ -341,11 +346,11 @@ it('rejects an old upload refresh after Project A to B to A', async () => {
 
   mocks.currentProject = { id: 'project-b', name: 'Project B' };
   window.localStorage.setItem('llm-wiki-last-project', 'project-b');
-  view.rerender(<PipelineClient />);
+  view.rerender(pipelineTree());
   await screen.findByText(/B-CURRENT-REVISION/);
   mocks.currentProject = { id: 'project-a', name: 'Project A' };
   window.localStorage.setItem('llm-wiki-last-project', 'project-a');
-  view.rerender(<PipelineClient />);
+  view.rerender(pipelineTree());
   expect(await screen.findByText(/A-CURRENT-REVISION/)).toBeDefined();
 
   await act(async () => {

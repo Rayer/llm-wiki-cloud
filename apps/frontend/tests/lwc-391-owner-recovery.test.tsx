@@ -20,6 +20,11 @@ vi.mock('@/components/WorkspaceProvider', () => ({
 }));
 
 import { PipelineClient } from '@/components/PipelineClient';
+import { NavigationBlockerProvider } from '@/components/NavigationBlocker';
+
+function pipelineTree() {
+  return <NavigationBlockerProvider><PipelineClient /></NavigationBlockerProvider>;
+}
 
 const quota = {
   enforced: true,
@@ -94,7 +99,7 @@ async function start() {
 }
 
 it('recovers the accepted execution after a poll error without accepting another execution refresh', async () => {
-  render(<PipelineClient />);
+  render(pipelineTree());
   await start();
   await screen.findByText('Pipeline running...');
 
@@ -129,7 +134,7 @@ it('can start a second execution after terminal scoped polling', async () => {
   m.status.mockImplementation((projectId: string, executionId?: string) => Promise.resolve(
     executionId ? status(executionId, 'SUCCEEDED') : { project_id: projectId, quota },
   ));
-  render(<PipelineClient />);
+  render(pipelineTree());
   await start();
   await screen.findByText('Pipeline complete (1m)');
   await waitFor(() => expect(m.capability).toHaveBeenCalledTimes(2));
@@ -145,7 +150,7 @@ it('can start a second execution after terminal scoped polling', async () => {
 
 it('POST rejection releases loading and permits same Project retry', async () => {
   m.run.mockRejectedValueOnce(new Error('quota rejected'));
-  render(<PipelineClient />);
+  render(pipelineTree());
   await start();
   await screen.findByText('quota rejected');
   await start();
@@ -155,7 +160,7 @@ it('POST rejection releases loading and permits same Project retry', async () =>
 
 it('nonaccepted POST leaves generic lifecycle refresh usable', async () => {
   m.run.mockResolvedValue({ status: 'denied' });
-  render(<PipelineClient />);
+  render(pipelineTree());
   await start();
   await waitFor(() => expect(m.run).toHaveBeenCalledTimes(1));
   m.status.mockResolvedValue(status('previous', 'SUCCEEDED'));
@@ -164,12 +169,12 @@ it('nonaccepted POST leaves generic lifecycle refresh usable', async () => {
 });
 
 it('Project context change resets execution owner for generic refresh', async () => {
-  const view = render(<PipelineClient />);
+  const view = render(pipelineTree());
   await start();
   await screen.findByText('Pipeline running...');
   m.project = { id: 'project-b', name: 'B' };
   window.localStorage.setItem('llm-wiki-last-project', 'project-b');
-  view.rerender(<PipelineClient />);
+  view.rerender(pipelineTree());
   await waitFor(() => expect(m.capability).toHaveBeenCalledWith('project-b'));
   m.status.mockResolvedValue({ ...status('execution-b', 'SUCCEEDED'), project_id: 'project-b' });
   await act(async () => { window.dispatchEvent(new Event('source-annotation-saved')); });

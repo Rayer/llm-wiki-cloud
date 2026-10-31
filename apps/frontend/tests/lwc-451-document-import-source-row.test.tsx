@@ -92,12 +92,11 @@ it('merges saved import and Pipeline status into the source row while retaining 
 
   render(<SourceListClient />);
 
-  const sourceTitle = await screen.findByText('Imported report');
-  expect(screen.getAllByText('Imported report')).toHaveLength(1);
-  expect(screen.queryByText('report.docx')).toBeNull();
+  const sourceTitle = await screen.findByText('report.docx');
+  expect(screen.getAllByText('report.docx')).toHaveLength(1);
   await waitFor(() => {
     const status = screen.getAllByRole('status').find((item) => item.textContent?.includes('Source.documentImport.sourceSaved'));
-    expect(status?.textContent).toContain('Pipeline published');
+    expect(status?.textContent).toContain('Source.documentImport.pipelineStatus.succeeded');
   });
 
   const sourceRow = sourceTitle.closest('[tabindex="-1"]');
@@ -106,7 +105,7 @@ it('merges saved import and Pipeline status into the source row while retaining 
 
   fireEvent.click(screen.getByRole('button', { name: 'Source.previewRawAria' }));
   expect(await screen.findByRole('dialog')).toBeTruthy();
-  expect(await screen.findByText('# converted source preview')).toBeTruthy();
+  expect(await screen.findByText('converted source preview')).toBeTruthy();
 });
 
 for (const terminal of ['failed', 'published']) {
@@ -128,10 +127,10 @@ for (const terminal of ['failed', 'published']) {
     vi.stubGlobal('fetch', fetchMock);
 
     render(<SourceListClient />);
-    await waitFor(() => expect(screen.getByText('Imported report')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('report.docx')).toBeTruthy());
     const sourceStatus = () => screen.getAllByRole('status').find((item) => item.textContent?.includes('Source.documentImport.sourceSaved'));
-    await waitFor(() => expect(sourceStatus()?.textContent).toContain('Pipeline pending'));
-    expect(screen.queryByText('report.docx')).toBeNull();
+    await waitFor(() => expect(sourceStatus()?.textContent).toContain('Source.documentImport.pipelineStatus.pending'));
+    expect(screen.getByText('report.docx')).toBeTruthy();
     await waitFor(() => expect(pendingPolls.size).toBe(1));
 
     for (const expected of ['running', terminal]) {
@@ -141,7 +140,8 @@ for (const terminal of ['failed', 'published']) {
         poll?.();
         await Promise.resolve();
       });
-      await waitFor(() => expect(sourceStatus()?.textContent).toContain(`Pipeline ${expected}`));
+      const statusKey = expected === 'running' ? 'running' : expected === 'published' ? 'succeeded' : expected;
+      await waitFor(() => expect(sourceStatus()?.textContent).toContain(`Source.documentImport.pipelineStatus.${statusKey}`));
     }
     expect(pendingPolls.size).toBe(0);
     expect(screen.queryByText('Source.documentImport.failure.worker_unavailable')).toBeNull();

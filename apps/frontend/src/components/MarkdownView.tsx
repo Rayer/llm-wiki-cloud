@@ -19,9 +19,11 @@ let currentWikilinkSection: WikilinkSection = 'concepts';
 export function MarkdownView({
   content,
   existingConceptSlugs,
+  preserveLeadingHeading = false,
 }: {
   content?: string;
   existingConceptSlugs?: Set<string>;
+  preserveLeadingHeading?: boolean;
 }) {
   const { t } = useT();
   const [deadLinkSlug, setDeadLinkSlug] = useState<string | null>(null);
@@ -43,8 +45,11 @@ export function MarkdownView({
     );
   }
 
-  // Strip leading "# Title" to avoid double title with page header
-  const clean = content.replace(/^# .+\n\n?/, '').replace(/^.+\n=+\n\n?/, '').trimStart();
+  // Detail pages already show the source title as their page heading. Previews
+  // use a filename in their dialog header, so keep the Markdown's own H1 there.
+  const clean = preserveLeadingHeading
+    ? content
+    : content.replace(/^# .+\n\n?/, '').replace(/^.+\n=+\n\n?/, '').trimStart();
 
   return (
     <>
@@ -135,6 +140,22 @@ function renderMarkdown(
       continue;
     }
 
+    const setext = index + 1 < lines.length ? /^(=+|-+)\s*$/.exec(lines[index + 1]) : null;
+    if (setext) {
+      const level = setext[1][0] === '=' ? 1 : 2;
+      const headingText = line.trim();
+      if (level === 2) {
+        const lc = headingText.toLowerCase();
+        if (lc === 'sources') currentWikilinkSection = 'sources';
+        else if (lc === 'concepts') currentWikilinkSection = 'concepts';
+      }
+      const children = renderInline(headingText, existingConceptSlugs, onDeadLink);
+      const key = nodes.length;
+      nodes.push(level === 1 ? <h1 key={key}>{children}</h1> : <h2 key={key}>{children}</h2>);
+      index += 2;
+      continue;
+    }
+
     if (/^>\s?/.test(line)) {
       const quote: string[] = [];
       while (index < lines.length && /^>\s?/.test(lines[index])) {
@@ -198,6 +219,8 @@ function renderMarkdown(
       lines[index].trim() &&
       !/^(#{1,4})\s+/.test(lines[index]) &&
       !/^```/.test(lines[index]) &&
+      !/^>\s?/.test(lines[index]) &&
+      !isTableStart(lines, index) &&
       !/^\s*[-*]\s+/.test(lines[index]) &&
       !/^\s*\d+\.\s+/.test(lines[index])
     ) {

@@ -44,6 +44,11 @@ vi.mock('@/components/WorkspaceProvider', () => ({
 }));
 
 import { PipelineClient } from '@/components/PipelineClient';
+import { NavigationBlockerProvider } from '@/components/NavigationBlocker';
+
+function pipelineTree() {
+  return <NavigationBlockerProvider><PipelineClient /></NavigationBlockerProvider>;
+}
 
 const expectedQuotaLine = '今日執行：2/5 · 冷卻：無 · 新檔案：4';
 
@@ -56,7 +61,7 @@ beforeEach(() => {
     quota: mockedQuota,
   });
 
-  render(<PipelineClient />);
+  render(pipelineTree());
 });
 
 afterEach(() => {

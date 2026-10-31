@@ -4,8 +4,6 @@ import { useState } from 'react';
 import { ProjectRenameModal } from '@/components/ProjectRenameModal';
 import type { Project } from '@/lib/projects';
 import { ProjectProfilePanel } from '@/components/ProjectProfilePanel';
-import { ProjectContentContextPanel } from '@/components/ProjectContentContextPanel';
-import { ProjectDescriptionEditor } from '@/components/ProjectDescriptionEditor';
 import { useWorkspace } from '@/components/WorkspaceProvider';
 import { useAuth } from '@/lib/auth';
 import { useT } from '@/lib/i18n';
@@ -31,14 +29,6 @@ export default function ProfilePage() {
   return (
     <div className="space-y-5">
       <ProjectHeading key={`heading:${user.id}:${currentProject.id}`} project={currentProject} />
-      <ProjectDescriptionEditor
-        key={`description:${user.id}:${sessionEpoch}:${currentProject.id}`}
-        projectId={currentProject.id}
-      />
-      <ProjectContentContextPanel
-        key={`content-context:${user.id}:${sessionEpoch}:${currentProject.id}`}
-        projectId={currentProject.id}
-      />
       <ProjectProfilePanel
         key={`${user.id}:${sessionEpoch}:${currentProject.id}`}
         projectId={currentProject.id}

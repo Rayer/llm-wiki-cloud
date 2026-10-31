@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import type { DocumentImportList, DocumentImportRecord } from '@/lib/api';
 
 const mocks = vi.hoisted(() => ({
+  search: 'conversion_status=all',
   getDocumentImports: vi.fn(),
   deleteDocumentImport: vi.fn(),
   refreshNavCounts: vi.fn(),
@@ -19,9 +20,9 @@ vi.mock('@/components/WorkspaceProvider', () => ({
 }));
 
 vi.mock('@/lib/i18n', () => ({ useT: () => ({ t: (key: string, params?: Record<string, string | number>) => key === 'Source.documentImport.pipelineState' ? `Pipeline ${params?.state}` : key }) }));
-vi.mock('next/navigation', () => ({ useSearchParams: () => new URLSearchParams() }));
+vi.mock('next/navigation', () => ({ useSearchParams: () => new URLSearchParams(mocks.search) }));
 
-import { DocumentImportsPanel } from '@/components/DocumentImportsPanel';
+import { DocumentImportsPanel, documentImportPipelineStatusKey } from '@/components/DocumentImportsPanel';
 
 const failedRecord = (deletionState: DocumentImportRecord['deletion_state']): DocumentImportRecord => ({
   document_id: 'document-1',
@@ -55,9 +56,16 @@ const list = (items: DocumentImportRecord[]): DocumentImportList => ({
   latest_failure_sequence: 1,
 });
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
 let intervals: Map<number, () => void>;
 
 beforeEach(() => {
+  mocks.search = 'conversion_status=all';
   window.localStorage.setItem('locale', 'en');
   intervals = new Map();
   let nextIntervalId = 0;
@@ -156,23 +164,105 @@ it('cancels the deleting-state poll when the panel unmounts', async () => {
   expect(mocks.getDocumentImports).toHaveBeenCalledTimes(2);
 });
 
+it('does not let a late delete refresh overwrite a newer same-scope poll', async () => {
+  const deleteRefresh = deferred<DocumentImportList>();
+  const latestPoll = deferred<DocumentImportList>();
+  const runningPipeline = { ...pipelineRecord('running'), document_id: 'pipeline-document-1', original_filename: 'pipeline.docx' };
+  mocks.getDocumentImports
+    .mockResolvedValueOnce(list([failedRecord('present'), runningPipeline]))
+    .mockReturnValueOnce(deleteRefresh.promise)
+    .mockReturnValueOnce(latestPoll.promise);
+
+  render(<DocumentImportsPanel projectId="project-1" sourcePaths={[]} />);
+  await screen.findByText('report.docx');
+  fireEvent.click(screen.getByRole('button', { name: 'Source.documentImport.delete' }));
+  await waitFor(() => expect(mocks.getDocumentImports).toHaveBeenCalledTimes(2));
+
+  await tickPendingPoll();
+  await waitFor(() => expect(mocks.getDocumentImports).toHaveBeenCalledTimes(3));
+  await act(async () => latestPoll.resolve(list([{ ...runningPipeline, pipeline_ref: { status: 'succeeded', intent_id: 'intent-1', execution_id: 'execution-1', content_generation: '4' } }])));
+  await waitFor(() => expect(screen.queryByText('report.docx')).toBeNull());
+
+  await act(async () => deleteRefresh.resolve(list([failedRecord('present'), runningPipeline])));
+  expect(screen.queryByText('report.docx')).toBeNull();
+  expect(mocks.refreshNavCounts).toHaveBeenCalledTimes(1);
+  expect(mocks.deleteDocumentImport).toHaveBeenCalledTimes(1);
+});
+
+it('does not let a retired delete continuation invalidate a different filter list', async () => {
+  const deleting = deferred<{ status: string }>();
+  const failedList = deferred<DocumentImportList>();
+  const retiredRefresh = deferred<DocumentImportList>();
+  mocks.getDocumentImports
+    .mockResolvedValueOnce(list([failedRecord('present')]))
+    .mockReturnValueOnce(failedList.promise)
+    .mockReturnValueOnce(retiredRefresh.promise);
+  mocks.deleteDocumentImport.mockReturnValueOnce(deleting.promise);
+
+  const view = render(<DocumentImportsPanel projectId="project-1" sourcePaths={[]} />);
+  await screen.findByText('report.docx');
+  fireEvent.click(screen.getByRole('button', { name: 'Source.documentImport.delete' }));
+  mocks.search = 'conversion_status=failed';
+  view.rerender(<DocumentImportsPanel projectId="project-1" sourcePaths={[]} />);
+  await waitFor(() => expect(mocks.getDocumentImports).toHaveBeenCalledTimes(2));
+
+  await act(async () => deleting.resolve({ status: 'accepted' }));
+  expect(mocks.getDocumentImports).toHaveBeenCalledTimes(2);
+  await act(async () => failedList.resolve(list([])));
+
+  expect(await screen.findByText('Source.documentImport.filterEmpty')).toBeTruthy();
+  expect(mocks.getDocumentImports).toHaveBeenCalledTimes(2);
+});
+
+it('does not revive an old all-filter owner after all→failed→all', async () => {
+  const deleting = deferred<{ status: string }>();
+  const currentAll = deferred<DocumentImportList>();
+  const retiredRefresh = deferred<DocumentImportList>();
+  const currentRecord = { ...failedRecord('present'), document_id: 'current-document', original_filename: 'current.docx' };
+  mocks.getDocumentImports
+    .mockResolvedValueOnce(list([failedRecord('present')]))
+    .mockResolvedValueOnce(list([]))
+    .mockReturnValueOnce(currentAll.promise)
+    .mockReturnValueOnce(retiredRefresh.promise);
+  mocks.deleteDocumentImport.mockReturnValueOnce(deleting.promise);
+
+  const view = render(<DocumentImportsPanel projectId="project-1" sourcePaths={[]} />);
+  await screen.findByText('report.docx');
+  fireEvent.click(screen.getByRole('button', { name: 'Source.documentImport.delete' }));
+  mocks.search = 'conversion_status=failed';
+  view.rerender(<DocumentImportsPanel projectId="project-1" sourcePaths={[]} />);
+  await screen.findByText('Source.documentImport.filterEmpty');
+  mocks.search = 'conversion_status=all';
+  view.rerender(<DocumentImportsPanel projectId="project-1" sourcePaths={[]} />);
+  await waitFor(() => expect(mocks.getDocumentImports).toHaveBeenCalledTimes(3));
+
+  await act(async () => deleting.resolve({ status: 'accepted' }));
+  expect(mocks.getDocumentImports).toHaveBeenCalledTimes(3);
+  await act(async () => currentAll.resolve(list([currentRecord])));
+
+  expect(await screen.findByText('current.docx')).toBeTruthy();
+  expect(mocks.getDocumentImports).toHaveBeenCalledTimes(3);
+});
+
+const pipelineStatusText = (status: string) => `Pipeline ${documentImportPipelineStatusKey(status)}`;
+
 for (const terminal of ['failed', 'published']) {
-  it(`tracks Pipeline pending→running→${terminal} without changing successful conversion`, async () => {
+  it(`tracks translated pending→running→${terminal} status without changing successful conversion`, async () => {
     mocks.getDocumentImports
       .mockResolvedValueOnce(list([pipelineRecord('pending')]))
       .mockResolvedValueOnce(list([pipelineRecord('running')]))
       .mockResolvedValueOnce(list([pipelineRecord(terminal)]));
 
     render(<DocumentImportsPanel projectId="project-1" sourcePaths={[]} />);
-    await screen.findByText('Pipeline pending');
+    await screen.findByText(pipelineStatusText('pending'));
     await waitFor(() => expect(intervals.size).toBe(1));
 
     await tickPendingPoll();
-    await screen.findByText('Pipeline running');
+    await screen.findByText(pipelineStatusText('running'));
     expect(screen.getByText('Source.documentImport.sourceSaved')).toBeDefined();
 
     await tickPendingPoll();
-    await screen.findByText(`Pipeline ${terminal}`);
+    await screen.findByText(pipelineStatusText(terminal));
     expect(screen.getByText('Source.documentImport.sourceSaved')).toBeDefined();
     expect(screen.queryByText('Source.documentImport.failure.worker_unavailable')).toBeNull();
     expect(intervals.size).toBe(0);
