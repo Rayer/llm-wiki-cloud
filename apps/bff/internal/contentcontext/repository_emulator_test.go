@@ -144,6 +144,72 @@ func TestFirestoreRepositoryBoundsExpiredAttemptTakeover(t *testing.T) {
 	}
 }
 
+func TestFirestoreRepositoryClaimTimestampsMatchNativePrecisionForTerminals(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+
+	for index, terminal := range []string{"complete", "fail", "mark_empty"} {
+		t.Run(terminal, func(t *testing.T) {
+			emulatorHost := strings.TrimSpace(os.Getenv("FIRESTORE_EMULATOR_HOST"))
+			parsed, err := url.Parse("http://" + emulatorHost)
+			if err != nil || parsed.Host == "" {
+				t.Fatalf("invalid Firestore emulator host")
+			}
+			host, _, err := net.SplitHostPort(parsed.Host)
+			if err != nil || (host != "127.0.0.1" && host != "localhost" && host != "::1") {
+				t.Fatalf("Firestore emulator must use loopback")
+			}
+			cloudProject := fmt.Sprintf("content-context-precision-%d", time.Now().UnixNano())
+			client, err := scopedfirestore.NewClientWithDatabaseAndScope(cloudProject, "(default)", "", "", "")
+			if err != nil {
+				t.Fatalf("create Firestore emulator client: %v", err)
+			}
+			defer client.Close()
+			ownerID := "cc-precision-owner"
+			projectID := fmt.Sprintf("cc-precision-%s-%d", terminal, time.Now().UnixNano())
+			stateRef := scopedfirestore.Collection(client.Raw(), "projects").Doc(ownerID + "_" + projectID).Collection("content_context").Doc("state")
+			defer func() { _, _ = stateRef.Delete(context.Background()) }()
+
+			now := time.Date(2026, time.October, 31, 1, 4, 31, 240808123, time.UTC)
+			repository := NewFirestoreRepository(client.Raw())
+			repository.SetClockForTest(func() time.Time { return now })
+			authority := &testPublicationAuthority{publication: testPublication("G1", byte('a'+index), "manifest-precision")}
+			if _, err := repository.ReconcileCurrent(ctx, ownerID, projectID, authority); err != nil {
+				t.Fatalf("reconcile publication: %v", err)
+			}
+			claim, err := repository.Claim(ctx, ownerID, projectID, authority)
+			if err != nil || claim == nil {
+				t.Fatalf("claim=%+v err=%v", claim, err)
+			}
+			state, err := repository.Read(ctx, ownerID, projectID)
+			if err != nil || state.SummaryWork == nil || state.SummaryWork.LeaseUntil == nil || state.AttemptStartedAt == nil {
+				t.Fatalf("read claimed state=%+v err=%v", state, err)
+			}
+			persistedLease := *state.SummaryWork.LeaseUntil
+			persistedStart := *state.AttemptStartedAt
+			t.Logf("claim_lease=%s persisted_lease=%s persisted_start=%s",
+				claim.LeaseUntil.Format(time.RFC3339Nano), persistedLease.Format(time.RFC3339Nano), persistedStart.Format(time.RFC3339Nano))
+			if persistedLease.Nanosecond()%int(time.Microsecond) != 0 || persistedStart.Nanosecond()%int(time.Microsecond) != 0 {
+				t.Fatalf("native Firestore timestamp precision not established: lease=%s start=%s",
+					persistedLease.Format(time.RFC3339Nano), persistedStart.Format(time.RFC3339Nano))
+			}
+			var accepted bool
+			switch terminal {
+			case "complete":
+				accepted, err = repository.Complete(ctx, ownerID, projectID, authority, *claim, testSummaryCompletion("precision summary"))
+			case "fail":
+				accepted, err = repository.Fail(ctx, ownerID, projectID, authority, *claim, "provider_timeout")
+			case "mark_empty":
+				accepted, err = repository.MarkEmpty(ctx, ownerID, projectID, authority, *claim)
+			}
+			if err != nil || !accepted {
+				t.Fatalf("terminal=%s accepted=%t err=%v claim_lease=%s persisted_lease=%s",
+					terminal, accepted, err, claim.LeaseUntil.Format(time.RFC3339Nano), persistedLease.Format(time.RFC3339Nano))
+			}
+		})
+	}
+}
+
 func TestFirestoreRepositoryReplaysOwnedPendingReadbackThroughSDK(t *testing.T) {
 	endpoint := strings.TrimSpace(os.Getenv("FIRESTORE_EMULATOR_HOST"))
 	if endpoint == "" {
