@@ -147,24 +147,11 @@ func TestFirestoreRepositoryBoundsExpiredAttemptTakeover(t *testing.T) {
 func TestFirestoreRepositoryClaimTimestampsMatchNativePrecisionForTerminals(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
+	client := newContentContextFirestoreEmulator(t)
+	defer client.Close()
 
 	for index, terminal := range []string{"complete", "fail", "mark_empty"} {
 		t.Run(terminal, func(t *testing.T) {
-			emulatorHost := strings.TrimSpace(os.Getenv("FIRESTORE_EMULATOR_HOST"))
-			parsed, err := url.Parse("http://" + emulatorHost)
-			if err != nil || parsed.Host == "" {
-				t.Fatalf("invalid Firestore emulator host")
-			}
-			host, _, err := net.SplitHostPort(parsed.Host)
-			if err != nil || (host != "127.0.0.1" && host != "localhost" && host != "::1") {
-				t.Fatalf("Firestore emulator must use loopback")
-			}
-			cloudProject := fmt.Sprintf("content-context-precision-%d", time.Now().UnixNano())
-			client, err := scopedfirestore.NewClientWithDatabaseAndScope(cloudProject, "(default)", "", "", "")
-			if err != nil {
-				t.Fatalf("create Firestore emulator client: %v", err)
-			}
-			defer client.Close()
 			ownerID := "cc-precision-owner"
 			projectID := fmt.Sprintf("cc-precision-%s-%d", terminal, time.Now().UnixNano())
 			stateRef := scopedfirestore.Collection(client.Raw(), "projects").Doc(ownerID + "_" + projectID).Collection("content_context").Doc("state")
