@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -14,10 +17,14 @@ import (
 	"testing"
 	"time"
 
+	"cloud.google.com/go/firestore"
 	"github.com/rayer/llm-wiki-bff/internal/contentcontext"
 	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"github.com/rayer/llm-wiki-bff/internal/generation"
 	"github.com/rayer/llm-wiki-bff/internal/llm"
+	"google.golang.org/api/googleapi"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type contentContextTestSummaryClient struct {
@@ -35,6 +42,31 @@ func (c *contentContextTestSummaryClient) Complete(_ context.Context, system, in
 }
 
 func (*contentContextTestSummaryClient) Close() {}
+
+type contentContextFailureReadStore struct {
+	objectStore
+	name string
+	err  error
+}
+
+func (s *contentContextFailureReadStore) Read(ctx context.Context, name string, generationID, limit int64) ([]byte, objectAttrs, error) {
+	if name == s.name {
+		return nil, objectAttrs{}, s.err
+	}
+	return s.objectStore.Read(ctx, name, generationID, limit)
+}
+
+type contentContextTestPublicationAuthority struct {
+	publication contentcontext.Publication
+}
+
+func (a *contentContextTestPublicationAuthority) WithProjectFence(ctx context.Context, _, _ string, operation func(context.Context) error) error {
+	return operation(ctx)
+}
+
+func (a *contentContextTestPublicationAuthority) CurrentPublication(context.Context, string, string) (contentcontext.Publication, error) {
+	return a.publication, nil
+}
 
 func TestContentContextManifestIdentityBindsGenerationObjectAndDigest(t *testing.T) {
 	digest := strings.Repeat("a", 64)
@@ -145,6 +177,218 @@ func TestContentContextManifestIdentityDoesNotAcceptUntrustedFormatting(t *testi
 	digest := strings.Repeat("A", 64)
 	if got := contentContextManifestIdentity("generation-1", 17, digest); got != "" {
 		t.Fatalf("uppercase manifest digest produced identity %q", got)
+	}
+}
+
+func TestContentContextFailureCauseKeepsKnownTypesAndDropsMessages(t *testing.T) {
+	const privateURL = "https://example.invalid/firestore/state?opaque=synthetic-value"
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "gRPC", err: status.Error(codes.PermissionDenied, privateURL), want: "grpc_permission_denied"},
+		{name: "Google API", err: &googleapi.Error{Code: 503, Message: privateURL}, want: "google_api_http_503"},
+		{name: "LLM", err: &llm.ProfileCallError{Kind: llm.ProviderQuotaExhausted, StatusCode: 429}, want: "quota_exhausted"},
+		{name: "joined persistence and provider errors", err: errors.Join(
+			&llm.ProfileCallError{Kind: llm.ProviderPermissionDenied, StatusCode: 403}, status.Error(codes.Unavailable, privateURL),
+		), want: "provider_permission_denied+grpc_unavailable"},
+		{name: "untyped", err: errors.New(privateURL), want: "internal_error"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := contentContextFailureCause(tc.err)
+			if got != tc.want || len(got) > 128 || strings.Contains(got, " ") || strings.Contains(got, "/") {
+				t.Fatalf("safe cause=%q, want bounded %q", got, tc.want)
+			}
+			if strings.Contains(got, privateURL) || strings.Contains(got, "synthetic-value") {
+				t.Fatalf("safe cause exposed wrapped message: %q", got)
+			}
+		})
+	}
+}
+
+func TestContentContextFailureReporterRetainsOperationClassCauseAndAttempt(t *testing.T) {
+	oldWarn := warnContentContextFailure
+	t.Cleanup(func() { warnContentContextFailure = oldWarn })
+	var events []contentContextFailureEvent
+	warnContentContextFailure = func(event contentContextFailureEvent) { events = append(events, event) }
+	attemptID := "37c788c0-5657-4fc9-8cb0-f8ce4673d788"
+	privateURL := "https://example.invalid/firestore/state?opaque=synthetic-value"
+
+	reportContentContextReconcileFailure(&contentContextOperationError{
+		operation: "claim", err: status.Error(codes.PermissionDenied, privateURL),
+	})
+	reportContentContextReconcileFailure(&contentContextOperationError{
+		operation: "complete", attemptID: attemptID, class: "storage_failure",
+		err: &googleapi.Error{Code: 503, Message: privateURL},
+	})
+	reportContentContextReconcileFailure(&contentContextOperationError{
+		operation: "record_failure", attemptID: attemptID, class: "storage_failure",
+		err: errors.Join(&llm.ProfileCallError{Kind: llm.ProviderTimeout}, status.Error(codes.Unavailable, privateURL)),
+	})
+
+	want := []contentContextFailureEvent{
+		{operation: "claim", class: "storage_failure", cause: "grpc_permission_denied", attemptID: "none"},
+		{operation: "complete", class: "storage_failure", cause: "google_api_http_503", attemptID: attemptID},
+		{operation: "record_failure", class: "storage_failure", cause: "provider_timeout+grpc_unavailable", attemptID: attemptID},
+	}
+	if fmt.Sprint(events) != fmt.Sprint(want) {
+		t.Fatalf("failure events=%+v, want %+v", events, want)
+	}
+}
+
+func TestCloudContentContextClaimFailureRetainsStoreCause(t *testing.T) {
+	ctx := contentContextEmulatorContext(t, 15*time.Second)
+	cloudProject := fmt.Sprintf("content-context-claim-error-%d", time.Now().UnixNano())
+	t.Setenv("GOOGLE_CLOUD_PROJECT", cloudProject)
+	t.Setenv("FIRESTORE_DATABASE_ID", "(default)")
+	t.Setenv("LOCAL_CLOUD_SCOPE", "")
+	cfg := workerConfig{
+		Bucket: "local-test", UserID: "claim-error-owner", ProjectID: "claim-error-project", ExecutionID: "claim-error-execution",
+	}
+	base := newMemoryObjects()
+	prefix := workerProjectObjectPrefix(cfg)
+	objects := &contentContextFailureReadStore{
+		objectStore: base, name: prefix + generation.ManifestPath,
+		err: status.Error(codes.PermissionDenied, "https://example.invalid/published/manifest?opaque=synthetic-value"),
+	}
+
+	oldClient, oldWarn := newContentContextFirestoreClient, warnContentContextFailure
+	t.Cleanup(func() {
+		newContentContextFirestoreClient = oldClient
+		warnContentContextFailure = oldWarn
+	})
+	newContentContextFirestoreClient = newProfileFirestoreClient
+	var event contentContextFailureEvent
+	warnContentContextFailure = func(got contentContextFailureEvent) { event = got }
+
+	err := runCloudContentContext(ctx, cfg, objects)
+	if err == nil {
+		t.Fatal("content-context claim unexpectedly succeeded")
+	}
+	reportContentContextReconcileFailure(err)
+	if event.operation != "claim" || event.class != "storage_failure" || event.cause != "grpc_permission_denied" || event.attemptID != "none" {
+		t.Fatalf("claim failure event=%+v", event)
+	}
+}
+
+func TestContentContextCompletionAndFailureRecordKeepOperationCause(t *testing.T) {
+	oldBootstrap, oldWarn := newBootstrapContentContextSummaryClient, warnContentContextFailure
+	t.Cleanup(func() {
+		newBootstrapContentContextSummaryClient = oldBootstrap
+		warnContentContextFailure = oldWarn
+	})
+	var events []contentContextFailureEvent
+	warnContentContextFailure = func(event contentContextFailureEvent) { events = append(events, event) }
+
+	ctx := context.Background()
+	digest := strings.Repeat("a", 64)
+	publication := contentcontext.Publication{
+		Generation: "published-generation", ConceptsDigest: digest,
+		ManifestIdentity: "published-generation:1:" + strings.Repeat("b", 64),
+	}
+	authority := &contentContextTestPublicationAuthority{publication: publication}
+	claim := contentcontext.SummaryClaim{
+		WorkID: "captured-work", AttemptID: "37c788c0-5657-4fc9-8cb0-f8ce4673d788",
+		ConceptsSHA256: digest, SourceGeneration: publication.Generation,
+		SourceManifestIdentity: publication.ManifestIdentity, LeaseUntil: time.Now().Add(time.Minute),
+	}
+	cfg := workerConfig{
+		UserID: "content-owner", ProjectID: "content-project", PipelineProfileSource: "bootstrap", BootstrapLLMSource: true,
+	}
+	testClient := &contentContextTestSummaryClient{result: llm.CompletionResult{
+		Text: `{"summary":"synthetic completed summary"}`,
+		Metadata: llm.CompletionMetadata{
+			Provider: "synthetic-provider", Protocol: string(llm.ProtocolOpenAIChatCompletions),
+			Role: string(llm.ProfileRoleFast), RequestedModel: "synthetic-fast", ReturnedModel: "synthetic-fast-v1",
+		},
+	}}
+	newBootstrapContentContextSummaryClient = func(string) (contentContextSummaryClient, llm.ModelIdentity, error) {
+		return testClient, llm.ModelIdentity{Provider: "synthetic-provider", Model: "synthetic-fast"}, nil
+	}
+	metadata := contentcontext.SummaryInputMetadata{
+		ConceptsDigest: digest, SourceGeneration: publication.Generation,
+		InputDigest: strings.Repeat("c", 64), SelectionVersion: contentcontext.SummarySelectionVersion,
+	}
+	input := []byte(`{"concepts":[{"slug":"synthetic"}]}`)
+	completeErr := runClaimedContentContextSummary(ctx, cfg, contentcontext.NewFirestoreRepository(nil), authority, claim, input, metadata, nil)
+	var completeOperation *contentContextOperationError
+	if !errors.As(completeErr, &completeOperation) || completeOperation.operation != "complete" || completeOperation.class != "storage_failure" || completeOperation.attemptID != claim.AttemptID {
+		t.Fatalf("completion error=%+v", completeErr)
+	}
+	reportContentContextReconcileFailure(completeErr)
+
+	recordErr := failCloudContentContextSummary(
+		ctx, contentcontext.NewFirestoreRepository(nil), authority, cfg, claim, "fast_call", "provider_timeout",
+		&llm.ProfileCallError{Kind: llm.ProviderTimeout},
+	)
+	var recordOperation *contentContextOperationError
+	if !errors.As(recordErr, &recordOperation) || recordOperation.operation != "record_failure" || recordOperation.class != "storage_failure" || recordOperation.attemptID != claim.AttemptID {
+		t.Fatalf("failure-record error=%+v", recordErr)
+	}
+	reportContentContextReconcileFailure(recordErr)
+
+	if len(events) != 2 || events[0].operation != "complete" || events[0].class != "storage_failure" ||
+		events[0].cause != "internal_error" || events[0].attemptID != claim.AttemptID ||
+		events[1].operation != "record_failure" || events[1].class != "storage_failure" ||
+		events[1].cause != "provider_timeout+internal_error" || events[1].attemptID != claim.AttemptID {
+		t.Fatalf("completion/failure-record events=%+v", events)
+	}
+}
+
+func TestCloudWorkerExitLogsBoundedContentContextCauseWithoutFailingPublish(t *testing.T) {
+	cfg := cloudCfgFor("synthetic-user", "synthetic-project", "synthetic-execution")
+	objects := newMemoryObjects()
+	prefix := workerProjectObjectPrefix(cfg)
+	seedCloudSource(t, objects, prefix, "raw-start", "", priorCloudReceipt())
+
+	oldExec := execOLW
+	oldGuidance := resolveProfileGuidanceAtCompileStart
+	oldFirestoreClient := newContentContextFirestoreClient
+	t.Cleanup(func() {
+		execOLW = oldExec
+		resolveProfileGuidanceAtCompileStart = oldGuidance
+		newContentContextFirestoreClient = oldFirestoreClient
+	})
+	execOLW = func(_ context.Context, vault string, _ []string, _ []string, _, _ io.Writer) error {
+		writeCloudRequiredOutputs(t, vault)
+		return nil
+	}
+	resolveProfileGuidanceAtCompileStart = func(context.Context, workerConfig, objectStore) (*profileGuidancePin, error) {
+		return nil, nil
+	}
+	newContentContextFirestoreClient = func(context.Context, string) (*firestore.Client, error) {
+		return nil, status.Error(codes.PermissionDenied, "https://example.invalid/firestore/state?opaque=synthetic-value")
+	}
+	t.Setenv("GOOGLE_CLOUD_PROJECT", "synthetic-cloud-project")
+
+	oldOutput, oldFlags := log.Writer(), log.Flags()
+	var output bytes.Buffer
+	log.SetOutput(&output)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(oldOutput)
+		log.SetFlags(oldFlags)
+	})
+
+	if err := runCloudWorkerBatch(context.Background(), cfg, [][]string{{"run"}}, objects); err != nil {
+		t.Fatalf("summary failure changed successful publish result: %v", err)
+	}
+	if _, _, err := objects.Read(context.Background(), prefix+generation.ManifestPath, 0, generation.MaxManifestBytes); err != nil {
+		t.Fatalf("worker did not publish current manifest: %v", err)
+	}
+	logLine := output.String()
+	for _, expected := range []string{
+		"operation=firestore_client", "class=storage_failure", "cause=grpc_permission_denied", "attempt_id=none",
+	} {
+		if !strings.Contains(logLine, expected) {
+			t.Fatalf("worker warning %q missing %q", logLine, expected)
+		}
+	}
+	if strings.Contains(logLine, "example.invalid") || strings.Contains(logLine, "synthetic-value") ||
+		strings.Contains(logLine, cfg.UserID) || strings.Contains(logLine, cfg.ProjectID) || strings.Contains(logLine, cfg.ExecutionID) {
+		t.Fatalf("worker warning exposed request or cause data: %q", logLine)
 	}
 }
 

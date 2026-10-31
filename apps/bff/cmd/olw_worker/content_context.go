@@ -9,18 +9,31 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/rayer/llm-wiki-bff/internal/auth"
 	conceptcache "github.com/rayer/llm-wiki-bff/internal/cache"
 	"github.com/rayer/llm-wiki-bff/internal/contentcontext"
 	"github.com/rayer/llm-wiki-bff/internal/gcs"
 	"github.com/rayer/llm-wiki-bff/internal/generation"
 	"github.com/rayer/llm-wiki-bff/internal/llm"
+	"google.golang.org/api/googleapi"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 var newContentContextGCSClient = gcs.NewClientWithScope
 var newContentContextFirestoreClient = newProfileFirestoreClient
-var warnContentContextFailure = func(class string) {
-	log.Printf("WARNING project_context operation failed stage=project_context class=%s", class)
+
+type contentContextFailureEvent struct {
+	operation string
+	class     string
+	cause     string
+	attemptID string
+}
+
+var warnContentContextFailure = func(event contentContextFailureEvent) {
+	log.Printf("WARNING project_context operation failed stage=project_context operation=%s class=%s cause=%s attempt_id=%s",
+		event.operation, event.class, event.cause, event.attemptID)
 }
 
 const (
@@ -99,8 +112,10 @@ var newBootstrapContentContextSummaryClient = func(apiKey string) (contentContex
 var loadContentContextSummaryInput = pinnedSummaryInput
 
 type contentContextOperationError struct {
-	class string
-	err   error
+	operation string
+	attemptID string
+	class     string
+	err       error
 }
 
 func (e *contentContextOperationError) Error() string {
@@ -108,6 +123,118 @@ func (e *contentContextOperationError) Error() string {
 }
 
 func (e *contentContextOperationError) Unwrap() error { return e.err }
+
+func contentContextFailureCause(err error) string {
+	causes := make([]string, 0, 3)
+	seen := make(map[string]struct{}, 3)
+	visited := 0
+	var visit func(error, int)
+	visit = func(current error, depth int) {
+		if current == nil || depth > 8 || visited >= 16 || len(causes) >= 3 {
+			return
+		}
+		visited++
+		if joined, ok := current.(interface{ Unwrap() []error }); ok {
+			for _, child := range joined.Unwrap() {
+				visit(child, depth+1)
+			}
+			return
+		}
+		cause := contentContextFailureLeaf(current)
+		if cause != "internal_error" {
+			if _, ok := seen[cause]; !ok {
+				seen[cause] = struct{}{}
+				causes = append(causes, cause)
+			}
+			return
+		}
+		if wrapped, ok := current.(interface{ Unwrap() error }); ok {
+			visit(wrapped.Unwrap(), depth+1)
+			return
+		}
+		if _, ok := seen[cause]; !ok {
+			seen[cause] = struct{}{}
+			causes = append(causes, cause)
+		}
+	}
+	visit(err, 0)
+	if len(causes) == 0 {
+		return "internal_error"
+	}
+	return strings.Join(causes, "+")
+}
+
+func contentContextFailureLeaf(err error) string {
+	switch {
+	case errors.Is(err, context.Canceled):
+		return "context_canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline_exceeded"
+	case errors.Is(err, contentcontext.ErrPublicationChanged):
+		return "publication_changed"
+	case errors.Is(err, contentcontext.ErrAttemptRejected):
+		return "attempt_rejected"
+	case errors.Is(err, contentcontext.ErrEmptyConcepts):
+		return "empty_concepts"
+	case isObjectNotFound(err):
+		return "object_not_found"
+	}
+	var profileErr *llm.ProfileCallError
+	if errors.As(err, &profileErr) {
+		return llm.SafeErrorCategory(err)
+	}
+	var httpErr *llm.HTTPStatusError
+	if errors.As(err, &httpErr) {
+		return llm.SafeErrorCategory(err)
+	}
+	var apiErr *googleapi.Error
+	if errors.As(err, &apiErr) {
+		if apiErr.Code >= 100 && apiErr.Code <= 599 {
+			return fmt.Sprintf("google_api_http_%d", apiErr.Code)
+		}
+		return "google_api_http_other"
+	}
+	if grpcStatus, ok := status.FromError(err); ok {
+		switch grpcStatus.Code() {
+		case codes.Canceled:
+			return "grpc_canceled"
+		case codes.DeadlineExceeded:
+			return "grpc_deadline_exceeded"
+		case codes.PermissionDenied:
+			return "grpc_permission_denied"
+		case codes.Unauthenticated:
+			return "grpc_unauthenticated"
+		case codes.ResourceExhausted:
+			return "grpc_resource_exhausted"
+		case codes.Unavailable:
+			return "grpc_unavailable"
+		case codes.NotFound:
+			return "grpc_not_found"
+		case codes.InvalidArgument:
+			return "grpc_invalid_argument"
+		case codes.FailedPrecondition:
+			return "grpc_failed_precondition"
+		case codes.Aborted:
+			return "grpc_aborted"
+		case codes.Internal:
+			return "grpc_internal"
+		default:
+			return fmt.Sprintf("grpc_code_%d", grpcStatus.Code())
+		}
+	}
+	return "internal_error"
+}
+
+func safeContentContextAttemptID(value string) string {
+	if value == "" {
+		return "none"
+	}
+	id, err := uuid.Parse(value)
+	if err != nil {
+		return "invalid"
+	}
+	return id.String()
+}
 
 // pinnedSummaryInput loads exactly the archived generation recorded by the
 // summary claim. It validates that archive's manifest identity and uses the
@@ -277,18 +404,18 @@ func validateCloudContentContextLease(ctx context.Context, lease *cloudLease, ex
 // worker warning channel and never change the knowledge publication result.
 func reconcileCloudContentContext(ctx context.Context, cfg workerConfig, objects objectStore) error {
 	if ctx == nil || objects == nil || cfg.Bucket == "" || !auth.ValidPathSegment(cfg.UserID) || !auth.ValidPathSegment(cfg.ProjectID) {
-		return errors.New("invalid content-context worker identity")
+		return &contentContextOperationError{operation: "worker_identity", class: "storage_failure", err: errors.New("invalid content-context worker identity")}
 	}
 	cloudProject := firstNonEmptyEnv("GOOGLE_CLOUD_PROJECT", "GCP_PROJECT", "GCLOUD_PROJECT")
 	if cloudProject == "" {
-		return errors.New("content-context Firestore project identity unavailable")
+		return &contentContextOperationError{operation: "firestore_client", class: "storage_failure", err: errors.New("content-context Firestore project identity unavailable")}
 	}
 	client, err := newContentContextFirestoreClient(ctx, cloudProject)
 	if err != nil {
-		return &contentContextOperationError{class: "storage_failure", err: fmt.Errorf("create content-context Firestore client: %w", err)}
+		return &contentContextOperationError{operation: "firestore_client", class: "storage_failure", err: fmt.Errorf("create content-context Firestore client: %w", err)}
 	}
 	if client == nil {
-		return &contentContextOperationError{class: "storage_failure", err: errors.New("content-context Firestore client unavailable")}
+		return &contentContextOperationError{operation: "firestore_client", class: "storage_failure", err: errors.New("content-context Firestore client unavailable")}
 	}
 	defer client.Close()
 	repository := contentcontext.NewFirestoreRepository(client)
@@ -297,7 +424,10 @@ func reconcileCloudContentContext(ctx context.Context, cfg workerConfig, objects
 	if isObjectNotFound(err) {
 		return nil
 	}
-	return err
+	if err != nil {
+		return &contentContextOperationError{operation: "reconcile", err: err}
+	}
+	return nil
 }
 
 // runCloudContentContext reconciles and claims the current published digest,
@@ -306,18 +436,18 @@ func reconcileCloudContentContext(ctx context.Context, cfg workerConfig, objects
 // logging; they never change the knowledge publication result.
 func runCloudContentContext(ctx context.Context, cfg workerConfig, objects objectStore) error {
 	if ctx == nil || objects == nil || cfg.Bucket == "" || !auth.ValidPathSegment(cfg.UserID) || !auth.ValidPathSegment(cfg.ProjectID) {
-		return errors.New("invalid content-context worker identity")
+		return &contentContextOperationError{operation: "worker_identity", class: "storage_failure", err: errors.New("invalid content-context worker identity")}
 	}
 	cloudProject := firstNonEmptyEnv("GOOGLE_CLOUD_PROJECT", "GCP_PROJECT", "GCLOUD_PROJECT")
 	if cloudProject == "" {
-		return errors.New("content-context Firestore project identity unavailable")
+		return &contentContextOperationError{operation: "firestore_client", class: "storage_failure", err: errors.New("content-context Firestore project identity unavailable")}
 	}
 	client, err := newContentContextFirestoreClient(ctx, cloudProject)
 	if err != nil {
-		return fmt.Errorf("create content-context Firestore client: %w", err)
+		return &contentContextOperationError{operation: "firestore_client", class: "storage_failure", err: fmt.Errorf("create content-context Firestore client: %w", err)}
 	}
 	if client == nil {
-		return errors.New("content-context Firestore client unavailable")
+		return &contentContextOperationError{operation: "firestore_client", class: "storage_failure", err: errors.New("content-context Firestore client unavailable")}
 	}
 	defer client.Close()
 	repository := contentcontext.NewFirestoreRepository(client)
@@ -326,8 +456,11 @@ func runCloudContentContext(ctx context.Context, cfg workerConfig, objects objec
 	if isObjectNotFound(err) {
 		return nil
 	}
-	if err != nil || claim == nil {
-		return err
+	if err != nil {
+		return &contentContextOperationError{operation: "claim", err: err}
+	}
+	if claim == nil {
+		return nil
 	}
 
 	inputCtx, cancelInput := context.WithTimeout(ctx, contentContextInputTimeout)
@@ -340,7 +473,7 @@ func runClaimedContentContextSummary(ctx context.Context, cfg workerConfig, repo
 	if errors.Is(err, contentcontext.ErrEmptyConcepts) {
 		marked, markErr := repository.MarkEmpty(ctx, cfg.UserID, cfg.ProjectID, authority, claim)
 		if markErr != nil {
-			return &contentContextOperationError{class: "storage_failure", err: markErr}
+			return &contentContextOperationError{operation: "mark_empty", attemptID: claim.AttemptID, class: "storage_failure", err: markErr}
 		}
 		if !marked {
 			return contentcontext.ErrAttemptRejected
@@ -348,18 +481,18 @@ func runClaimedContentContextSummary(ctx context.Context, cfg workerConfig, repo
 		return nil
 	}
 	if err != nil {
-		return failCloudContentContextSummary(ctx, repository, authority, cfg, claim, "input_invalid", err)
+		return failCloudContentContextSummary(ctx, repository, authority, cfg, claim, "load_input", "input_invalid", err)
 	}
 	if len(input) == 0 || len(input)+len(contentcontext.SummarySystemPrompt)+1 > contentcontext.SummaryMaxInputBytes ||
 		metadata.SourceGeneration != claim.SourceGeneration || metadata.SelectionVersion != contentcontext.SummarySelectionVersion ||
 		!validSummaryInputMetadata(metadata, claim) {
 		err = errors.New("pinned summary input metadata is invalid")
-		return failCloudContentContextSummary(ctx, repository, authority, cfg, claim, "input_invalid", err)
+		return failCloudContentContextSummary(ctx, repository, authority, cfg, claim, "validate_input", "input_invalid", err)
 	}
 
 	summaryClient, identity, err := newContentContextFastClient(ctx, cfg)
 	if err != nil {
-		return failCloudContentContextSummary(ctx, repository, authority, cfg, claim, "provider_unavailable", err)
+		return failCloudContentContextSummary(ctx, repository, authority, cfg, claim, "fast_client", "provider_unavailable", err)
 	}
 	defer summaryClient.Close()
 	modelCtx, cancelModel := context.WithTimeout(ctx, contentContextModelTimeout)
@@ -367,7 +500,7 @@ func runClaimedContentContextSummary(ctx context.Context, cfg workerConfig, repo
 	result, err := summaryClient.Complete(modelCtx, contentcontext.SummarySystemPrompt, string(input))
 	cancelModel()
 	if err != nil {
-		return failCloudContentContextSummary(ctx, repository, authority, cfg, claim, contentContextProviderErrorClass(err), err)
+		return failCloudContentContextSummary(ctx, repository, authority, cfg, claim, "fast_call", contentContextProviderErrorClass(err), err)
 	}
 	text, err := contentcontext.ParseSummaryOutput([]byte(result.Text))
 	if err != nil || result.Metadata.ProfileID != identity.profileID || result.Metadata.ProfileRevision != identity.profileRevision ||
@@ -376,7 +509,7 @@ func runClaimedContentContextSummary(ctx context.Context, cfg workerConfig, repo
 		if err == nil {
 			err = errors.New("Fast summary response metadata is invalid")
 		}
-		return failCloudContentContextSummary(ctx, repository, authority, cfg, claim, "summary_invalid", err)
+		return failCloudContentContextSummary(ctx, repository, authority, cfg, claim, "validate_response", "summary_invalid", err)
 	}
 	completion := contentcontext.SummaryCompletion{
 		Text: text, PromptRevision: contentcontext.SummaryPromptRevision, ProfileSource: identity.source,
@@ -387,10 +520,10 @@ func runClaimedContentContextSummary(ctx context.Context, cfg workerConfig, repo
 	}
 	completed, err := repository.Complete(ctx, cfg.UserID, cfg.ProjectID, authority, claim, completion)
 	if err != nil {
-		return &contentContextOperationError{class: "storage_failure", err: fmt.Errorf("persist content-context summary: %w", err)}
+		return &contentContextOperationError{operation: "complete", attemptID: claim.AttemptID, class: "storage_failure", err: fmt.Errorf("persist content-context summary: %w", err)}
 	}
 	if !completed {
-		return contentcontext.ErrAttemptRejected
+		return &contentContextOperationError{operation: "complete", attemptID: claim.AttemptID, err: contentcontext.ErrAttemptRejected}
 	}
 	return nil
 }
@@ -484,12 +617,12 @@ func contentContextProviderErrorClass(err error) string {
 	return "provider_error"
 }
 
-func failCloudContentContextSummary(ctx context.Context, repository *contentcontext.FirestoreRepository, authority contentcontext.PublicationAuthority, cfg workerConfig, claim contentcontext.SummaryClaim, errorClass string, cause error) error {
+func failCloudContentContextSummary(ctx context.Context, repository *contentcontext.FirestoreRepository, authority contentcontext.PublicationAuthority, cfg workerConfig, claim contentcontext.SummaryClaim, operation, errorClass string, cause error) error {
 	_, err := repository.Fail(ctx, cfg.UserID, cfg.ProjectID, authority, claim, errorClass)
 	if err != nil {
-		return &contentContextOperationError{class: "storage_failure", err: errors.Join(cause, err)}
+		return &contentContextOperationError{operation: "record_failure", attemptID: claim.AttemptID, class: "storage_failure", err: errors.Join(cause, err)}
 	}
-	return &contentContextOperationError{class: errorClass, err: cause}
+	return &contentContextOperationError{operation: operation, attemptID: claim.AttemptID, class: errorClass, err: cause}
 }
 
 func reportContentContextReconcileFailure(err error) {
@@ -497,15 +630,31 @@ func reportContentContextReconcileFailure(err error) {
 		return
 	}
 	class := "storage_failure"
+	operation := "summary_run"
+	attemptID := ""
+	cause := err
 	var operationErr *contentContextOperationError
 	if errors.As(err, &operationErr) {
-		class = operationErr.class
-	} else if errors.Is(err, contentcontext.ErrPublicationChanged) {
-		class = "publication_changed"
-	} else if errors.Is(err, errObjectNotFound) {
-		class = "publication_unavailable"
-	} else if errors.Is(err, contentcontext.ErrAttemptRejected) {
-		class = "attempt_rejected"
+		if operationErr.class != "" {
+			class = operationErr.class
+		}
+		if operationErr.operation != "" {
+			operation = operationErr.operation
+		}
+		attemptID = operationErr.attemptID
+		cause = operationErr.err
 	}
-	warnContentContextFailure(class)
+	if operationErr == nil || operationErr.class == "" {
+		switch {
+		case errors.Is(err, contentcontext.ErrPublicationChanged):
+			class = "publication_changed"
+		case isObjectNotFound(err):
+			class = "publication_unavailable"
+		case errors.Is(err, contentcontext.ErrAttemptRejected):
+			class = "attempt_rejected"
+		}
+	}
+	warnContentContextFailure(contentContextFailureEvent{
+		operation: operation, class: class, cause: contentContextFailureCause(cause), attemptID: safeContentContextAttemptID(attemptID),
+	})
 }
