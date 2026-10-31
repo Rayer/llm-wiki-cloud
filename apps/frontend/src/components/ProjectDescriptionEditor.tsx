@@ -214,6 +214,7 @@ export function ProjectDescriptionEditor({ projectId }: { projectId: string }) {
   return (
     <section
       id="project-description"
+      tabIndex={-1}
       aria-labelledby="project-description-heading"
       className="rounded-[var(--radius-lg)] border border-white/10 bg-zinc-900/45 p-5 backdrop-blur-sm sm:p-6"
     >
