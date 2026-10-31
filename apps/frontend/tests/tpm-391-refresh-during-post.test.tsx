@@ -23,6 +23,11 @@ vi.mock('@/components/WorkspaceProvider', () => ({
 }));
 
 import { PipelineClient } from '@/components/PipelineClient';
+import { NavigationBlockerProvider } from '@/components/NavigationBlocker';
+
+function pipelineTree() {
+  return <NavigationBlockerProvider><PipelineClient /></NavigationBlockerProvider>;
+}
 
 const quota = {
   enforced: true,
@@ -112,7 +117,7 @@ it.each(['upload', 'annotation'] as const)(
         : Promise.resolve({ project_id: projectId, quota });
     });
 
-    const view = render(<PipelineClient />);
+    const view = render(pipelineTree());
     await waitFor(() => expect(m.capability).toHaveBeenCalledWith('project-a'));
     await startFullRecompile();
     await waitFor(() => expect(m.run).toHaveBeenCalled());
@@ -149,7 +154,7 @@ it.each(['upload', 'annotation'] as const)(
         : Promise.resolve({ project_id: projectId, quota });
     });
 
-    const view = render(<PipelineClient />);
+    const view = render(pipelineTree());
     await waitFor(() => expect(m.capability).toHaveBeenCalledWith('project-a'));
     await startFullRecompile();
     await screen.findByText('Pipeline running...');

@@ -72,6 +72,11 @@ vi.mock('@/components/WorkspaceProvider', () => ({
 }));
 
 import { PipelineClient } from '@/components/PipelineClient';
+import { NavigationBlockerProvider } from '@/components/NavigationBlocker';
+
+function pipelineTree() {
+  return <NavigationBlockerProvider><PipelineClient /></NavigationBlockerProvider>;
+}
 
 function deferred<T>(): Deferred<T> {
   let resolve!: (value: T) => void;
@@ -135,7 +140,7 @@ afterEach(() => {
 
 describe('LWC-125 raw upload progress behavior', () => {
   it('holds the fourth file queued until one of three active uploads completes', async () => {
-    render(<PipelineClient />);
+    render(pipelineTree());
 
     await act(async () => {
       fireEvent.change(progressInput(), {
@@ -172,7 +177,7 @@ describe('LWC-125 raw upload progress behavior', () => {
   });
 
   it('updates progress independently and retries failed uploads from zero', async () => {
-    render(<PipelineClient />);
+    render(pipelineTree());
 
     await act(async () => {
       fireEvent.change(progressInput(), {

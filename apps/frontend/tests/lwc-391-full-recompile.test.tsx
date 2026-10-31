@@ -30,6 +30,11 @@ vi.mock('@/components/WorkspaceProvider', () => ({
 }));
 
 import { PipelineClient } from '@/components/PipelineClient';
+import { NavigationBlockerProvider } from '@/components/NavigationBlocker';
+
+function pipelineTree() {
+  return <NavigationBlockerProvider><PipelineClient /></NavigationBlockerProvider>;
+}
 
 const fullQuota = {
   enforced: true,
@@ -58,7 +63,7 @@ beforeEach(() => {
     quota: fullQuota,
   });
   mocks.triggerPipeline.mockResolvedValue({ status: 'accepted', project_id: 'project-a', execution_id: 'incremental-execution' });
-  render(<PipelineClient />);
+  render(pipelineTree());
 });
 
 afterEach(() => {
