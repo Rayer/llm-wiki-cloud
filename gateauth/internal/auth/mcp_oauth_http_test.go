@@ -76,6 +76,7 @@ func TestDailyBriefCredentialVerifierFailsClosedAndRequiresVerifiedCaller(t *tes
 	const (
 		devResourceURI        = "https://brief.dev.rayer.idv.tw/mcp"
 		productionResourceURI = "https://brief.rayer.idv.tw/mcp"
+		supersededDevURI      = "https://brief-dev.rayer.idv.tw/mcp"
 		devCaller             = "daily-brief-dev-runtime@daily-brief-service.iam.gserviceaccount.com"
 		productionCaller      = "daily-brief-runtime@daily-brief-service.iam.gserviceaccount.com"
 	)
@@ -94,6 +95,9 @@ func TestDailyBriefCredentialVerifierFailsClosedAndRequiresVerifiedCaller(t *tes
 	}
 	if service.validStoredResource(productionResourceURI, "", "brief:manage", true) {
 		t.Fatal("DEV verifier policy accepted the Production Daily Brief resource")
+	}
+	if service.validStoredResource(supersededDevURI, "", "brief:manage", true) {
+		t.Fatal("DEV verifier policy accepted the superseded hyphenated Daily Brief resource")
 	}
 	validated := 0
 	validator := func(_ context.Context, token, gotAudience string) (*idtoken.Payload, error) {

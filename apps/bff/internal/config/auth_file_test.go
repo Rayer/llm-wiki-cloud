@@ -190,8 +190,9 @@ func TestAuthDailyBriefBindingMatchesSelectedEnvironment(t *testing.T) {
 			}
 
 			for name, uri := range map[string]string{
-				"swapped environment": test.swappedURI,
-				"unknown URI":         "https://brief-unknown.rayer.idv.tw/mcp",
+				"swapped environment":            test.swappedURI,
+				"unknown URI":                    "https://brief-unknown.rayer.idv.tw/mcp",
+				"superseded hyphenated DEV host": "https://brief-dev.rayer.idv.tw/mcp",
 			} {
 				t.Run(name, func(t *testing.T) {
 					bad := file
