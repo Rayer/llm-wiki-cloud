@@ -353,7 +353,7 @@ func TestProfileSavePreflightAllowsFrontendPutOnlyFromConfiguredOrigins(t *testi
 	}
 }
 
-func TestDocumentImportDeletePreflightAllowsIfMatchOnlyFromConfiguredOrigins(t *testing.T) {
+func TestDocumentImportDeletePreflightAllowsIfMatchFromConfiguredOrigins(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	const allowedOrigin = "https://wiki.dev.rayer.idv.tw"
 	router := newProductionRouter(
@@ -365,17 +365,18 @@ func TestDocumentImportDeletePreflightAllowsIfMatchOnlyFromConfiguredOrigins(t *
 		&syssettings.FakeStore{Enabled: true},
 		nil,
 	)
-	preflight := func(origin string) *httptest.ResponseRecorder {
+	preflight := func(origin, requestedHeaders string) *httptest.ResponseRecorder {
 		recorder := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodOptions, "/api/v1/projects/project-1/document-imports/document-1", nil)
 		req.Header.Set("Origin", origin)
 		req.Header.Set("Access-Control-Request-Method", http.MethodDelete)
-		req.Header.Set("Access-Control-Request-Headers", "authorization,content-type,x-project-id,if-match,x-unrelated-unsupported")
+		req.Header.Set("Access-Control-Request-Headers", requestedHeaders)
 		router.ServeHTTP(recorder, req)
 		return recorder
 	}
 
-	allowed := preflight(allowedOrigin)
+	validDeleteHeaders := "authorization,content-type,x-project-id,if-match"
+	allowed := preflight(allowedOrigin, validDeleteHeaders)
 	if allowed.Code != http.StatusNoContent {
 		t.Fatalf("allowed document DELETE preflight status = %d, want %d", allowed.Code, http.StatusNoContent)
 	}
@@ -405,7 +406,15 @@ func TestDocumentImportDeletePreflightAllowsIfMatchOnlyFromConfiguredOrigins(t *
 		t.Fatalf("Access-Control-Allow-Headers unexpectedly allows unrelated header: %q", allowed.Header().Get("Access-Control-Allow-Headers"))
 	}
 
-	rejected := preflight("https://unlisted.example")
+	// This negative control checks the advertised allowlist only. Some CORS
+	// middleware returns 204 even when a requested header is not advertised,
+	// so this response is not a browser-success preflight.
+	unsupported := preflight(allowedOrigin, validDeleteHeaders+",x-unrelated-unsupported")
+	if containsFold(strings.Split(unsupported.Header().Get("Access-Control-Allow-Headers"), ","), "X-Unrelated-Unsupported") {
+		t.Fatalf("Access-Control-Allow-Headers unexpectedly allows unrelated header: %q", unsupported.Header().Get("Access-Control-Allow-Headers"))
+	}
+
+	rejected := preflight("https://unlisted.example", validDeleteHeaders)
 	if got := rejected.Header().Get("Access-Control-Allow-Origin"); got != "" {
 		t.Fatalf("unlisted origin received Access-Control-Allow-Origin %q", got)
 	}
