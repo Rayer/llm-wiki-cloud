@@ -186,6 +186,9 @@ afterEach(() => {
 type ProfileCard = 'requirements' | 'interpretation' | 'active';
 
 async function openProfileCard(card: ProfileCard) {
+  const knowledgeTab = localStorage.getItem('locale') === 'zh-TW' ? '知識庫產出設定' : 'Knowledge generation settings';
+  const settingsTab = screen.getByRole('tab', { name: knowledgeTab });
+  if (settingsTab.getAttribute('aria-selected') !== 'true') fireEvent.click(settingsTab);
   await act(async () => {
     await Promise.resolve();
     await Promise.resolve();
@@ -201,6 +204,8 @@ async function openProfileCard(card: ProfileCard) {
 
 async function renderProfile(projectId = 'project-a', card: ProfileCard | null = 'requirements') {
   const view = render(<ProjectProfilePanel projectId={projectId} />);
+  const knowledgeTab = localStorage.getItem('locale') === 'zh-TW' ? '知識庫產出設定' : 'Knowledge generation settings';
+  fireEvent.click(screen.getByRole('tab', { name: knowledgeTab }));
   if (card) await openProfileCard(card);
   return view;
 }
@@ -891,6 +896,7 @@ describe('LWC-211 Project Profile', () => {
 
   it('starts with three collapsed settings cards and keeps the full-recompile notice visible', async () => {
     render(<ProjectProfilePanel projectId="project-a" />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Knowledge generation settings' }));
 
     expect(await screen.findByRole('heading', { name: 'Organization and search preferences' })).toBeDefined();
     expect(screen.getByText(/To apply new requirements to concepts that have already been compiled, run a full recompile/)).toBeDefined();
@@ -1021,6 +1027,7 @@ describe('LWC-211 Project Profile', () => {
     const profileResponse = deferred<ProfileState>();
     mocks.getProfile.mockReturnValue(profileResponse.promise);
     render(<ProjectProfilePanel projectId="project-a" />);
+    fireEvent.click(screen.getByRole('tab', { name: '知識庫產出設定' }));
 
     expect(await screen.findByRole('heading', { name: '專案設定' })).toBeDefined();
     expect(screen.getByText('正在載入 Profile…')).toBeDefined();

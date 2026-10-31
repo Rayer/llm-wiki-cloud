@@ -90,6 +90,8 @@ function RawClientSession() {
   const [preview, setPreview] = useState<RawPreview | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<RawPreviewError | null>(null);
+  const previewTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
   const openedQueryFileRef = useRef('');
   const listRequestRef = useRef(0);
   const previewRequestRef = useRef(0);
@@ -101,6 +103,7 @@ function RawClientSession() {
   const scopedPreview = preview?.viewKey === rawViewKey ? preview : null;
   const scopedPreviewError = previewError?.viewKey === rawViewKey ? previewError : null;
   const scopedDownloadError = downloadError?.viewKey === rawViewKey ? downloadError : null;
+  const previewIsOpen = Boolean(scopedPreview);
   const { copyErrorId, errorIdCopied } = useErrorIdCopy(scopedError, scopedError?.requestId, scopedError?.diagnosticId);
   const { copyErrorId: copyPreviewErrorId, errorIdCopied: previewErrorIdCopied } =
     useErrorIdCopy(scopedPreviewError, scopedPreviewError?.requestId, scopedPreviewError?.diagnosticId);
@@ -243,16 +246,36 @@ function RawClientSession() {
     setPreviewError(null);
     setDownloadError(null);
     setPreviewLoading(false);
+    queueMicrotask(() => previewTriggerRef.current?.focus());
   }, []);
 
   useEffect(() => {
-    if (!scopedPreview) return;
+    if (!previewIsOpen) return;
     const handler = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') closePreview();
+      if (event.key === 'Escape') {
+        closePreview();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const dialog = document.getElementById('raw-preview-dialog');
+      const focusable = Array.from(dialog?.querySelectorAll<HTMLElement>(
+        'button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])',
+      ) ?? []).filter((element) => !element.closest('[hidden]'));
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (!first || !last) event.preventDefault();
+      else if (event.shiftKey && (document.activeElement === first || !dialog?.contains(document.activeElement))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
     };
     window.addEventListener('keydown', handler);
+    closeButtonRef.current?.focus();
     return () => window.removeEventListener('keydown', handler);
-  }, [closePreview, scopedPreview]);
+  }, [closePreview, previewIsOpen]);
 
   async function downloadRawFile() {
     if (!scopedPreview || hasProjectTarget && !rawProjectId) return;
@@ -353,7 +376,10 @@ function RawClientSession() {
                       <td className="max-w-xs px-4 py-3 font-medium">
                         <button
                           type="button"
-                          onClick={() => openRawPreview(file)}
+                          onClick={(event) => {
+                            previewTriggerRef.current = event.currentTarget;
+                            void openRawPreview(file);
+                          }}
                           className="block max-w-xs truncate text-left text-white underline decoration-white/20 underline-offset-4 transition hover:text-emerald-200 hover:decoration-emerald-300"
                           title={file.name}
                           aria-label={
@@ -395,23 +421,29 @@ function RawClientSession() {
 
       {scopedPreview ? (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black p-3 backdrop-blur-sm sm:p-4"
           onClick={closePreview}
         >
           <Surface
+            id="raw-preview-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="raw-preview-title"
             variant="elevated"
-            className="flex max-h-[86vh] w-full max-w-4xl flex-col overflow-hidden"
+            className="flex max-h-[calc(100dvh-1.5rem)] w-full max-w-4xl flex-col overflow-hidden bg-zinc-900 sm:max-h-[calc(100dvh-2rem)]"
+            style={{ backgroundColor: '#18181b' }}
             onClick={(event) => event.stopPropagation()}
           >
             <div className="flex items-start justify-between gap-4 border-b border-white/10 p-4">
               <div className="min-w-0">
-                <h2 className="truncate text-lg font-semibold text-white">{scopedPreview.file.name}</h2>
+                <h2 id="raw-preview-title" className="truncate text-lg font-semibold text-white">{scopedPreview.file.name}</h2>
                 <p className="mt-1 text-sm text-zinc-400">
                   {scopedPreview.kind === 'download' ? t('Raw.previewUnavailable') : t('Raw.previewTitle')}
                 </p>
               </div>
               <button
                 type="button"
+                ref={closeButtonRef}
                 onClick={closePreview}
                 className="rounded-md p-2 text-zinc-400 transition hover:bg-white/10 hover:text-white"
                 aria-label={t('Raw.close')}
@@ -450,8 +482,8 @@ function RawClientSession() {
                 />
               ) : null}
               {!previewLoading && !scopedPreviewError && scopedPreview.kind === 'markdown' ? (
-                <div className="rounded-md border border-white/10 bg-black/20 p-4">
-                  <MarkdownView content={scopedPreview.content} />
+                <div className="min-w-0 max-w-full overflow-x-auto rounded-md border border-white/10 bg-[#111111] p-4">
+                  <MarkdownView content={scopedPreview.content} preserveLeadingHeading />
                 </div>
               ) : null}
               {!previewLoading && !scopedPreviewError && scopedPreview.kind === 'html' ? (

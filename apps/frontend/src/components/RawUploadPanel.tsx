@@ -100,6 +100,12 @@ function uploadStatusLabel(status: UploadItemStatus, t: Translator): string {
   }
 }
 
+function documentSourceStateKey(status: string): string {
+  if (status === 'not_started') return 'none';
+  if (['saving', 'saved', 'failed', 'unknown'].includes(status)) return status;
+  return 'unknown';
+}
+
 function summarizeUploads(items: UploadItem[], t: Translator): string {
   const created = items.filter((item) => item.status === 'created').length;
   const existing = items.filter((item) => item.status === 'already_exists').length;
@@ -576,7 +582,7 @@ export function RawUploadPanel({
                   {item.document ? <p className="truncate text-zinc-400" title={item.document.document_id}>{t('RawUpload.documentStatus', {
                     id: item.document.document_id,
                     conversion: t(`Source.documentImport.state.${item.document.conversion_state}`),
-                    source: t(`Source.documentImport.sourceState.${item.document.source_state}`),
+                    source: t(`Source.documentImport.sourceState.${documentSourceStateKey(item.document.source_state)}`),
                   })}</p> : null}
                   {item.result && 'path' in item.result ? <p className="truncate text-zinc-400" title={item.result.path} data-testid="upload-path">{item.result.path}</p> : null}
                   {item.result && 'processing_status' in item.result && item.result.processing_status ? (

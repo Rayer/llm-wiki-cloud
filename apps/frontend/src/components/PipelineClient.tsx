@@ -10,7 +10,6 @@ import {
   getRecompileAllCapability,
   getPipelineStatus,
   getProjectPipelineAutomation,
-  updateProjectPipelineAutomation,
   retryPipeline,
   scrapeUrl,
   acceptScrapeCandidate,
@@ -35,6 +34,7 @@ import { useT } from '@/lib/i18n';
 import { useWorkspace } from './WorkspaceProvider';
 import { RawUploadPanel, type RawUploadsSettled } from './RawUploadPanel';
 import { UrlPreviewDialog } from './UrlPreviewDialog';
+import { NavigationLink } from './NavigationBlocker';
 
 type Toast = {
   id: number;
@@ -64,6 +64,17 @@ let toastId = 0;
 function automationCopy(t: (key: string) => string, key: string, fallback: string): string {
   const translated = t(key);
   return translated === key ? fallback : translated;
+}
+
+function automationStatusKey(status: string): string {
+  const normalized = status.toLowerCase();
+  if (['pending', 'preparing', 'ready', 'invoking', 'invocation_unknown', 'unknown'].includes(normalized)) return 'pending';
+  if (['running', 'compiling'].includes(normalized)) return 'running';
+  if (['succeeded', 'published'].includes(normalized)) return 'succeeded';
+  if (normalized === 'failed') return 'failed';
+  if (normalized === 'cancelled') return 'cancelled';
+  if (normalized === 'not_started_disabled') return 'disabled';
+  return 'idle';
 }
 
 function pipelineStatusBadge(status: PipelineStatus | null): string | null {
@@ -118,7 +129,6 @@ export function PipelineClient() {
   const [pipelineStatusReadFailedProjectId, setPipelineStatusReadFailedProjectId] = useState<string | null>(null);
   const [pipelineAutomation, setPipelineAutomation] = useState<ProjectPipelineAutomation | null>(null);
   const [pipelineAutomationError, setPipelineAutomationError] = useState<string | null>(null);
-  const [pipelineAutomationPending, setPipelineAutomationPending] = useState(false);
   const pipelineExecutionOwnerRef = useRef<PipelineExecutionOwner | null>(null);
   const pipelineTerminalPollScopeRef = useRef<PipelineRequestScope | null>(null);
   const pipelinePollErrorNotifiedRef = useRef(false);
@@ -132,7 +142,6 @@ export function PipelineClient() {
       setPipelineStatusReadFailedProjectId(null);
       setPipelineAutomation(null);
       setPipelineAutomationError(null);
-      setPipelineAutomationPending(false);
       scrapeRequestGenerationRef.current += 1;
       setScrapeLoading(false);
       setScrapeError(null);
@@ -397,30 +406,6 @@ export function PipelineClient() {
       startPipelineAutomationPolling({ projectId: uploadedProjectId, contextGeneration: context.generation });
     }
   }, [refreshPipelineAutomation, refreshPipelineStatus, startPipelineAutomationPolling]);
-
-  const handleProjectAutomationToggle = useCallback(async () => {
-    if (!projectId || !pipelineAutomation || pipelineAutomationPending) return;
-    const context = pipelineProjectContextRef.current;
-    const isCurrent = () => pipelineProjectContextRef.current.projectId === projectId
-      && pipelineProjectContextRef.current.generation === context.generation;
-    setPipelineAutomationPending(true);
-    setPipelineAutomationError(null);
-    try {
-      const next = await updateProjectPipelineAutomation(projectId, !pipelineAutomation.enabled, pipelineAutomation.revision);
-      if (isCurrent()) {
-        setPipelineAutomation(next);
-        startPipelineAutomationPolling({ projectId, contextGeneration: context.generation });
-      }
-    } catch (error) {
-      if (isCurrent()) {
-        setPipelineAutomationError(error instanceof Error ? error.message : automationCopy(t, 'Pipeline.automationUpdateFailed', 'Automatic processing settings could not be updated.'));
-        void refreshPipelineAutomation({ projectId, contextGeneration: context.generation });
-      }
-    } finally {
-      setPipelineAutomationPending(false);
-    }
-  }, [pipelineAutomation, pipelineAutomationPending, projectId, refreshPipelineAutomation,
-    setPipelineAutomation, setPipelineAutomationError, setPipelineAutomationPending, startPipelineAutomationPolling, t]);
 
   useEffect(() => {
     const refreshAfterAnnotationSave = () => {
@@ -903,29 +888,12 @@ export function PipelineClient() {
           </div>
         </div>
 
-        <section className="mt-4 rounded-[var(--radius-md)] border border-white/10 bg-zinc-950/40 p-4" data-testid="pipeline-automation-settings">
+        <section className="mt-4 rounded-[var(--radius-md)] border border-white/10 bg-zinc-950/40 p-4" aria-labelledby="pipeline-automation-status-title" data-testid="pipeline-automation-settings">
           <div className="flex flex-wrap items-start justify-between gap-3">
-            <div className="max-w-3xl">
-              <h3 className="text-sm font-semibold text-zinc-200">
-                {automationCopy(t, 'Pipeline.automationTitle', 'Automatic processing for this Project')}
-              </h3>
-              <p className="mt-1 text-xs text-zinc-400">
-                {automationCopy(t, 'Pipeline.automationDescription', 'Changed raw source content starts an incremental Pipeline when both the Admin and Project switches are on. Saved content is not published or searchable until processing succeeds.')}
-              </p>
-            </div>
-            {pipelineAutomation ? (
-              <label className="flex min-h-11 items-center gap-3 rounded-md border border-white/10 px-3 py-2 text-sm text-zinc-200">
-                <span>{automationCopy(t, 'Pipeline.automationProjectToggle', 'Auto-pipeline for this Project')}</span>
-                <input
-                  type="checkbox"
-                  checked={pipelineAutomation.enabled}
-                  disabled={pipelineAutomationPending || isDemoSession}
-                  onChange={() => void handleProjectAutomationToggle()}
-                  className="size-5 rounded border-white/20 bg-black/30 text-emerald-400 focus:ring-emerald-400"
-                  data-testid="pipeline-automation-project-toggle"
-                />
-              </label>
-            ) : null}
+            <h3 id="pipeline-automation-status-title" className="text-sm font-semibold text-zinc-200">{t('Pipeline.automationStatus')}</h3>
+            <NavigationLink href="/profile#project-pipeline-automation" className="min-h-10 rounded-md border border-white/10 px-3 py-2 text-sm text-emerald-200 hover:bg-white/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400">
+              {t('Pipeline.automationSettingsGuide')}
+            </NavigationLink>
           </div>
           {pipelineAutomationError ? (
             <p className="mt-2 text-xs text-amber-200" role="status">{pipelineAutomationError}</p>
@@ -937,19 +905,24 @@ export function PipelineClient() {
                   {automationCopy(t, 'Pipeline.automationAdminDisabled', 'Automatic processing is disabled by the Admin. Saved sources remain pending until the Admin allows processing.')}
                 </p>
               ) : null}
-              <p>
-                {automationCopy(t, 'Pipeline.automationStatus', 'Processing status')}: <span className="font-medium text-zinc-200">{pipelineAutomation.pipeline_status || 'idle'}</span>
-                {` · ${automationCopy(t, 'Pipeline.automationSourceRevision', 'Source revision')} ${pipelineAutomation.source_revision}`}
-                {` · ${automationCopy(t, 'Pipeline.automationProcessedRevision', 'Processed revision')} ${pipelineAutomation.processed_revision}`}
-              </p>
-              {pipelineAutomation.failure_stage || pipelineAutomation.failure_code ? (
-                <p className="text-red-200/90" data-testid="pipeline-automation-failure">
-                  {automationCopy(t, 'Pipeline.automationFailure', 'Last failure')}: {[pipelineAutomation.failure_stage, pipelineAutomation.failure_code].filter(Boolean).join(' · ')}
+              {!pipelineAutomation.enabled && pipelineAutomation.admin_allowed ? (
+                <p className="rounded-md border border-red-300/20 bg-red-950/30 p-3 text-red-100" role="status">
+                  {t('Pipeline.automationProjectDisabled')}
                 </p>
               ) : null}
               <p>
-                {automationCopy(t, 'Pipeline.automationManualNote', 'Manual runs remain available independently of the auto-pipeline switches. The existing daily schedule also remains independent.')}
+                {automationCopy(t, 'Pipeline.automationStatus', 'Processing status')}: <span className="font-medium text-zinc-200">{t(`Pipeline.automationState.${automationStatusKey(pipelineAutomation.pipeline_status || 'idle')}`)}</span>
               </p>
+              {pipelineAutomation.failure_stage || pipelineAutomation.failure_code ? (
+                <p className="text-red-200/90">{automationCopy(t, 'Pipeline.automationFailure', 'Last failure')}: {t('Pipeline.automationState.failed')}</p>
+              ) : null}
+              <details className="pt-1 text-zinc-500">
+                <summary className="w-fit cursor-pointer">{t('Pipeline.automationDiagnostics')}</summary>
+                <div className="mt-1 space-y-1 break-all font-mono">
+                  <p>{pipelineAutomation.pipeline_status || 'idle'} · {t('Pipeline.automationSourceRevision')}: {pipelineAutomation.source_revision} · {t('Pipeline.automationProcessedRevision')}: {pipelineAutomation.processed_revision}</p>
+                  {pipelineAutomation.failure_stage || pipelineAutomation.failure_code ? <p data-testid="pipeline-automation-failure">{[pipelineAutomation.failure_stage, pipelineAutomation.failure_code].filter(Boolean).join(' · ')}</p> : null}
+                </div>
+              </details>
             </div>
           ) : null}
         </section>

@@ -1,6 +1,7 @@
 'use client';
 
 import { type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type MutableRefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useAuth } from '@/lib/auth';
 import { beginGoogleLink, GoogleAuthError, readGoogleIdentitySummary } from '@/lib/google-auth';
 import { changeAccountPassword, PasswordSelfServiceError, readPasswordSelfServiceStatus, type PasswordSelfServiceAuthContext, type PasswordSelfServiceStatus } from '@/lib/account-password';
@@ -39,7 +40,7 @@ export function AccountSettingsModal({ onClose, focusBYOK = false, onProfileCrea
     authSessionRef.current = { userID: user?.id ?? null, accessToken, sessionEpoch };
   }, [accessToken, sessionEpoch, user?.id]);
   if (!user) return null;
-  return (
+  return typeof document === 'undefined' ? null : createPortal((
     <AccountSettingsModalContent
       key={user.id}
       onClose={onClose}
@@ -52,7 +53,7 @@ export function AccountSettingsModal({ onClose, focusBYOK = false, onProfileCrea
       authSessionRef={authSessionRef}
       user={user}
     />
-  );
+  ), document.body);
 }
 
 function AccountSettingsModalContent({
@@ -400,7 +401,7 @@ function AccountSettingsModalContent({
         role="dialog"
         aria-modal="true"
         aria-labelledby="account-settings-title"
-        className="max-h-[calc(100dvh-2rem)] w-full max-w-3xl overflow-y-auto rounded-2xl border border-white/10 bg-[#151515] p-6 shadow-2xl sm:p-8"
+        className="max-h-[calc(100dvh-2rem)] w-full max-w-3xl overflow-y-auto overscroll-contain rounded-2xl border border-white/10 bg-[#151515] p-6 shadow-2xl sm:p-8"
         onMouseDown={(event) => event.stopPropagation()}
       >
         <div className="flex items-start justify-between gap-4">

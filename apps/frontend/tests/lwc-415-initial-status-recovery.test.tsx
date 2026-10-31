@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { PipelineStatus } from '@/lib/api';
+import { NavigationBlockerProvider } from '@/components/NavigationBlocker';
 
 const mocks = vi.hoisted(() => ({
   currentProject: { id: 'project-a', name: 'Project A' },
@@ -33,6 +34,14 @@ vi.mock('@/components/WorkspaceProvider', () => ({
 }));
 
 import { PipelineClient } from '@/components/PipelineClient';
+
+function renderPipeline() {
+  return render(
+    <NavigationBlockerProvider>
+      <PipelineClient />
+    </NavigationBlockerProvider>,
+  );
+}
 
 const quota = {
   enforced: true,
@@ -153,7 +162,7 @@ it('shows an initial read failure, resumes the same intent and tracks its termin
     return Promise.resolve({ project_id: projectId, quota });
   });
 
-  render(<PipelineClient />);
+  renderPipeline();
   const readFailure = await screen.findByTestId('pipeline-status-read-failed');
   expect(readFailure.textContent).toContain('Retrying automatically');
   expect(screen.getByRole('button', { name: 'Run Pipeline' }).hasAttribute('disabled')).toBe(true);
@@ -190,13 +199,14 @@ it('refreshes automatic processing status during mounted Pipeline polling throug
 		processed_revision: automationStatus === 'published' ? 1 : 0,
 	}));
 
-	render(<PipelineClient />);
+	renderPipeline();
 	const settings = await screen.findByTestId('pipeline-automation-settings');
-	await waitFor(() => expect(settings.textContent).toContain('Processing status: pending'));
+	await waitFor(() => expect(settings.textContent).toContain('Processing status: Waiting to process'));
 	await tickPipelinePoll();
-	await waitFor(() => expect(settings.textContent).toContain('Processing status: running'));
+	await waitFor(() => expect(settings.textContent).toContain('Processing status: Processing'));
 	await tickPipelinePoll();
-	await waitFor(() => expect(settings.textContent).toContain('Processing status: published'));
+	await waitFor(() => expect(settings.textContent).toContain('Processing status: Complete'));
+	expect(settings.textContent).toContain('published · Source revision: 1');
 	expect(mocks.getProjectPipelineAutomation).toHaveBeenCalledTimes(4);
 	expect(intervals.size).toBe(0);
 });
@@ -216,13 +226,13 @@ it('refreshes mounted automatic processing state through a terminal failure', as
 		processed_revision: 0, ...(automationStatus === 'failed' ? { failure_stage: 'pipeline', failure_code: 'pipeline_failed' } : {}),
 	}));
 
-	render(<PipelineClient />);
+	renderPipeline();
 	const settings = await screen.findByTestId('pipeline-automation-settings');
-	await waitFor(() => expect(settings.textContent).toContain('Processing status: pending'));
+	await waitFor(() => expect(settings.textContent).toContain('Processing status: Waiting to process'));
 	await tickPipelinePoll();
-	await waitFor(() => expect(settings.textContent).toContain('Processing status: running'));
+	await waitFor(() => expect(settings.textContent).toContain('Processing status: Processing'));
 	await tickPipelinePoll();
-	await waitFor(() => expect(settings.textContent).toContain('Processing status: failed'));
+	await waitFor(() => expect(settings.textContent).toContain('Processing status: Needs attention'));
 	await waitFor(() => expect(screen.getByTestId('pipeline-automation-failure').textContent).toContain('pipeline_failed'));
 	expect(intervals.size).toBe(0);
 });
@@ -267,7 +277,7 @@ it('discovers delayed upload admission and a chained intent while Pipeline stays
     return { project_id: projectId, quota };
   });
 
-  render(<PipelineClient />);
+  renderPipeline();
   await screen.findByTestId('pipeline-automation-settings');
   await waitFor(() => expect(statusReads).toBe(1));
 
@@ -301,9 +311,9 @@ it('discovers delayed upload admission and a chained intent while Pipeline stays
   expect(mocks.uploadRawFile).toHaveBeenCalledTimes(1);
 });
 
-it('follows backlog admission to failure after enabling Project automation', async () => {
-  let automationStatus = 'idle';
-  let backlogStatus = 'idle';
+it('follows backlog admission to failure while Project automation is enabled in settings', async () => {
+  let automationStatus = 'pending';
+  let backlogStatus = 'pending';
   let statusReads = 0;
   let executionPolls = 0;
   const settings = () => ({
@@ -314,11 +324,6 @@ it('follows backlog admission to failure after enabling Project automation', asy
     ...(automationStatus === 'failed' ? { failure_stage: 'pipeline', failure_code: 'backlog_pipeline_failed' } : {}),
   });
   mocks.getProjectPipelineAutomation.mockImplementation(async () => settings());
-  mocks.updateProjectPipelineAutomation.mockImplementation(async () => {
-    automationStatus = 'pending';
-    backlogStatus = 'pending';
-    return settings();
-  });
   mocks.getPipelineStatus.mockImplementation(async (projectId: string, executionId?: string, intentId?: string) => {
     if (intentId) {
       executionPolls += 1;
@@ -331,18 +336,11 @@ it('follows backlog admission to failure after enabling Project automation', asy
       return intentStatus(projectId, 'failed', 'backlog-intent');
     }
     statusReads += 1;
-    if (statusReads === 3) return intentStatus(projectId, 'preparing', 'backlog-intent');
-    if (statusReads > 3) return intentStatus(projectId, 'failed', 'backlog-intent');
+    if (statusReads === 1) return intentStatus(projectId, 'preparing', 'backlog-intent');
     return { project_id: projectId, quota };
   });
 
-  render(<PipelineClient />);
-  const disabledToggle = await screen.findByRole('checkbox', { name: 'Auto-pipeline for this Project' });
-  expect((disabledToggle as HTMLInputElement).checked).toBe(false);
-  fireEvent.click(disabledToggle);
-  await waitFor(() => expect(mocks.updateProjectPipelineAutomation).toHaveBeenCalledWith('project-a', true, 1));
-  await tickAutomationPoll();
-  await tickAutomationPoll();
+  renderPipeline();
   await screen.findByText('Pipeline compiling…');
   await tickPipelinePoll();
   await screen.findByText('Pipeline needs attention');
@@ -391,7 +389,7 @@ it.each(['accept', 'resolve'] as const)('discovers a URL-saved source after dela
     });
   }
 
-  render(<PipelineClient />);
+  renderPipeline();
   await screen.findByTestId('pipeline-automation-settings');
   await waitFor(() => expect(statusReads).toBe(1));
   const urlInput = screen.getByPlaceholderText('https://example.com/article');
@@ -442,7 +440,7 @@ it('discovers initially pending source work before an intent exists and follows 
       : { project_id: projectId, quota };
   });
 
-  render(<PipelineClient />);
+  renderPipeline();
   await screen.findByTestId('pipeline-automation-settings');
   await waitFor(() => expect(statusReads).toBe(1));
   await waitFor(() => expect(intervals.size).toBe(1));
@@ -470,7 +468,7 @@ it('ignores a late recovery read after switching Projects', async () => {
     return Promise.resolve({ project_id: projectId, quota });
   });
 
-  const view = render(<PipelineClient />);
+  const view = renderPipeline();
   await screen.findByTestId('pipeline-status-read-failed');
   await waitFor(() => expect(intervals.size).toBe(1));
   await tickPipelinePoll();
@@ -478,7 +476,11 @@ it('ignores a late recovery read after switching Projects', async () => {
 
   mocks.currentProject = { id: 'project-b', name: 'Project B' };
   window.localStorage.setItem('llm-wiki-last-project', 'project-b');
-  view.rerender(<PipelineClient />);
+  view.rerender(
+    <NavigationBlockerProvider>
+      <PipelineClient />
+    </NavigationBlockerProvider>,
+  );
   await waitFor(() => expect(mocks.getPipelineStatus).toHaveBeenLastCalledWith('project-b'));
   await act(async () => {
     delayedRecovery.resolve(intentStatus('project-a', 'preparing'));

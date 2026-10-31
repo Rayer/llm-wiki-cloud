@@ -26,6 +26,9 @@ import { ProfileHowItWorks } from './ProfileHowItWorks';
 import { ProfileRequirementsEditor } from './ProfileRequirementsEditor';
 import { AccountSettingsModal } from './AccountSettingsModal';
 import { ProjectLLMSourcePanel } from './ProjectLLMSourcePanel';
+import { ProjectDescriptionEditor } from './ProjectDescriptionEditor';
+import { ProjectContentContextPanel } from './ProjectContentContextPanel';
+import { ProjectPipelineAutomationSettings } from './ProjectPipelineAutomationSettings';
 import {
   newProfileRequirementId,
   ProfileTemplates,
@@ -112,7 +115,12 @@ function ProfileGuidanceArtifactDetails({ projectId, revision, title }: { projec
 
 type RequestScope = { projectId: string; ownerId: string; sessionEpoch: number; identity: object };
 type ProfileSettingsCard = 'requirements' | 'interpretation' | 'active';
-type ProjectSettingsTab = 'knowledge' | 'ai-service';
+type ProjectSettingsTab = 'project-info' | 'pipeline' | 'knowledge' | 'ai-service';
+const PROJECT_SETTINGS_TABS: ProjectSettingsTab[] = ['project-info', 'pipeline', 'knowledge', 'ai-service'];
+const PROJECT_SETTINGS_HASH_TARGETS: Record<string, { tab: ProjectSettingsTab; targetId: string; focusId?: string }> = {
+  'project-description': { tab: 'project-info', targetId: 'project-description', focusId: 'project-description-input' },
+  'project-pipeline-automation': { tab: 'pipeline', targetId: 'project-pipeline-automation' },
+};
 
 export function ProjectProfilePanel({ projectId }: { projectId: string }) {
   const router = useRouter();
@@ -137,11 +145,13 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
   const [introVisibleFor, setIntroVisibleFor] = useState('');
   const [byokSettingsOpen, setByokSettingsOpen] = useState(false);
   const [newlyCreatedProfile, setNewlyCreatedProfile] = useState<LLMProfile | null>(null);
-  const [activeSettingsTab, setActiveSettingsTab] = useState<ProjectSettingsTab>('knowledge');
+  const [activeSettingsTab, setActiveSettingsTab] = useState<ProjectSettingsTab>('project-info');
+  const [locationTargetVersion, setLocationTargetVersion] = useState(0);
   const profileRef = useRef<ProfileState | null>(null);
   const guideEntryRef = useRef<HTMLButtonElement>(null);
   const requirementsCardRef = useRef<HTMLButtonElement>(null);
   const settingsTabRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const locationTargetRef = useRef<{ targetId: string; focusId?: string } | null>(null);
   const focusAfterGuideRef = useRef<'guideEntry' | 'requirements' | null>(null);
   const bootstrapRequestRef = useRef(0);
   const loadedRef = useRef(false);
@@ -167,6 +177,31 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
       if (currentScopeRef.current === currentScope) currentScopeRef.current = null;
     };
   }, [currentScope]);
+
+  useLayoutEffect(() => {
+    const pendingTarget = locationTargetRef.current;
+    if (!pendingTarget) return;
+    const target = document.getElementById(pendingTarget.targetId);
+    if (!target) return;
+    target.scrollIntoView?.({ block: 'start' });
+    const focusTarget = pendingTarget.focusId ? document.getElementById(pendingTarget.focusId) : target;
+    if (focusTarget instanceof HTMLElement) focusTarget.focus({ preventScroll: true });
+    else if (target instanceof HTMLElement) target.focus({ preventScroll: true });
+    locationTargetRef.current = null;
+  }, [activeSettingsTab, locationTargetVersion]);
+
+  useEffect(() => {
+    const selectTabFromHash = () => {
+      const target = PROJECT_SETTINGS_HASH_TARGETS[window.location.hash.slice(1)];
+      if (!target) return;
+      locationTargetRef.current = { targetId: target.targetId, focusId: target.focusId };
+      setActiveSettingsTab(target.tab);
+      setLocationTargetVersion((current) => current + 1);
+    };
+    selectTabFromHash();
+    window.addEventListener('hashchange', selectTabFromHash);
+    return () => window.removeEventListener('hashchange', selectTabFromHash);
+  }, []);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -553,16 +588,15 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
   }
 
   function handleSettingsTabKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
-    const tabs: ProjectSettingsTab[] = ['knowledge', 'ai-service'];
-    const currentIndex = tabs.indexOf(activeSettingsTab);
-    const nextIndex = event.key === 'ArrowRight' ? (currentIndex + 1) % tabs.length
-      : event.key === 'ArrowLeft' ? (currentIndex + tabs.length - 1) % tabs.length
+    const currentIndex = PROJECT_SETTINGS_TABS.indexOf(activeSettingsTab);
+    const nextIndex = event.key === 'ArrowRight' ? (currentIndex + 1) % PROJECT_SETTINGS_TABS.length
+      : event.key === 'ArrowLeft' ? (currentIndex + PROJECT_SETTINGS_TABS.length - 1) % PROJECT_SETTINGS_TABS.length
         : event.key === 'Home' ? 0
-          : event.key === 'End' ? tabs.length - 1
+          : event.key === 'End' ? PROJECT_SETTINGS_TABS.length - 1
             : -1;
     if (nextIndex < 0) return;
     event.preventDefault();
-    setActiveSettingsTab(tabs[nextIndex]);
+    setActiveSettingsTab(PROJECT_SETTINGS_TABS[nextIndex]);
     settingsTabRefs.current[nextIndex]?.focus();
   }
 
@@ -583,8 +617,8 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
         </div>
       </div>
 
-      <div className="mt-5 grid grid-cols-2 gap-2 rounded-xl border border-white/10 bg-black/20 p-1.5 sm:inline-grid sm:min-w-[24rem]" role="tablist" aria-label={t('Profile.settingsTabs')}>
-        {(['knowledge', 'ai-service'] as const).map((tab, index) => (
+      <div className="mt-5 grid grid-cols-2 gap-2 rounded-xl border border-white/10 bg-black/20 p-1.5 sm:inline-grid sm:grid-cols-4 sm:min-w-[36rem]" role="tablist" aria-label={t('Profile.settingsTabs')}>
+        {PROJECT_SETTINGS_TABS.map((tab, index) => (
           <button
             key={tab}
             ref={(element) => { settingsTabRefs.current[index] = element; }}
@@ -598,7 +632,9 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
             onKeyDown={handleSettingsTabKeyDown}
             className={`min-h-11 rounded-lg px-3 py-2 text-sm font-medium transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 ${activeSettingsTab === tab ? 'bg-emerald-300 text-zinc-950' : 'text-zinc-300 hover:bg-white/5 hover:text-white'}`}
           >
-            {t(tab === 'knowledge' ? 'Profile.knowledgeTab' : 'Profile.aiServiceTab')}
+            {t(tab === 'project-info' ? 'Profile.projectInfoTab'
+              : tab === 'pipeline' ? 'Profile.pipelineTab'
+                : tab === 'knowledge' ? 'Profile.knowledgeTab' : 'Profile.aiServiceTab')}
           </button>
         ))}
       </div>
@@ -641,33 +677,38 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
         </div>
       ) : null}
 
+      <div
+        id="project-settings-panel-project-info"
+        role="tabpanel"
+        aria-labelledby="project-settings-tab-project-info"
+        hidden={activeSettingsTab !== 'project-info'}
+        tabIndex={0}
+      >
+        <div className="mt-5 space-y-4">
+          <ProjectDescriptionEditor projectId={projectId} />
+          <ProjectContentContextPanel projectId={projectId} />
+        </div>
+      </div>
+      <div
+        id="project-settings-panel-pipeline"
+        role="tabpanel"
+        aria-labelledby="project-settings-tab-pipeline"
+        hidden={activeSettingsTab !== 'pipeline'}
+        tabIndex={0}
+      >
+        <div className="mt-5">
+          <ProjectPipelineAutomationSettings projectId={projectId} />
+        </div>
+      </div>
+      <div
+        id="project-settings-panel-knowledge"
+        role="tabpanel"
+        aria-labelledby="project-settings-tab-knowledge"
+        hidden={activeSettingsTab !== 'knowledge'}
+        tabIndex={0}
+      >
       {visibleProfile ? (
         <>
-          <div
-            id="project-settings-panel-ai-service"
-            role="tabpanel"
-            aria-labelledby="project-settings-tab-ai-service"
-            hidden={activeSettingsTab !== 'ai-service'}
-            tabIndex={0}
-          >
-            {user?.id ? (
-              <ProjectLLMSourcePanel
-                projectId={projectId}
-                ownerId={user.id}
-                sessionEpoch={sessionEpoch}
-                onAddProfile={openProjectProviderSettings}
-                onManageProviders={openProjectProviderSettings}
-                newlyCreatedProfile={newlyCreatedProfile}
-              />
-            ) : null}
-          </div>
-          <div
-            id="project-settings-panel-knowledge"
-            role="tabpanel"
-            aria-labelledby="project-settings-tab-knowledge"
-            hidden={activeSettingsTab !== 'knowledge'}
-            tabIndex={0}
-          >
           <div className="mt-5">
             <h3 className="text-lg font-semibold text-white">{t('Profile.title')}</h3>
             <p className="mt-2 max-w-3xl text-sm leading-6 text-zinc-400">{t('Profile.intro')}</p>
@@ -1105,10 +1146,27 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
             </div>
           </section>
           </div>
-          </div>
         </>
       ) : null}
-
+      </div>
+      <div
+        id="project-settings-panel-ai-service"
+        role="tabpanel"
+        aria-labelledby="project-settings-tab-ai-service"
+        hidden={activeSettingsTab !== 'ai-service'}
+        tabIndex={0}
+      >
+        {user?.id ? (
+          <ProjectLLMSourcePanel
+            projectId={projectId}
+            ownerId={user.id}
+            sessionEpoch={sessionEpoch}
+            onAddProfile={openProjectProviderSettings}
+            onManageProviders={openProjectProviderSettings}
+            newlyCreatedProfile={newlyCreatedProfile}
+          />
+        ) : null}
+      </div>
       </div>
       <ProfileHowItWorks
         open={guideOpen}

@@ -11,7 +11,8 @@ import { useWorkspace } from './WorkspaceProvider';
 import { NavigationLink } from './NavigationBlocker';
 import { rawFileNameFromSource } from '@/lib/raw-file-name';
 import { usePathname, useSearchParams } from 'next/navigation';
-import { DocumentImportsPanel } from './DocumentImportsPanel';
+import { DocumentImportsPanel, documentImportPipelineStatusKey } from './DocumentImportsPanel';
+import { MarkdownView } from './MarkdownView';
 
 const lifecycleVariant: Record<SourceListItem['lifecycle'], 'muted' | 'published' | 'draft'> = {
   new: 'muted',
@@ -50,6 +51,7 @@ function SourceListSession() {
   const [preview, setPreview] = useState<{ path: string; content: string } | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<PreviewError | null>(null);
+  const previewIsOpen = Boolean(preview);
   const previewTriggerRef = useRef<HTMLButtonElement | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
   const previewRequestRef = useRef(0);
@@ -58,6 +60,13 @@ function SourceListSession() {
   const { copyErrorId, errorIdCopied } = useErrorIdCopy(error, error?.requestId, error?.diagnosticId);
   const { copyErrorId: copyPreviewErrorId, errorIdCopied: previewErrorIdCopied } =
     useErrorIdCopy(previewError, previewError?.requestId, previewError?.diagnosticId);
+  const mergeDocumentImports = useCallback((records: DocumentImportRecord[]) => {
+    setDocumentImports((current) => {
+      const merged = new Map(current.map((record) => [record.document_id, record]));
+      records.forEach((record) => merged.set(record.document_id, record));
+      return [...merged.values()];
+    });
+  }, []);
 
   useEffect(() => {
     if (!requestedProjectId || currentProjectId === requestedProjectId || projectsLoading) return;
@@ -125,14 +134,32 @@ function SourceListSession() {
   }, []);
 
   useEffect(() => {
-    if (!preview) return;
+    if (!previewIsOpen) return;
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') closePreview();
+      if (event.key === 'Escape') {
+        closePreview();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const dialog = document.getElementById('source-raw-preview-dialog');
+      const focusable = Array.from(dialog?.querySelectorAll<HTMLElement>(
+        'button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])',
+      ) ?? []).filter((element) => !element.closest('[hidden]'));
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (!first || !last) event.preventDefault();
+      else if (event.shiftKey && (document.activeElement === first || !dialog?.contains(document.activeElement))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
     };
     window.addEventListener('keydown', closeOnEscape);
     closeButtonRef.current?.focus();
     return () => window.removeEventListener('keydown', closeOnEscape);
-  }, [closePreview, preview]);
+  }, [closePreview, previewIsOpen]);
 
   const filtered = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -181,7 +208,7 @@ function SourceListSession() {
         className="min-h-11 w-full rounded-[var(--radius-lg)] border border-white/10 bg-zinc-900/50 px-4 py-2.5 text-sm text-white outline-none transition placeholder:text-zinc-400 focus:border-emerald-400/50 focus:ring-1 focus:ring-emerald-400/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
       />
 
-      {currentProjectId ? <DocumentImportsPanel projectId={currentProjectId} sourcePaths={sources.map((source) => source.rawPath)} onRecordsChange={setDocumentImports} /> : null}
+      {currentProjectId ? <DocumentImportsPanel projectId={currentProjectId} sourcePaths={sources.map((source) => source.rawPath)} onRecordsChange={mergeDocumentImports} /> : null}
 
       {loading ? <LoadingState label={t('Source.loading')} /> : null}
       {error ? (
@@ -204,6 +231,7 @@ function SourceListSession() {
           const detailHref = source.id ? `/sources/${source.id}-${encodeURIComponent(source.slug)}` : null;
           const lifecycle = t(`Source.lifecycle.${source.lifecycle}`);
           const importedRecord = documentImportsBySourcePath.get(source.rawPath);
+          const displayName = importedRecord?.original_filename.trim() || source.title;
           const isImportTarget = requestedImportPath === source.rawPath;
           return (
             <div key={source.id ?? source.rawPath} ref={isImportTarget ? sourceImportTargetRef : undefined} tabIndex={isImportTarget ? -1 : undefined} className="h-full">
@@ -217,14 +245,17 @@ function SourceListSession() {
                 </div>
                 {detailHref ? (
                   <NavigationLink href={detailHref} className="mt-3 block break-words text-lg font-semibold text-white hover:text-emerald-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400">
-                    {source.title}
+                    {displayName}
                   </NavigationLink>
-                ) : <h2 className="mt-3 break-words text-lg font-semibold text-white">{source.title}</h2>}
-                <p className="mt-2 break-all font-mono text-xs text-zinc-500">{source.rawPath}</p>
+                ) : <h2 className="mt-3 break-words text-lg font-semibold text-white">{displayName}</h2>}
+                <details className="mt-2 text-xs text-zinc-500">
+                  <summary className="w-fit cursor-pointer">{t('Source.documentImport.rawPath')}</summary>
+                  <code className="mt-1 block break-all font-mono">{source.rawPath}</code>
+                </details>
                 {importedRecord ? (
                   <p role="status" className="mt-2 text-sm text-zinc-300">
                     {t('Source.documentImport.sourceSaved')}
-                    {importedRecord.pipeline_ref?.status ? ` · ${t('Source.documentImport.pipelineState', { state: importedRecord.pipeline_ref.status })}` : ''}
+                    {importedRecord.pipeline_ref?.status ? ` · ${t('Source.documentImport.pipelineState', { state: t(documentImportPipelineStatusKey(importedRecord.pipeline_ref.status)) })}` : ''}
                   </p>
                 ) : null}
                 {source.lifecycle === 'error' ? (
@@ -251,10 +282,10 @@ function SourceListSession() {
       </div>
 
       {preview ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-3 sm:p-4" onClick={closePreview}>
-          <Surface role="dialog" aria-modal="true" aria-labelledby="source-raw-preview-title" variant="elevated" className="flex max-h-[calc(100dvh-1.5rem)] w-full max-w-3xl flex-col sm:max-h-[calc(100dvh-2rem)]" onClick={(event) => event.stopPropagation()}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black p-3 backdrop-blur-sm sm:p-4" onClick={closePreview}>
+          <Surface id="source-raw-preview-dialog" role="dialog" aria-modal="true" aria-labelledby="source-raw-preview-title" variant="elevated" className="flex max-h-[calc(100dvh-1.5rem)] w-full max-w-3xl flex-col overflow-hidden bg-zinc-900 sm:max-h-[calc(100dvh-2rem)]" style={{ backgroundColor: '#18181b' }} onClick={(event) => event.stopPropagation()}>
             <div className="flex items-center justify-between gap-4 border-b border-white/10 p-4">
-              <h2 id="source-raw-preview-title" className="min-w-0 truncate text-lg font-semibold text-white">{preview.path}</h2>
+              <h2 id="source-raw-preview-title" className="min-w-0 truncate text-lg font-semibold text-white">{documentImportsBySourcePath.get(preview.path)?.original_filename.trim() || preview.path}</h2>
               <button ref={closeButtonRef} type="button" onClick={closePreview} aria-label={t('Raw.close')} className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-md text-zinc-300 hover:bg-white/10">
                 <X className="size-5" aria-hidden="true" />
               </button>
@@ -274,7 +305,11 @@ function SourceListSession() {
                   onCopyErrorId={copyPreviewErrorId}
                 />
               ) : null}
-              {!previewLoading && !previewError ? <pre className="whitespace-pre-wrap break-words text-sm text-zinc-200">{preview.content}</pre> : null}
+              {!previewLoading && !previewError ? (
+                <div className="min-w-0 max-w-full overflow-x-auto rounded-md border border-white/10 bg-[#111111] p-4">
+                  <MarkdownView content={preview.content} preserveLeadingHeading />
+                </div>
+              ) : null}
             </div>
           </Surface>
         </div>

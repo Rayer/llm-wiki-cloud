@@ -47,6 +47,7 @@ async function renderPanel() {
       <ProjectProfilePanel projectId="project-b" />
     </NavigationBlockerProvider>,
   );
+  fireEvent.click(screen.getByRole('tab', { name: 'Knowledge generation settings' }));
   await screen.findByRole('heading', { name: 'Organization and search preferences (optional)' });
 }
 
