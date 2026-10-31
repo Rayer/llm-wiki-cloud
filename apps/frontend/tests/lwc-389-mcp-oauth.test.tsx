@@ -275,7 +275,7 @@ describe('LWC-389 MCP OAuth frontend', () => {
   });
 
   it.each([
-    ['Auth DEV', 'https://auth.dev.rayer.idv.tw', 'https://brief-dev.rayer.idv.tw/mcp'],
+    ['Auth DEV', 'https://auth.dev.rayer.idv.tw', 'https://brief.dev.rayer.idv.tw/mcp'],
     ['local Auth with disabled Brief policy', 'http://127.0.0.1:18081', 'https://brief.rayer.idv.tw/mcp'],
   ])('selects the %s grant resource from loaded Auth runtime config', async (_name, authURL, resource) => {
     await loadAuthRuntimeConfig(authURL);

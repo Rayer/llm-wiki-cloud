@@ -37,7 +37,7 @@ var authServiceAccountPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{4,62}@[a-
 const (
 	authDailyBriefDevVerifierAudience             = "https://llm-wiki-auth-dev-a5nkmux6pq-de.a.run.app"
 	authDailyBriefProdVerifierAudience            = "https://llm-wiki-auth-a5nkmux6pq-de.a.run.app"
-	authDailyBriefDevResourceURI                  = "https://brief-dev.rayer.idv.tw/mcp"
+	authDailyBriefDevResourceURI                  = "https://brief.dev.rayer.idv.tw/mcp"
 	authDailyBriefProdResourceURI                 = "https://brief.rayer.idv.tw/mcp"
 	authDailyBriefDevVerifierCallerServiceAccount = "daily-brief-dev-runtime@daily-brief-service.iam.gserviceaccount.com"
 )

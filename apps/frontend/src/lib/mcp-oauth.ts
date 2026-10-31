@@ -39,7 +39,7 @@ export type MCPOAuthGrant = {
   revoked_at?: string;
 };
 
-const DAILY_BRIEF_DEV_MCP_RESOURCE = 'https://brief-dev.rayer.idv.tw/mcp';
+const DAILY_BRIEF_DEV_MCP_RESOURCE = 'https://brief.dev.rayer.idv.tw/mcp';
 const DAILY_BRIEF_PROD_MCP_RESOURCE = 'https://brief.rayer.idv.tw/mcp';
 
 export class MCPOAuthApiError extends Error {

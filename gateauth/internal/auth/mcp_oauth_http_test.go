@@ -74,7 +74,7 @@ func TestDailyBriefCredentialVerifierFailsClosedAndRequiresVerifiedCaller(t *tes
 	gin.SetMode(gin.TestMode)
 	const audience = "https://auth.fixture.example.test"
 	const (
-		devResourceURI        = "https://brief-dev.rayer.idv.tw/mcp"
+		devResourceURI        = "https://brief.dev.rayer.idv.tw/mcp"
 		productionResourceURI = "https://brief.rayer.idv.tw/mcp"
 		devCaller             = "daily-brief-dev-runtime@daily-brief-service.iam.gserviceaccount.com"
 		productionCaller      = "daily-brief-runtime@daily-brief-service.iam.gserviceaccount.com"

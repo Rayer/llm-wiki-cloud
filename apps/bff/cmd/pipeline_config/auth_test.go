@@ -43,7 +43,7 @@ func authProjectionForTest(environment string) authSourceProjection {
 	briefURI := "https://brief.rayer.idv.tw/mcp"
 	briefAudience := "https://llm-wiki-auth-a5nkmux6pq-de.a.run.app"
 	if environment == "dev" {
-		briefURI = "https://brief-dev.rayer.idv.tw/mcp"
+		briefURI = "https://brief.dev.rayer.idv.tw/mcp"
 		briefAudience = "https://llm-wiki-auth-dev-a5nkmux6pq-de.a.run.app"
 	}
 	projection := authSourceProjection{
@@ -178,7 +178,7 @@ func TestRealPklAuthPrepareProducesLocalFileAndCloudInputStages(t *testing.T) {
 			if environment == "dev" {
 				wantAudience = "https://llm-wiki-auth-dev-a5nkmux6pq-de.a.run.app"
 				wantCaller = "daily-brief-dev-runtime@daily-brief-service.iam.gserviceaccount.com"
-				wantResourceURI = "https://brief-dev.rayer.idv.tw/mcp"
+				wantResourceURI = "https://brief.dev.rayer.idv.tw/mcp"
 				wantEnabled = true
 			} else if environment == "prod" {
 				wantAudience = "https://llm-wiki-auth-a5nkmux6pq-de.a.run.app"

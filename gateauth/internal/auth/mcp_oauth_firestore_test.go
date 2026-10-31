@@ -465,7 +465,7 @@ func TestDailyBriefFixedResourceGrantIsAccountOwnedWithoutProject(t *testing.T) 
 	}
 	resources := config.LegacyAuthOAuthResources("https://bff.example.test")
 	resources = append(resources, config.AuthOAuthResource{
-		ID: "daily-brief", Kind: "fixed", Enabled: true, URI: "https://brief-dev.rayer.idv.tw/mcp", Name: "Daily Brief",
+		ID: "daily-brief", Kind: "fixed", Enabled: true, URI: "https://brief.dev.rayer.idv.tw/mcp", Name: "Daily Brief",
 		Scopes:           []config.AuthOAuthScope{{Name: "brief:manage", Description: "Read and manage Daily Brief reports and annotations in your private account space."}},
 		AllowedScopeSets: [][]string{{"brief:manage"}}, DefaultScopeSet: []string{},
 		VerifierCallerServiceAccount: "daily-brief-dev-runtime@daily-brief-service.iam.gserviceaccount.com",
@@ -502,7 +502,7 @@ func TestDailyBriefFixedResourceGrantIsAccountOwnedWithoutProject(t *testing.T) 
 	verifier := strings.Repeat("b", 43)
 	challengeBytes := sha256.Sum256([]byte(verifier))
 	challenge := base64.RawURLEncoding.EncodeToString(challengeBytes[:])
-	resource := "https://brief-dev.rayer.idv.tw/mcp"
+	resource := "https://brief.dev.rayer.idv.tw/mcp"
 	consentURL, err := service.BeginAuthorization(ctx, client.ClientID, client.RedirectURIs[0], "code", challenge, "S256", "brief-state", resource, "brief:manage")
 	if err != nil {
 		t.Fatalf("begin fixed-resource authorization: %v", err)

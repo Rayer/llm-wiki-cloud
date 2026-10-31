@@ -883,7 +883,7 @@ local devAuth = new AuthConfig {
       id = "daily-brief"
       kind = "fixed"
       enabled = true
-      uri = "https://brief-dev.rayer.idv.tw/mcp"
+      uri = "https://brief.dev.rayer.idv.tw/mcp"
       name = "Daily Brief"
       scopes = new Listing {
         new AuthOAuthScope { name = "brief:manage"; description = "Read and manage Daily Brief reports and annotations in your private account space." }
