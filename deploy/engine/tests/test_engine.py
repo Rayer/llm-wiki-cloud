@@ -1954,6 +1954,28 @@ class Acceptance(unittest.TestCase):
         return {'deployments':deployments,
                 'pagination':{'count':len(deployments),'next':next_cursor,'prev':None}}
 
+    def _legacy_frontend_quota_evidence(self, e):
+        self.configure(quota_rejections_remaining=1)
+        rejected,_,_,_=self._invoke_engine_deploy(e)
+        self.assertEqual(rejected,1)
+        legacy=self.root/'retained-original-result'
+        shutil.copytree(e.directory,legacy)
+        original_state=read(legacy/'state.json')
+        original_entry=original_state['components']['frontend']
+        for key in ('quota_rejections','quota_retry_pending','quota_retry_reconciliation'):
+            original_entry.pop(key,None)
+        write(legacy/'state.json',original_state)
+        original_result=read(legacy/'result.json')
+        original_result['reason']='provider-result-unreadable'
+        write(legacy/'result.json',original_result)
+
+        latest=read(e.state_path)
+        latest_entry=latest['components']['frontend']
+        for key in ('quota_rejections','quota_retry_pending','quota_retry_reconciliation'):
+            latest_entry.pop(key,None)
+        write(e.state_path,latest)
+        return legacy
+
     def test_frontend_quota_classifier_keeps_timeout_and_unproven_errors_unknown(self):
         message='{"error":{"code":"api-deployments-free-per-day"}}'
         with patch('support.subprocess.run',return_value=subprocess.CompletedProcess(
@@ -1963,6 +1985,17 @@ class Acceptance(unittest.TestCase):
         self.assertEqual(caught.exception.status,'unknown')
         self.assertTrue(caught.exception.mutation)
         self.assertTrue(support.is_frontend_quota_rejection(caught.exception.cause))
+
+        for field,value in (
+                ('exception_type','TimeoutExpired'),
+                ('stage','frontend-deployment-reconcile'),
+                ('code','child-command-failed-extra'),
+                ('message',message.replace('api-deployments-free-per-day',
+                                           'api-deployments-free-per-day-extra')),
+                ('message',message.replace('api-deployments-free-per-day',
+                                           'xapi-deployments-free-per-day'))):
+            unproven={**caught.exception.cause,field:value}
+            self.assertFalse(support.is_frontend_quota_rejection(unproven),unproven)
 
         for error in ('ordinary command failure',message):
             with patch('support.subprocess.run',return_value=subprocess.CompletedProcess(
@@ -2053,25 +2086,7 @@ class Acceptance(unittest.TestCase):
 
     def test_legacy_unknown_uses_exact_retained_result_then_complete_zero_match(self):
         e=self._ready_frontend('frontend-quota-legacy')
-        self.configure(quota_rejections_remaining=1)
-        rejected,_,_,_=self._invoke_engine_deploy(e)
-        self.assertEqual(rejected,1)
-        legacy=self.root/'retained-original-result'
-        shutil.copytree(e.directory,legacy)
-        original_state=read(legacy/'state.json')
-        original_entry=original_state['components']['frontend']
-        for key in ('quota_rejections','quota_retry_pending','quota_retry_reconciliation'):
-            original_entry.pop(key,None)
-        write(legacy/'state.json',original_state)
-        original_result=read(legacy/'result.json')
-        original_result['reason']='provider-result-unreadable'
-        write(legacy/'result.json',original_result)
-
-        latest=read(e.state_path)
-        latest_entry=latest['components']['frontend']
-        for key in ('quota_rejections','quota_retry_pending','quota_retry_reconciliation'):
-            latest_entry.pop(key,None)
-        write(e.state_path,latest)
+        legacy=self._legacy_frontend_quota_evidence(e)
         older={'uid':'dpl_old_a','projectId':'prj_test','meta':{}}
         older2={'uid':'dpl_old_b','projectId':'prj_test','meta':{}}
         self.configure(deployment_pages=[
@@ -2089,6 +2104,46 @@ class Acceptance(unittest.TestCase):
         self.assertFalse(entry['quota_retry_pending'])
         self.assertEqual(entry['quota_retry_reconciliation']['pages_read'],2)
         self.assertEqual(len([call for call in self.calls('vercel') if call[1]=='deploy']),2)
+
+    def test_legacy_rejection_proof_is_single_use_across_artifact_ids_after_timeout(self):
+        e=self._ready_frontend('frontend-quota-legacy-single-use')
+        legacy=self._legacy_frontend_quota_evidence(e)
+        deploy_count_before=len([call for call in self.calls('vercel') if call[1]=='deploy'])
+        self.configure(deployment_pages=[self._frontend_page([])])
+        original_run=subprocess.run
+
+        def timeout_after_legacy_retry(args,**kwargs):
+            argv=[str(arg) for arg in args]
+            if argv and Path(argv[0]).name=='vercel' and argv[1]=='deploy':
+                state=self.current()
+                state['calls'].append(['vercel',*argv[1:]])
+                write(self.root/'provider.json',state)
+                raise subprocess.TimeoutExpired(args,kwargs.get('timeout'),
+                                                stderr='TEST ONLY retry timeout')
+            return original_run(args,**kwargs)
+
+        with patch('support.subprocess.run',side_effect=timeout_after_legacy_retry):
+            first_code,first_result,first_state,_=self._invoke_engine_deploy(
+                e,('--rejection-evidence',str(legacy),
+                   '--rejection-artifact-id','13035372075'))
+        self.assertEqual(first_code,1)
+        self.assertEqual(first_result['reason'],'provider-result-unreadable')
+        history=first_state['components']['frontend']['quota_rejections']
+        self.assertEqual(history[0]['source'],'retained-result')
+        self.assertEqual(history[0]['artifact_id'],'13035372075')
+        self.assertEqual(len([call for call in self.calls('vercel') if call[1]=='deploy']),
+                         deploy_count_before+1)
+
+        second_code,second_result,second_state,_=self._invoke_engine_deploy(
+            e,('--rejection-evidence',str(legacy),
+               '--rejection-artifact-id','99999999999'))
+        self.assertEqual(second_code,1)
+        self.assertEqual(second_result['reason'],'provider-result-unreadable')
+        self.assertEqual(second_result['causes'][-1]['reason'],'deployment-identity-unknown')
+        self.assertEqual(second_state['components']['frontend']['quota_rejections'],history)
+        self.assertEqual(len([call for call in self.calls('vercel') if call[1]=='deploy']),
+                         deploy_count_before+1,
+                         'the same retained rejection must not authorize a second create')
 
     def test_timeout_zero_match_stays_unknown_and_unique_candidate_is_not_recreated(self):
         no_match=self._ready_frontend('frontend-timeout-zero')

@@ -142,7 +142,8 @@ def is_frontend_quota_rejection(cause):
             cause.get('stage') == 'frontend-vercel-deploy' and
             cause.get('code') == 'child-command-failed' and
             isinstance(cause.get('message'), str) and
-            _VERCEL_FREE_DAILY_DEPLOYMENT_CODE in cause['message'])
+            re.search(r'(?<![A-Za-z0-9_-])' + re.escape(_VERCEL_FREE_DAILY_DEPLOYMENT_CODE) +
+                      r'(?![A-Za-z0-9_-])', cause['message']) is not None)
 
 
 def latest_artifact_cause(stderr, sensitive_values=()):

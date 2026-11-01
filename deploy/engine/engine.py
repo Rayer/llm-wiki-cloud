@@ -1060,10 +1060,10 @@ class Engine:
     def _retained_quota_rejection(self, artifact, entry):
         if self.quota_rejection_evidence_dir is None:
             return None
-        history = self._quota_rejection_history(entry, artifact)
-        if any(record.get('source') == 'retained-result' and
-               record.get('artifact_id') == self.quota_rejection_artifact_id
-               for record in history):
+        # The artifact ID locates a result; it is not the identity of the proof.
+        # Once any quota history is checkpointed, legacy evidence cannot bootstrap
+        # another retry under a different artifact ID.
+        if entry.get('quota_rejections'):
             return None
         try:
             root = self.quota_rejection_evidence_dir
