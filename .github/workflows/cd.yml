@@ -59,6 +59,10 @@ on:
       artifact_id:
         type: string
         default: ''
+      rejection_artifact_id:
+        type: string
+        default: ''
+        description: Exact retained DEV result artifact containing a machine-verifiable Vercel quota rejection
       dev_artifact_id:
         type: string
         default: ''
@@ -101,6 +105,7 @@ jobs:
       REUSE_ID: ${{ inputs.artifact_id }}
       DEV_ID: ${{ inputs.dev_artifact_id }}
       ARTIFACT_ID: ${{ inputs.artifact_id }}
+      REJECTION_ARTIFACT_ID: ${{ inputs.rejection_artifact_id }}
       OPERATION: ${{ inputs.operation }}
       FORCE: ${{ inputs.force }}
       LWC_PIPELINE_RUN_TIMEOUT_SECONDS: ${{ inputs.pipeline_run_timeout_seconds }}
@@ -242,10 +247,16 @@ jobs:
         run: |
           python3 - <<'PY'
           import json, os
+          import re
           p=json.load(open(os.environ['RUNNER_TEMP']+'/release/plan.json'))
           assert p['normalized']['environment']==os.environ['TARGET']
           assert p['source']==os.environ['SOURCE'] and p['tag']==os.environ['RELEASE_TAG']
           assert os.environ['OPERATION'] in ('release','deploy','rollback','reactivate','tag','readback')
+          if os.environ.get('REJECTION_ARTIFACT_ID'):
+              assert re.fullmatch(r'[1-9][0-9]*', os.environ['REJECTION_ARTIFACT_ID'])
+              assert os.environ['TARGET'] == 'development'
+              assert os.environ['OPERATION'] == 'deploy'
+              assert os.environ['COMPONENTS'] == 'frontend'
           if os.environ.get('FORCE') == 'true':
               assert os.environ['TARGET'] == 'development'
               assert os.environ['OPERATION'] in ('release','deploy')

@@ -189,6 +189,13 @@ class EngineWorkflowContract(unittest.TestCase):
         recovery=(ROOT/'.github/workflows/recover-deployment.yml').read_text()
         self.assertIn('[rollback, reactivate, deploy, tag, readback, diagnose-auth-image]',recovery)
         self.assertIn('uses: ./.github/workflows/cd.yml',recovery)
+        recovery_yaml=yaml.safe_load(recovery)
+        recovery_trigger=recovery_yaml.get('on',recovery_yaml.get(True,{}))
+        self.assertEqual(recovery_trigger['workflow_dispatch']['inputs']['rejection_artifact_id'],
+                         {'description':'Optional exact DEV final result artifact proving the original frontend quota rejection',
+                          'required':False,'default':'','type':'string'})
+        self.assertEqual(recovery_yaml['jobs']['recovery']['with']['rejection_artifact_id'],
+                         '${{ inputs.rejection_artifact_id }}')
 
     def test_registered_dev_release_can_resume_stage1_source_with_current_executor(self):
         dev=yaml.safe_load((ROOT/'.github/workflows/deploy-dev.yml').read_text())
@@ -204,6 +211,8 @@ class EngineWorkflowContract(unittest.TestCase):
         cd=yaml.safe_load((ROOT/'.github/workflows/cd.yml').read_text())
         job=cd['jobs']['release']
         self.assertEqual(job['env']['SOURCE'],'${{ inputs.source_sha }}')
+        self.assertEqual(job['env']['REJECTION_ARTIFACT_ID'],
+                         '${{ inputs.rejection_artifact_id }}')
         self.assertEqual(job['env']['EXECUTOR_SHA'],'${{ inputs.executor_sha }}')
         steps=job['steps']
         validate=next((index,step) for index,step in enumerate(steps)
@@ -320,6 +329,7 @@ class EngineWorkflowContract(unittest.TestCase):
             'release_source_mode':'${{ inputs.release_source_mode }}',
             'components':'${{ inputs.components }}','release_tag':'${{ inputs.release_tag }}',
             'operation':'${{ inputs.operation }}','artifact_id':'${{ inputs.artifact_id }}',
+            'rejection_artifact_id':'${{ inputs.rejection_artifact_id }}',
         })
         diagnostic_wrapper=recovery['jobs']['auth-image-diagnostic']
         for fixed in ("github.ref == 'refs/heads/develop'", "inputs.environment == 'development'",

@@ -65,9 +65,17 @@ function files(dir) {
     return entry.isDirectory() ? files(p) : [p];
   });
 }
-async function download(id, destination) {
+async function download(id, destination, resultEnvironment=null) {
   if (!/^[1-9][0-9]*$/.test(id)) throw Error('invalid explicit artifact ID');
   const artifact = await api(`actions/artifacts/${id}`);
+  if (resultEnvironment !== null) {
+    const identity = artifact && typeof artifact.name === 'string'
+      ? artifact.name.match(/^lwc-result-(development)-(\d+)-(\d+)$/) : null;
+    if (resultEnvironment !== 'development' || !identity ||
+        String(artifact.workflow_run?.id) !== identity[2]) {
+      throw Error('quota rejection evidence is not an exact DEV result artifact');
+    }
+  }
   const run = await api(`actions/runs/${artifact.workflow_run.id}`);
   if (run.event !== 'workflow_dispatch' || !['.github/workflows/deploy-dev.yml', '.github/workflows/promote-production.yml', '.github/workflows/recover-deployment.yml'].includes(run.path)) throw Error('untrusted artifact workflow');
   if (artifact.expired || !artifact.name.startsWith('lwc-')) throw Error('artifact unavailable');
@@ -77,11 +85,13 @@ async function download(id, destination) {
   }});
 }
 async function main() {
-  const [op, arg, name] = process.argv.slice(2);
+  const [op, arg, name, environment] = process.argv.slice(2);
   if (op === 'upload') {
     await client.uploadArtifact(name, files(arg), arg, {retentionDays:90});
   } else if (op === 'download') {
     await download(arg, name);
+  } else if (op === 'download-result') {
+    await download(arg, name, environment);
   } else if (op === 'latest') {
     if (!['development','production'].includes(arg)) throw Error('invalid target');
     // Consume a complete repository listing before deciding latest or absence.

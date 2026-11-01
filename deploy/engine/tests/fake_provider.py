@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import sys
+from urllib.parse import parse_qs, urlsplit
 
 root = Path(os.environ['LWC_TEST_STATE'])
 s = json.loads(root.read_text())
@@ -330,7 +331,23 @@ elif tool == 'curl':
             binary_out=bytes.fromhex(s['multipart_output_hex'])
         else:out=s['build_config']
     elif '/v6/deployments?' in endpoint:
-        out={'deployments':[dict(v,uid=k) for k,v in s['deployments'].items()]}
+        pages=s.get('deployment_pages')
+        if s.get('deployment_list_unreadable'):
+            fail=True
+            failure_message='TEST ONLY unreadable deployment listing\n'
+        elif isinstance(pages,list):
+            cursor=parse_qs(urlsplit(endpoint).query).get('until',[None])[0]
+            page_index=0 if cursor is None else next((i for i in range(1,len(pages))
+                if str(pages[i-1].get('pagination',{}).get('next'))==cursor),None)
+            if page_index is None or page_index >= len(pages):
+                fail=True
+                failure_message='TEST ONLY invalid deployment pagination cursor\n'
+            else:
+                out=pages[page_index]
+        else:
+            deployments=[dict(v,uid=k) for k,v in s['deployments'].items()]
+            out={'deployments':deployments,
+                 'pagination':{'count':len(deployments),'next':None,'prev':None}}
     elif '/aliases?' in endpoint:
         deployment=endpoint.split('/v2/deployments/')[1].split('/')[0]
         alias=json.loads(flag('--data'))['alias']
@@ -400,11 +417,17 @@ elif tool=='vercel':
             fixture=json.loads(Path(fixture_path).read_text())
             refs={ref for item in fixture['configs'] for ref in item['filePathMap'].values()}
             assert all(os.path.lexists(Path.cwd()/ref) for ref in refs), 'filePathMap closure missing from prepared artifact'
-        meta={}
-        for i,v in enumerate(a):
-            if v=='--meta': k,val=a[i+1].split('=',1);meta[k]=val
-        s['deployments']['dpl_candidate']={'id':'dpl_candidate','projectId':'prj_test','teamId':'team_test','readyState':'READY','meta':meta,'target':'production' if '--prod' in a else None}
-        out='https://candidate.vercel.app'
+        if s.get('quota_rejections_remaining',0)>0:
+            s['quota_rejections_remaining']-=1
+            fail=True
+            failure_message=json.dumps({'error':{'code':'api-deployments-free-per-day',
+                'message':'TEST ONLY provider quota rejected deployment'}})+'\n'
+        else:
+            meta={}
+            for i,v in enumerate(a):
+                if v=='--meta': k,val=a[i+1].split('=',1);meta[k]=val
+            s['deployments']['dpl_candidate']={'id':'dpl_candidate','projectId':'prj_test','teamId':'team_test','readyState':'READY','meta':meta,'target':'production' if '--prod' in a else None}
+            out='https://candidate.vercel.app'
     else:fail=True
 else:
     fail=True
