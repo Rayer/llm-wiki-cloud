@@ -324,7 +324,7 @@ export function DocumentImportsPanel({ projectId, sourcePaths, onRecordsChange }
                     {feedback[record.document_id] ? <p className="mt-2 text-sm text-zinc-300" role={feedback[record.document_id]?.includes('failed') ? 'alert' : 'status'}>{feedback[record.document_id]}</p> : null}
                     <details className="mt-2 text-xs text-zinc-500">
                       <summary className="w-fit cursor-pointer">{t('Source.documentImport.diagnostics')}</summary>
-                      <div className="mt-1 space-y-1 break-all font-mono">
+                      <div className="mt-1 space-y-1 break-all font-sans">
                         <p>{record.document_id} · revision {record.revision}</p>
                         {record.source_ref?.raw_path ? <p>{record.source_ref.raw_path}</p> : null}
                         {record.failure?.diagnostic_id ? <p>{t('Source.documentImport.diagnostic', { id: record.failure.diagnostic_id })}</p> : null}

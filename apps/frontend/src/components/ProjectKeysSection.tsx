@@ -189,51 +189,51 @@ export function ProjectKeysSection({
           <span>{t('ProjectSettings.projectKeys')}</span>
           <Badge variant="accent">{t('Shell.betaBadge')}</Badge>
         </h3>
-        <button type="button" disabled={!projectId || !accessToken || projectKeyBusy} onClick={() => void handleRefreshProjectKeys()} className="min-h-11 rounded-lg border border-white/15 px-3 py-2 text-sm text-zinc-200 hover:bg-white/10 disabled:opacity-50">{t('AccountSettings.projectKeysRefresh')}</button>
+        <button type="button" disabled={!projectId || !accessToken || projectKeyBusy} onClick={() => void handleRefreshProjectKeys()} className="min-h-11 rounded border border-white/15 px-3 py-2 text-sm text-zinc-200 hover:bg-white/10 disabled:opacity-50">{t('AccountSettings.projectKeysRefresh')}</button>
       </div>
       <p className="mt-1 text-sm leading-6 text-zinc-400">{t('AccountSettings.projectKeysHint')}</p>
       {currentProject ? (
-        <p className="mt-3 break-all rounded-lg border border-white/10 bg-black/20 p-3 text-xs text-zinc-400">
+        <p className="mt-3 break-all rounded border border-white/10 bg-black/20 p-3 text-xs text-zinc-400">
           {t('AccountSettings.projectKeyBoundProject', { name: currentProject.name, id: currentProject.id })}
         </p>
       ) : (
-        <p className="mt-3 rounded-lg border border-white/10 bg-black/20 p-3 text-sm text-zinc-400">{t('AccountSettings.projectKeyNoProject')}</p>
+        <p className="mt-3 rounded border border-white/10 bg-black/20 p-3 text-sm text-zinc-400">{t('AccountSettings.projectKeyNoProject')}</p>
       )}
       <form onSubmit={(event) => void handleCreateProjectKey(event)} className="mt-4 flex flex-col gap-3 sm:flex-row">
         <label className="min-w-0 flex-1 text-sm text-zinc-300">
           {t('AccountSettings.projectKeyName')}
-          <input value={projectKeyName} onChange={(event) => setProjectKeyName(event.target.value)} className="mt-2 min-h-11 w-full rounded-lg border border-white/10 bg-black/30 px-3 text-white outline-none focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400" />
+          <input value={projectKeyName} onChange={(event) => setProjectKeyName(event.target.value)} className="mt-2 min-h-11 w-full rounded border border-white/10 bg-black/30 px-3 text-white outline-none focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400" />
           <span className="mt-1 block text-xs text-zinc-500">{t('AccountSettings.projectKeyNameHint')}</span>
         </label>
-        <button type="submit" disabled={!accessToken || !projectId || projectKeyBusy || projectKeysStale || keyNameLength < 1 || keyNameLength > 64} className="min-h-11 self-end rounded-lg bg-emerald-300 px-4 py-2.5 text-sm font-semibold text-black hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-50">
+        <button type="submit" disabled={!accessToken || !projectId || projectKeyBusy || projectKeysStale || keyNameLength < 1 || keyNameLength > 64} className="min-h-11 self-end rounded bg-emerald-300 px-4 py-2.5 text-sm font-semibold text-black hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-50">
           {projectKeyBusy ? t('AccountSettings.projectKeyProcessing') : t('AccountSettings.projectKeyCreate')}
         </button>
       </form>
       {projectKeySecret ? (
-        <div className="mt-4 rounded-lg border border-amber-300/30 bg-amber-300/5 p-4">
+        <div className="mt-4 rounded border border-amber-300/30 bg-amber-300/5 p-4">
           <p className="text-sm font-semibold text-amber-100">{t('AccountSettings.projectKeyShowOnce')}</p>
           <p className="mt-1 text-xs leading-5 text-zinc-300">{t('AccountSettings.projectKeyShowOnceHint')}</p>
           <code data-testid="project-key-secret" className="mt-3 block max-h-24 select-all overflow-auto break-all rounded bg-black/40 p-3 font-mono text-xs text-white">{projectKeySecret}</code>
           <div className="mt-3 flex flex-wrap gap-2">
-            <button type="button" onClick={() => void handleCopyProjectKey()} className="min-h-11 rounded-lg border border-white/15 px-3 py-2 text-sm text-white hover:bg-white/10">{t('AccountSettings.projectKeyCopy')}</button>
-            <button type="button" onClick={() => setProjectKeySecret('')} className="min-h-11 rounded-lg border border-white/15 px-3 py-2 text-sm text-zinc-300 hover:bg-white/10">{t('AccountSettings.projectKeyDismiss')}</button>
+            <button type="button" onClick={() => void handleCopyProjectKey()} className="min-h-11 rounded border border-white/15 px-3 py-2 text-sm text-white hover:bg-white/10">{t('AccountSettings.projectKeyCopy')}</button>
+            <button type="button" onClick={() => setProjectKeySecret('')} className="min-h-11 rounded border border-white/15 px-3 py-2 text-sm text-zinc-300 hover:bg-white/10">{t('AccountSettings.projectKeyDismiss')}</button>
           </div>
         </div>
       ) : null}
       {projectKeysStale ? null : projectKeys.length === 0 ? (
-        <p className="mt-4 rounded-lg border border-white/10 bg-black/20 p-4 text-sm text-zinc-400">{t('AccountSettings.projectKeysEmpty')}</p>
+        <p className="mt-4 rounded border border-white/10 bg-black/20 p-4 text-sm text-zinc-400">{t('AccountSettings.projectKeysEmpty')}</p>
       ) : (
         <ul aria-label={t('ProjectSettings.projectKeys')} className="mt-4 space-y-3">
           {projectKeys.map((key) => (
-            <li key={key.key_id} className="flex flex-col gap-3 rounded-lg border border-white/10 bg-black/20 p-4 sm:flex-row sm:items-center sm:justify-between">
+            <li key={key.key_id} className="flex flex-col gap-3 rounded border border-white/10 bg-black/20 p-4 sm:flex-row sm:items-center sm:justify-between">
               <div className="min-w-0 text-sm">
                 <p className="font-medium text-white">{key.name} <span className="text-zinc-500">· {t(key.state === 'active' ? 'AccountSettings.projectKeyActive' : 'AccountSettings.projectKeyRevokedState')}</span></p>
-                <p className="mt-1 break-all font-mono text-xs text-zinc-500">{key.key_id}</p>
+                <p className="mt-1 break-all font-sans text-xs text-zinc-500">{key.key_id}</p>
                 <p className="mt-1 text-xs text-zinc-500">{t('AccountSettings.projectKeyQueryOnly')} · {new Date(key.created_at).toLocaleString(locale === 'zh-TW' ? 'zh-TW' : locale === 'zh-CN' ? 'zh-CN' : 'en-US')}</p>
                   <p className="mt-1 text-xs text-zinc-500">{projectKeyUsageLabel(key, t, locale)}</p>
               </div>
               {key.state === 'active' ? (
-                <button type="button" disabled={projectKeyBusy} onClick={() => void handleRevokeProjectKey(key)} className="min-h-11 shrink-0 rounded-lg border border-red-300/20 px-3 py-2 text-sm text-red-200 hover:bg-red-300/10 disabled:opacity-50">
+                <button type="button" disabled={projectKeyBusy} onClick={() => void handleRevokeProjectKey(key)} className="min-h-11 shrink-0 rounded border border-red-300/20 px-3 py-2 text-sm text-red-200 hover:bg-red-300/10 disabled:opacity-50">
                   {projectKeyBusy ? t('AccountSettings.projectKeyProcessing') : t('AccountSettings.projectKeyRevoke')}
                 </button>
               ) : null}
@@ -241,8 +241,8 @@ export function ProjectKeysSection({
           ))}
         </ul>
       )}
-      {projectKeyNotice ? <p role="status" className="mt-4 rounded-lg border border-emerald-300/20 bg-emerald-300/5 p-3 text-sm text-emerald-100">{projectKeyNotice}</p> : null}
-      {projectKeyError ? <p role="alert" className="mt-4 rounded-lg border border-red-300/20 bg-red-300/5 p-3 text-sm text-red-100">{projectKeyError}</p> : null}
+      {projectKeyNotice ? <p role="status" className="mt-4 rounded border border-emerald-300/20 bg-emerald-300/5 p-3 text-sm text-emerald-100">{projectKeyNotice}</p> : null}
+      {projectKeyError ? <p role="alert" className="mt-4 rounded border border-red-300/20 bg-red-300/5 p-3 text-sm text-red-100">{projectKeyError}</p> : null}
       </section>
 
       <section className="mt-8 border-t border-white/10 pt-6" aria-labelledby="project-keys-hermes-title">
@@ -254,11 +254,11 @@ export function ProjectKeysSection({
           <li>{t('ProjectSettings.hermesConfigStep')}</li>
           <li>{t('ProjectSettings.hermesDiscoveryStep')}</li>
         </ol>
-        <pre className="mt-4 overflow-x-auto rounded-lg border border-white/10 bg-black/30 p-4 text-xs leading-5 text-zinc-200"><code>{hermesConfigSnippet}</code></pre>
+        <pre className="mt-4 overflow-x-auto rounded border border-white/10 bg-black/30 p-4 text-xs leading-5 text-zinc-200"><code>{hermesConfigSnippet}</code></pre>
         <p className="mt-4 text-sm leading-6 text-zinc-400">{t('ProjectSettings.usageHint')}</p>
         <p className="mt-2 text-sm leading-6 text-zinc-400">{t('ProjectSettings.hermesQueryHint')}</p>
         <p className="mt-2 text-sm leading-6 text-zinc-400">{t('ProjectSettings.hermesRotationHint')}</p>
-        <p role="note" className="mt-4 rounded-lg border border-white/10 bg-black/20 p-3 text-xs leading-5 text-zinc-500">
+        <p role="note" className="mt-4 rounded border border-white/10 bg-black/20 p-3 text-xs leading-5 text-zinc-500">
           {t('ProjectSettings.grokUnverified')} {t('ProjectSettings.multiProjectDeferred')}
         </p>
         <div className="mt-4 flex flex-wrap gap-4 text-sm">

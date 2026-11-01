@@ -39,7 +39,7 @@ export function AnnouncementBoard({ markdown }: { markdown?: string | null }) {
   return (
     <section
       aria-label={t('Admin.announcement')}
-      className="announcement-board mt-5 max-h-52 overflow-y-auto rounded-lg border border-emerald-300/20 bg-emerald-300/5 px-4 py-3"
+      className="announcement-board mt-5 max-h-52 overflow-y-auto rounded border border-emerald-300/20 bg-emerald-300/5 px-4 py-3"
     >
       <AnnouncementContent markdown={markdown} />
     </section>

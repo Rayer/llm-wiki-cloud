@@ -39,7 +39,7 @@ export function MarkdownView({
 
   if (!content) {
     return (
-      <div className="rounded-md border border-white/10 bg-[#111111] p-6 text-zinc-400">
+      <div className="rounded-md border border-white/10 bg-[#101112] p-6 text-zinc-400">
         {t('Common.noMarkdownContent')}
       </div>
     );
@@ -58,7 +58,7 @@ export function MarkdownView({
       </article>
       {deadLinkSlug ? (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
           onClick={() => setDeadLinkSlug(null)}
         >
           <Surface
@@ -254,7 +254,7 @@ function renderInline(
         </strong>
       );
     }
-    // Image: ![alt](url) — must be checked before regular link
+    // Image: ![alt](url)，must be checked before regular link
     const image = parseMarkdownImage(part);
     if (image) {
       return (
@@ -263,12 +263,12 @@ function renderInline(
           key={index}
           src={image.src}
           alt={image.alt}
-          className="rounded-lg"
+          className="rounded"
           loading="lazy"
         />
       );
     }
-    // Obsidian-style wikilink: [[Page Name]] — route based on section context
+    // Obsidian-style wikilink: [[Page Name]]，route based on section context
     const wikilinkLabel = parseWikilinkToken(part);
     if (wikilinkLabel) {
       const resolved = resolveWikilink(wikilinkLabel, currentWikilinkSection, existingConceptSlugs);

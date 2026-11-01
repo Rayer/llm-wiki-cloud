@@ -216,7 +216,7 @@ export function StatusClient() {
 
       {status ? (
         <>
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="lwc-status-metrics">
             <Metric label="Sources" value={status.sourcesCount} />
             <Metric label="Concepts" value={status.conceptsCount} />
             <Metric label="Raw" value={status.rawCount} />
@@ -233,12 +233,12 @@ export function StatusClient() {
             </p>
           ) : null}
           {status.scheduledPipeline ? (
-            <section className="space-y-1 rounded-lg border border-white/10 bg-zinc-900/40 p-3 text-xs text-zinc-400" data-testid="status-scheduled-pipeline">
+            <section className="space-y-1 rounded border border-white/10 bg-zinc-900/40 p-3 text-xs text-zinc-400" data-testid="status-scheduled-pipeline">
               <h2 className="font-medium text-zinc-200">{t('Pipeline.scheduledTitle')}</h2>
                 <p>{t('Pipeline.scheduledDescription')}</p>
               <p>{t('Pipeline.scheduledProfileNote')}</p>
               <p>
-                {t('Pipeline.scheduledSchedule')}: <span className="font-mono">{status.scheduledPipeline.schedule}</span> · {status.scheduledPipeline.timezone}
+                {t('Pipeline.scheduledSchedule')}: <span className="font-sans">{status.scheduledPipeline.schedule}</span> · {status.scheduledPipeline.timezone}
                 {status.scheduledPipeline.next_check_at ? ` · ${t('Pipeline.scheduledNextCheck')}: ${formatScheduledTime(status.scheduledPipeline.next_check_at, status.scheduledPipeline.timezone, locale)}` : ''}
               </p>
               <p>
@@ -361,41 +361,41 @@ function DeveloperDetails({
           <dl className="grid gap-2 text-xs sm:grid-cols-2">
             <div>
               <dt className="text-zinc-500">{t('Status.userId')}</dt>
-              <dd className="mt-1 font-mono text-zinc-300">{userId ?? '—'}</dd>
+              <dd className="mt-1 font-sans text-zinc-300">{userId ?? '未提供'}</dd>
             </div>
             <div>
               <dt className="text-zinc-500">{t('Status.projectId')}</dt>
-              <dd className="mt-1 font-mono text-zinc-300">{projectId ?? '—'}</dd>
+              <dd className="mt-1 font-sans text-zinc-300">{projectId ?? '未提供'}</dd>
             </div>
             {buildInfo ? (
               <>
                 <div>
                   <dt className="text-zinc-500">{t('Status.productVersion')}</dt>
-                  <dd className="mt-1 font-mono text-zinc-300">{buildInfo.product_version}</dd>
+                  <dd className="mt-1 font-sans text-zinc-300">{buildInfo.product_version}</dd>
                 </div>
                 <div>
                   <dt className="text-zinc-500">{t('Status.commit')}</dt>
-                  <dd className="mt-1 font-mono text-zinc-300">{buildInfo.commit}</dd>
+                  <dd className="mt-1 font-sans text-zinc-300">{buildInfo.commit}</dd>
                 </div>
                 <div>
                   <dt className="text-zinc-500">{t('Status.branch')}</dt>
-                  <dd className="mt-1 font-mono text-zinc-300">{buildInfo.branch}</dd>
+                  <dd className="mt-1 font-sans text-zinc-300">{buildInfo.branch}</dd>
                 </div>
                 <div>
                   <dt className="text-zinc-500">{t('Status.gitTag')}</dt>
-                  <dd className="mt-1 font-mono text-zinc-300">{buildInfo.tag || '—'}</dd>
+                  <dd className="mt-1 font-sans text-zinc-300">{buildInfo.tag || '未提供'}</dd>
                 </div>
                 <div>
                   <dt className="text-zinc-500">{t('Status.imageTag')}</dt>
-                  <dd className="mt-1 font-mono text-zinc-300">{buildInfo.image_tag}</dd>
+                  <dd className="mt-1 font-sans text-zinc-300">{buildInfo.image_tag}</dd>
                 </div>
                 <div>
                   <dt className="text-zinc-500">{t('Status.cloudRunService')}</dt>
-                  <dd className="mt-1 font-mono text-zinc-300">{buildInfo.service}</dd>
+                  <dd className="mt-1 font-sans text-zinc-300">{buildInfo.service}</dd>
                 </div>
                 <div>
                   <dt className="text-zinc-500">{t('Status.cloudRunRevision')}</dt>
-                  <dd className="mt-1 font-mono text-zinc-300">{buildInfo.revision}</dd>
+                  <dd className="mt-1 font-sans text-zinc-300">{buildInfo.revision}</dd>
                 </div>
               </>
             ) : null}
@@ -468,7 +468,7 @@ function PipelineLogPanel({
         <p className="mt-4 text-sm text-zinc-500" role="status" aria-live="polite">{t('Status.emptyPipelineLog')}</p>
       ) : null}
       {logState.text ? (
-        <pre className="mt-4 max-h-96 overflow-x-auto overflow-y-auto rounded-md border border-white/10 bg-black/60 p-4 font-mono text-xs leading-5 text-zinc-300">
+        <pre className="mt-4 max-h-96 overflow-x-auto overflow-y-auto rounded-md border border-white/10 bg-black/60 p-4 font-sans text-xs leading-5 text-zinc-300">
           {visibleLog}
         </pre>
       ) : null}
@@ -478,10 +478,10 @@ function PipelineLogPanel({
 
 function Metric({ label, value }: { label: string; value: number }) {
   return (
-    <Surface variant="glass" className="p-6">
+    <div className="p-5">
       <div className="text-sm text-zinc-500">{label}</div>
-      <div className="mt-2 text-4xl font-semibold tabular-nums text-white">{value}</div>
-    </Surface>
+      <div className="mt-2 text-2xl font-semibold tabular-nums text-white">{value}</div>
+    </div>
   );
 }
 
@@ -534,7 +534,7 @@ function PipelineTimeline({ execution }: { execution?: PipelineExecution | null 
               return (
                 <li
                   key={step}
-                  className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-sm capitalize ${
+                  className={`flex items-center gap-2 rounded border px-3 py-2 text-sm capitalize ${
                     done
                       ? 'border-emerald-400/30 bg-emerald-400/10 text-emerald-200'
                       : active
@@ -560,13 +560,13 @@ function PipelineTimeline({ execution }: { execution?: PipelineExecution | null 
           {isFailed ? (
             <dl className="mt-5 grid gap-3 text-xs text-zinc-500 sm:grid-cols-2">
               <div>
-                <dt className="uppercase tracking-wider">{t('Pipeline.failureReasonLabel')}</dt>
+                <dt className="">{t('Pipeline.failureReasonLabel')}</dt>
                 <dd className="mt-1 text-zinc-300">
                   {failureReason || t('Pipeline.failureReasonUnavailable')}
                 </dd>
               </div>
               <div>
-                <dt className="uppercase tracking-wider">{t('Pipeline.quotaSettlementLabel')}</dt>
+                <dt className="">{t('Pipeline.quotaSettlementLabel')}</dt>
                 <dd className="mt-1 text-zinc-300">
                   {execution.quota_settlement === 'refunded'
                     ? t('Pipeline.quotaRefunded')
@@ -580,32 +580,32 @@ function PipelineTimeline({ execution }: { execution?: PipelineExecution | null 
                 </dd>
               </div>
               <div>
-                <dt className="uppercase tracking-wider">{t('Status.failedStage')}</dt>
+                <dt className="">{t('Status.failedStage')}</dt>
                 <dd className="mt-1 text-zinc-300">
                   {stageLabel === 'stage unavailable' ? t('Status.failedStageUnavailable') : localizedStageLabel}
                 </dd>
               </div>
               {execution.diagnostic?.error_class ? (
                 <div>
-                  <dt className="uppercase tracking-wider">{t('Status.errorClass')}</dt>
+                  <dt className="">{t('Status.errorClass')}</dt>
                   <dd className="mt-1 text-zinc-300">{execution.diagnostic.error_class}</dd>
                 </div>
               ) : null}
               {execution.diagnostic?.detail_code ? (
                 <div>
-                  <dt className="uppercase tracking-wider">{t('Status.detailCode')}</dt>
+                  <dt className="">{t('Status.detailCode')}</dt>
                   <dd className="mt-1 text-zinc-300">{execution.diagnostic.detail_code}</dd>
                 </div>
               ) : null}
               {execution.diagnostic?.child_command ? (
                 <div>
-                  <dt className="uppercase tracking-wider">{t('Status.childCommand')}</dt>
-                  <dd className="mt-1 break-words font-mono text-zinc-300">{execution.diagnostic.child_command}</dd>
+                  <dt className="">{t('Status.childCommand')}</dt>
+                  <dd className="mt-1 break-words font-sans text-zinc-300">{execution.diagnostic.child_command}</dd>
                 </div>
               ) : null}
               {execution.diagnostic?.exit_code != null ? (
                 <div>
-                  <dt className="uppercase tracking-wider">{t('Status.exitCode')}</dt>
+                  <dt className="">{t('Status.exitCode')}</dt>
                   <dd className="mt-1 text-zinc-300">{String(execution.diagnostic.exit_code)}</dd>
                 </div>
               ) : null}
@@ -615,19 +615,19 @@ function PipelineTimeline({ execution }: { execution?: PipelineExecution | null 
           <dl className="mt-5 grid gap-3 text-xs text-zinc-500 sm:grid-cols-3">
             {execution.started_at ? (
               <div>
-                <dt className="uppercase tracking-wider">{t('Status.started')}</dt>
+                <dt className="">{t('Status.started')}</dt>
                 <dd className="mt-1 text-zinc-300">{String(execution.started_at)}</dd>
               </div>
             ) : null}
             {execution.finished_at ? (
               <div>
-                <dt className="uppercase tracking-wider">{t('Status.finished')}</dt>
+                <dt className="">{t('Status.finished')}</dt>
                 <dd className="mt-1 text-zinc-300">{String(execution.finished_at)}</dd>
               </div>
             ) : null}
             {execution.duration != null ? (
               <div>
-                <dt className="uppercase tracking-wider">{t('Status.duration')}</dt>
+                <dt className="">{t('Status.duration')}</dt>
                 <dd className="mt-1 text-zinc-300">{String(execution.duration)}</dd>
               </div>
             ) : null}

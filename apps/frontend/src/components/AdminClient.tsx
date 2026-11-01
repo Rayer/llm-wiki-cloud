@@ -404,7 +404,7 @@ export function AdminClient() {
         <button
           type="button"
           onClick={() => void refreshActive()}
-          className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 text-sm font-medium text-zinc-200 transition hover:bg-white/10"
+          className="inline-flex min-h-11 items-center gap-2 rounded border border-white/10 bg-white/5 px-3 text-sm font-medium text-zinc-200 transition hover:bg-white/10"
         >
           <RefreshCw className="size-4" aria-hidden="true" />
           {t('Admin.refresh')}
@@ -674,7 +674,7 @@ function SettingsPanel({
             <p className="mt-1 text-sm text-zinc-400">{pipelineAutomationDescription}</p>
             {pipelineAutomation ? (
               <>
-                <label className="mt-4 flex max-w-xl items-center justify-between gap-4 rounded-lg border border-white/10 bg-black/20 px-4 py-3">
+                <label className="mt-4 flex max-w-xl items-center justify-between gap-4 rounded border border-white/10 bg-black/20 px-4 py-3">
                   <span className="text-sm font-medium text-zinc-200">{pipelineAutomationLabel}</span>
                   <input
                     type="checkbox"
@@ -700,12 +700,12 @@ function SettingsPanel({
               onChange={(event) => onAnnouncementChange(event.target.value)}
               disabled={pending}
               rows={8}
-              className="mt-3 w-full rounded-lg border border-white/10 bg-black/30 p-3 font-mono text-sm text-zinc-100 outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400 focus:border-emerald-300"
+              className="mt-3 w-full rounded border border-white/10 bg-black/30 p-3 font-mono text-sm text-zinc-100 outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400 focus:border-emerald-300"
             />
             <div className="mt-3 flex flex-wrap gap-3">
-              <button type="button" disabled={pending || !announcementDirty} onClick={onPublishAnnouncement} className="rounded-lg border border-emerald-300/30 px-4 py-2 text-sm font-semibold text-emerald-200 disabled:opacity-50">{t('Admin.publish')}</button>
+              <button type="button" disabled={pending || !announcementDirty} onClick={onPublishAnnouncement} className="rounded border border-emerald-300/30 px-4 py-2 text-sm font-semibold text-emerald-200 disabled:opacity-50">{t('Admin.publish')}</button>
             </div>
-            <h3 className="mt-5 text-sm font-semibold uppercase tracking-wide text-zinc-400">{t('Admin.preview')}</h3>
+            <h3 className="mt-5 text-sm font-semibold text-zinc-400">{t('Admin.preview')}</h3>
             <AnnouncementBoard markdown={announcementMarkdown} />
           </div> : null}
         </div>
@@ -737,7 +737,7 @@ function TabButton({
 }
 
 function adminOwnerPrimary(project: AdminProject): string {
-  return project.userName || project.userEmail || project.userId || '—';
+  return project.userName || project.userEmail || project.userId || '未提供';
 }
 
 function adminOwnerSecondary(project: AdminProject, primary: string): string | undefined {
@@ -752,7 +752,7 @@ function adminOwnerSecondary(project: AdminProject, primary: string): string | u
 }
 
 function adminUserPrimary(user: AdminUser): string {
-  return user.name || user.email || user.id || '—';
+  return user.name || user.email || user.id || '未提供';
 }
 
 function IdentityCell({ primary, secondary }: { primary: string; secondary?: string }) {
@@ -760,7 +760,7 @@ function IdentityCell({ primary, secondary }: { primary: string; secondary?: str
     <div className="min-w-0">
       <div className="truncate font-medium text-white">{primary}</div>
       {secondary ? (
-        <div className="mt-0.5 truncate font-mono text-xs text-zinc-500" title={secondary}>
+        <div className="mt-0.5 truncate font-sans text-xs text-zinc-500" title={secondary}>
           {secondary}
         </div>
       ) : null}
@@ -795,7 +795,7 @@ function ProjectsTable({
       />
       <div className="overflow-x-auto">
         <table className="w-full min-w-[900px] text-left text-sm">
-          <thead className="border-b border-white/10 text-xs uppercase text-zinc-500">
+          <thead className="border-b border-white/10 text-xs text-zinc-500">
             <tr>
               <th className="px-4 py-3 font-medium">{t('Admin.project')}</th>
               <th className="px-4 py-3 font-medium">{t('Admin.projectId')}</th>
@@ -813,8 +813,8 @@ function ProjectsTable({
                   <td className="px-4 py-3">
                     <IdentityCell primary={project.name} />
                   </td>
-                  <td className="px-4 py-3 font-mono text-xs text-zinc-400" title={project.projectId || project.id}>
-                    {project.projectId || '—'}
+                  <td className="px-4 py-3 font-sans text-xs text-zinc-400" title={project.projectId || project.id}>
+                    {project.projectId || '未提供'}
                   </td>
                   <td className="px-4 py-3">
                     <IdentityCell
@@ -909,7 +909,7 @@ function UsersTable({
       />
       <div className="overflow-x-auto">
         <table className="w-full min-w-[900px] text-left text-sm">
-          <thead className="border-b border-white/10 text-xs uppercase text-zinc-500">
+          <thead className="border-b border-white/10 text-xs text-zinc-500">
             <tr>
               <th className="px-4 py-3 font-medium">{t('Admin.user')}</th>
               <th className="px-4 py-3 font-medium">{t('Admin.userId')}</th>
@@ -929,8 +929,8 @@ function UsersTable({
                   <td className="px-4 py-3">
                     <IdentityCell primary={primary} secondary={secondary} />
                   </td>
-                  <td className="px-4 py-3 font-mono text-xs text-zinc-400" title={user.id}>
-                    {user.id || '—'}
+                  <td className="px-4 py-3 font-sans text-xs text-zinc-400" title={user.id}>
+                    {user.id || '未提供'}
                   </td>
                   <td className="px-4 py-3">
                     {unknown ? t('Admin.unknown') : <div className="flex flex-wrap gap-1">
@@ -1057,12 +1057,12 @@ function ModalFrame({
 }) {
   const { t } = useLocale();
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4 backdrop-blur-sm">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
       <div
         role="dialog"
         aria-modal="true"
         aria-label={title}
-        className="w-full max-w-md rounded-lg border border-white/10 bg-zinc-950 p-5 shadow-2xl"
+        className="w-full max-w-md rounded border border-white/10 bg-zinc-950 p-5"
       >
         <h2 className="text-lg font-semibold text-white">{title}</h2>
         {children}
@@ -1096,7 +1096,7 @@ function RenameProjectModal({
         <input
           value={name}
           onChange={(event) => setName(event.target.value)}
-          className="mt-2 min-h-11 w-full rounded-lg border border-white/10 bg-black/30 px-3 text-sm text-white outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400 focus:border-emerald-400"
+          className="mt-2 min-h-11 w-full rounded border border-white/10 bg-black/30 px-3 text-sm text-white outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400 focus:border-emerald-400"
         />
       </label>
       {error ? <p className="mt-3 text-sm text-amber-300">{error}</p> : null}
@@ -1139,7 +1139,7 @@ function ScopeActionModal({
       <select
         value={scope}
         onChange={(event) => setScope(event.target.value as 'auth:admin' | 'lwc:admin')}
-        className="mt-4 min-h-11 w-full rounded-lg border border-white/10 bg-black/30 px-3 text-sm text-white outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400 focus:border-emerald-400"
+        className="mt-4 min-h-11 w-full rounded border border-white/10 bg-black/30 px-3 text-sm text-white outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400 focus:border-emerald-400"
       >
         {scopes.map((entry) => <option key={entry.id} value={entry.id}>{entry.display_name[locale === 'zh-TW' ? 'zh-TW' : 'en'] || entry.id}</option>)}
       </select>
@@ -1188,7 +1188,7 @@ function ConfirmActionModal({
     <ModalFrame title={title} onClose={onClose}>
       <p className="mt-3 text-sm leading-6 text-zinc-400">{description}</p>
       {checkboxLabel && onCheckboxChange ? (
-        <label className="mt-4 flex cursor-pointer items-start gap-3 rounded-lg border border-white/10 bg-white/[0.03] p-3 text-sm text-zinc-300">
+        <label className="mt-4 flex cursor-pointer items-start gap-3 rounded border border-white/10 bg-white/[0.03] p-3 text-sm text-zinc-300">
           <input
             type="checkbox"
             className="mt-0.5 size-4 shrink-0 rounded border-white/20 bg-transparent"
@@ -1236,7 +1236,7 @@ function ModalActions({
         type="button"
         disabled={pending}
         onClick={onClose}
-        className="min-h-11 rounded-lg border border-white/10 px-4 text-sm text-zinc-300 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-60"
+        className="min-h-11 rounded border border-white/10 px-4 text-sm text-zinc-300 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-60"
       >
         {t('Shell.cancel')}
       </button>
@@ -1244,7 +1244,7 @@ function ModalActions({
         type="button"
         disabled={pending || disabled}
         onClick={onSubmit}
-        className={`min-h-11 rounded-lg px-4 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60 ${
+        className={`min-h-11 rounded px-4 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60 ${
           danger
             ? 'bg-red-400 text-zinc-950 hover:bg-red-300'
             : 'bg-emerald-400 text-zinc-950 hover:bg-emerald-300'

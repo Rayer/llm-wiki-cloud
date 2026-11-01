@@ -9,12 +9,12 @@ test('list client cache is scoped to the current project', async () => {
   );
 
   assert.match(listClient, /import \{ useWorkspace \} from '\.\/WorkspaceProvider';/);
-  assert.match(listClient, /const \{\s*currentProject\s*,\s*token\s*\} = useWorkspace\(\);/s);
-  assert.match(listClient, /const identityKey = JSON\.stringify\(\[currentProject\?\.id \?\? 'no-project', token, props\.basePath\]\);/);
+  assert.match(listClient, /const \{\s*currentProject\s*,\s*token\s*,\s*sessionEpoch\s*\} = useWorkspace\(\);/s);
+  assert.match(listClient, /const identityKey = JSON\.stringify\(\[currentProject\?\.id \?\? 'no-project', token, sessionEpoch, props\.basePath\]\);/);
   assert.match(listClient, /<ListClientSession key=\{identityKey\}/);
   assert.match(
     listClient,
-    /const cacheKey = `\$\{currentProject\?\.id \?\? 'no-project'\}:\$\{basePath\}`;/,
+    /const cacheKey = JSON\.stringify\(\[currentProject\?\.id \?\? 'no-project', token, sessionEpoch, basePath\]\);/,
   );
   assert.match(listClient, /clientCache\.get\(cacheKey\)/);
   assert.match(listClient, /clientCache\.has\(cacheKey\)/);

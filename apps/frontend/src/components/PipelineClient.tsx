@@ -1,7 +1,7 @@
 'use client';
 
 import { FormEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Link2, Cog, Loader2 } from 'lucide-react';
+import { Link2, Cog, Loader2, Check, X } from 'lucide-react';
 import { Surface } from './ui/Surface';
 import { Badge } from './ui/Badge';
 import { ExportPanel } from './ExportPanel';
@@ -874,7 +874,7 @@ export function PipelineClient() {
                 type="url"
                 value={scrapeUrlText}
                 onChange={(e) => setScrapeUrlText(e.target.value)}
-                placeholder="https://example.com/article"
+                placeholder={/* taste-skill-ignore: a valid input example, not fabricated product data. */ "https://example.com/article"}
                 className="flex-1 rounded-md border border-white/10 bg-black/30 px-3 py-2 text-sm text-white outline-none transition placeholder:text-zinc-400 focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
               />
               <button
@@ -918,7 +918,7 @@ export function PipelineClient() {
               ) : null}
               <details className="pt-1 text-zinc-500">
                 <summary className="w-fit cursor-pointer">{t('Pipeline.automationDiagnostics')}</summary>
-                <div className="mt-1 space-y-1 break-all font-mono">
+                <div className="mt-1 space-y-1 break-all font-sans">
                   <p>{pipelineAutomation.pipeline_status || 'idle'} · {t('Pipeline.automationSourceRevision')}: {pipelineAutomation.source_revision} · {t('Pipeline.automationProcessedRevision')}: {pipelineAutomation.processed_revision}</p>
                   {pipelineAutomation.failure_stage || pipelineAutomation.failure_code ? <p data-testid="pipeline-automation-failure">{[pipelineAutomation.failure_stage, pipelineAutomation.failure_code].filter(Boolean).join(' · ')}</p> : null}
                 </div>
@@ -980,7 +980,7 @@ export function PipelineClient() {
               <p>{t('Pipeline.scheduledDescription')}</p>
               <p>{t('Pipeline.scheduledProfileNote')}</p>
               <p>
-                {t('Pipeline.scheduledSchedule')}: <span className="font-mono">{pipelineStatus.scheduled_pipeline.schedule}</span> · {pipelineStatus.scheduled_pipeline.timezone}
+                {t('Pipeline.scheduledSchedule')}: <span className="font-sans">{pipelineStatus.scheduled_pipeline.schedule}</span> · {pipelineStatus.scheduled_pipeline.timezone}
                 {pipelineStatus.scheduled_pipeline.next_check_at ? ` · ${t('Pipeline.scheduledNextCheck')}: ${formatScheduledTime(pipelineStatus.scheduled_pipeline.next_check_at, pipelineStatus.scheduled_pipeline.timezone, locale)}` : ''}
               </p>
               {pipelineStatus.scheduled_pipeline.availability === 'available' ? (
@@ -1045,7 +1045,7 @@ export function PipelineClient() {
                     key={row.label}
                     className="flex items-center gap-2 text-xs text-zinc-400"
                   >
-                    <span aria-hidden="true">{row.ok ? '✓' : '✗'}</span>
+                    <span aria-hidden="true">{row.ok ? <Check className="size-3.5" /> : <X className="size-3.5" />}</span>
                     <span className={row.ok ? 'text-zinc-400' : 'text-amber-200/90'}>
                       {row.label}
                     </span>
@@ -1184,7 +1184,7 @@ export function PipelineClient() {
         {toasts.map((toast) => (
           <div
             key={toast.id}
-            className={`rounded-lg border px-4 py-2 text-sm shadow-lg backdrop-blur ${
+            className={`rounded border px-4 py-2 text-sm   ${
               toast.type === 'success'
                 ? 'border-emerald-300/30 bg-emerald-900/80 text-emerald-200'
                 : toast.type === 'error'

@@ -1,0 +1,17 @@
+[data-brand="lwc"] {
+  --brand-ground: #101112;
+  --brand-surface: #191B1C;
+  --brand-raised: #242728;
+  --brand-text: #F0F3F1;
+  --brand-muted: #A5AFAB;
+  --brand-accent: #9AC9B2;
+  --brand-action: #DCE9E1;
+  --brand-on-action: #17231D;
+  --brand-radius: 4px;
+  --brand-motion: 150ms;
+  --brand-space-unit: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-brand="lwc"] { --brand-motion: 0ms; }
+}

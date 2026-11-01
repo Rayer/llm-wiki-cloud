@@ -1017,7 +1017,7 @@
   },
   "Demo": {
     "heroSubtitle": "探索你的知識庫",
-    "heading": "你的過往知識，嵌入每一段對話",
+    "heading": "知識，從這裡接續。",
     "answer": "回答",
     "sourcesCount": "來源：{count}",
     "sources": "來源",
@@ -1043,7 +1043,8 @@
     "pipeline": "Pipeline",
     "runPipeline": "執行 Pipeline",
     "pipelineDesc": "Pipeline 會執行：",
-    "restricted": "Demo 模式不提供此功能"
+    "restricted": "Demo 模式不提供此功能",
+    "allConcepts": "所有條目"
   },
   "QueryResults": {
     "resultUnavailable": "已儲存的搜尋結果已無法使用。請重新搜尋以取得新結果。",
@@ -1119,7 +1120,26 @@
     "noSearchMatches": "找不到符合「{query}」的 {title}。",
     "noConcepts": "尚無條目。請先執行 Pipeline。",
     "noSources": "尚無來源。請先上傳內容並執行 Pipeline。",
-    "noEntries": "尚無條目。請先新增內容並執行 Pipeline。"
+    "noEntries": "尚無條目。請先新增內容並執行 Pipeline。",
+    "filterStatus": "篩選狀態",
+    "filterAnnotation": "篩選註記",
+    "filterDate": "篩選日期",
+    "orderBy": "排序方式",
+    "allStatuses": "所有狀態",
+    "allAnnotations": "所有註記",
+    "allDates": "所有日期",
+    "withDate": "有資料日期",
+    "withoutDate": "未提供日期",
+    "noStatus": "未提供狀態",
+    "titleAsc": "名稱：遞增",
+    "titleDesc": "名稱：遞減",
+    "slugOrder": "條目路徑",
+    "pathOrder": "來源路徑",
+    "dateDesc": "資料日期：新到舊",
+    "dateAsc": "資料日期：舊到新",
+    "resultCount": "{count} / {total} 筆",
+    "clearControls": "清除條件",
+    "noFilterMatches": "沒有符合條件的資料，請調整搜尋或篩選。"
   },
   "Status": {
     "title": "Pipeline Status",

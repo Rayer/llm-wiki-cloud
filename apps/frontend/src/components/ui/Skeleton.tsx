@@ -3,7 +3,7 @@ import { useT } from '@/lib/i18n';
 export function Skeleton({ className = '' }: { className?: string }) {
   return (
     <div
-      className={`animate-pulse rounded-md bg-white/8 ${className}`}
+      className={`rounded-md bg-white/8 ${className}`}
       aria-hidden="true"
     />
   );

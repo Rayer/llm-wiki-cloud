@@ -172,11 +172,11 @@ export function CommandPalette({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 p-4 pt-[15vh] backdrop-blur-sm animate-fade-in"
+      className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 p-4 pt-[15vh] animate-fade-in"
       onClick={handleClose}
     >
       <div
-        className="w-full max-w-lg overflow-hidden rounded-xl border border-white/10 bg-zinc-900/95 shadow-2xl backdrop-blur-xl animate-scale-in"
+        className="w-full max-w-lg overflow-hidden rounded border border-white/10 bg-zinc-900/95 animate-scale-in"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
@@ -195,7 +195,7 @@ export function CommandPalette({
             placeholder={labels.placeholder}
             className="flex-1 bg-transparent py-4 text-sm text-white outline-none placeholder:text-zinc-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
           />
-          <kbd className="hidden rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-[10px] text-zinc-500 sm:inline">
+          <kbd className="hidden rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-xs text-zinc-500 sm:inline">
             ESC
           </kbd>
         </div>
@@ -210,7 +210,7 @@ export function CommandPalette({
                 .filter(({ item }) => item.group === group);
               return (
                 <div key={group} className="mb-2">
-                  <p className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-600">
+                  <p className="px-3 py-1 text-xs font-semibold text-zinc-600">
                     {group}
                   </p>
                   {groupItems.map(({ item, index }) => (
@@ -222,7 +222,7 @@ export function CommandPalette({
                         item.action();
                         handleClose();
                       }}
-                      className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm transition ${
+                      className={`flex w-full items-center gap-3 rounded px-3 py-2.5 text-left text-sm transition ${
                         index === activeIndex
                           ? 'bg-emerald-500/15 text-emerald-100'
                           : 'text-zinc-300 hover:bg-white/8 hover:text-white'

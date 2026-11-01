@@ -135,9 +135,9 @@ export function AgentMcpTabs({
       : null;
     return (
       <div className="mt-4">
-        <pre className="overflow-x-auto rounded-lg border border-white/10 bg-black/30 p-4 text-xs leading-5 text-zinc-200"><code>{snippet || t('MCPOAuth.resourceUnavailable')}</code></pre>
+        <pre className="overflow-x-auto rounded border border-white/10 bg-black/30 p-4 text-xs leading-5 text-zinc-200"><code>{snippet || t('MCPOAuth.resourceUnavailable')}</code></pre>
         <div className="mt-3 flex flex-wrap items-center gap-3">
-          <button type="button" disabled={!snippet} onClick={() => void copySnippet(target, snippet)} className="min-h-11 rounded-lg bg-emerald-300 px-4 py-2 text-sm font-semibold text-black hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-50">{feedback === 'copied' ? t('MCPOAuth.copied') : t(buttonKey)}</button>
+          <button type="button" disabled={!snippet} onClick={() => void copySnippet(target, snippet)} className="min-h-11 rounded bg-emerald-300 px-4 py-2 text-sm font-semibold text-black hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-50">{feedback === 'copied' ? t('MCPOAuth.copied') : t(buttonKey)}</button>
           <span role="status" className="text-sm text-zinc-400">{feedback === 'error' ? t('MCPOAuth.copyFailed') : ''}</span>
         </div>
       </div>
@@ -151,12 +151,12 @@ export function AgentMcpTabs({
   };
 
   const renderTechnicalDetails = (scope: string) => (
-    <details className="mt-4 rounded-lg border border-white/8 bg-black/15 px-4 py-3">
+    <details className="mt-4 rounded border border-white/8 bg-black/15 px-4 py-3">
       <summary className="cursor-pointer text-sm text-zinc-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300">{t('MCPOAuth.technicalDetails')}</summary>
       <dl className="mt-3 grid gap-3 text-sm sm:grid-cols-2">
         <div><dt className="text-xs text-zinc-500">{t('MCPOAuth.environment')}</dt><dd className="mt-1 text-zinc-200">{environmentLabel}</dd></div>
-        <div><dt className="text-xs text-zinc-500">{t('MCPOAuth.scope')}</dt><dd className="mt-1 font-mono text-emerald-200">{scope}</dd></div>
-        <div className="sm:col-span-2"><dt className="text-xs text-zinc-500">{t('MCPOAuth.resource')}</dt><dd className="mt-1 break-all font-mono text-xs leading-5 text-zinc-300">{isUsableMCPResourceURL(resourceURL) ? resourceURL : t('MCPOAuth.resourceUnavailable')}</dd></div>
+        <div><dt className="text-xs text-zinc-500">{t('MCPOAuth.scope')}</dt><dd className="mt-1 font-sans text-emerald-200">{scope}</dd></div>
+        <div className="sm:col-span-2"><dt className="text-xs text-zinc-500">{t('MCPOAuth.resource')}</dt><dd className="mt-1 break-all font-sans text-xs leading-5 text-zinc-300">{isUsableMCPResourceURL(resourceURL) ? resourceURL : t('MCPOAuth.resourceUnavailable')}</dd></div>
       </dl>
     </details>
   );
@@ -176,17 +176,16 @@ export function AgentMcpTabs({
   );
 
   return (
-    <section className="overflow-hidden rounded-2xl border border-white/10 bg-[#151515]" aria-labelledby="mcp-oauth-setup-title">
+    <section className="overflow-hidden rounded border border-white/10 bg-[#151515]" aria-labelledby="mcp-oauth-setup-title">
       <div className="p-5 pb-0 sm:p-6 sm:pb-0">
-        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-300">{t('MCPOAuth.setupEyebrow')}</p>
         <h2 id="mcp-oauth-setup-title" className="mt-2 text-lg font-semibold text-white">{t('MCPOAuth.setupTitle')}</h2>
         <p className="mt-2 text-sm leading-6 text-zinc-400">{t('MCPOAuth.setupIntro')}</p>
-        <details className="mt-4 rounded-xl border border-white/10 bg-black/20 p-4">
+        <details className="mt-4 rounded border border-white/10 bg-black/20 p-4">
           <summary className="cursor-pointer font-semibold text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300">{t('MCPOAuth.sharedInstructionsTitle')}</summary>
           <div className="mt-3">
             <p className="whitespace-pre-wrap text-sm leading-6 text-zinc-300">{sharedInstructions}</p>
             <div className="mt-3 flex flex-wrap items-center gap-3">
-              <button type="button" onClick={() => void copySharedInstructions(sharedInstructions)} className="min-h-10 rounded-lg border border-white/10 px-3 text-sm text-zinc-200 hover:bg-white/5">{sharedCopyFeedback === 'copied' ? t('MCPOAuth.sharedInstructionsCopied') : t('MCPOAuth.copySharedInstructions')}</button>
+              <button type="button" onClick={() => void copySharedInstructions(sharedInstructions)} className="min-h-10 rounded border border-white/10 px-3 text-sm text-zinc-200 hover:bg-white/5">{sharedCopyFeedback === 'copied' ? t('MCPOAuth.sharedInstructionsCopied') : t('MCPOAuth.copySharedInstructions')}</button>
               <span role="status" className="text-sm text-zinc-400">{sharedCopyFeedback === 'error' ? t('MCPOAuth.sharedInstructionsCopyFailed') : ''}</span>
             </div>
           </div>
@@ -245,14 +244,14 @@ export function AgentMcpTabs({
                 <span className="rounded-md border border-amber-300/20 bg-amber-300/5 px-2.5 py-1 text-xs text-amber-100">{t('MCPOAuth.productNotVerified')}</span>
               </div>
               <p className="mt-3 text-sm leading-6 text-zinc-300">{t('MCPOAuth.panel.grok.body')}</p>
-              <section className="mt-5 rounded-xl border border-white/10 bg-black/15 p-4 sm:p-5" aria-labelledby="grok-cli-guide-title">
+              <section className="mt-5 rounded border border-white/10 bg-black/15 p-4 sm:p-5" aria-labelledby="grok-cli-guide-title">
                 <h4 id="grok-cli-guide-title" className="font-semibold text-white">{t('MCPOAuth.panel.grok.cliTitle')}</h4>
                 <p className="mt-2 text-sm leading-6 text-zinc-300">{t('MCPOAuth.panel.grok.cliBody')}</p>
                 {renderCopyBlock('grok-cli', 'MCPOAuth.copySetup')}
                 <p className="mt-3 text-xs leading-5 text-amber-100">{t('MCPOAuth.panel.grok.cliEvidence')}</p>
                 {renderSource('grok-cli')}
               </section>
-              <section className="mt-4 rounded-xl border border-white/10 bg-black/15 p-4 sm:p-5" aria-labelledby="grok-bot-guide-title">
+              <section className="mt-4 rounded border border-white/10 bg-black/15 p-4 sm:p-5" aria-labelledby="grok-bot-guide-title">
                 <h4 id="grok-bot-guide-title" className="font-semibold text-white">{t('MCPOAuth.panel.grok.botTitle')}</h4>
                 <p className="mt-2 text-sm leading-6 text-zinc-300">{t('MCPOAuth.panel.grok.botBody')}</p>
                 {renderCopyBlock('grok-bot', 'MCPOAuth.copyPrompt')}
@@ -264,7 +263,7 @@ export function AgentMcpTabs({
           ) : tool.id === 'codex' ? (
             <>
               {renderSingleGuide('codex', 'codex')}
-              <section className="mt-6 rounded-xl border border-white/10 bg-black/15 p-4 sm:p-5" aria-labelledby="openai-web-guide-title">
+              <section className="mt-6 rounded border border-white/10 bg-black/15 p-4 sm:p-5" aria-labelledby="openai-web-guide-title">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <h3 id="openai-web-guide-title" className="text-lg font-semibold text-white">{t('MCPOAuth.panel.openaiWeb.title')}</h3>
                   <span className="rounded-md border border-amber-300/20 bg-amber-300/5 px-2.5 py-1 text-xs text-amber-100">{t('MCPOAuth.productNotVerified')}</span>

@@ -13,9 +13,9 @@ export function ComingSoonModal({ open, onClose }: Props) {
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
       <div
-        className="w-full max-w-sm rounded-2xl border border-white/10 bg-[#151515] p-6 text-center shadow-2xl"
+        className="w-full max-w-sm rounded border border-white/10 bg-[#151515] p-6 text-center"
         role="dialog"
         aria-modal="true"
         aria-labelledby="coming-soon-title"
@@ -29,7 +29,7 @@ export function ComingSoonModal({ open, onClose }: Props) {
         <button
           type="button"
           onClick={onClose}
-          className="mt-6 w-full rounded-lg bg-emerald-300 px-4 py-3 font-semibold text-black transition hover:bg-emerald-200"
+          className="mt-6 w-full rounded bg-emerald-300 px-4 py-3 font-semibold text-black transition hover:bg-emerald-200"
         >
           {t('ComingSoon.ok')}
         </button>

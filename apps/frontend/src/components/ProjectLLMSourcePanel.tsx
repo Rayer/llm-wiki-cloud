@@ -89,7 +89,7 @@ export function ProjectLLMSourcePanel({ projectId, projectName, ownerId, session
   }
 
   return (
-    <section className="mt-5 rounded-xl border border-white/10 bg-black/15 p-4" aria-labelledby={`llm-source-${projectId}`}>
+    <section className="mt-5 rounded border border-white/10 bg-black/15 p-4" aria-labelledby={`llm-source-${projectId}`}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           {projectName ? <p className="text-xs font-medium text-zinc-400">{t('LLMSource.projectName', { name: projectName })}</p> : null}

@@ -163,41 +163,40 @@ export function MCPOAuthConsentClient({ transactionId }: { transactionId: string
   };
 
   return (
-    <section className="mx-auto max-w-2xl rounded-2xl border border-white/10 bg-[#151515] p-5 shadow-2xl sm:p-8" aria-busy={loading || busy}>
+    <section className="mx-auto max-w-2xl rounded border border-white/10 bg-[#151515] p-5 sm:p-8" aria-busy={loading || busy}>
       {loading ? <p role="status" className="mt-6 text-sm text-zinc-400">{t('MCPOAuth.loading')}</p> : null}
       {visibleError ? (
-        <div className="mt-6 rounded-xl border border-amber-300/20 bg-amber-300/5 p-4">
+        <div className="mt-6 rounded border border-amber-300/20 bg-amber-300/5 p-4">
           <p role="alert" className="text-sm leading-6 text-amber-100">{visibleError}</p>
           <Link href="/advanced" className="mt-4 inline-flex min-h-11 items-center text-sm font-medium text-emerald-300 underline underline-offset-4">{t('MCPOAuth.backToAdvanced')}</Link>
         </div>
       ) : null}
       {visibleDetails ? (
         <>
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-300">{t('MCPOAuth.consentEyebrow')}</p>
-          <h1 className="mt-3 font-serif text-2xl font-medium text-[#eeeae4]">{t('MCPOAuth.consentTitle')}</h1>
+          <h1 className="mt-3 font-sans text-2xl font-medium text-[#F0F3F1]">{t('MCPOAuth.consentTitle')}</h1>
           <p className="mt-3 text-sm leading-6 text-zinc-400">{t('MCPOAuth.consentIntro')}</p>
-          <dl className="mt-6 grid gap-4 rounded-xl border border-white/8 bg-black/20 p-4 sm:grid-cols-2">
-            <div><dt className="text-xs uppercase tracking-wide text-zinc-500">{t('MCPOAuth.client')}</dt><dd className="mt-1 break-words text-sm font-medium text-white">{visibleDetails.client_name}</dd></div>
-            <div><dt className="text-xs uppercase tracking-wide text-zinc-500">{t('MCPOAuth.account')}</dt><dd className="mt-1 break-all text-sm font-medium text-white">{visibleDetails.account_email}</dd></div>
+          <dl className="mt-6 grid gap-4 rounded border border-white/8 bg-black/20 p-4 sm:grid-cols-2">
+            <div><dt className="text-xs text-zinc-500">{t('MCPOAuth.client')}</dt><dd className="mt-1 break-words text-sm font-medium text-white">{visibleDetails.client_name}</dd></div>
+            <div><dt className="text-xs text-zinc-500">{t('MCPOAuth.account')}</dt><dd className="mt-1 break-all text-sm font-medium text-white">{visibleDetails.account_email}</dd></div>
             {fixedResource ? (
-              <div><dt className="text-xs uppercase tracking-wide text-zinc-500">{t('MCPOAuth.resourceName')}</dt><dd className="mt-1 break-words text-sm font-medium text-white">{visibleDetails.resource_name}</dd></div>
+              <div><dt className="text-xs text-zinc-500">{t('MCPOAuth.resourceName')}</dt><dd className="mt-1 break-words text-sm font-medium text-white">{visibleDetails.resource_name}</dd></div>
             ) : (
-              <div><dt className="text-xs uppercase tracking-wide text-zinc-500">{t('MCPOAuth.project')}</dt><dd className="mt-1 break-words text-sm font-medium text-white">{visibleDetails.project_name}<span className="mt-1 block break-all font-mono text-xs text-zinc-500">{visibleDetails.project_id}</span></dd></div>
+              <div><dt className="text-xs text-zinc-500">{t('MCPOAuth.project')}</dt><dd className="mt-1 break-words text-sm font-medium text-white">{visibleDetails.project_name}<span className="mt-1 block break-all font-sans text-xs text-zinc-500">{visibleDetails.project_id}</span></dd></div>
             )}
-            <div><dt className="text-xs uppercase tracking-wide text-zinc-500">{t('MCPOAuth.scope')}</dt><dd className="mt-1 font-mono text-sm text-emerald-200">{visibleDetails.scope}</dd></div>
+            <div><dt className="text-xs text-zinc-500">{t('MCPOAuth.scope')}</dt><dd className="mt-1 font-sans text-sm text-emerald-200">{visibleDetails.scope}</dd></div>
             {visibleDetails.scope_details?.length ? visibleDetails.scope_details.map((scope) => (
-              <div key={scope.name} className="sm:col-span-2"><dt className="font-mono text-xs text-emerald-200">{scope.name}</dt><dd className="mt-1 text-sm leading-6 text-zinc-300">{scope.description}</dd></div>
+              <div key={scope.name} className="sm:col-span-2"><dt className="font-sans text-xs text-emerald-200">{scope.name}</dt><dd className="mt-1 text-sm leading-6 text-zinc-300">{scope.description}</dd></div>
             )) : legacyProjectScopeDescription ? <p className="sm:col-span-2 text-sm leading-6 text-zinc-300">{legacyProjectScopeDescription}</p> : null}
-            <div className="sm:col-span-2"><dt className="text-xs uppercase tracking-wide text-zinc-500">{t('MCPOAuth.resource')}</dt><dd className="mt-1 break-all font-mono text-xs leading-5 text-zinc-200">{visibleDetails.resource}</dd></div>
-            <div className="sm:col-span-2"><dt className="text-xs uppercase tracking-wide text-zinc-500">{t('MCPOAuth.expires')}</dt><dd className="mt-1 text-sm text-zinc-300">{new Date(visibleDetails.expires_at).toLocaleString(locale === 'zh-TW' ? 'zh-TW' : locale === 'zh-CN' ? 'zh-CN' : 'en-US')}</dd></div>
+            <div className="sm:col-span-2"><dt className="text-xs text-zinc-500">{t('MCPOAuth.resource')}</dt><dd className="mt-1 break-all font-sans text-xs leading-5 text-zinc-200">{visibleDetails.resource}</dd></div>
+            <div className="sm:col-span-2"><dt className="text-xs text-zinc-500">{t('MCPOAuth.expires')}</dt><dd className="mt-1 text-sm text-zinc-300">{new Date(visibleDetails.expires_at).toLocaleString(locale === 'zh-TW' ? 'zh-TW' : locale === 'zh-CN' ? 'zh-CN' : 'en-US')}</dd></div>
           </dl>
           <p className="mt-3 text-xs leading-5 text-zinc-500">{t('MCPOAuth.clientUnverified')}</p>
           {terminal ? (
             <Link href="/advanced" className="mt-6 inline-flex min-h-11 items-center text-sm font-medium text-emerald-300 underline underline-offset-4">{t('MCPOAuth.backToAdvanced')}</Link>
           ) : (
             <div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
-              <button type="button" disabled={busy || loading || terminal} onClick={() => void decide('deny')} className="min-h-11 rounded-lg border border-white/10 px-4 py-2.5 text-sm font-medium text-zinc-300 transition hover:bg-white/10 disabled:opacity-50">{busy ? t('MCPOAuth.processing') : t('MCPOAuth.deny')}</button>
-              <button type="button" disabled={busy || loading || terminal} onClick={() => void decide('allow')} className="min-h-11 rounded-lg bg-emerald-300 px-4 py-2.5 text-sm font-semibold text-black transition hover:bg-emerald-200 disabled:opacity-50">{busy ? t('MCPOAuth.processing') : t('MCPOAuth.allow')}</button>
+              <button type="button" disabled={busy || loading || terminal} onClick={() => void decide('deny')} className="min-h-11 rounded border border-white/10 px-4 py-2.5 text-sm font-medium text-zinc-300 transition hover:bg-white/10 disabled:opacity-50">{busy ? t('MCPOAuth.processing') : t('MCPOAuth.deny')}</button>
+              <button type="button" disabled={busy || loading || terminal} onClick={() => void decide('allow')} className="min-h-11 rounded bg-emerald-300 px-4 py-2.5 text-sm font-semibold text-black transition hover:bg-emerald-200 disabled:opacity-50">{busy ? t('MCPOAuth.processing') : t('MCPOAuth.allow')}</button>
             </div>
           )}
         </>

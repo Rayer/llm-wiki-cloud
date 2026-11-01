@@ -41,21 +41,20 @@ export function CLIPairingClient({ initialUserCode }: { initialUserCode: string 
 
   return (
     <div className="mx-auto flex min-h-[70vh] max-w-xl items-center px-4 py-10">
-      <section className="w-full rounded-2xl border border-white/10 bg-[#151515] p-6 shadow-2xl sm:p-8">
-        <p className="font-mono text-xs uppercase tracking-[0.2em] text-emerald-300">LLM Wiki Cloud</p>
+      <section className="w-full rounded border border-white/10 bg-[#151515] p-6 sm:p-8">
         <h1 className="mt-3 text-2xl font-semibold text-white">{t('CLIPairing.title')}</h1>
         <p className="mt-3 text-sm leading-6 text-zinc-300">{t('CLIPairing.description')}</p>
 
         {!accessToken || !user ? (
-          <p className="mt-6 rounded-lg border border-amber-300/20 bg-amber-300/5 p-4 text-sm text-amber-100">
+          <p className="mt-6 rounded border border-amber-300/20 bg-amber-300/5 p-4 text-sm text-amber-100">
             {t('CLIPairing.signInHint')}
           </p>
         ) : isDemoSession ? (
-          <p className="mt-6 rounded-lg border border-amber-300/20 bg-amber-300/5 p-4 text-sm text-amber-100">
+          <p className="mt-6 rounded border border-amber-300/20 bg-amber-300/5 p-4 text-sm text-amber-100">
             {t('CLIPairing.demoDisabled')}
           </p>
         ) : result ? (
-          <p role="status" className="mt-6 rounded-lg border border-emerald-300/20 bg-emerald-300/5 p-4 text-sm text-emerald-100">
+          <p role="status" className="mt-6 rounded border border-emerald-300/20 bg-emerald-300/5 p-4 text-sm text-emerald-100">
             {result === 'approved' ? t('CLIPairing.approved') : t('CLIPairing.denied')}
           </p>
         ) : (
@@ -70,7 +69,7 @@ export function CLIPairingClient({ initialUserCode }: { initialUserCode: string 
                 value={userCode}
                 onChange={(event) => setUserCode(event.target.value.toUpperCase())}
                 aria-describedby="cli-pairing-help"
-                className="mt-2 min-h-12 w-full rounded-lg border border-white/10 bg-black/30 px-4 py-3 font-mono text-lg tracking-[0.18em] text-white outline-none focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400"
+                className="mt-2 min-h-12 w-full rounded border border-white/10 bg-black/30 px-4 py-3 font-mono text-lg tracking-[0.18em] text-white outline-none focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400"
               />
             </label>
             <p id="cli-pairing-help" className="text-sm leading-6 text-zinc-400">
@@ -82,7 +81,7 @@ export function CLIPairingClient({ initialUserCode }: { initialUserCode: string 
                 type="button"
                 disabled={!codeIsValid || busy}
                 onClick={() => void decide('approve')}
-                className="min-h-11 rounded-lg bg-emerald-300 px-4 py-3 text-sm font-semibold text-black hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-50"
+                className="min-h-11 rounded bg-emerald-300 px-4 py-3 text-sm font-semibold text-black hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {busy ? t('CLIPairing.processing') : t('CLIPairing.approve')}
               </button>
@@ -90,7 +89,7 @@ export function CLIPairingClient({ initialUserCode }: { initialUserCode: string 
                 type="button"
                 disabled={!codeIsValid || busy}
                 onClick={() => void decide('deny')}
-                className="min-h-11 rounded-lg border border-white/15 px-4 py-3 text-sm font-medium text-zinc-200 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
+                className="min-h-11 rounded border border-white/15 px-4 py-3 text-sm font-medium text-zinc-200 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {t('CLIPairing.deny')}
               </button>

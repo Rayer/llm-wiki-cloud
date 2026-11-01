@@ -613,6 +613,13 @@
       "params": [
         "state"
       ]
+    },
+    "List.resultCount": {
+      "kind": "literal",
+      "params": [
+        "count",
+        "total"
+      ]
     }
   }
 }

@@ -46,7 +46,7 @@ export function ProjectSelect({
       <button
         type="button"
         onClick={() => setOpen((prev) => !prev)}
-        className="flex w-full items-center justify-between gap-2 rounded-lg border border-white/10 bg-zinc-900/60 px-3 py-2 text-left text-sm font-medium text-zinc-100 outline-none transition hover:bg-white/5 focus:border-emerald-400/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
+        className="flex w-full items-center justify-between gap-2 rounded border border-white/10 bg-zinc-900/60 px-3 py-2 text-left text-sm font-medium text-zinc-100 outline-none transition hover:bg-white/5 focus:border-emerald-400/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
         aria-haspopup="listbox"
         aria-expanded={open}
       >
@@ -57,7 +57,7 @@ export function ProjectSelect({
       {open ? (
         <ul
           role="listbox"
-          className="absolute left-0 right-0 z-20 mt-1 max-h-48 overflow-y-auto rounded-lg border border-white/10 bg-zinc-900/95 p-1 shadow-xl backdrop-blur-xl animate-scale-in"
+          className="absolute left-0 right-0 z-20 mt-1 max-h-48 overflow-y-auto rounded border border-white/10 bg-zinc-900/95 p-1 animate-scale-in"
         >
           {projects.map((project) => (
             <li key={project.id} role="option" aria-selected={project.id === value}>

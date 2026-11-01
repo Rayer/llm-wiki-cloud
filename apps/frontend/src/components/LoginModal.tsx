@@ -1,5 +1,6 @@
 'use client';
 
+import Image from 'next/image';
 import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { getPublicConfig } from '@/lib/api';
 import { AnnouncementModal } from './AnnouncementModal';
@@ -137,32 +138,32 @@ export function LoginModal() {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-3 backdrop-blur-sm sm:p-6">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-3 sm:p-6">
       <div
-        className="grid max-h-[calc(100dvh-1.5rem)] w-full max-w-5xl overscroll-contain overflow-y-auto rounded-2xl border border-white/10 bg-[#121212] shadow-2xl shadow-black/50 sm:max-h-[calc(100dvh-3rem)] md:grid-cols-[minmax(0,1.15fr)_minmax(22rem,0.85fr)]"
+        className="grid max-h-[calc(100dvh-1.5rem)] w-full max-w-5xl overscroll-contain overflow-y-auto rounded border border-white/10 bg-[#121212] shadow-black/50 sm:max-h-[calc(100dvh-3rem)] md:grid-cols-[minmax(0,1.15fr)_minmax(22rem,0.85fr)]"
         role="dialog"
         aria-modal="true"
         inert={announcementOpen || undefined}
         aria-hidden={announcementOpen ? 'true' : undefined}
         aria-labelledby="login-title"
       >
-        <section aria-hidden="true" className="hidden min-h-[34rem] flex-col justify-end bg-[radial-gradient(circle_at_80%_0%,rgba(52,211,153,0.16),transparent_38%)] p-10 md:flex lg:p-14">
-          <div className="font-mono text-[11px] uppercase tracking-[0.22em] text-emerald-300/90">
-            {t('Login.brand')}
+        <section aria-hidden="true" className="hidden min-h-[28rem] flex-col justify-center bg-zinc-900 p-10 md:flex lg:p-14">
+          <div className="text-sm text-zinc-300">
+            <Image src="/brand/lwc/lockup-dark.svg" width={220} height={81} style={{ height: 'auto' }} alt="LLM Wiki Cloud" priority />
           </div>
-          <div className="mt-8 max-w-md border-l border-emerald-300/50 pl-5">
-            <p className="font-serif text-4xl font-medium leading-tight tracking-tight text-[#eeeae4] text-pretty lg:text-5xl">
-              {t('Login.subtitle')}
+          <div className="mt-8 max-w-md">
+            <p className="font-sans text-3xl font-medium leading-tight tracking-tight text-[#F0F3F1] text-pretty">
+              {t('Demo.heading')}
             </p>
           </div>
         </section>
 
         <div className="p-6 sm:p-9 lg:p-12">
           <LocaleControl />
-          <div className="font-mono text-[11px] uppercase tracking-[0.22em] text-emerald-300/90">
-            {t('Login.brand')}
+          <div className="text-sm text-zinc-300 md:hidden">
+            <Image src="/brand/lwc/lockup-dark.svg" width={220} height={81} style={{ height: 'auto' }} alt="LLM Wiki Cloud" priority />
           </div>
-          <h1 id="login-title" className="font-serif mt-3 text-3xl font-medium tracking-tight text-[#eeeae4]">
+          <h1 id="login-title" className="font-sans mt-3 text-3xl font-medium tracking-tight text-[#F0F3F1]">
             {t('Login.title')}
           </h1>
           <p className="mt-2 text-sm leading-6 text-zinc-400">
@@ -170,7 +171,7 @@ export function LoginModal() {
           </p>
 
           {announcementMarkdown?.trim() ? (
-            <button ref={announcementTriggerRef} type="button" onClick={openAnnouncement} className="mt-5 w-full rounded-lg border border-emerald-300/20 bg-emerald-300/5 px-4 py-3 text-left text-sm font-medium text-emerald-200 hover:bg-emerald-300/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400">
+            <button ref={announcementTriggerRef} type="button" onClick={openAnnouncement} className="mt-5 w-full rounded border border-emerald-300/20 bg-emerald-300/5 px-4 py-3 text-left text-sm font-medium text-emerald-200 hover:bg-emerald-300/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400">
               {t('Announcement.open')}
             </button>
           ) : null}
@@ -182,8 +183,8 @@ export function LoginModal() {
                 ref={emailRef} type="email" name="email" autoComplete="email" spellCheck={false} required
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
-                className="mt-2 w-full rounded-lg border border-white/10 bg-black/30 px-4 py-3 text-white outline-none transition placeholder:text-zinc-400 focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
-                placeholder="you@example.com"
+                className="mt-2 w-full rounded border border-white/10 bg-black/30 px-4 py-3 text-white outline-none transition placeholder:text-zinc-400 focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
+                placeholder={/* taste-skill-ignore: a valid input example, not fabricated product data. */ "you@example.com"}
               />
             </label>
             <label className="block text-sm font-medium text-zinc-300">
@@ -193,7 +194,7 @@ export function LoginModal() {
                   type={showPassword ? 'text' : 'password'} name="password" autoComplete="current-password" required
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
-                  className="w-full rounded-lg border border-white/10 bg-black/30 px-4 py-3 pr-24 text-white outline-none transition focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
+                  className="w-full rounded border border-white/10 bg-black/30 px-4 py-3 pr-24 text-white outline-none transition focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
                 />
                 <button
                   type="button"
@@ -207,32 +208,32 @@ export function LoginModal() {
               </span>
             </label>
             {error ? (
-              <p role="alert" className="rounded-lg border border-red-400/20 bg-red-400/10 px-3 py-2 text-sm text-red-200">
+              <p role="alert" className="rounded border border-red-400/20 bg-red-400/10 px-3 py-2 text-sm text-red-200">
                 {error}
               </p>
             ) : null}
             <button
               type="submit" disabled={loading}
-              className="w-full rounded-lg bg-emerald-300 px-4 py-3 font-semibold text-black transition hover:bg-emerald-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:opacity-60"
+              className="w-full rounded bg-emerald-300 px-4 py-3 font-semibold text-black transition hover:bg-emerald-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {loading ? t('Login.signingIn') : t('Login.signIn')}
             </button>
             <button
               type="button" onClick={handleGoogleLogin} disabled={loading}
-              className="w-full rounded-lg border border-white/10 bg-white/5 px-4 py-3 font-semibold text-white transition hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:opacity-60"
+              className="w-full rounded border border-white/10 bg-white/5 px-4 py-3 font-semibold text-white transition hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {t('Login.continueWithGoogle')}
             </button>
             {demoEnabled === true ? <button
               type="button" onClick={handleDemo}
-              className="w-full rounded-lg border border-emerald-400/20 bg-emerald-400/10 px-4 py-3 text-sm font-medium text-emerald-200 transition hover:bg-emerald-400/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
+              className="w-full rounded border border-emerald-400/20 bg-emerald-400/10 px-4 py-3 text-sm font-medium text-emerald-200 transition hover:bg-emerald-400/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
             >
               {t('Login.tryDemo')}
             </button> : null}
             {registrationEnabled === true ? (
               <button
                 type="button" onClick={() => setRegisterOpen(true)}
-                className="w-full rounded-lg border border-white/10 bg-transparent px-4 py-3 text-sm font-medium text-zinc-300 transition hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
+                className="w-full rounded border border-white/10 bg-transparent px-4 py-3 text-sm font-medium text-zinc-300 transition hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
               >
                 {t('Login.signUp')}
               </button>

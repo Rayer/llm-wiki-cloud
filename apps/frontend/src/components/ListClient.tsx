@@ -6,6 +6,8 @@ import { EmptyState, ErrorState, LoadingState, useErrorIdCopy } from './States';
 import { useWorkspace } from './WorkspaceProvider';
 import { ApiError, type WikiEntry } from '@/lib/api';
 import { useT } from '@/lib/i18n';
+import { selectEntries } from '@/lib/list-controls';
+import { ListToolbar } from './ListToolbar';
 
 // Client-side cache: avoids re-fetching on every navigation.
 // Cleared on page refresh; BFF remains stateless.
@@ -22,8 +24,8 @@ type ListClientProps = {
 };
 
 export function ListClient(props: ListClientProps) {
-  const { currentProject, token } = useWorkspace();
-  const identityKey = JSON.stringify([currentProject?.id ?? 'no-project', token, props.basePath]);
+  const { currentProject, token, sessionEpoch } = useWorkspace();
+  const identityKey = JSON.stringify([currentProject?.id ?? 'no-project', token, sessionEpoch, props.basePath]);
   return <ListClientSession key={identityKey} {...props} />;
 }
 
@@ -35,12 +37,15 @@ function ListClientSession({
   entryType,
 }: ListClientProps) {
   const { t } = useT();
-  const { currentProject } = useWorkspace();
-  const cacheKey = `${currentProject?.id ?? 'no-project'}:${basePath}`;
+  const { currentProject, token, sessionEpoch } = useWorkspace();
+  const cacheKey = JSON.stringify([currentProject?.id ?? 'no-project', token, sessionEpoch, basePath]);
   const [entries, setEntries] = useState<WikiEntry[]>(() => clientCache.get(cacheKey) ?? []);
   const [loading, setLoading] = useState(() => !clientCache.has(cacheKey));
   const [error, setError] = useState<ListError | null>(null);
   const [search, setSearch] = useState('');
+  const [status, setStatus] = useState('all');
+  const [dates, setDates] = useState('all');
+  const [order, setOrder] = useState('title');
   const { copyErrorId, errorIdCopied } = useErrorIdCopy(error, error?.requestId, error?.diagnosticId);
 
   useEffect(() => {
@@ -75,15 +80,8 @@ function ListClientSession({
     return () => { ignore = true; };
   }, [load, basePath, cacheKey]);
 
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return entries;
-    return entries.filter(
-      (e) =>
-        e.title.toLowerCase().includes(q) ||
-        e.slug.toLowerCase().includes(q)
-    );
-  }, [entries, search]);
+  const filtered = useMemo(() => selectEntries(entries, search, status, dates, order), [entries, search, status, dates, order]);
+  const active = Boolean(search.trim() || status !== 'all' || dates !== 'all' || order !== 'title');
 
   const emptyMessage = search.trim()
     ? t('List.noSearchMatches', { title: title.toLowerCase(), query: search.trim() })
@@ -100,25 +98,22 @@ function ListClientSession({
         <p className="mt-2 max-w-2xl text-zinc-400">{description}</p>
       </header>
 
-      <div className="flex items-center gap-3">
-        <input
-          type="text"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder={t('List.searchPlaceholder', { title: title.toLowerCase() })}
-          aria-label={t('List.searchPlaceholder', { title: title.toLowerCase() })}
-          className="flex-1 rounded-[var(--radius-lg)] border border-white/10 bg-zinc-900/50 px-4 py-2.5 text-sm text-white outline-none transition placeholder:text-zinc-400 focus:border-emerald-400/50 focus:ring-1 focus:ring-emerald-400/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
-        />
-        {search.trim() ? (
-          <span className="text-sm text-zinc-500 tabular-nums whitespace-nowrap">
-            {filtered.length} of {entries.length}
-          </span>
-        ) : (
-          <span className="text-sm text-zinc-600 tabular-nums whitespace-nowrap">
-            {entries.length}
-          </span>
-        )}
-      </div>
+      <ListToolbar search={search} onSearch={setSearch} searchLabel={t('List.searchPlaceholder', { title: title.toLowerCase() })}
+        count={filtered.length} total={entries.length} active={active}
+        onClear={() => { setSearch(''); setStatus('all'); setDates('all'); setOrder('title'); }}
+        filters={[
+          { label: t('List.filterStatus'), value: status, onChange: setStatus, options: [
+            { value: 'all', label: t('List.allStatuses') },
+            ...[...new Set(entries.map((entry) => entry.status ?? 'missing'))].sort().map((value) => ({ value, label: value === 'published' ? t('Entry.published') : value === 'draft' ? t('Entry.draft') : value === 'missing' ? t('List.noStatus') : value })),
+          ] },
+          { label: t('List.filterDate'), value: dates, onChange: setDates, options: [
+            { value: 'all', label: t('List.allDates') }, { value: 'dated', label: t('List.withDate') }, { value: 'undated', label: t('List.withoutDate') },
+          ] },
+        ]}
+        order={{ label: t('List.orderBy'), value: order, onChange: setOrder, options: [
+          { value: 'title', label: t('List.titleAsc') }, { value: 'title-desc', label: t('List.titleDesc') }, { value: 'slug', label: t('List.slugOrder') },
+          { value: 'date-desc', label: t('List.dateDesc') }, { value: 'date-asc', label: t('List.dateAsc') },
+        ] }} />
 
       {loading ? <LoadingState label={t('States.loadingWikiData')} /> : null}
       {error ? (
@@ -135,10 +130,10 @@ function ListClientSession({
         />
       ) : null}
       {!loading && !error && filtered.length === 0 ? (
-        <EmptyState message={emptyMessage} />
+        <EmptyState message={active ? t('List.noFilterMatches') : emptyMessage} />
       ) : null}
 
-      <div className="grid gap-4 md:grid-cols-2">
+      <div className="lwc-data-list grid gap-4 md:grid-cols-2">
         {filtered.map((entry, index) => (
           <EntryCard
             key={entry.slug}

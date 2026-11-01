@@ -20,7 +20,7 @@ export function RequestIDPanel() {
   };
 
   return (
-    <details className="mb-4 rounded-lg border border-white/10 bg-zinc-950/70 px-3 py-2 text-xs text-zinc-300">
+    <details className="mb-4 rounded border border-white/10 bg-zinc-950/70 px-3 py-2 text-xs text-zinc-300">
       <summary className="cursor-pointer select-none font-medium text-zinc-200">
         {t('Shell.requestIDs')} <span className="ml-1 text-zinc-500">({requests.length})</span>
       </summary>

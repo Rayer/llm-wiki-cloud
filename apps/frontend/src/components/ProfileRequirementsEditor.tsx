@@ -55,7 +55,7 @@ export function ProfileRequirementsEditor({
                   rows={2}
                   disabled={disabled}
                   placeholder={t('Profile.requirementPlaceholder')}
-                  className="mt-1.5 w-full resize-y rounded-lg border border-white/10 bg-black/30 px-3 py-2.5 text-sm leading-6 text-white outline-none transition placeholder:text-zinc-500 focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400 disabled:opacity-60"
+                  className="mt-1.5 w-full resize-y rounded border border-white/10 bg-black/30 px-3 py-2.5 text-sm leading-6 text-white outline-none transition placeholder:text-zinc-500 focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400 disabled:opacity-60"
                 />
               </label>
               {!placeholder ? (

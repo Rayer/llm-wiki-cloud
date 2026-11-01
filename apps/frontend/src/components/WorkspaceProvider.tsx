@@ -404,7 +404,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setCurrentProject(selected);
     setNavCounts(emptyNavCounts);
     // Concept/source/detail routes and home search query belong to the previous
-    // project — always land on a clean home after switching.
+    // project，always land on a clean home after switching.
     router.replace(destination ?? '/');
   }, [confirmNavigation, currentProject?.id, projects, router]);
 

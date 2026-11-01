@@ -56,13 +56,13 @@ export function ProjectRenameModal({ project, onSubmit, onClose, provisional = f
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4"
       onMouseDown={() => {
         if (!loading) onClose();
       }}
     >
       <div
-        className="w-full max-w-md rounded-2xl border border-white/10 bg-[#151515] p-6 shadow-2xl"
+        className="w-full max-w-md rounded border border-white/10 bg-[#151515] p-6"
         role="dialog"
         aria-modal="true"
         aria-labelledby="rename-project-title"
@@ -96,7 +96,7 @@ export function ProjectRenameModal({ project, onSubmit, onClose, provisional = f
                 if (hasServerError) setError('');
               }}
               placeholder={t('ProjectRename.projectName')}
-              className="mt-2 w-full rounded-lg border border-white/10 bg-black/30 px-4 py-3 text-white outline-none transition placeholder:text-zinc-400 focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
+              className="mt-2 w-full rounded border border-white/10 bg-black/30 px-4 py-3 text-white outline-none transition placeholder:text-zinc-400 focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
             />
           </label>
           {validationError || hasServerError ? (
@@ -107,14 +107,14 @@ export function ProjectRenameModal({ project, onSubmit, onClose, provisional = f
               type="button"
               onClick={() => onClose()}
               disabled={loading}
-              className="rounded-lg px-4 py-2.5 text-sm font-medium text-zinc-300 transition hover:bg-white/10 hover:text-white"
+              className="rounded px-4 py-2.5 text-sm font-medium text-zinc-300 transition hover:bg-white/10 hover:text-white"
             >
               {provisional ? t('ProjectRename.skip') : t('ProjectRename.cancel')}
             </button>
             <button
               type="submit"
               disabled={submitDisabled}
-              className="rounded-lg bg-emerald-300 px-4 py-2.5 text-sm font-semibold text-black transition hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-60"
+              className="rounded bg-emerald-300 px-4 py-2.5 text-sm font-semibold text-black transition hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {loading ? t('ProjectRename.renaming') : t('ProjectRename.rename')}
             </button>

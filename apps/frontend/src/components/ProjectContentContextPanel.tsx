@@ -33,7 +33,7 @@ export function ProjectContentContextPanel({ projectId }: { projectId: string })
 
   return (
     <section
-      className="rounded-xl border border-white/10 bg-black/15 p-4"
+      className="rounded border border-white/10 bg-black/15 p-4"
       aria-labelledby={`content-context-${projectId}`}
     >
       <h2 id={`content-context-${projectId}`} className="text-sm font-semibold text-white">
@@ -82,8 +82,8 @@ export function ProjectContentContextPanel({ projectId }: { projectId: string })
             </p>
           ) : null}
           {summary ? (
-            <div className="mt-3 rounded-lg border border-white/10 bg-zinc-950/40 p-3">
-              <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-400">
+            <div className="mt-3 rounded border border-white/10 bg-zinc-950/40 p-3">
+              <h3 className="text-xs font-semibold text-zinc-400">
                 {t('Profile.contentContext.savedSummary')}
               </h3>
               <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-zinc-200">{summary}</p>

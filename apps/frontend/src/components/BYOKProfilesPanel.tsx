@@ -245,11 +245,11 @@ export function BYOKProfilesPanel({ active = true, onProfileCreated }: { active?
       <p className="mt-1 text-sm leading-6 text-zinc-400">{t('BYOK.hint')}</p>
       {loading ? <p role="status" className="mt-3 text-sm text-zinc-400">{t('BYOK.loading')}</p> : null}
       {loadError ? <p role="alert" className="mt-3 text-sm text-red-200">{loadError} <button type="button" onClick={() => { setLoading(true); void load(); }} className="underline">{t('BYOK.retry')}</button></p> : null}
-      {!loading && !loadError && profiles.length === 0 ? <p className="mt-3 rounded-lg border border-white/10 bg-black/20 p-3 text-sm text-zinc-400">{t('BYOK.empty')}</p> : null}
+      {!loading && !loadError && profiles.length === 0 ? <p className="mt-3 rounded border border-white/10 bg-black/20 p-3 text-sm text-zinc-400">{t('BYOK.empty')}</p> : null}
       {profiles.length > 0 ? (
         <ul className="mt-3 space-y-2" aria-label={t('BYOK.title')}>
           {profiles.map((profile) => (
-            <li key={profile.id} className="flex flex-col gap-3 rounded-lg border border-white/10 bg-black/20 p-3 sm:flex-row sm:items-center sm:justify-between">
+            <li key={profile.id} className="flex flex-col gap-3 rounded border border-white/10 bg-black/20 p-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="min-w-0">
                 <p className="truncate text-sm font-medium text-white">{profile.name}</p>
                 <p className="mt-1 break-all text-xs text-zinc-400">{profile.provider} · {t('BYOK.fastModel')}: {profile.models?.fast ?? profile.model} · {t('BYOK.heavyModel')}: {profile.models?.heavy ?? profile.model} · {profile.secret_configured ? t('BYOK.secretSaved') : t('BYOK.noSecret')}</p>
@@ -262,7 +262,7 @@ export function BYOKProfilesPanel({ active = true, onProfileCreated }: { active?
           ))}
         </ul>
       ) : null}
-      <form onSubmit={(event) => void save(event)} className="mt-4 space-y-3 rounded-lg border border-white/10 bg-black/20 p-4">
+      <form onSubmit={(event) => void save(event)} className="mt-4 space-y-3 rounded border border-white/10 bg-black/20 p-4">
         <h4 className="text-sm font-semibold text-zinc-100">{editing ? t('BYOK.editTitle') : t('BYOK.addTitle')}</h4>
         <label className="block text-sm text-zinc-300">{t('BYOK.name')}
           <input required maxLength={100} value={name} onChange={(event) => setName(event.target.value)} className="mt-1 min-h-11 w-full rounded-md border border-white/10 bg-black/30 px-3 text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300" />
