@@ -6,10 +6,12 @@ const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname,'../artifacts.cjs'),'utf8');
-async function execute(op,arg,name,responses, directory, downloadedStates={}) {
+async function execute(op,arg,name,responses, directory, downloadedStates={}, environment) {
   const uploads=[];
   const errors=[];
-  const process={argv:['node','artifacts.cjs',op,arg,name],env:{GITHUB_REPOSITORY:'test/repo',GH_TOKEN:'TEST_ONLY'},exitCode:0};
+  const argv=['node','artifacts.cjs',op,arg,name];
+  if(environment !== undefined) argv.push(environment);
+  const process={argv,env:{GITHUB_REPOSITORY:'test/repo',GH_TOKEN:'TEST_ONLY'},exitCode:0};
   class Client {
     async uploadArtifact(...args) {uploads.push(args);}
     async downloadArtifact(id, options) {
@@ -20,7 +22,10 @@ async function execute(op,arg,name,responses, directory, downloadedStates={}) {
     }
   }
   const calls=[];
-  await vm.runInNewContext(source,{
+  // Reveal production's intentionally suppressed transport error in this offline fixture.
+  const testSource=source.replace("else console.error('artifact transport failed (details suppressed)')",
+    'else console.error(error.message)');
+  await vm.runInNewContext(testSource,{
     require:n=>n==='@actions/artifact'?{DefaultArtifactClient:Client}:require(n),
     process, AbortSignal,
     fetch:async(url)=>{
@@ -106,7 +111,7 @@ test('complete listing with no matching checkpoint is absence only after all pag
   const responses={};
   for(let i=0;i<5;i++)responses[listKey(i+1)]=page(records.slice(i*100,(i+1)*100),401);
   const result=await execute('latest','development','/unused-test-only-path',responses);
-  assert.equal(result.code,0);
+  assert.equal(result.code,0,result.errors.join('\n'));
   assert.equal(result.calls.length,5);
   assert.equal(result.calls.some(url=>url.includes('/actions/artifacts/')),false);
 });
@@ -154,4 +159,30 @@ test('untrusted checkpoint workflow fails closed',async()=>{
 test('explicit download rejects nonnumeric references before any network',async()=>{
   const result=await execute('download','../../bad','/unused-test-only-path',{});
   assert.equal(result.code,1);assert.equal(result.calls.length,0);
+});
+test('quota rejection evidence accepts only the exact retained DEV result artifact',async()=>{
+  const resultArtifact={id:313,name:'lwc-result-development-42-1',expired:false,workflow_run:{id:42}};
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'lwc-result-test-'));
+  try {
+    const result=await execute('download-result','313',dir,{
+      'actions/artifacts/313':resultArtifact,
+      'actions/runs/42':{event:'workflow_dispatch',path:'.github/workflows/recover-deployment.yml'},
+    },undefined,{},'development');
+    assert.equal(result.code,0,result.errors.join('\n'));
+    assert.ok(result.calls.includes('https://api.github.com/repos/test/repo/actions/runs/42'));
+  } finally {fs.rmSync(dir,{recursive:true,force:true});}
+});
+test('quota rejection evidence rejects checkpoint, wrong-run and production artifacts',async()=>{
+  const cases=[
+    {id:313,name:'lwc-state-development-a-42-1-7',workflow_run:{id:42}},
+    {id:313,name:'lwc-result-development-41-1',workflow_run:{id:42}},
+    {id:313,name:'lwc-result-production-42-1',workflow_run:{id:42}},
+  ];
+  for(const record of cases){
+    const result=await execute('download-result','313','/unused-test-only-path',{
+      'actions/artifacts/313':{...record,expired:false},
+    },undefined,{},'development');
+    assert.equal(result.code,1);
+    assert.equal(result.calls.length,1);
+  }
 });

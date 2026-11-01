@@ -55,6 +55,7 @@ _MAX_CAUSE_MESSAGE_LENGTH = 512
 _CAUSE_CODES = {value[1] for value in _CAUSE_TYPES.values()} | {
     'tool-unavailable', 'unclassified-input-error'}
 _MESSAGE_UNSET = object()
+_VERCEL_FREE_DAILY_DEPLOYMENT_CODE = 'api-deployments-free-per-day'
 
 
 def safe_error_message(value, *, sensitive_values=(), max_bytes=None):
@@ -132,6 +133,17 @@ def structured_cause(exc, stage='unknown', *, code=None, message=_MESSAGE_UNSET,
         'message_omitted': message is None,
     }
     return cause
+
+
+def is_frontend_quota_rejection(cause):
+    """Recognize only the retained Vercel CLI rejection code for a deploy call."""
+    return (isinstance(cause, dict) and
+            cause.get('exception_type') == 'ChildProcessError' and
+            cause.get('stage') == 'frontend-vercel-deploy' and
+            cause.get('code') == 'child-command-failed' and
+            isinstance(cause.get('message'), str) and
+            re.search(r'(?<![A-Za-z0-9_-])' + re.escape(_VERCEL_FREE_DAILY_DEPLOYMENT_CODE) +
+                      r'(?![A-Za-z0-9_-])', cause['message']) is not None)
 
 
 def latest_artifact_cause(stderr, sensitive_values=()):

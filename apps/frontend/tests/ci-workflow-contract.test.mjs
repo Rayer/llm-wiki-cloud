@@ -123,6 +123,7 @@ test('r2 registered release and recovery workflows use explicit artifact inputs'
     components: '${{ inputs.components }}', release_tag: '${{ inputs.release_tag }}',
     release_source_mode: '${{ inputs.release_source_mode }}',
     operation: '${{ inputs.operation }}', artifact_id: '${{ inputs.artifact_id }}',
+    rejection_artifact_id: '${{ inputs.rejection_artifact_id }}',
   });
   const diagnosticRecovery = recovery.jobs['auth-image-diagnostic'];
   assert.match(diagnosticRecovery.if, /inputs\.operation == 'diagnose-auth-image'/);
