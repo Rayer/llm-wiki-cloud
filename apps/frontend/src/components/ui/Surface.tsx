@@ -8,9 +8,9 @@ type SurfaceProps = HTMLAttributes<HTMLElement> & {
 };
 
 const variants = {
-  default: 'border border-white/10 bg-zinc-900/50',
-  glass: 'glass-card',
-  elevated: 'border border-white/10 bg-zinc-900/80 shadow-lg shadow-black/20',
+  default: 'lwc-surface',
+  glass: 'lwc-surface',
+  elevated: 'lwc-surface bg-zinc-800',
 };
 
 export function Surface({

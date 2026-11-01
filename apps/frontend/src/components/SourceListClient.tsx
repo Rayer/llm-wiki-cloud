@@ -13,6 +13,8 @@ import { rawFileNameFromSource } from '@/lib/raw-file-name';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { DocumentImportsPanel, documentImportPipelineStatusKey } from './DocumentImportsPanel';
 import { MarkdownView } from './MarkdownView';
+import { selectSources } from '@/lib/list-controls';
+import { ListToolbar } from './ListToolbar';
 
 const lifecycleVariant: Record<SourceListItem['lifecycle'], 'muted' | 'published' | 'draft'> = {
   new: 'muted',
@@ -48,6 +50,9 @@ function SourceListSession() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<SourceListError | null>(null);
   const [search, setSearch] = useState('');
+  const [lifecycleFilter, setLifecycleFilter] = useState('all');
+  const [annotationFilter, setAnnotationFilter] = useState('all');
+  const [order, setOrder] = useState('title');
   const [preview, setPreview] = useState<{ path: string; content: string } | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<PreviewError | null>(null);
@@ -161,12 +166,8 @@ function SourceListSession() {
     return () => window.removeEventListener('keydown', closeOnEscape);
   }, [closePreview, previewIsOpen]);
 
-  const filtered = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    return query
-      ? sources.filter((source) => [source.title, source.rawPath].some((value) => value.toLowerCase().includes(query)))
-      : sources;
-  }, [search, sources]);
+  const filtered = useMemo(() => selectSources(sources, search, lifecycleFilter, annotationFilter, order), [search, sources, lifecycleFilter, annotationFilter, order]);
+  const active = Boolean(search.trim() || lifecycleFilter !== 'all' || annotationFilter !== 'all' || order !== 'title');
 
   const documentImportsBySourcePath = useMemo(() => {
     const result = new Map<string, DocumentImportRecord>();
@@ -199,16 +200,22 @@ function SourceListSession() {
         <p className="mt-2 max-w-2xl text-zinc-400">{t('List.sourcesDescription')}</p>
       </header>
 
-      <input
-        type="search"
-        value={search}
-        onChange={(event) => setSearch(event.target.value)}
-        placeholder={t('List.searchPlaceholder', { title: t('List.sourcesTitle').toLowerCase() })}
-        aria-label={t('List.searchPlaceholder', { title: t('List.sourcesTitle').toLowerCase() })}
-        className="min-h-11 w-full rounded-[var(--radius-lg)] border border-white/10 bg-zinc-900/50 px-4 py-2.5 text-sm text-white outline-none transition placeholder:text-zinc-400 focus:border-emerald-400/50 focus:ring-1 focus:ring-emerald-400/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
-      />
+      <ListToolbar search={search} onSearch={setSearch} searchLabel={t('List.searchPlaceholder', { title: t('List.sourcesTitle').toLowerCase() })}
+        count={filtered.length} total={sources.length} active={active}
+        onClear={() => { setSearch(''); setLifecycleFilter('all'); setAnnotationFilter('all'); setOrder('title'); }}
+        filters={[
+          { label: t('List.filterStatus'), value: lifecycleFilter, onChange: setLifecycleFilter, options: [
+            { value: 'all', label: t('List.allStatuses') },
+            ...[...new Set(sources.map((source) => source.lifecycle))].sort().map((value) => ({ value, label: t(`Source.lifecycle.${value}`) })),
+          ] },
+          { label: t('List.filterAnnotation'), value: annotationFilter, onChange: setAnnotationFilter, options: [
+            { value: 'all', label: t('List.allAnnotations') }, { value: 'present', label: t('Source.annotationPresent') }, { value: 'empty', label: t('Source.annotationEmpty') },
+          ] },
+        ]}
+        order={{ label: t('List.orderBy'), value: order, onChange: setOrder, options: [
+          { value: 'title', label: t('List.titleAsc') }, { value: 'title-desc', label: t('List.titleDesc') }, { value: 'path', label: t('List.pathOrder') },
+        ] }} />
 
-      {currentProjectId ? <DocumentImportsPanel projectId={currentProjectId} sourcePaths={sources.map((source) => source.rawPath)} onRecordsChange={mergeDocumentImports} /> : null}
 
       {loading ? <LoadingState label={t('Source.loading')} /> : null}
       {error ? (
@@ -224,9 +231,9 @@ function SourceListSession() {
           onCopyErrorId={copyErrorId}
         />
       ) : null}
-      {!loading && !error && filtered.length === 0 ? <EmptyState message={t('List.noSources')} /> : null}
+      {!loading && !error && filtered.length === 0 ? <EmptyState message={t(active ? 'List.noFilterMatches' : 'List.noSources')} /> : null}
 
-      <div className="grid gap-4 md:grid-cols-2">
+      <div className="lwc-data-list grid gap-4 md:grid-cols-2">
         {filtered.map((source) => {
           const detailHref = source.id ? `/sources/${source.id}-${encodeURIComponent(source.slug)}` : null;
           const lifecycle = t(`Source.lifecycle.${source.lifecycle}`);
@@ -281,9 +288,11 @@ function SourceListSession() {
         })}
       </div>
 
+      {currentProjectId ? <DocumentImportsPanel projectId={currentProjectId} sourcePaths={sources.map((source) => source.rawPath)} onRecordsChange={mergeDocumentImports} /> : null}
+
       {preview ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black p-3 backdrop-blur-sm sm:p-4" onClick={closePreview}>
-          <Surface id="source-raw-preview-dialog" role="dialog" aria-modal="true" aria-labelledby="source-raw-preview-title" variant="elevated" className="flex max-h-[calc(100dvh-1.5rem)] w-full max-w-3xl flex-col overflow-hidden bg-zinc-900 sm:max-h-[calc(100dvh-2rem)]" style={{ backgroundColor: '#18181b' }} onClick={(event) => event.stopPropagation()}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black p-3 sm:p-4" onClick={closePreview}>
+          <Surface id="source-raw-preview-dialog" role="dialog" aria-modal="true" aria-labelledby="source-raw-preview-title" variant="elevated" className="flex max-h-[calc(100dvh-1.5rem)] w-full max-w-3xl flex-col overflow-hidden bg-zinc-900 sm:max-h-[calc(100dvh-2rem)]" style={{ backgroundColor: '#191B1C' }} onClick={(event) => event.stopPropagation()}>
             <div className="flex items-center justify-between gap-4 border-b border-white/10 p-4">
               <h2 id="source-raw-preview-title" className="min-w-0 truncate text-lg font-semibold text-white">{documentImportsBySourcePath.get(preview.path)?.original_filename.trim() || preview.path}</h2>
               <button ref={closeButtonRef} type="button" onClick={closePreview} aria-label={t('Raw.close')} className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-md text-zinc-300 hover:bg-white/10">
@@ -306,7 +315,7 @@ function SourceListSession() {
                 />
               ) : null}
               {!previewLoading && !previewError ? (
-                <div className="min-w-0 max-w-full overflow-x-auto rounded-md border border-white/10 bg-[#111111] p-4">
+                <div className="min-w-0 max-w-full overflow-x-auto rounded-md border border-white/10 bg-[#101112] p-4">
                   <MarkdownView content={preview.content} preserveLeadingHeading />
                 </div>
               ) : null}

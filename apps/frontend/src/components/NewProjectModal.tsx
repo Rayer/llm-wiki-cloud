@@ -118,11 +118,11 @@ export function NewProjectModal() {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4"
       onMouseDown={closeDialog}
     >
       <div
-        className={`w-full rounded-2xl border border-white/10 bg-[#151515] p-6 shadow-2xl ${helpOpen
+        className={`w-full rounded border border-white/10 bg-[#151515] p-6  ${helpOpen
           ? 'flex h-[calc(100dvh-2rem)] max-h-[54rem] max-w-4xl flex-col overflow-hidden'
           : 'max-h-[calc(100dvh-2rem)] max-w-md overflow-y-auto'}`}
         role="dialog"
@@ -165,7 +165,7 @@ export function NewProjectModal() {
               }}
               disabled={loading || Boolean(createdProject)}
               placeholder={t('NewProject.namePlaceholder')}
-              className="mt-2 w-full rounded-lg border border-white/10 bg-black/30 px-4 py-3 text-white outline-none transition placeholder:text-zinc-400 focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
+              className="mt-2 w-full rounded border border-white/10 bg-black/30 px-4 py-3 text-white outline-none transition placeholder:text-zinc-400 focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
             />
           </label>
           {!createdProject ? (
@@ -182,7 +182,7 @@ export function NewProjectModal() {
                   idempotencyKeyRef.current = '';
                 }}
                 disabled={loading}
-                className="mt-2 w-full resize-y rounded-lg border border-white/10 bg-black/30 px-4 py-3 text-white outline-none transition placeholder:text-zinc-400 focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400 disabled:opacity-60"
+                className="mt-2 w-full resize-y rounded border border-white/10 bg-black/30 px-4 py-3 text-white outline-none transition placeholder:text-zinc-400 focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400 disabled:opacity-60"
               />
               <p className="mt-2 text-sm leading-6 text-zinc-400">{t('ProjectDescription.help')}</p>
               <p className="mt-1 text-xs leading-5 text-zinc-500">{t('ProjectDescription.example')}</p>
@@ -199,7 +199,7 @@ export function NewProjectModal() {
               type="button"
               onClick={() => setHelpOpen(true)}
               disabled={loading}
-              className="min-h-11 rounded-lg border border-white/10 px-3 text-sm font-medium text-zinc-200 transition hover:bg-white/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
+              className="min-h-11 rounded border border-white/10 px-3 text-sm font-medium text-zinc-200 transition hover:bg-white/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
             >
               {t('NewProject.learnAboutPreferences')}
             </button>
@@ -210,14 +210,14 @@ export function NewProjectModal() {
               type="button"
               onClick={closeDialog}
               disabled={loading}
-              className="rounded-lg px-4 py-2.5 text-sm font-medium text-zinc-300 transition hover:bg-white/10 hover:text-white"
+              className="rounded px-4 py-2.5 text-sm font-medium text-zinc-300 transition hover:bg-white/10 hover:text-white"
             >
               {t('Shell.cancel')}
             </button>
             <button
               type="submit"
               disabled={loading || (!name.trim() && !createdProject) || (!createdProject && !isValidProjectDescription(description))}
-              className="rounded-lg bg-emerald-300 px-4 py-2.5 text-sm font-semibold text-black transition hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-60"
+              className="rounded bg-emerald-300 px-4 py-2.5 text-sm font-semibold text-black transition hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {loading
                 ? (createdProject ? t('NewProject.opening') : t('NewProject.creating'))

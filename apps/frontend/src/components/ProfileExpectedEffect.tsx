@@ -18,7 +18,7 @@ export function ProfileExpectedEffect() {
       </div>
       <p className="mt-1 text-xs leading-5 text-zinc-400">{t(`${prefix}.conceptComparisonDescription`)}</p>
       <div className="mt-3 grid min-w-0 gap-3 sm:grid-cols-2">
-        <article className="min-w-0 rounded-xl border border-white/10 bg-black/20 p-4" aria-labelledby="profile-concept-without-heading">
+        <article className="min-w-0 rounded border border-white/10 bg-black/20 p-4" aria-labelledby="profile-concept-without-heading">
           <h5 id="profile-concept-without-heading" className="text-sm font-semibold text-zinc-100">
             {t(`${prefix}.withoutProfile`)}
           </h5>
@@ -33,7 +33,7 @@ export function ProfileExpectedEffect() {
             ))}
           </ul>
         </article>
-        <article className="min-w-0 rounded-xl border border-emerald-200/20 bg-emerald-200/[0.03] p-4" aria-labelledby="profile-concept-with-heading">
+        <article className="min-w-0 rounded border border-emerald-200/20 bg-emerald-200/[0.03] p-4" aria-labelledby="profile-concept-with-heading">
           <h5 id="profile-concept-with-heading" className="text-sm font-semibold text-emerald-100">
             {t(`${prefix}.withProfile`)}
           </h5>

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
-test('entry cards expose type borders and staggered fade-in animation', async () => {
+test('entry cards retain localized type badges and navigation without staggered motion', async () => {
   const entryCard = await readFile(
     new URL('../src/components/EntryCard.tsx', import.meta.url),
     'utf8',
@@ -12,17 +12,15 @@ test('entry cards expose type borders and staggered fade-in animation', async ()
     'utf8',
   );
 
-  assert.match(entryCard, /index = 0/);
-  assert.match(entryCard, /animationDelay: `\$\{index \* 50\}ms`/);
-  assert.match(entryCard, /animate-fade-in/);
-  assert.match(entryCard, /border-l-\[3px\]/);
-  assert.match(entryCard, /entryType === 'source'[\s\S]*border-l-blue-400/);
-  assert.match(entryCard, /entryType === 'concept'[\s\S]*border-l-emerald-400/);
+  assert.doesNotMatch(entryCard, /animationDelay|animate-fade-in/);
+  assert.match(entryCard, /<NavigationLink href=\{href\}/);
+  assert.match(entryCard, /<Badge variant=\{entryType\}>/);
+  assert.match(entryCard, /entryType === 'source' \? t\('Source\.singular'\) : t\('Entry\.singular'\)/);
   assert.match(listClient, /filtered\.map\(\(entry, index\) =>/);
   assert.match(listClient, /index=\{index\}/);
 });
 
-test('home first-run and result cards use staggered entrance polish', async () => {
+test('home entry and result cards preserve type distinctions without stagger delays', async () => {
   const homeClient = await readFile(
     new URL('../src/components/HomeClient.tsx', import.meta.url),
     'utf8',
@@ -30,13 +28,16 @@ test('home first-run and result cards use staggered entrance polish', async () =
 
   assert.match(homeClient, /latestConcepts\.map\(\(concept, index\) =>/);
   assert.match(homeClient, /results\.map\(\(result, index\) =>/);
-  assert.match(homeClient, /animationDelay: `\$\{index \* 50\}ms`/);
+  assert.doesNotMatch(homeClient, /animationDelay/);
+  const latestEntries = homeClient.slice(homeClient.indexOf('latestConcepts.map'), homeClient.indexOf('{results.map'));
+  assert.doesNotMatch(latestEntries, /animate-fade-in/);
+  assert.match(homeClient, /<Badge variant="concept">\{t\('Entry\.singular'\)\}/);
   assert.match(homeClient, /border-l-\[3px\]/);
   assert.match(homeClient, /type === 'source'[\s\S]*border-l-blue-400/);
   assert.match(homeClient, /type === 'concept'[\s\S]*border-l-emerald-400/);
 });
 
-test('loading state renders pulse skeleton cards without spinner UI', async () => {
+test('loading state renders static skeleton cards with accessible loading announcements', async () => {
   const states = await readFile(
     new URL('../src/components/States.tsx', import.meta.url),
     'utf8',
@@ -49,7 +50,8 @@ test('loading state renders pulse skeleton cards without spinner UI', async () =
   assert.match(states, /Skeleton/);
   assert.match(states, /SkeletonLines/);
   assert.match(states, /aria-live="polite"/);
-  assert.match(skeleton, /animate-pulse/);
+  assert.doesNotMatch(skeleton, /animate-pulse|animate-spin/);
+  assert.match(skeleton, /aria-hidden="true"/);
   assert.doesNotMatch(states, /animate-spin|Spinner|Loader/);
 });
 
@@ -61,7 +63,12 @@ test('shell provides a global smooth scroll-to-top control', async () => {
 
   assert.match(shell, /ChevronUp/);
   assert.match(shell, /ScrollToTopButton/);
-  assert.match(shell, /window\.scrollY > 320/);
+  assert.match(shell, /new IntersectionObserver\(/);
+  assert.match(shell, /!entry\.isIntersecting && entry\.boundingClientRect\.top < 0/);
+  assert.match(shell, /observer\.observe\(marker\.current\)/);
+  assert.match(shell, /observer\.disconnect\(\)/);
+  assert.match(shell, /top-\[320px\]/);
+  assert.doesNotMatch(shell, /window\.scrollY|addEventListener\(['"]scroll['"]/);
   assert.match(shell, /window\.scrollTo\(\{ top: 0, behavior: 'smooth' \}\)/);
   assert.match(shell, /aria-label=\{t\('Shell\.scrollToTop'\)\}/);
   assert.match(shell, /fixed bottom-5 right-5/);

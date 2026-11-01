@@ -395,13 +395,13 @@ function AccountSettingsModalContent({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm" onMouseDown={closeSettings}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4" onMouseDown={closeSettings}>
       <div
         ref={settingsDialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="account-settings-title"
-        className="max-h-[calc(100dvh-2rem)] w-full max-w-3xl overflow-y-auto overscroll-contain rounded-2xl border border-white/10 bg-[#151515] p-6 shadow-2xl sm:p-8"
+        className="max-h-[calc(100dvh-2rem)] w-full max-w-3xl overflow-y-auto overscroll-contain rounded border border-white/10 bg-[#151515] p-6 sm:p-8"
         onMouseDown={(event) => event.stopPropagation()}
       >
         <div className="flex items-start justify-between gap-4">
@@ -412,7 +412,7 @@ function AccountSettingsModalContent({
           <button type="button" onClick={closeSettings} className="min-h-11 min-w-11 rounded-md p-2 text-zinc-400 hover:bg-white/10 hover:text-white" aria-label={t('AccountSettings.close')}>×</button>
         </div>
 
-        <div role="tablist" aria-label={t('AccountSettings.tabs')} className="mt-6 flex flex-wrap gap-2 rounded-xl border border-white/10 bg-black/20 p-1.5">
+        <div role="tablist" aria-label={t('AccountSettings.tabs')} className="mt-6 flex flex-wrap gap-2 rounded border border-white/10 bg-black/20 p-1.5">
           {accountSettingsTabs.map((tab, index) => (
             <button
               key={tab.id}
@@ -425,7 +425,7 @@ function AccountSettingsModalContent({
               tabIndex={activeSettingsTab === tab.id ? 0 : -1}
               onClick={() => selectSettingsTab(tab.id)}
               onKeyDown={(event) => handleSettingsTabKeyDown(event, index)}
-              className={`min-h-11 min-w-0 flex-1 basis-32 rounded-lg px-3 py-2 text-sm font-medium transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 ${activeSettingsTab === tab.id ? 'bg-emerald-300 text-zinc-950' : 'text-zinc-300 hover:bg-white/5 hover:text-white'}`}
+              className={`min-h-11 min-w-0 flex-1 basis-32 rounded px-3 py-2 text-sm font-medium transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 ${activeSettingsTab === tab.id ? 'bg-emerald-300 text-zinc-950' : 'text-zinc-300 hover:bg-white/5 hover:text-white'}`}
             >
               {t(tab.label)}
             </button>
@@ -434,12 +434,12 @@ function AccountSettingsModalContent({
 
         <div id="account-settings-panel-account" role="tabpanel" aria-labelledby="account-settings-tab-account" hidden={activeSettingsTab !== 'account'} tabIndex={0}>
           <dl className="mt-6 space-y-4 text-sm">
-            <div className="rounded-lg border border-white/10 bg-black/20 p-4">
+            <div className="rounded border border-white/10 bg-black/20 p-4">
               <dt className="text-zinc-400">{t('AccountSettings.primaryEmail')}</dt>
               <dd className="mt-1 break-all font-medium text-white">{primaryEmail}</dd>
               <p className="mt-2 text-xs leading-5 text-zinc-500">{t('AccountSettings.primaryHint')}</p>
             </div>
-            <div className="rounded-lg border border-white/10 bg-black/20 p-4">
+            <div className="rounded border border-white/10 bg-black/20 p-4">
               <dt className="text-zinc-400">{t('AccountSettings.googleEmail')}</dt>
               <dd className="mt-1 break-all text-zinc-300">{linkedGoogleEmail ?? t('AccountSettings.googleNotLinked')}</dd>
               <p className="mt-2 text-xs leading-5 text-zinc-500">{t('AccountSettings.googleHint')}</p>
@@ -456,29 +456,29 @@ function AccountSettingsModalContent({
               <p className="mt-2 text-sm leading-6 text-zinc-400">{t('AccountSettings.passwordDemoDisabled')}</p>
             ) : null}
             {passwordStatus?.userID === user.id && passwordStatus.value.allowed ? (
-              <form onSubmit={handlePasswordUpdate} className="mt-3 space-y-4 rounded-lg border border-white/10 bg-black/20 p-4">
+              <form onSubmit={handlePasswordUpdate} className="mt-3 space-y-4 rounded border border-white/10 bg-black/20 p-4">
                 <p className="text-sm leading-6 text-zinc-400">
                   {passwordStatus.value.configured ? t('AccountSettings.passwordChangeHint') : t('AccountSettings.passwordSetupHint')}
                 </p>
                 {passwordStatus.value.configured ? (
                   <label className="block text-sm font-medium text-zinc-300">
                     {t('AccountSettings.currentPassword')}
-                    <input type="password" autoComplete="current-password" aria-required="true" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} className="mt-2 w-full rounded-lg border border-white/10 bg-black/30 px-4 py-3 text-white outline-none focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400" />
+                    <input type="password" autoComplete="current-password" aria-required="true" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} className="mt-2 w-full rounded border border-white/10 bg-black/30 px-4 py-3 text-white outline-none focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400" />
                   </label>
                 ) : null}
                 <label className="block text-sm font-medium text-zinc-300">
                   {t('AccountSettings.newPassword')}
-                  <input type="password" autoComplete="new-password" minLength={8} required value={newPassword} onChange={(event) => setNewPassword(event.target.value)} className="mt-2 w-full rounded-lg border border-white/10 bg-black/30 px-4 py-3 text-white outline-none focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400" />
+                  <input type="password" autoComplete="new-password" minLength={8} required value={newPassword} onChange={(event) => setNewPassword(event.target.value)} className="mt-2 w-full rounded border border-white/10 bg-black/30 px-4 py-3 text-white outline-none focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400" />
                 </label>
                 <label className="block text-sm font-medium text-zinc-300">
                   {t('AccountSettings.confirmNewPassword')}
-                  <input type="password" autoComplete="new-password" minLength={8} required value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} className="mt-2 w-full rounded-lg border border-white/10 bg-black/30 px-4 py-3 text-white outline-none focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400" />
+                  <input type="password" autoComplete="new-password" minLength={8} required value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} className="mt-2 w-full rounded border border-white/10 bg-black/30 px-4 py-3 text-white outline-none focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400" />
                 </label>
                 {passwordError ? <p role="alert" className="text-sm text-red-300">{passwordError}</p> : null}
                 {passwordNotice ? <p role="status" className="text-sm text-emerald-200">{passwordNotice}</p> : null}
                 <p className="text-xs leading-5 text-zinc-500">{t('AccountSettings.forgotPasswordHint')}</p>
                 <div className="flex justify-end">
-                  <button type="submit" disabled={passwordPending || newPassword.length < 8 || !confirmPassword} className="min-h-11 rounded-lg bg-emerald-300 px-4 py-2.5 text-sm font-semibold text-black hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-60">
+                  <button type="submit" disabled={passwordPending || newPassword.length < 8 || !confirmPassword} className="min-h-11 rounded bg-emerald-300 px-4 py-2.5 text-sm font-semibold text-black hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-60">
                     {passwordPending ? t('AccountSettings.passwordSaving') : passwordStatus.value.configured ? t('AccountSettings.changePassword') : t('AccountSettings.setPassword')}
                   </button>
                 </div>
@@ -487,20 +487,20 @@ function AccountSettingsModalContent({
           </section>
 
           {!linkOpen ? (
-            <button type="button" onClick={() => setLinkOpen(true)} className="mt-6 min-h-11 w-full rounded-lg bg-emerald-300 px-4 py-3 font-semibold text-black hover:bg-emerald-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300">
+            <button type="button" onClick={() => setLinkOpen(true)} className="mt-6 min-h-11 w-full rounded bg-emerald-300 px-4 py-3 font-semibold text-black hover:bg-emerald-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300">
               {t('AccountSettings.linkGoogle')}
             </button>
           ) : (
-            <form onSubmit={handleLink} className="mt-6 space-y-4 rounded-lg border border-emerald-300/20 bg-emerald-300/5 p-4">
+            <form onSubmit={handleLink} className="mt-6 space-y-4 rounded border border-emerald-300/20 bg-emerald-300/5 p-4">
               <p className="text-sm leading-6 text-zinc-300">{t('AccountSettings.reauthHint')}</p>
               <label className="block text-sm font-medium text-zinc-300">
                 {t('AccountSettings.currentPassword')}
-                <input ref={passwordRef} type="password" autoComplete="current-password" required value={password} onChange={(event) => setPassword(event.target.value)} className="mt-2 w-full rounded-lg border border-white/10 bg-black/30 px-4 py-3 text-white outline-none focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400" />
+                <input ref={passwordRef} type="password" autoComplete="current-password" required value={password} onChange={(event) => setPassword(event.target.value)} className="mt-2 w-full rounded border border-white/10 bg-black/30 px-4 py-3 text-white outline-none focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400" />
               </label>
               {error ? <p role="alert" className="text-sm text-red-300">{error}</p> : null}
               <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
-                <button type="button" disabled={loading} onClick={() => { setLinkOpen(false); setPassword(''); setError(''); }} className="min-h-11 rounded-lg border border-white/10 px-4 py-2.5 text-sm text-zinc-300 hover:bg-white/10 disabled:opacity-60">{t('AccountSettings.cancel')}</button>
-                <button type="submit" disabled={loading || !password || !accessToken} className="min-h-11 rounded-lg bg-emerald-300 px-4 py-2.5 text-sm font-semibold text-black hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-60">{loading ? t('AccountSettings.openingGoogle') : t('AccountSettings.continue')}</button>
+                <button type="button" disabled={loading} onClick={() => { setLinkOpen(false); setPassword(''); setError(''); }} className="min-h-11 rounded border border-white/10 px-4 py-2.5 text-sm text-zinc-300 hover:bg-white/10 disabled:opacity-60">{t('AccountSettings.cancel')}</button>
+                <button type="submit" disabled={loading || !password || !accessToken} className="min-h-11 rounded bg-emerald-300 px-4 py-2.5 text-sm font-semibold text-black hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-60">{loading ? t('AccountSettings.openingGoogle') : t('AccountSettings.continue')}</button>
               </div>
             </form>
           )}
@@ -523,7 +523,7 @@ function AccountSettingsModalContent({
           <h3 id="cli-sessions-title" className="text-lg font-semibold text-white">{t('AccountSettings.cliSessions')}</h3>
           <p className="mt-1 text-sm text-zinc-400">{t('AccountSettings.cliSessionsHint')}</p>
           {cliSessions.length === 0 ? (
-            <p className="mt-4 rounded-lg border border-white/10 bg-black/20 p-4 text-sm text-zinc-400">{t('AccountSettings.cliSessionsEmpty')}</p>
+            <p className="mt-4 rounded border border-white/10 bg-black/20 p-4 text-sm text-zinc-400">{t('AccountSettings.cliSessionsEmpty')}</p>
           ) : (
             <ul className="mt-4 space-y-3">
               {cliSessions.map((session) => {
@@ -535,14 +535,14 @@ function AccountSettingsModalContent({
                       ? t('AccountSettings.cliSessionStatusExpired')
                       : session.status;
                 return (
-                  <li key={session.id} className="flex flex-col gap-3 rounded-lg border border-white/10 bg-black/20 p-4 sm:flex-row sm:items-center sm:justify-between">
+                  <li key={session.id} className="flex flex-col gap-3 rounded border border-white/10 bg-black/20 p-4 sm:flex-row sm:items-center sm:justify-between">
                     <div className="min-w-0 text-sm">
                       <p className="font-medium text-white">{session.client_name || 'CLI'} <span className="text-zinc-500">· {statusLabel}</span></p>
-                      <p className="mt-1 break-all font-mono text-xs text-zinc-500">{session.id}</p>
+                      <p className="mt-1 break-all font-sans text-xs text-zinc-500">{session.id}</p>
                       <p className="mt-1 text-xs text-zinc-500">{new Date(session.created_at).toLocaleString(locale === 'zh-TW' ? 'zh-TW' : locale === 'zh-CN' ? 'zh-CN' : 'en-US')}</p>
                     </div>
                     {session.status === 'active' ? (
-                      <button type="button" disabled={Boolean(busyControl)} onClick={() => void handleRevokeSession(session)} className="min-h-11 shrink-0 rounded-lg border border-red-300/20 px-3 py-2 text-sm text-red-200 hover:bg-red-300/10 disabled:opacity-50">
+                      <button type="button" disabled={Boolean(busyControl)} onClick={() => void handleRevokeSession(session)} className="min-h-11 shrink-0 rounded border border-red-300/20 px-3 py-2 text-sm text-red-200 hover:bg-red-300/10 disabled:opacity-50">
                         {busyControl === session.id ? t('CLIPairing.processing') : t('AccountSettings.revokeSession')}
                       </button>
                     ) : null}
@@ -557,24 +557,24 @@ function AccountSettingsModalContent({
           <h3 id="sync-bindings-title" className="text-lg font-semibold text-white">{t('AccountSettings.syncBindings')}</h3>
           <p className="mt-1 text-sm leading-6 text-zinc-400">{t('AccountSettings.syncBindingsHint')}</p>
           {syncBindings.length === 0 ? (
-            <p className="mt-4 rounded-lg border border-white/10 bg-black/20 p-4 text-sm text-zinc-400">{t('AccountSettings.syncBindingsEmpty')}</p>
+            <p className="mt-4 rounded border border-white/10 bg-black/20 p-4 text-sm text-zinc-400">{t('AccountSettings.syncBindingsEmpty')}</p>
           ) : (
             <ul className="mt-4 space-y-3">
               {syncBindings.map((binding) => (
-                <li key={binding.project_id} className="rounded-lg border border-white/10 bg-black/20 p-4">
+                <li key={binding.project_id} className="rounded border border-white/10 bg-black/20 p-4">
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                     <div className="min-w-0 text-sm">
                       <p className="font-medium text-white">{binding.project_id} <span className="text-zinc-500">· {binding.status === 'active' ? t('AccountSettings.bindingActive') : binding.status === 'revoked' ? t('AccountSettings.bindingRevoked') : binding.status}</span></p>
-                      <p className="mt-1 break-all font-mono text-xs text-zinc-500">{binding.wiki_id} · {binding.binding_id}</p>
+                      <p className="mt-1 break-all font-sans text-xs text-zinc-500">{binding.wiki_id} · {binding.binding_id}</p>
                       <p className="mt-1 break-all text-xs text-zinc-500">{binding.host}</p>
                     </div>
                     <div className="flex shrink-0 flex-wrap gap-2">
                       {binding.status === 'active' ? (
-                        <button type="button" disabled={Boolean(busyControl)} onClick={() => void handleRevokeBinding(binding)} className="min-h-11 rounded-lg border border-red-300/20 px-3 py-2 text-sm text-red-200 hover:bg-red-300/10 disabled:opacity-50">
+                        <button type="button" disabled={Boolean(busyControl)} onClick={() => void handleRevokeBinding(binding)} className="min-h-11 rounded border border-red-300/20 px-3 py-2 text-sm text-red-200 hover:bg-red-300/10 disabled:opacity-50">
                           {busyControl === binding.binding_id ? t('CLIPairing.processing') : t('AccountSettings.revokeBinding')}
                         </button>
                       ) : null}
-                      <button type="button" disabled={Boolean(busyControl)} onClick={() => void handleReauthorizeBinding(binding)} className="min-h-11 rounded-lg border border-white/15 px-3 py-2 text-sm text-zinc-200 hover:bg-white/10 disabled:opacity-50">
+                      <button type="button" disabled={Boolean(busyControl)} onClick={() => void handleReauthorizeBinding(binding)} className="min-h-11 rounded border border-white/15 px-3 py-2 text-sm text-zinc-200 hover:bg-white/10 disabled:opacity-50">
                         {busyControl === binding.binding_id ? t('CLIPairing.processing') : t('AccountSettings.reauthorizeBinding')}
                       </button>
                     </div>
@@ -585,8 +585,8 @@ function AccountSettingsModalContent({
           )}
         </section>
 
-        {controlNotice ? <p role="status" className="mt-5 rounded-lg border border-emerald-300/20 bg-emerald-300/5 p-3 text-sm text-emerald-100">{controlNotice}</p> : null}
-        {controlError ? <p role="alert" className="mt-5 rounded-lg border border-red-300/20 bg-red-300/5 p-3 text-sm text-red-100">{controlError}</p> : null}
+        {controlNotice ? <p role="status" className="mt-5 rounded border border-emerald-300/20 bg-emerald-300/5 p-3 text-sm text-emerald-100">{controlNotice}</p> : null}
+        {controlError ? <p role="alert" className="mt-5 rounded border border-red-300/20 bg-red-300/5 p-3 text-sm text-red-100">{controlError}</p> : null}
         </div>
       </div>
     </div>

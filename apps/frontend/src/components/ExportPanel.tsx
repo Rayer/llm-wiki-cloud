@@ -29,8 +29,8 @@ function exportActionError(error: unknown, fallback: string): ExportActionError 
   };
 }
 
-function formatBytes(bytes: number | null, locale: string): string {
-  if (bytes === null || !Number.isFinite(bytes) || bytes < 0) return '—';
+function formatBytes(bytes: number | null, locale: string, notProvided: string): string {
+  if (bytes === null || !Number.isFinite(bytes) || bytes < 0) return notProvided;
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
   let value = bytes;
   let unit = 0;
@@ -41,10 +41,10 @@ function formatBytes(bytes: number | null, locale: string): string {
   return `${new Intl.NumberFormat(locale, { maximumFractionDigits: unit === 0 ? 0 : 1 }).format(value)} ${units[unit]}`;
 }
 
-function formatTime(value: string | null, locale: string): string {
-  if (!value) return '—';
+function formatTime(value: string | null, locale: string, notProvided: string): string {
+  if (!value) return notProvided;
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? '—' : new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short' }).format(date);
+  return Number.isNaN(date.getTime()) ? notProvided : new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short' }).format(date);
 }
 
 export function ExportPanel() {
@@ -230,7 +230,7 @@ export function ExportPanel() {
   const blockReason = currentData.rejection_reason === 'in_progress'
     ? t('Export.blockedRunning')
     : currentData.rejection_reason === 'cooldown'
-      ? t('Export.blockedCooldown', { time: formatTime(currentData.next_allowed_at, locale) })
+      ? t('Export.blockedCooldown', { time: formatTime(currentData.next_allowed_at, locale, t('Common.notProvided')) })
       : '';
   const disableReason = !projectId ? t('Export.selectProject') : blockReason;
 
@@ -244,10 +244,10 @@ export function ExportPanel() {
           <p className="mt-1 text-sm text-zinc-400">{t('Export.description')}</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <button type="button" onClick={(event) => openModal(event.currentTarget)} disabled={!projectId || !currentData.eligible || loading} className="rounded-lg bg-emerald-400 px-4 py-2 text-sm font-semibold text-zinc-950 transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-40">
+          <button type="button" onClick={(event) => openModal(event.currentTarget)} disabled={!projectId || !currentData.eligible || loading} className="rounded bg-emerald-400 px-4 py-2 text-sm font-semibold text-zinc-950 transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-40">
             {active ? t('Export.preparing') : t('Export.package')}
           </button>
-          <button type="button" onClick={() => archives[0] && void download(archives[0])} disabled={!archives[0]?.download_available} className="inline-flex items-center gap-2 rounded-lg border border-white/15 px-4 py-2 text-sm text-zinc-100 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-40">
+          <button type="button" onClick={() => archives[0] && void download(archives[0])} disabled={!archives[0]?.download_available} className="inline-flex items-center gap-2 rounded border border-white/15 px-4 py-2 text-sm text-zinc-100 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-40">
             <Download size={15} />{active && archives[0] ? t('Export.downloadPrevious') : t('Export.download')}
           </button>
         </div>
@@ -255,24 +255,24 @@ export function ExportPanel() {
       {disableReason && <p className="text-sm text-amber-300" role="status">{disableReason}</p>}
       {!archives[0] && <p className="text-sm text-zinc-500">{t('Export.noDownloadReason')}</p>}
       {loading && <p className="text-sm text-zinc-400" role="status">{t('Export.loading')}</p>}
-      {active && <div className="rounded-lg border border-sky-400/20 bg-sky-400/5 p-3 text-sm text-sky-200" role="status">
+      {active && <div className="rounded border border-sky-400/20 bg-sky-400/5 p-3 text-sm text-sky-200" role="status">
         <p className="font-medium">{t('Export.preparing')}</p><p className="mt-1 text-sky-200/70">{t('Export.leaveAndReturn')}</p>
-        {latest?.next_allowed_at && <p className="mt-1 text-sky-200/70">{t('Export.nextAllowed', { time: formatTime(latest.next_allowed_at, locale) })}</p>}
+        {latest?.next_allowed_at && <p className="mt-1 text-sky-200/70">{t('Export.nextAllowed', { time: formatTime(latest.next_allowed_at, locale, t('Common.notProvided')) })}</p>}
       </div>}
       {latest?.status === 'ready' && <p className="text-sm text-emerald-300">{t('Export.ready')}</p>}
-      {latest?.status === 'failed' && <div className="rounded-lg border border-red-400/20 bg-red-400/5 p-3 text-sm text-red-200" role="alert">
+      {latest?.status === 'failed' && <div className="rounded border border-red-400/20 bg-red-400/5 p-3 text-sm text-red-200" role="alert">
         <p>{t('Export.failed')}: {latest.error_message || latest.error_code || t('Export.unknownError')}</p>
         <button type="button" disabled={!currentData.eligible} onClick={(event) => openModal(event.currentTarget)} className="mt-2 underline disabled:opacity-50">{t('Export.retry')}</button>
       </div>}
       {latest?.status === 'expired' && <p className="text-sm text-amber-300" role="status">{t('Export.expired')}</p>}
-      {archives.map((archive, index) => <dl key={archive.export_id} className="grid gap-2 rounded-lg border border-white/10 bg-black/10 p-3 text-sm sm:grid-cols-2">
+      {archives.map((archive, index) => <dl key={archive.export_id} className="grid gap-2 rounded border border-white/10 bg-black/10 p-3 text-sm sm:grid-cols-2">
         <div><dt className="text-zinc-500">{t('Export.scope')}</dt><dd className="text-zinc-200">{t(`Export.scope_${archive.scope}`)}</dd></div>
-        <div><dt className="text-zinc-500">{t('Export.size')}</dt><dd className="text-zinc-200">{formatBytes(archive.size_bytes, locale)}</dd></div>
-        <div><dt className="text-zinc-500">{t('Export.snapshot')}</dt><dd className="text-zinc-200">{formatTime(archive.snapshot_at, locale)}</dd></div>
-        <div><dt className="text-zinc-500">{t('Export.expires')}</dt><dd className="text-zinc-200">{formatTime(archive.expires_at, locale)}</dd></div>
+        <div><dt className="text-zinc-500">{t('Export.size')}</dt><dd className="text-zinc-200">{formatBytes(archive.size_bytes, locale, t('Common.notProvided'))}</dd></div>
+        <div><dt className="text-zinc-500">{t('Export.snapshot')}</dt><dd className="text-zinc-200">{formatTime(archive.snapshot_at, locale, t('Common.notProvided'))}</dd></div>
+        <div><dt className="text-zinc-500">{t('Export.expires')}</dt><dd className="text-zinc-200">{formatTime(archive.expires_at, locale, t('Common.notProvided'))}</dd></div>
         {index === 1 && <button type="button" disabled={!archive.download_available} onClick={() => void download(archive)} className="justify-self-start text-sm text-emerald-300 underline disabled:opacity-40">{t('Export.downloadPrevious')}</button>}
       </dl>)}
-      {currentData.next_allowed_at && !active && <p className="text-sm text-zinc-400">{t('Export.nextAllowed', { time: formatTime(currentData.next_allowed_at, locale) })}</p>}
+      {currentData.next_allowed_at && !active && <p className="text-sm text-zinc-400">{t('Export.nextAllowed', { time: formatTime(currentData.next_allowed_at, locale, t('Common.notProvided')) })}</p>}
       {actionError ? <div>
         <p className="text-sm text-red-300" role="alert">{actionError.message}</p>
         <ErrorIdDetails
@@ -288,9 +288,9 @@ export function ExportPanel() {
         />
       </div> : null}
       {modalOpen && <div className="fixed inset-0 z-50 grid place-items-center bg-black/70 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) setModalOpen(false); }}>
-        <section ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="export-dialog-title" className="max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-2xl border border-white/10 bg-zinc-900 p-6 shadow-2xl">
+        <section ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="export-dialog-title" className="max-h-[90vh] w-full max-w-xl overflow-y-auto rounded border border-white/10 bg-zinc-900 p-6">
           <div className="flex items-start justify-between gap-4"><div><h3 id="export-dialog-title" className="text-lg font-semibold text-white">{t('Export.modalTitle')}</h3><p className="mt-1 text-sm text-zinc-400">{t('Export.modalDescription')}</p></div><button type="button" aria-label={t('Export.close')} onClick={() => setModalOpen(false)} className="rounded p-1 text-zinc-400 hover:bg-white/10"><X size={18} /></button></div>
-          <fieldset className="mt-5 space-y-2"><legend className="mb-2 text-sm font-medium text-zinc-200">{t('Export.scope')}</legend>{scopes.map((option) => <label key={option} className="flex cursor-pointer gap-3 rounded-lg border border-white/10 p-3 text-sm hover:bg-white/5"><input type="radio" name="export-scope" value={option} checked={scope === option} onChange={() => setScope(option)} /><span><span className="block font-medium text-zinc-100">{t(`Export.scope_${option}`)}</span><span className="mt-1 block text-zinc-400">{t(`Export.scopeDescription_${option}`)}</span></span></label>)}</fieldset>
+          <fieldset className="mt-5 space-y-2"><legend className="mb-2 text-sm font-medium text-zinc-200">{t('Export.scope')}</legend>{scopes.map((option) => <label key={option} className="flex cursor-pointer gap-3 rounded border border-white/10 p-3 text-sm hover:bg-white/5"><input type="radio" name="export-scope" value={option} checked={scope === option} onChange={() => setScope(option)} /><span><span className="block font-medium text-zinc-100">{t(`Export.scope_${option}`)}</span><span className="mt-1 block text-zinc-400">{t(`Export.scopeDescription_${option}`)}</span></span></label>)}</fieldset>
           <ul className="mt-4 list-disc space-y-1 pl-5 text-sm text-zinc-400"><li>{t('Export.excludesSecrets')}</li><li>{t('Export.noCompile')}</li><li>{t('Export.noRestore')}</li></ul>
           {blockReason && <p className="mt-4 text-sm text-amber-300" role="status">{blockReason}</p>}
           {actionError ? <div className="mt-3">
@@ -307,7 +307,7 @@ export function ExportPanel() {
               className="mt-2 flex flex-wrap items-center gap-3 text-sm text-red-200"
             />
           </div> : null}
-          <div className="mt-6 flex justify-end gap-2"><button type="button" onClick={() => setModalOpen(false)} className="rounded-lg border border-white/15 px-4 py-2 text-sm text-zinc-200">{t('Export.cancel')}</button><button type="button" disabled={!currentData.eligible || submitting} onClick={() => void startExport()} className="rounded-lg bg-emerald-400 px-4 py-2 text-sm font-semibold text-zinc-950 disabled:cursor-not-allowed disabled:opacity-40">{submitting ? t('Export.preparing') : t('Export.start')}</button></div>
+          <div className="mt-6 flex justify-end gap-2"><button type="button" onClick={() => setModalOpen(false)} className="rounded border border-white/15 px-4 py-2 text-sm text-zinc-200">{t('Export.cancel')}</button><button type="button" disabled={!currentData.eligible || submitting} onClick={() => void startExport()} className="rounded bg-emerald-400 px-4 py-2 text-sm font-semibold text-zinc-950 disabled:cursor-not-allowed disabled:opacity-40">{submitting ? t('Export.preparing') : t('Export.start')}</button></div>
         </section>
       </div>}
     </Surface>

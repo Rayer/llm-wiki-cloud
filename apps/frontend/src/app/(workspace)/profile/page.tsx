@@ -45,13 +45,13 @@ function ProjectHeading({ project }: { project: Project }) {
   return (
     <div className="flex flex-wrap items-center justify-between gap-3">
       <div>
-        <h1 className="font-serif text-2xl font-medium text-[#eeeae4]">{t('Profile.pageTitle')}</h1>
+        <h1 className="font-sans text-2xl font-medium text-[#F0F3F1]">{t('Profile.pageTitle')}</h1>
         <p className="mt-1 break-words text-sm text-zinc-400">{project.name}</p>
       </div>
       <button
         type="button"
         onClick={() => setRenaming(true)}
-        className="min-h-11 rounded-lg border border-white/10 px-4 py-2 text-sm text-zinc-300 transition hover:bg-white/5 hover:text-white"
+        className="min-h-11 rounded border border-white/10 px-4 py-2 text-sm text-zinc-300 transition hover:bg-white/5 hover:text-white"
       >
         {t('Profile.renameProject')}
       </button>

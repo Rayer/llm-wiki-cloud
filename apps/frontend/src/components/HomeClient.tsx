@@ -844,16 +844,14 @@ export function HomeClient() {
   const searchButtonCueState = searchButtonCue > 0 ? searchButtonCue.toString() : undefined;
 
   return (
-    <div className="space-y-12">
-      <section className="relative overflow-hidden border-b border-white/10 pb-10 pt-10 sm:pt-14">
-        <div aria-hidden="true" className="pointer-events-none absolute -right-32 -top-44 size-[34rem] rounded-full bg-emerald-400/10 blur-3xl" />
-        <p className="font-mono text-[11px] uppercase tracking-[0.22em] text-emerald-300/90">{t('Demo.heroSubtitle')}</p>
-        <h1 className="font-serif relative mt-4 max-w-3xl text-[1.95rem] font-medium leading-[1.2] tracking-tight text-[#eeeae4] text-pretty sm:text-[2.7rem]">
+    <div className="lwc-home space-y-8">
+      <section className="lwc-search-section">
+        <h1 className="relative max-w-3xl text-[2rem] font-medium leading-tight tracking-tight text-[#F0F3F1]">
           {t('Demo.heading')}
         </h1>
 
         {token && currentProject && user?.id && !isDemoSession ? (
-          <section className="relative mt-6 max-w-4xl rounded-xl border border-white/10 bg-zinc-900/45 p-4 backdrop-blur-sm sm:flex sm:items-start sm:justify-between sm:gap-6 sm:p-5" aria-labelledby="home-project-description-heading">
+          <section className="lwc-project-context relative mt-6 rounded border border-white/10 bg-zinc-900/45 p-4 sm:flex sm:items-start sm:justify-between sm:gap-6 sm:p-5" aria-labelledby="home-project-description-heading">
             <div className="min-w-0">
               <h2 id="home-project-description-heading" className="text-sm font-semibold text-zinc-200">
                 {t('ProjectDescription.mainTitle')}
@@ -864,14 +862,14 @@ export function HomeClient() {
             </div>
             <NavigationLink
               href="/profile#project-description"
-              className="mt-3 inline-flex min-h-11 shrink-0 items-center rounded-lg border border-white/10 px-3 text-sm font-medium text-emerald-200 transition hover:bg-white/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 sm:mt-0"
+              className="mt-3 inline-flex min-h-11 shrink-0 items-center rounded border border-white/10 px-3 text-sm font-medium text-emerald-200 transition hover:bg-white/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 sm:mt-0"
             >
               {currentProject.description ? t('ProjectDescription.edit') : t('ProjectDescription.add')}
             </NavigationLink>
           </section>
         ) : null}
 
-        <form onSubmit={onSubmit} className="relative mt-10 w-full max-w-4xl overflow-hidden rounded-[var(--radius-lg)] border border-white/15 bg-zinc-900/65 shadow-xl shadow-black/20 backdrop-blur-sm focus-within:border-emerald-300/70">
+        <form onSubmit={onSubmit} className="lwc-search-form relative mt-6 w-full overflow-hidden rounded-[var(--radius-lg)] border border-white/15 bg-zinc-900/65 focus-within:border-emerald-300/70">
           <div className="flex items-center gap-3 px-4 py-3 sm:px-5">
             <input
               name="query"
@@ -887,7 +885,7 @@ export function HomeClient() {
               disabled={loading}
               aria-busy={loading}
               data-search-cue={searchButtonCueState}
-              className="min-h-12 shrink-0 rounded-lg bg-emerald-400 px-5 text-sm font-semibold text-zinc-950 transition hover:bg-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-200 disabled:cursor-not-allowed disabled:opacity-60"
+              className="min-h-12 shrink-0 rounded bg-emerald-400 px-5 text-sm font-semibold text-zinc-950 transition hover:bg-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-200 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {t('Demo.search')}
             </button>
@@ -908,7 +906,7 @@ export function HomeClient() {
                 </button>
               ))}
             </div>
-            <p className="font-mono text-xs tracking-wide text-zinc-400">
+            <p className="text-xs text-zinc-400">
               <StatPill label={t('Shell.sources')} value={status?.sourcesCount} error={statusError} />
               <span className="mx-2 text-white/20" aria-hidden="true">·</span>
               <StatPill label={t('Shell.concepts')} value={status?.conceptsCount} error={statusError} />
@@ -925,7 +923,7 @@ export function HomeClient() {
                 aria-controls="suggested-queries"
                 aria-label={suggestedQueriesOpen ? t('Demo.hideSuggestedQueries') : t('Demo.showSuggestedQueries')}
                 onClick={toggleSuggestedQueries}
-                className="inline-flex min-h-11 items-center gap-1.5 text-left text-xs tracking-wide text-zinc-500 transition hover:text-zinc-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
+                className="inline-flex min-h-11 items-center gap-1.5 text-left text-xs text-zinc-500 transition hover:text-zinc-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
               >
                 <ChevronDown className={`size-4 shrink-0 transition-transform ${suggestedQueriesOpen ? '' : '-rotate-90'}`} aria-hidden="true" />
                 {t('Demo.suggestedQueries')}
@@ -938,7 +936,7 @@ export function HomeClient() {
                       type="button"
                       onMouseDown={(event) => event.preventDefault()}
                       onClick={() => void handleSuggestedQuery(suggestion)}
-                      className="max-w-full min-h-11 rounded-full border border-emerald-300/20 bg-emerald-300/10 px-3 py-1.5 text-left text-sm text-emerald-100 transition hover:border-emerald-300/40 hover:bg-emerald-300/15 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
+                      className="max-w-full min-h-11 rounded border border-emerald-300/20 bg-emerald-300/10 px-3 py-1.5 text-left text-sm text-emerald-100 transition hover:border-emerald-300/40 hover:bg-emerald-300/15 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
                     >
                       <span className="block truncate">{suggestion}</span>
                     </button>
@@ -962,10 +960,12 @@ export function HomeClient() {
       {!searched && latestConcepts.length > 0 ? (
         <section className="space-y-4" aria-labelledby="latest-concepts-heading">
           <div className="flex items-center justify-between gap-4">
-            <h2 id="latest-concepts-heading" className="font-serif text-xl font-medium text-[#eeeae4]">
+            <h2 id="latest-concepts-heading" className="font-sans text-xl font-medium text-[#F0F3F1]">
               {t('Demo.latestConcepts')}
             </h2>
-            <Badge variant="muted">{latestConcepts.length}</Badge>
+            <NavigationLink href="/concepts" className="inline-flex min-h-11 items-center text-sm text-zinc-300 transition hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300">
+              {t('Demo.allConcepts')}
+            </NavigationLink>
           </div>
           <div className="grid gap-3 md:grid-cols-2">
             {latestConcepts.map((concept, index) => {
@@ -975,12 +975,12 @@ export function HomeClient() {
                 <NavigationLink key={concept.slug} href={href} className="group block focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-emerald-400">
                 <Surface
                   variant="default"
-                  className="animate-fade-in rounded-lg border-l-2 border-l-emerald-400/80 p-5 [animation-fill-mode:backwards] transition hover:border-white/20 hover:bg-zinc-900/75"
-                  style={{ animationDelay: `${index * 50}ms` }}
+                  className="lwc-entry p-5"
+
                 >
                   <div className="flex flex-wrap items-center gap-2">
                     <Badge variant="concept">{t('Entry.singular')}</Badge>
-                    <h3 className="font-serif text-lg font-medium text-[#eeeae4] group-hover:text-white">
+                    <h3 className="font-sans text-lg font-medium text-[#F0F3F1] group-hover:text-white">
                       {concept.title}
                     </h3>
                   </div>
@@ -1055,7 +1055,7 @@ export function HomeClient() {
             {canReviewAISettings ? (
               <button
                 type="button"
-                className="mt-3 min-h-11 rounded-lg border border-amber-200/50 px-4 py-2 text-sm font-medium text-amber-50 hover:bg-amber-100/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-200"
+                className="mt-3 min-h-11 rounded border border-amber-200/50 px-4 py-2 text-sm font-medium text-amber-50 hover:bg-amber-100/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-200"
                 onClick={() => window.dispatchEvent(new CustomEvent('lwc-open-account-settings', { detail: { focusBYOK: true } }))}
               >
                 {t(`QueryResults.aiFailure.${aiSettingsAction}`)}
@@ -1064,8 +1064,8 @@ export function HomeClient() {
           </aside>
         ) : null}
         {!loading && !error && aiAnswer ? (
-          <article className="relative overflow-hidden rounded-[var(--radius-lg)] border border-emerald-400/20 bg-emerald-400/[0.06] p-5 backdrop-blur-sm">
-            <div className="absolute inset-y-0 left-0 w-1 bg-gradient-to-b from-emerald-300 to-teal-500" />
+          <article className="relative overflow-hidden rounded-[var(--radius-lg)] border border-emerald-400/20 bg-emerald-400/[0.06] p-5">
+            <div className="absolute inset-y-0 left-0 w-1 bg-emerald-300" />
             <div className="pl-3">
               <div className="flex flex-wrap items-center gap-2">
                 <h3 className="text-sm font-semibold text-emerald-200">{t('Demo.answer')}</h3>
@@ -1140,8 +1140,8 @@ export function HomeClient() {
                   id: result.id,
                   path: '',
                 })}
-                className={`animate-fade-in rounded-[var(--radius-lg)] border border-l-[3px] border-white/10 bg-zinc-900/40 p-5 text-left backdrop-blur-sm transition duration-200 [animation-fill-mode:backwards] hover:-translate-y-0.5 hover:border-emerald-400/30 hover:shadow-lg hover:shadow-emerald-500/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400 ${typeBorderClass}`}
-                style={{ animationDelay: `${index * 50}ms` }}
+                className={`animate-fade-in rounded-[var(--radius-lg)] border border-l-[3px] border-white/10 bg-zinc-900/40 p-5 text-left  transition duration-200 [animation-fill-mode:backwards] hover:-translate-y-0.5 hover:border-emerald-400/30   focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400 ${typeBorderClass}`}
+
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex flex-wrap items-center gap-2">
@@ -1174,7 +1174,7 @@ export function HomeClient() {
           aria-labelledby="citation-modal-title"
           role="dialog"
           aria-modal="true"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm animate-fade-in"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 animate-fade-in"
           onClick={closeCitationModal}
         >
           <Surface
@@ -1484,9 +1484,10 @@ function StatPill({
   value?: number;
   error?: string;
 }) {
+  const { t } = useT();
   return (
     <span className="inline-flex items-center gap-1.5 text-zinc-400">
-      <span className="tabular-nums text-[#eeeae4]">{error ? '—' : value ?? '…'}</span>
+      <span className="tabular-nums text-[#F0F3F1]">{error ? t('Common.notProvided') : value ?? '…'}</span>
       <span>{label}</span>
     </span>
   );

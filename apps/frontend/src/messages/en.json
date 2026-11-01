@@ -1017,7 +1017,7 @@
   },
   "Demo": {
     "heroSubtitle": "Explore your knowledge base",
-    "heading": "Your past knowledge, woven into every conversation",
+    "heading": "Keep knowledge connected.",
     "answer": "Answer",
     "sourcesCount": "Sources: {count}",
     "sources": "Sources",
@@ -1043,7 +1043,8 @@
     "pipeline": "Pipeline",
     "runPipeline": "Run Pipeline",
     "pipelineDesc": "The pipeline runs:",
-    "restricted": "This feature is not available in demo mode"
+    "restricted": "This feature is not available in demo mode",
+    "allConcepts": "All entries"
   },
   "QueryResults": {
     "resultUnavailable": "This saved result is no longer available. Search again to get a new result.",
@@ -1119,7 +1120,26 @@
     "noSearchMatches": "No {title} matching “{query}”.",
     "noConcepts": "No entries yet. Run the pipeline first.",
     "noSources": "No sources yet. Upload content and run the pipeline first.",
-    "noEntries": "No entries yet. Add content and run the pipeline first."
+    "noEntries": "No entries yet. Add content and run the pipeline first.",
+    "filterStatus": "Filter by status",
+    "filterAnnotation": "Filter by annotation",
+    "filterDate": "Filter by date",
+    "orderBy": "Order by",
+    "allStatuses": "All statuses",
+    "allAnnotations": "All annotations",
+    "allDates": "All dates",
+    "withDate": "Has data date",
+    "withoutDate": "No date provided",
+    "noStatus": "No status provided",
+    "titleAsc": "Name: ascending",
+    "titleDesc": "Name: descending",
+    "slugOrder": "Entry path",
+    "pathOrder": "Source path",
+    "dateDesc": "Data date: newest first",
+    "dateAsc": "Data date: oldest first",
+    "resultCount": "{count} / {total} results",
+    "clearControls": "Clear conditions",
+    "noFilterMatches": "No matching data. Adjust your search or filters."
   },
   "Status": {
     "title": "Pipeline Status",
@@ -1532,7 +1552,8 @@
   "Common": {
     "close": "Close",
     "noContent": "No content available.",
-    "noMarkdownContent": "No markdown content was returned for this entry."
+    "noMarkdownContent": "No markdown content was returned for this entry.",
+    "notProvided": "Not provided"
   },
   "RuntimeConfig": {
     "loadFailed": "Runtime configuration could not be loaded.",

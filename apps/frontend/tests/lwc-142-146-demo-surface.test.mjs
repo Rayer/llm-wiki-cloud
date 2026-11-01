@@ -59,12 +59,13 @@ test('concept route remains but user-facing concept copy becomes entries', async
 });
 
 test('main-path chrome strings are i18n-backed in zh-TW', async () => {
-  const [homeClient, pipelineClient, rawUploadPanel, rawClient, listClient, commandPalette, zhTW] = await Promise.all([
+  const [homeClient, pipelineClient, rawUploadPanel, rawClient, listClient, listToolbar, commandPalette, zhTW] = await Promise.all([
     readFile(new URL('../src/components/HomeClient.tsx', import.meta.url), 'utf8'),
     readFile(new URL('../src/components/PipelineClient.tsx', import.meta.url), 'utf8'),
     readFile(new URL('../src/components/RawUploadPanel.tsx', import.meta.url), 'utf8'),
     readFile(new URL('../src/components/RawClient.tsx', import.meta.url), 'utf8'),
     readFile(new URL('../src/components/ListClient.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../src/components/ListToolbar.tsx', import.meta.url), 'utf8'),
     readFile(new URL('../src/components/ui/CommandPalette.tsx', import.meta.url), 'utf8'),
     readFile(new URL('../src/messages/zh-TW.json', import.meta.url), 'utf8').then(JSON.parse),
   ]);
@@ -84,7 +85,8 @@ test('main-path chrome strings are i18n-backed in zh-TW', async () => {
   assert.match(rawUploadPanel, /t\('Pipeline\.select'\)/);
   assert.match(pipelineClient, /t\('Pipeline\.quotaLine'\)/);
   assert.match(rawClient, /useT\(\)/);
-  assert.match(listClient, /placeholder=\{t\('List\.searchPlaceholder'/);
+  assert.match(listClient, /<ListToolbar[\s\S]*searchLabel=\{t\('List\.searchPlaceholder', \{ title: title\.toLowerCase\(\) \}\)\}/);
+  assert.match(listToolbar, /<input type="search"[\s\S]*?placeholder=\{searchLabel\} aria-label=\{searchLabel\}/);
   assert.match(commandPalette, /labels\.sources/);
   assert.match(commandPalette, /labels\.concepts/);
   assert.equal(zhTW.Shell.raw, '原文');

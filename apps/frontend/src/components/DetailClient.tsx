@@ -116,7 +116,7 @@ function DetailClientSession({ slug, labelKey, label: labelOverride, backHref, l
               {entryType === 'source' ? t('Source.singular') : t('Entry.singular')}
             </Badge>
           ) : (
-            <span className="text-xs font-medium uppercase tracking-wider text-zinc-500">{label}</span>
+            <span className="text-xs font-medium text-zinc-500">{label}</span>
           )}
           {entry.status === 'draft' ? <Badge variant="draft">{t('Entry.draft')}</Badge> : null}
           {entry.status === 'published' ? <Badge variant="published">{t('Entry.published')}</Badge> : null}
@@ -157,24 +157,24 @@ function ConceptProvenance({ data }: { data?: Record<string, unknown> }) {
 
   return (
     <Surface variant="glass" className="p-5" data-testid="concept-generation-provenance">
-      <h2 className="text-xs font-semibold uppercase tracking-wider text-zinc-500">
+      <h2 className="text-xs font-semibold text-zinc-500">
         {t('ConceptProvenance.title')}
       </h2>
       <dl className="mt-4 grid gap-4 sm:grid-cols-2">
         <div>
-          <dt className="text-xs uppercase tracking-wider text-zinc-600">{t('ConceptProvenance.implementation')}</dt>
+          <dt className="text-xs text-zinc-600">{t('ConceptProvenance.implementation')}</dt>
           <dd className="mt-1 break-words text-sm text-zinc-200">{value(provenance.implementation)}</dd>
         </div>
         <div>
-          <dt className="text-xs uppercase tracking-wider text-zinc-600">{t('ConceptProvenance.version')}</dt>
+          <dt className="text-xs text-zinc-600">{t('ConceptProvenance.version')}</dt>
           <dd className="mt-1 break-words text-sm text-zinc-200">{value(provenance.version)}</dd>
         </div>
         <div>
-          <dt className="text-xs uppercase tracking-wider text-zinc-600">{t('ConceptProvenance.revision')}</dt>
+          <dt className="text-xs text-zinc-600">{t('ConceptProvenance.revision')}</dt>
           <dd className="mt-1 break-words text-sm text-zinc-200">{value(provenance.revision)}</dd>
         </div>
         <div>
-          <dt className="text-xs uppercase tracking-wider text-zinc-600">{t('ConceptProvenance.compileRun')}</dt>
+          <dt className="text-xs text-zinc-600">{t('ConceptProvenance.compileRun')}</dt>
           <dd className="mt-1 break-words text-sm text-zinc-200">{value(provenance.compileRun)}</dd>
         </div>
       </dl>
@@ -188,13 +188,13 @@ function Frontmatter({ data }: { data: Record<string, unknown> }) {
 
   return (
     <Surface variant="glass" className="p-5">
-      <h2 className="text-xs font-semibold uppercase tracking-wider text-zinc-500">
+      <h2 className="text-xs font-semibold text-zinc-500">
         Metadata
       </h2>
       <dl className="mt-4 grid gap-4 sm:grid-cols-2">
         {entries.map(([key, value]) => (
           <div key={key}>
-            <dt className="text-xs uppercase tracking-wider text-zinc-600">{key}</dt>
+            <dt className="text-xs text-zinc-600">{key}</dt>
             <dd className="mt-1 break-words text-sm text-zinc-200">
               {renderFrontmatterValue(key, value)}
             </dd>
@@ -226,7 +226,7 @@ function renderFrontmatterValue(key: string, value: unknown) {
     }
   }
 
-  // OLW sources use source_file: raw/….md — link like the sources list (LWC-139).
+  // OLW sources use source_file: raw/….md，link like the sources list (LWC-139).
   if ((key === 'source_file' || key === 'source') && typeof value === 'string' && value.trim()) {
     const fileName = rawFileNameFromSource(value);
     return (

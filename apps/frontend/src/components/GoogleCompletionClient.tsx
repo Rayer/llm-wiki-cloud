@@ -122,7 +122,7 @@ export function GoogleCompletionClient() {
 
   return (
     <main className="flex min-h-dvh items-center justify-center px-4 py-8">
-      <section className="w-full max-w-md rounded-2xl border border-white/10 bg-[#151515] p-6 text-center shadow-2xl sm:p-8" aria-live="polite">
+      <section className="w-full max-w-md rounded border border-white/10 bg-[#151515] p-6 text-center sm:p-8" aria-live="polite">
         {state === 'completing' ? <><p className="text-lg font-semibold text-white">{t('GoogleCompletion.completing')}</p><p className="mt-2 text-sm text-zinc-400">{t('GoogleCompletion.completingHint')}</p></> : null}
         {state === 'confirming' && pending ? (
           <>
@@ -133,16 +133,17 @@ export function GoogleCompletionClient() {
               <div><dt className="text-zinc-500">{t('AccountSettings.googleEmail')}</dt><dd className="break-all font-medium text-white">{pending.provider_email}</dd></div>
             </dl>
             <div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
-              <button type="button" disabled={busy} onClick={() => void decideLink(false)} className="min-h-11 rounded-lg border border-white/10 px-4 py-2.5 text-sm text-zinc-300 hover:bg-white/10 disabled:opacity-60">{t('GoogleCompletion.cancel')}</button>
-              <button type="button" disabled={busy} onClick={() => void decideLink(true)} className="min-h-11 rounded-lg bg-emerald-300 px-4 py-2.5 text-sm font-semibold text-black hover:bg-emerald-200 disabled:opacity-60">{busy ? t('GoogleCompletion.saving') : t('GoogleCompletion.confirm')}</button>
+              <button type="button" disabled={busy} onClick={() => void decideLink(false)} className="min-h-11 rounded border border-white/10 px-4 py-2.5 text-sm text-zinc-300 hover:bg-white/10 disabled:opacity-60">{t('GoogleCompletion.cancel')}</button>
+              <button type="button" disabled={busy} onClick={() => void decideLink(true)} className="min-h-11 rounded bg-emerald-300 px-4 py-2.5 text-sm font-semibold text-black hover:bg-emerald-200 disabled:opacity-60">{busy ? t('GoogleCompletion.saving') : t('GoogleCompletion.confirm')}</button>
             </div>
           </>
         ) : null}
         {state === 'failed' && error ? (
           <>
+            <h1 className="mb-4 text-2xl font-semibold text-white">{t('Login.title')}</h1>
             <p role="alert" className="text-lg font-semibold text-white">{error.message}</p>
             <div className="mt-4 text-left text-sm text-zinc-300"><span className="text-zinc-500">{t('GoogleCompletion.supportReference')}</span> <code className="break-all select-all text-emerald-200">{error.supportRef}</code><button type="button" className="mt-2 min-h-11 rounded border border-white/10 px-3 text-xs text-zinc-200 hover:bg-white/10" onClick={() => { void navigator.clipboard?.writeText(error.supportRef); }}>{t('GoogleCompletion.copyReference')}</button></div>
-            <button type="button" onClick={() => router.replace('/')} className="mt-6 min-h-11 w-full rounded-lg border border-white/10 px-4 py-2.5 text-sm font-medium text-zinc-200 hover:bg-white/10">{t('GoogleCompletion.return')}</button>
+            <button type="button" onClick={() => router.replace('/')} className="mt-6 min-h-11 w-full rounded border border-white/10 px-4 py-2.5 text-sm font-medium text-zinc-200 hover:bg-white/10">{t('GoogleCompletion.return')}</button>
           </>
         ) : null}
       </section>

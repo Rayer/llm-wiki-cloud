@@ -37,10 +37,10 @@ function formatBytes(bytes: number) {
   return `${value >= 10 || unit === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unit]}`;
 }
 
-function formatUpdated(value: string, locale: 'zh-TW' | 'zh-CN' | 'en') {
-  if (!value) return '—';
+function formatUpdated(value: string, locale: 'zh-TW' | 'zh-CN' | 'en', notProvided: string) {
+  if (!value) return notProvided;
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return '—';
+  if (Number.isNaN(date.getTime())) return notProvided;
   return new Intl.DateTimeFormat(locale === 'zh-TW' ? 'zh-TW' : locale === 'zh-CN' ? 'zh-CN' : 'en-US', {
     year: 'numeric',
     month: 'short',
@@ -355,7 +355,7 @@ function RawClientSession() {
         <Surface variant="glass" className="overflow-hidden">
           <div className="overflow-x-auto">
             <table className="min-w-full text-left text-sm">
-              <thead className="border-b border-white/10 bg-white/[0.03] text-xs uppercase tracking-wider text-zinc-500">
+              <thead className="border-b border-white/10 bg-white/[0.03] text-xs text-zinc-500">
                 <tr>
                   <th className="px-4 py-3 font-semibold">{t('Raw.name')}</th>
                   <th className="px-4 py-3 font-semibold">{t('Raw.size')}</th>
@@ -395,14 +395,14 @@ function RawClientSession() {
                         {formatBytes(file.size)}
                       </td>
                       <td className="whitespace-nowrap px-4 py-3 text-zinc-400">
-                        {formatUpdated(file.updated, locale)}
+                        {formatUpdated(file.updated, locale, t('Common.notProvided'))}
                       </td>
                       <td className="px-4 py-3">
                         <code
                           className="block max-w-[18rem] truncate rounded-md border border-white/10 bg-black/30 px-2 py-1 font-mono text-xs text-zinc-300"
                           title={file.sha256 || undefined}
                         >
-                          {file.sha256 || '—'}
+                          {file.sha256 || t('Common.notProvided')}
                         </code>
                       </td>
                       <td className="whitespace-nowrap px-4 py-3">
@@ -421,7 +421,7 @@ function RawClientSession() {
 
       {scopedPreview ? (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black p-3 backdrop-blur-sm sm:p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black p-3 sm:p-4"
           onClick={closePreview}
         >
           <Surface
@@ -431,7 +431,7 @@ function RawClientSession() {
             aria-labelledby="raw-preview-title"
             variant="elevated"
             className="flex max-h-[calc(100dvh-1.5rem)] w-full max-w-4xl flex-col overflow-hidden bg-zinc-900 sm:max-h-[calc(100dvh-2rem)]"
-            style={{ backgroundColor: '#18181b' }}
+            style={{ backgroundColor: '#191B1C' }}
             onClick={(event) => event.stopPropagation()}
           >
             <div className="flex items-start justify-between gap-4 border-b border-white/10 p-4">
@@ -482,7 +482,7 @@ function RawClientSession() {
                 />
               ) : null}
               {!previewLoading && !scopedPreviewError && scopedPreview.kind === 'markdown' ? (
-                <div className="min-w-0 max-w-full overflow-x-auto rounded-md border border-white/10 bg-[#111111] p-4">
+                <div className="min-w-0 max-w-full overflow-x-auto rounded-md border border-white/10 bg-[#101112] p-4">
                   <MarkdownView content={scopedPreview.content} preserveLeadingHeading />
                 </div>
               ) : null}

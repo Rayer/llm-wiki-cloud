@@ -66,7 +66,6 @@ export function CLILaneClient() {
   return (
     <div className="mx-auto w-full max-w-4xl space-y-7 px-4 py-8 sm:px-6 lg:py-12">
       <header className="space-y-3">
-        <p className="font-mono text-xs uppercase tracking-[0.2em] text-emerald-300">{t('CLILane.eyebrow')}</p>
         <h1 aria-label={`${t('CLILane.title')} ${t('Shell.betaBadge')}`} className="flex flex-wrap items-center gap-x-3 gap-y-2 text-3xl font-semibold tracking-tight text-white sm:text-4xl">
           <span>{t('CLILane.title')}</span>
           <Badge variant="accent">{t('Shell.betaBadge')}</Badge>
@@ -84,7 +83,7 @@ export function CLILaneClient() {
             type="button"
             aria-pressed={shell === option}
             onClick={() => setShell(option)}
-            className={`min-h-10 rounded-lg border px-3 text-sm transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400 ${shell === option ? 'border-emerald-300/60 bg-emerald-300/10 text-emerald-100' : 'border-white/10 text-zinc-300 hover:bg-white/5'}`}
+            className={`min-h-10 rounded border px-3 text-sm transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400 ${shell === option ? 'border-emerald-300/60 bg-emerald-300/10 text-emerald-100' : 'border-white/10 text-zinc-300 hover:bg-white/5'}`}
           >
             {option === 'posix' ? t('CLILane.posixShell') : t('CLILane.powershell')}
           </button>
@@ -102,16 +101,16 @@ export function CLILaneClient() {
                 {platformLabels.map(([target, label]) => {
                   const asset = assets.find((item) => `${item.os}/${item.arch}` === target);
                   return (
-                    <article key={target} className="rounded-xl border border-white/10 bg-black/20 p-4">
+                    <article key={target} className="rounded border border-white/10 bg-black/20 p-4">
                       <h3 className="font-medium text-white">{label}</h3>
                       {asset?.download_url ? (
                         <>
-                          <p className="mt-2 break-all font-mono text-xs text-zinc-400">{asset.asset_name}</p>
+                          <p className="mt-2 break-all font-sans text-xs text-zinc-400">{asset.asset_name}</p>
                           <a
                             href={asset.download_url}
                             target="_blank"
                             rel="noreferrer"
-                            className="mt-3 inline-flex min-h-10 items-center gap-2 rounded-lg bg-emerald-300 px-3 text-sm font-semibold text-black hover:bg-emerald-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
+                            className="mt-3 inline-flex min-h-10 items-center gap-2 rounded bg-emerald-300 px-3 text-sm font-semibold text-black hover:bg-emerald-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
                           >
                             <Download aria-hidden="true" size={16} />{t('CLILane.download')}
                           </a>
@@ -155,10 +154,10 @@ export function CLILaneClient() {
                   placeholder={shell === 'powershell' ? 'C:\\Users\\you\\Documents\\YourWiki' : '/Users/you/Documents/YourWiki'}
                   autoComplete="off"
                   spellCheck={false}
-                  className="mt-2 min-h-12 w-full rounded-lg border border-white/10 bg-black/30 px-4 py-3 font-mono text-sm text-white outline-none focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400"
+                  className="mt-2 min-h-12 w-full rounded border border-white/10 bg-black/30 px-4 py-3 font-mono text-sm text-white outline-none focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400"
                 />
               </label>
-              <button type="button" onClick={() => setRoot(suggestedRoot)} className="min-h-11 rounded-lg border border-white/15 px-3 text-sm text-zinc-200 hover:bg-white/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400">
+              <button type="button" onClick={() => setRoot(suggestedRoot)} className="min-h-11 rounded border border-white/15 px-3 text-sm text-zinc-200 hover:bg-white/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400">
                 {t('CLILane.documentsExample')}
               </button>
             </div>
@@ -167,7 +166,7 @@ export function CLILaneClient() {
             <p className="mt-3 text-sm leading-6 text-zinc-400">{t('CLILane.sameInit')}</p>
             <p className="mt-3 text-sm leading-6 text-zinc-400">{t('CLILane.recoveryGuidance')}</p>
             <CommandLine command={commands.init} label={t('CLILane.copy')} copied={copyStatus === 'init'} onCopy={() => void copy('init', commands.init)} />
-            <details className="mt-5 rounded-lg border border-white/10 bg-black/20 p-4">
+            <details className="mt-5 rounded border border-white/10 bg-black/20 p-4">
               <summary className="cursor-pointer text-sm font-medium text-zinc-200">{t('CLILane.obsidianTitle')}</summary>
               <p className="mt-3 text-sm leading-6 text-zinc-400">{t('CLILane.obsidianDescription')}</p>
             </details>
@@ -182,7 +181,7 @@ export function CLILaneClient() {
               {t('CLILane.syncOption')}
             </label>
             <CommandLine command={syncMissing ? commands.pushSync : commands.push} label={t('CLILane.copy')} copied={copyStatus === 'push'} onCopy={() => void copy('push', syncMissing ? commands.pushSync : commands.push)} />
-            <details className="mt-5 rounded-lg border border-white/10 bg-black/20 p-4">
+            <details className="mt-5 rounded border border-white/10 bg-black/20 p-4">
               <summary className="cursor-pointer text-sm font-medium text-zinc-200">{t('CLILane.syncDetailsTitle')}</summary>
               <ul className="mt-3 list-disc space-y-2 pl-5 text-sm leading-6 text-zinc-400">
                 <li>{t('CLILane.syncConflict')}</li>
@@ -208,7 +207,7 @@ function StepCard({ number, title, open, onToggle, children }: {
   children: React.ReactNode;
 }) {
   return (
-    <section className="overflow-hidden rounded-2xl border border-white/10 bg-[#151515] shadow-lg shadow-black/10">
+    <section className="overflow-hidden rounded border border-white/10 bg-[#151515] shadow-black/10">
       <h2>
         <button
           type="button"
@@ -217,7 +216,7 @@ function StepCard({ number, title, open, onToggle, children }: {
           onClick={onToggle}
           className="flex min-h-16 w-full items-center gap-4 px-4 py-4 text-left sm:px-5"
         >
-          <span className="flex size-9 shrink-0 items-center justify-center rounded-full border border-emerald-300/30 font-mono text-sm text-emerald-200">{number}</span>
+          <span className="flex size-9 shrink-0 items-center justify-center rounded-full border border-emerald-300/30 font-sans text-sm text-emerald-200">{number}</span>
           <span className="flex-1 text-base font-semibold text-white sm:text-lg">{title}</span>
           <ChevronDown aria-hidden="true" className={`shrink-0 text-zinc-400 transition-transform ${open ? 'rotate-180' : ''}`} size={18} />
         </button>
@@ -230,14 +229,14 @@ function StepCard({ number, title, open, onToggle, children }: {
 function CommandLine({ command, label, copied, onCopy }: { command: string; label: string; copied: boolean; onCopy: () => void }) {
   const { t } = useT();
   return (
-    <div className="mt-3 flex items-start gap-2 rounded-xl border border-white/10 bg-black/40 p-3">
+    <div className="mt-3 flex items-start gap-2 rounded border border-white/10 bg-black/40 p-3">
       <code className="min-w-0 flex-1 whitespace-pre-wrap break-all font-mono text-xs leading-6 text-emerald-100 sm:text-sm">{command || t('CLILane.enterRoot')}</code>
       <button
         type="button"
         disabled={!command}
         aria-label={copied ? t('CLILane.copied') : label}
         onClick={onCopy}
-        className="inline-flex min-h-10 min-w-10 shrink-0 items-center justify-center rounded-lg border border-white/10 text-zinc-300 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400"
+        className="inline-flex min-h-10 min-w-10 shrink-0 items-center justify-center rounded border border-white/10 text-zinc-300 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400"
       >
         {copied ? <Check aria-hidden="true" size={16} /> : <Copy aria-hidden="true" size={16} />}
         <span className="sr-only">{copied ? t('CLILane.copied') : label}</span>

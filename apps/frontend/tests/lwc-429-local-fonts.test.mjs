@@ -19,8 +19,8 @@ test('LWC-429 loads pinned local fonts and keeps the existing font variables', (
   assert.doesNotMatch(layout, /weight: "200 900"/);
   assert.match(layout, /display: "swap"/);
   assert.doesNotMatch(globalStyles, /fonts\.googleapis\.com|fonts\.gstatic\.com/);
-  assert.match(legalLayout, /font-serif text-xl/);
-  assert.match(legalLayout, /\[&_h1\]:font-serif/);
+  assert.match(legalLayout, /font-sans text-xl/);
+  assert.match(legalLayout, /\[&_h1\]:font-sans/);
   assert.doesNotMatch(legalLayout, /\[&_h1\]:font-(?:medium|semibold|bold)/);
 
   for (const asset of [

@@ -189,12 +189,12 @@ export function AdminSharedProfilesPanel() {
       <p className="mt-1 text-sm text-zinc-400">{t('Admin.sharedProfiles.hint')}</p>
     </div>
     {loading ? <p role="status" className="text-sm text-zinc-400">{t('Admin.sharedProfiles.loading')}</p> : null}
-    {!loading && profiles.length === 0 ? <p className="rounded-lg border border-white/10 bg-black/20 p-3 text-sm text-zinc-400">{t('Admin.sharedProfiles.empty')}</p> : null}
-    {profiles.length ? <ul className="space-y-2">{profiles.map((profile) => <li key={profile.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-white/10 bg-black/20 p-3">
+    {!loading && profiles.length === 0 ? <p className="rounded border border-white/10 bg-black/20 p-3 text-sm text-zinc-400">{t('Admin.sharedProfiles.empty')}</p> : null}
+    {profiles.length ? <ul className="space-y-2">{profiles.map((profile) => <li key={profile.id} className="flex flex-wrap items-center justify-between gap-3 rounded border border-white/10 bg-black/20 p-3">
       <div className="min-w-0"><p className="font-medium text-white">{profile.name}</p><p className="mt-1 break-all text-xs text-zinc-400">{profile.provider} · {t('BYOK.fastModel')}: {profile.models?.fast ?? profile.model} · {t('BYOK.heavyModel')}: {profile.models?.heavy ?? profile.model} · {t('Admin.sharedProfiles.priority')} {profile.priority ?? 100} · {profile.available_to_public ? t('Admin.sharedProfiles.public') : t('Admin.sharedProfiles.private')} · {profile.enabled ? t('Admin.sharedProfiles.enabled') : t('Admin.sharedProfiles.disabled')} · {profile.secret_configured ? t('Admin.sharedProfiles.keySaved') : t('Admin.sharedProfiles.noKey')}</p></div>
       <div className="flex gap-2"><button type="button" disabled={busy} onClick={() => edit(profile)} className="min-h-10 rounded-md border border-white/15 px-3 text-sm text-zinc-200">{t('BYOK.edit')}</button><button type="button" disabled={busy} onClick={() => void remove(profile)} className="min-h-10 rounded-md border border-red-300/20 px-3 text-sm text-red-200">{t('BYOK.delete')}</button></div>
     </li>)}</ul> : null}
-    <form onSubmit={(event) => void save(event)} className="space-y-3 rounded-lg border border-white/10 bg-black/20 p-4">
+    <form onSubmit={(event) => void save(event)} className="space-y-3 rounded border border-white/10 bg-black/20 p-4">
       <h3 className="font-semibold text-white">{editing ? t('Admin.sharedProfiles.editTitle') : t('Admin.sharedProfiles.addTitle')}</h3>
       <div className="grid gap-3 sm:grid-cols-2">
         <label className="text-sm text-zinc-300">{t('BYOK.name')}<input required maxLength={100} value={name} onChange={(event) => setName(event.target.value)} className="mt-1 min-h-11 w-full rounded-md border border-white/10 bg-black/30 px-3 text-white" /></label>

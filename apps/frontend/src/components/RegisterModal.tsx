@@ -55,12 +55,12 @@ export function RegisterModal({ onClose, onSuccess, t }: Props) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4" onClick={onClose}>
       <div
         role="dialog"
         aria-modal="true"
         aria-labelledby="register-title"
-        className="w-full max-w-md rounded-2xl border border-white/10 bg-[#151515] p-6 shadow-2xl sm:p-8"
+        className="w-full max-w-md rounded border border-white/10 bg-[#151515] p-6 sm:p-8"
         onClick={(event) => event.stopPropagation()}
       >
         <h2 id="register-title" className="text-2xl font-semibold text-white">{t('Register.title')}</h2>
@@ -72,8 +72,8 @@ export function RegisterModal({ onClose, onSuccess, t }: Props) {
               ref={emailRef} type="email" autoComplete="email" required
               value={email}
               onChange={e => setEmail(e.target.value)}
-              className="mt-2 w-full rounded-lg border border-white/10 bg-black/30 px-4 py-3 text-white outline-none transition placeholder:text-zinc-400 focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
-              placeholder="you@example.com"
+              className="mt-2 w-full rounded border border-white/10 bg-black/30 px-4 py-3 text-white outline-none transition placeholder:text-zinc-400 focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
+              placeholder={/* taste-skill-ignore: a valid input example, not fabricated product data. */ "you@example.com"}
             />
           </label>
           <label className="block text-sm font-medium text-zinc-300">
@@ -84,7 +84,7 @@ export function RegisterModal({ onClose, onSuccess, t }: Props) {
                 minLength={8}
                 value={password}
                 onChange={e => setPassword(e.target.value)}
-                className="w-full rounded-lg border border-white/10 bg-black/30 px-4 py-3 pr-24 text-white outline-none transition focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
+                className="w-full rounded border border-white/10 bg-black/30 px-4 py-3 pr-24 text-white outline-none transition focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
               />
               <button
                 type="button"
@@ -98,17 +98,17 @@ export function RegisterModal({ onClose, onSuccess, t }: Props) {
             </span>
           </label>
           {error ? (
-            <p role="alert" className="rounded-lg border border-red-400/20 bg-red-400/10 px-3 py-2 text-sm text-red-200">{error}</p>
+            <p role="alert" className="rounded border border-red-400/20 bg-red-400/10 px-3 py-2 text-sm text-red-200">{error}</p>
           ) : null}
           <button
             type="submit" disabled={loading}
-            className="w-full rounded-lg bg-emerald-300 px-4 py-3 font-semibold text-black transition hover:bg-emerald-200 disabled:opacity-60"
+            className="w-full rounded bg-emerald-300 px-4 py-3 font-semibold text-black transition hover:bg-emerald-200 disabled:opacity-60"
           >
             {loading ? t('Register.registering') : t('Register.signUp')}
           </button>
           <button
             type="button" onClick={onClose}
-            className="w-full rounded-lg border border-white/10 bg-transparent px-4 py-3 text-sm font-medium text-zinc-300 transition hover:bg-white/10"
+            className="w-full rounded border border-white/10 bg-transparent px-4 py-3 text-sm font-medium text-zinc-300 transition hover:bg-white/10"
           >
             {t('Register.backToLogin')}
           </button>

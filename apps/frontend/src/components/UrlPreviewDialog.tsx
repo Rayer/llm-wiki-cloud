@@ -83,7 +83,7 @@ export function UrlPreviewDialog({
                     <input value={title} maxLength={200} onChange={(event) => setEditedTitle(event.target.value)} className="mt-1 block w-full rounded-md border border-white/10 bg-black/40 px-3 py-2 text-white" />
                   </label>
                   <p className="break-all text-xs text-zinc-400">{result.preview.source_url}</p>
-                  <p className="break-all font-mono text-[11px] text-zinc-500">{labels.digest}: {result.candidate_revision ?? result.preview.candidate_sha256}</p>
+                  <p className="break-all font-sans text-xs text-zinc-500">{labels.digest}: {result.candidate_revision ?? result.preview.candidate_sha256}</p>
                   {knownMetadata ? (
                     <dl className="grid gap-1 text-xs text-zinc-400 sm:grid-cols-2">
                       {(['created', 'author', 'published', 'description', 'tags'] as const).flatMap((key) => {

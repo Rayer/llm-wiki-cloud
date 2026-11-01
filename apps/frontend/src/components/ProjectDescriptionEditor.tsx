@@ -216,7 +216,7 @@ export function ProjectDescriptionEditor({ projectId }: { projectId: string }) {
       id="project-description"
       tabIndex={-1}
       aria-labelledby="project-description-heading"
-      className="rounded-[var(--radius-lg)] border border-white/10 bg-zinc-900/45 p-5 backdrop-blur-sm sm:p-6"
+      className="rounded-[var(--radius-lg)] border border-white/10 bg-zinc-900/45 p-5 sm:p-6"
     >
       <h2 id="project-description-heading" className="text-xl font-semibold text-white">
         {t('ProjectDescription.title')}
@@ -237,8 +237,8 @@ export function ProjectDescriptionEditor({ projectId }: { projectId: string }) {
 
       {loadState === 'ready' && saved ? (
         <>
-          <div className="mt-4 rounded-lg border border-white/8 bg-black/15 p-3">
-            <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">{t('ProjectDescription.savedValue')}</p>
+          <div className="mt-4 rounded border border-white/8 bg-black/15 p-3">
+            <p className="text-xs font-medium text-zinc-500">{t('ProjectDescription.savedValue')}</p>
             <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-zinc-200">
               {saved.description || t('ProjectDescription.empty')}
             </p>
@@ -257,7 +257,7 @@ export function ProjectDescriptionEditor({ projectId }: { projectId: string }) {
               setSaveError('');
               setSavedNotice(false);
             }}
-            className="mt-2 w-full resize-y rounded-lg border border-white/10 bg-black/30 px-4 py-3 text-white outline-none transition focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400 disabled:opacity-60"
+            className="mt-2 w-full resize-y rounded border border-white/10 bg-black/30 px-4 py-3 text-white outline-none transition focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400 disabled:opacity-60"
           />
           <p className="mt-2 text-xs text-zinc-500" aria-live="polite">
             {t('ProjectDescription.counter', { count: projectDescriptionCodePointCount(draft), max: MAX_PROJECT_DESCRIPTION_LENGTH })}
@@ -267,11 +267,11 @@ export function ProjectDescriptionEditor({ projectId }: { projectId: string }) {
           {saveError ? <p className="mt-3 text-sm text-red-200" role="alert">{t('ProjectDescription.saveFailed', { error: saveError })}</p> : null}
           {savedNotice ? <p className="mt-3 text-sm text-emerald-200" role="status">{t('ProjectDescription.saved')}</p> : null}
           {conflict ? (
-            <div className="mt-3 rounded-lg border border-amber-200/30 bg-amber-200/[0.06] p-3" role="alert">
+            <div className="mt-3 rounded border border-amber-200/30 bg-amber-200/[0.06] p-3" role="alert">
               <p className="text-sm text-amber-100">{t('ProjectDescription.conflict')}</p>
               {latest ? (
                 <>
-                  <p className="mt-2 text-xs font-medium uppercase tracking-wide text-zinc-400">{t('ProjectDescription.latestValue')}</p>
+                  <p className="mt-2 text-xs font-medium text-zinc-400">{t('ProjectDescription.latestValue')}</p>
                   <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-zinc-200">{latest.description || t('ProjectDescription.empty')}</p>
                 </>
               ) : null}
@@ -292,7 +292,7 @@ export function ProjectDescriptionEditor({ projectId }: { projectId: string }) {
               type="button"
               onClick={() => void save()}
               disabled={!dirty || !valid || saving || conflict}
-              className="min-h-11 rounded-lg bg-emerald-300 px-4 py-2 text-sm font-semibold text-zinc-950 transition hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-50"
+              className="min-h-11 rounded bg-emerald-300 px-4 py-2 text-sm font-semibold text-zinc-950 transition hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {saving ? t('ProjectDescription.saving') : t('ProjectDescription.save')}
             </button>

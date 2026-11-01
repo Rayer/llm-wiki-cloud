@@ -95,8 +95,8 @@ function ProfileGuidanceArtifactDetails({ projectId, revision, title }: { projec
   if (!current?.artifact) return <p className="mt-3 text-sm text-zinc-400" role="status">{t('Profile.loadingImmutableGuidance')}</p>;
 
   return (
-    <section className="mt-4 rounded-lg border border-white/10 p-3" aria-label={title}>
-      <h4 className="text-xs font-semibold uppercase tracking-wide text-sky-200">{title}</h4>
+    <section className="mt-4 rounded border border-white/10 p-3" aria-label={title}>
+      <h4 className="text-xs font-semibold text-sky-200">{title}</h4>
       <p className="mt-2 break-all text-xs leading-5 text-zinc-400">
         {t('Profile.revisionLabel')} <code>{current.artifact.revision}</code>
       </p>
@@ -608,16 +608,16 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
   return (
     <section
       aria-labelledby={guideOpen ? 'profile-guide-heading' : 'project-profile-heading'}
-      className="rounded-[var(--radius-lg)] border border-white/10 bg-zinc-900/45 p-5 backdrop-blur-sm sm:p-6"
+      className="lwc-project-settings"
     >
       <div hidden={guideOpen}>
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h2 id="project-profile-heading" className="text-xl font-semibold text-white">{t('Profile.pageTitle')}</h2>
+          <h2 id="project-profile-heading" className="sr-only">{t('Profile.pageTitle')}</h2>
         </div>
       </div>
 
-      <div className="mt-5 grid grid-cols-2 gap-2 rounded-xl border border-white/10 bg-black/20 p-1.5 sm:inline-grid sm:grid-cols-4 sm:min-w-[36rem]" role="tablist" aria-label={t('Profile.settingsTabs')}>
+      <div className="mt-5 grid grid-cols-2 gap-2 rounded border border-white/10 bg-black/20 p-1.5 sm:inline-grid sm:grid-cols-4 sm:min-w-[36rem]" role="tablist" aria-label={t('Profile.settingsTabs')}>
         {PROJECT_SETTINGS_TABS.map((tab, index) => (
           <button
             key={tab}
@@ -630,7 +630,7 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
             tabIndex={activeSettingsTab === tab ? 0 : -1}
             onClick={() => setActiveSettingsTab(tab)}
             onKeyDown={handleSettingsTabKeyDown}
-            className={`min-h-11 rounded-lg px-3 py-2 text-sm font-medium transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 ${activeSettingsTab === tab ? 'bg-emerald-300 text-zinc-950' : 'text-zinc-300 hover:bg-white/5 hover:text-white'}`}
+            className={`min-h-11 rounded px-3 py-2 text-sm font-medium transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 ${activeSettingsTab === tab ? 'bg-emerald-300 text-zinc-950' : 'text-zinc-300 hover:bg-white/5 hover:text-white'}`}
           >
             {t(tab === 'project-info' ? 'Profile.projectInfoTab'
               : tab === 'pipeline' ? 'Profile.pipelineTab'
@@ -714,7 +714,7 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
             <p className="mt-2 max-w-3xl text-sm leading-6 text-zinc-400">{t('Profile.intro')}</p>
           </div>
           {showNewProjectIntro ? (
-            <section className="mt-4 rounded-xl border border-emerald-200/25 bg-emerald-200/[0.06] p-4" aria-labelledby="new-project-profile-intro-heading">
+            <section className="mt-4 rounded border border-emerald-200/25 bg-emerald-200/[0.06] p-4" aria-labelledby="new-project-profile-intro-heading">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <h3 id="new-project-profile-intro-heading" className="text-sm font-semibold text-emerald-50">
@@ -727,7 +727,7 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
                 <button
                   type="button"
                   onClick={() => setIntroVisibleFor('')}
-                  className="min-h-11 min-w-11 rounded-lg border border-white/10 px-3 text-zinc-300 hover:bg-white/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
+                  className="min-h-11 min-w-11 rounded border border-white/10 px-3 text-zinc-300 hover:bg-white/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
                   aria-label={t('Profile.localUx.newProjectIntroClose')}
                 >
                   ×
@@ -737,14 +737,14 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
                 <button
                   type="button"
                   onClick={reviewSettingsFromIntro}
-                  className="min-h-11 rounded-lg bg-emerald-300 px-4 text-sm font-semibold text-zinc-950 hover:bg-emerald-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
+                  className="min-h-11 rounded bg-emerald-300 px-4 text-sm font-semibold text-zinc-950 hover:bg-emerald-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
                 >
                   {t('Profile.localUx.newProjectIntroReview')}
                 </button>
                 <button
                   type="button"
                   onClick={addDataFromIntro}
-                  className="min-h-11 rounded-lg border border-emerald-100/30 px-4 text-sm font-semibold text-emerald-50 hover:bg-emerald-100/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
+                  className="min-h-11 rounded border border-emerald-100/30 px-4 text-sm font-semibold text-emerald-50 hover:bg-emerald-100/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
                 >
                   {t('Profile.localUx.newProjectIntroAddData')}
                 </button>
@@ -754,12 +754,12 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
 
           <p className="mt-4 text-xs leading-5 text-zinc-500">{t('Profile.localUx.layersDescription')}</p>
 
-          <section className="mt-4 rounded-xl border border-amber-200/30 bg-amber-200/[0.08] p-4" aria-labelledby="profile-update-notice-heading">
+          <section className="mt-4 rounded border border-amber-200/30 bg-amber-200/[0.08] p-4" aria-labelledby="profile-update-notice-heading">
             <h3 id="profile-update-notice-heading" className="text-sm font-semibold text-amber-100">{t('Profile.localUx.noticeHeading')}</h3>
             <p className="mt-1 text-sm leading-6 text-zinc-200">{t('Profile.localUx.noticeBody')}</p>
           </section>
 
-          <div className="mt-4 space-y-2 rounded-xl border border-white/10 bg-black/15 p-4" aria-live="polite">
+          <div className="mt-4 space-y-2 rounded border border-white/10 bg-black/15 p-4" aria-live="polite">
             {visibleProfile.active ? (
               <p className="text-sm text-emerald-200">{t('Profile.active', { candidateId: visibleProfile.active.candidate_id })}</p>
             ) : (
@@ -853,7 +853,7 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
             <button
               type="button"
               onClick={() => setOpenCard('requirements')}
-              className="min-h-11 rounded-lg bg-emerald-300 px-4 text-sm font-semibold text-zinc-950 hover:bg-emerald-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
+              className="min-h-11 rounded bg-emerald-300 px-4 text-sm font-semibold text-zinc-950 hover:bg-emerald-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
             >
               {t('Profile.localUx.setPreferences')}
             </button>
@@ -861,21 +861,21 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
               ref={guideEntryRef}
               type="button"
               onClick={() => setGuideOpen(true)}
-              className="min-h-11 rounded-lg border border-white/10 px-4 text-sm text-zinc-200 hover:bg-white/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
+              className="min-h-11 rounded border border-white/10 px-4 text-sm text-zinc-200 hover:bg-white/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
             >
               {t('Profile.localUx.seeExample')}
             </button>
           </div>
 
           <div className="mt-4 flex flex-col gap-3">
-          <section className="order-2 rounded-xl border border-white/10 bg-black/10 p-4" aria-labelledby="profile-interpretation-card-heading">
+          <section className="order-2 rounded border border-white/10 bg-black/10 p-4" aria-labelledby="profile-interpretation-card-heading">
             <h3>
               <button
                 type="button"
                 aria-expanded={openCard === 'interpretation'}
                 aria-controls="profile-interpretation-card"
                 onClick={() => setOpenCard((current) => current === 'interpretation' ? null : 'interpretation')}
-                className="min-h-11 w-full rounded-lg text-left text-base font-semibold text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
+                className="min-h-11 w-full rounded text-left text-base font-semibold text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
               >
                 <span id="profile-interpretation-card-heading">{t('Profile.localUx.cards.interpretation')}</span>
                 <span aria-hidden="true" className="float-right text-zinc-400">{openCard === 'interpretation' ? '−' : '+'}</span>
@@ -884,7 +884,7 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
             <p className="mt-1 text-xs leading-5 text-zinc-400">{t('Profile.localUx.interpretationCardDescription')}</p>
             <div id="profile-interpretation-card" hidden={openCard !== 'interpretation'}>
           {showFirstCompileBootstrap ? (
-            <section className="mt-5 rounded-xl border border-sky-300/20 bg-sky-300/5 p-4" aria-labelledby="profile-bootstrap-heading" aria-busy={visibleBootstrapLoading}>
+            <section className="mt-5 rounded border border-sky-300/20 bg-sky-300/5 p-4" aria-labelledby="profile-bootstrap-heading" aria-busy={visibleBootstrapLoading}>
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
                   <h3 id="profile-bootstrap-heading" className="text-sm font-semibold text-white">{t('Profile.firstCompileGuidance')}</h3>
@@ -897,7 +897,7 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
                     type="button"
                     disabled={saving || working || !bootstrapMatchesProfile || !bootstrapMatchesDraft}
                     onClick={() => void confirmBootstrapGuidance()}
-                    className="min-h-10 rounded-lg bg-sky-200 px-3 text-sm font-semibold text-zinc-950 hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-50"
+                    className="min-h-10 rounded bg-sky-200 px-3 text-sm font-semibold text-zinc-950 hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     {working ? t('Profile.confirming') : t('Profile.confirmForFirstCompile')}
                   </button>
@@ -920,8 +920,8 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
                     <p className="mt-3 text-sm text-amber-100" role="status">{t('Profile.bootstrapPreviewReady')}</p>
                   )}
 
-                  <div className="mt-4 rounded-lg border border-white/10 p-3">
-                    <h4 className="text-xs font-semibold uppercase tracking-wide text-sky-200">{t('Profile.guidancePreview')}</h4>
+                  <div className="mt-4 rounded border border-white/10 p-3">
+                    <h4 className="text-xs font-semibold text-sky-200">{t('Profile.guidancePreview')}</h4>
                     <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-zinc-300">
                       {visibleBootstrapGuidance.preview.guidance_diff || t('Profile.noCompileGuidanceChanges')}
                     </p>
@@ -933,10 +933,10 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
                   />
 
                   <div className="mt-4" aria-label={t('Profile.requirementEffects')}>
-                    <h4 className="text-xs font-semibold uppercase tracking-wide text-zinc-300">{t('Profile.requirementEffects')}</h4>
+                    <h4 className="text-xs font-semibold text-zinc-300">{t('Profile.requirementEffects')}</h4>
                     <ul className="mt-2 space-y-2">
                       {visibleBootstrapGuidance.preview.requirements.map((requirement) => (
-                        <li key={requirement.id} className="rounded-lg border border-white/10 p-3">
+                        <li key={requirement.id} className="rounded border border-white/10 p-3">
                           <p className="text-sm font-medium text-zinc-200">
                             {requirement.id}: {requirementDispositionLabel(requirement.disposition, t)}
                           </p>
@@ -964,7 +964,7 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
           ) : null}
 
           {visibleProfile.candidate ? (
-            <div className="mt-5 rounded-xl border border-white/10 bg-black/20 p-4" aria-labelledby="profile-preview-heading">
+            <div className="mt-5 rounded border border-white/10 bg-black/20 p-4" aria-labelledby="profile-preview-heading">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
                   <h3 id="profile-preview-heading" className="text-sm font-semibold text-white">{t('Profile.generatedPreview')}</h3>
@@ -988,7 +988,7 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
                     type="button"
                     disabled={working}
                     onClick={() => void confirmCandidate()}
-                    className="min-h-10 rounded-lg bg-emerald-300 px-3 text-sm font-semibold text-zinc-950 hover:bg-emerald-200 disabled:opacity-50"
+                    className="min-h-10 rounded bg-emerald-300 px-3 text-sm font-semibold text-zinc-950 hover:bg-emerald-200 disabled:opacity-50"
                   >
                     {t('Profile.confirmPreview')}
                   </button>
@@ -996,12 +996,12 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
               </div>
 
               <div className="mt-4 grid gap-3 md:grid-cols-2">
-                <section className="rounded-lg border border-white/10 p-3" aria-labelledby="dictionary-preview-heading">
-                  <h4 id="dictionary-preview-heading" className="text-xs font-semibold uppercase tracking-wide text-emerald-200">{t('Profile.dictionaryPreview')}</h4>
+                <section className="rounded border border-white/10 p-3" aria-labelledby="dictionary-preview-heading">
+                  <h4 id="dictionary-preview-heading" className="text-xs font-semibold text-emerald-200">{t('Profile.dictionaryPreview')}</h4>
                   <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-zinc-300">{visibleProfile.candidate.preview.dictionary_diff || t('Profile.noDictionaryChanges')}</p>
                 </section>
-                <section className="rounded-lg border border-white/10 p-3" aria-labelledby="guidance-preview-heading">
-                  <h4 id="guidance-preview-heading" className="text-xs font-semibold uppercase tracking-wide text-sky-200">{t('Profile.guidancePreview')}</h4>
+                <section className="rounded border border-white/10 p-3" aria-labelledby="guidance-preview-heading">
+                  <h4 id="guidance-preview-heading" className="text-xs font-semibold text-sky-200">{t('Profile.guidancePreview')}</h4>
                   <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-zinc-300">
                     {visibleProfile.candidate.source === 'compile_auto'
                       ? t('Profile.guidanceUnchanged')
@@ -1019,10 +1019,10 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
 
               {visibleProfile.candidate.preview.requirements.length > 0 ? (
                 <div className="mt-4" aria-label={t('Profile.candidateRequirementEffects')}>
-                  <h4 className="text-xs font-semibold uppercase tracking-wide text-zinc-300">{t('Profile.requirementEffects')}</h4>
+                  <h4 className="text-xs font-semibold text-zinc-300">{t('Profile.requirementEffects')}</h4>
                   <ul className="mt-2 space-y-2">
                     {visibleProfile.candidate.preview.requirements.map((requirement) => (
-                      <li key={requirement.id} className="rounded-lg border border-white/10 p-3">
+                      <li key={requirement.id} className="rounded border border-white/10 p-3">
                         <p className="text-sm font-medium text-zinc-200">
                             {requirement.id}: {requirementDispositionLabel(requirement.disposition, t)}
                         </p>
@@ -1055,7 +1055,7 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
             </div>
           </section>
 
-          <section className="order-1 rounded-xl border border-white/10 bg-black/10 p-4" aria-labelledby="profile-requirements-card-heading">
+          <section className="order-1 rounded border border-white/10 bg-black/10 p-4" aria-labelledby="profile-requirements-card-heading">
             <h3>
               <button
                 ref={requirementsCardRef}
@@ -1063,7 +1063,7 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
                 aria-expanded={openCard === 'requirements'}
                 aria-controls="profile-requirements-card"
                 onClick={() => setOpenCard((current) => current === 'requirements' ? null : 'requirements')}
-                className="min-h-11 w-full rounded-lg text-left text-base font-semibold text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
+                className="min-h-11 w-full rounded text-left text-base font-semibold text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
               >
                 <span id="profile-requirements-card-heading">{t('Profile.localUx.cards.requirements')}</span>
                 <span aria-hidden="true" className="float-right text-zinc-400">{openCard === 'requirements' ? '−' : '+'}</span>
@@ -1100,21 +1100,21 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
                 type="button"
                 disabled={isSavingDisabled}
                 onClick={() => void saveRequirements()}
-                className="mt-4 min-h-11 rounded-lg bg-emerald-300 px-4 text-sm font-semibold text-zinc-950 transition hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-50"
+                className="mt-4 min-h-11 rounded bg-emerald-300 px-4 text-sm font-semibold text-zinc-950 transition hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {saving ? t('Profile.saving') : t('Profile.saveRequirements')}
               </button>
             </div>
           </section>
 
-          <section className="order-3 rounded-xl border border-white/10 bg-black/10 p-4" aria-labelledby="profile-active-card-heading">
+          <section className="order-3 rounded border border-white/10 bg-black/10 p-4" aria-labelledby="profile-active-card-heading">
             <h3>
               <button
                 type="button"
                 aria-expanded={openCard === 'active'}
                 aria-controls="profile-active-card"
                 onClick={() => setOpenCard((current) => current === 'active' ? null : 'active')}
-                className="min-h-11 w-full rounded-lg text-left text-base font-semibold text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
+                className="min-h-11 w-full rounded text-left text-base font-semibold text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
               >
                 <span id="profile-active-card-heading">{t('Profile.localUx.cards.active')}</span>
                 <span aria-hidden="true" className="float-right text-zinc-400">{openCard === 'active' ? '−' : '+'}</span>

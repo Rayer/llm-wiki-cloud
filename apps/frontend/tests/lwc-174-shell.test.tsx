@@ -1,5 +1,6 @@
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { installShellIntersectionObserver } from './shell-intersection-observer-helper';
 
 if (!(React as { act?: (callback: () => unknown) => Promise<unknown> | unknown }).act) {
   Object.defineProperty(React, 'act', {
@@ -90,7 +91,9 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+let observers: ReturnType<typeof installShellIntersectionObserver>;
 beforeEach(() => {
+  observers = installShellIntersectionObserver();
   mocks.bootstrapDefaultProject.mockReset().mockResolvedValue('default');
   mocks.getProjects.mockResolvedValue([
     { id: 'project-a', name: 'Project Alpha' },
@@ -109,10 +112,39 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  vi.unstubAllGlobals();
   localStorage.clear();
 });
 
 describe('LWC-174 production Shell rename behavior', () => {
+  it('uses the observed marker to reveal scroll-to-top only above the viewport and disconnects on unmount', async () => {
+    localStorage.setItem('locale', 'en');
+    const view = renderShell();
+    await screen.findByText('workspace content');
+    const observer = observers.find(({ observe }) => observe.mock.calls.some(
+      ([target]) => (target as HTMLElement).classList.contains('top-[320px]'),
+    ))!;
+    expect(observer).toBeDefined();
+    const marker = observer.observe.mock.calls[0][0] as HTMLElement;
+    expect(marker.getAttribute('aria-hidden')).toBe('true');
+    expect(marker.classList.contains('top-[320px]')).toBe(true);
+    const label = 'Scroll to top';
+    expect(screen.queryByRole('button', { name: label })).toBeNull();
+    act(() => observer.notify(false, 320));
+    expect(screen.queryByRole('button', { name: label })).toBeNull();
+    act(() => observer.notify(true, 0));
+    expect(screen.queryByRole('button', { name: label })).toBeNull();
+    act(() => observer.notify(false, -1));
+    const scrollTo = vi.spyOn(window, 'scrollTo').mockImplementation(() => undefined);
+    fireEvent.click(screen.getByRole('button', { name: label }));
+    expect(scrollTo).toHaveBeenCalledExactlyOnceWith({ top: 0, behavior: 'smooth' });
+    scrollTo.mockRestore();
+    act(() => observer.notify(true, 0));
+    expect(screen.queryByRole('button', { name: label })).toBeNull();
+    view.unmount();
+    expect(observer.disconnect).toHaveBeenCalledOnce();
+  });
+
   it('keeps the authenticated OAuth consent route reachable during Project loading, empty state, and load failure', async () => {
     mocks.pathname = '/oauth/consent';
     const projects = deferred<{ id: string; name: string }[]>();

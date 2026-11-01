@@ -11,11 +11,11 @@ export default function LegalLayout({ children }: { children: React.ReactNode })
     <div className="mx-auto max-w-3xl px-5 py-8 sm:px-8 sm:py-12">
       <a href="#main-content" className="sr-only focus:not-sr-only focus:rounded-sm focus:text-emerald-200 focus:underline"><span lang="zh-Hant">跳至主要內容</span><span aria-hidden="true"> / </span><span lang="en">Skip to main content</span></a>
       <header className="border-b border-white/10 pb-6">
-        <Link href="/" prefetch={false} aria-label="LLM Wiki Cloud home / LLM Wiki Cloud 返回首頁" className="inline-flex min-h-11 items-center rounded-sm font-serif text-xl text-[#eeeae4] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-emerald-300">LLM Wiki Cloud · <span lang="en">Home</span><span aria-hidden="true"> / </span><span lang="zh-Hant">返回首頁</span></Link>
+        <Link href="/" prefetch={false} aria-label="LLM Wiki Cloud home / LLM Wiki Cloud 返回首頁" className="inline-flex min-h-11 items-center rounded-sm font-sans text-xl text-[#F0F3F1] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-emerald-300">LLM Wiki Cloud · <span lang="en">Home</span><span aria-hidden="true"> / </span><span lang="zh-Hant">返回首頁</span></Link>
         <LegalLinks />
       </header>
       <main id="main-content" tabIndex={-1} className="py-8 focus:outline-none sm:py-10">
-        <article className="space-y-8 break-words text-base leading-8 text-zinc-300 [&_h1]:font-serif [&_h1]:text-3xl [&_h1]:leading-tight [&_h1]:text-[#eeeae4] sm:[&_h1]:text-4xl [&_h2]:mb-3 [&_h2]:text-xl [&_h2]:font-semibold [&_h2]:text-zinc-100 [&_p+p]:mt-3 [&_li]:pl-1 [&_ul]:list-disc [&_ul]:space-y-2 [&_ul]:pl-6">
+        <article className="space-y-8 break-words text-base leading-8 text-zinc-300 [&_h1]:font-sans [&_h1]:text-3xl [&_h1]:leading-tight [&_h1]:text-[#F0F3F1] sm:[&_h1]:text-4xl [&_h2]:mb-3 [&_h2]:text-xl [&_h2]:font-semibold [&_h2]:text-zinc-100 [&_p+p]:mt-3 [&_li]:pl-1 [&_ul]:list-disc [&_ul]:space-y-2 [&_ul]:pl-6">
           {children}
         </article>
       </main>

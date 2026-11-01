@@ -87,7 +87,7 @@ function AccountGrantPanel({ accessToken, sessionEpoch, userId, t, locale }: {
   };
 
   return (
-    <details className="rounded-2xl border border-white/10 bg-[#151515]">
+    <details className="rounded border border-white/10 bg-[#151515]">
       <summary className="flex min-h-16 cursor-pointer list-none items-center justify-between gap-4 px-5 py-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-emerald-300 sm:px-6">
         <span className="min-w-0"><span className="block font-semibold text-white">{t('MCPOAuth.accountGrantsTitle')}</span><span className="mt-1 block text-sm text-zinc-400">{t('MCPOAuth.accountGrantsIntro')}</span></span>
         <span className="flex shrink-0 items-center gap-2"><span className="rounded-full border border-white/10 px-2.5 py-1 text-xs text-zinc-300">{visibleGrants.length}</span><span aria-hidden="true" className="text-zinc-400">⌄</span></span>
@@ -95,18 +95,18 @@ function AccountGrantPanel({ accessToken, sessionEpoch, userId, t, locale }: {
       <section className="border-t border-white/10 p-5 sm:p-6">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div><h2 className="text-lg font-semibold text-white">{t('MCPOAuth.accountGrantsTitle')}</h2><p className="mt-1 text-sm text-zinc-400">{t('MCPOAuth.accountGrantsIntro')}</p></div>
-          <button type="button" onClick={() => void load()} disabled={loading} className="min-h-11 rounded-lg border border-white/10 px-4 text-sm text-zinc-200 hover:bg-white/5 disabled:opacity-50">{t('MCPOAuth.refreshGrants')}</button>
+          <button type="button" onClick={() => void load()} disabled={loading} className="min-h-11 rounded border border-white/10 px-4 text-sm text-zinc-200 hover:bg-white/5 disabled:opacity-50">{t('MCPOAuth.refreshGrants')}</button>
         </div>
         {visibleNotice ? <p role="status" className="mt-4 text-sm text-emerald-100">{visibleNotice}</p> : null}
         {loading ? <p role="status" className="mt-5 text-sm text-zinc-400">{t('MCPOAuth.loading')}</p> : null}
         {visibleError ? <p role="alert" className="mt-5 text-sm text-amber-100">{visibleError}</p> : null}
-        {!loading && !visibleError && visibleGrants.length === 0 ? <p className="mt-5 rounded-lg border border-white/8 bg-black/20 p-4 text-sm text-zinc-400">{t('MCPOAuth.noAccountGrants')}</p> : null}
+        {!loading && !visibleError && visibleGrants.length === 0 ? <p className="mt-5 rounded border border-white/8 bg-black/20 p-4 text-sm text-zinc-400">{t('MCPOAuth.noAccountGrants')}</p> : null}
         <ul className="mt-4 space-y-3">
           {visibleGrants.map((grant) => (
-            <li key={grant.id} className="rounded-xl border border-white/8 bg-black/20 p-4">
+            <li key={grant.id} className="rounded border border-white/8 bg-black/20 p-4">
               <div className="flex flex-wrap items-start justify-between gap-3">
-                <div className="min-w-0"><p className="break-words font-medium text-white">{grant.client_name}</p><p className="mt-1 break-all font-mono text-xs text-zinc-400">{grant.resource}</p><p className="mt-2 text-xs text-zinc-400">{grant.scope} · {t(`MCPOAuth.status.${grant.status}`)}</p><p className="mt-1 text-xs text-zinc-500">{t('MCPOAuth.expires')}: {new Date(grant.expires_at).toLocaleString(locale === 'zh-TW' ? 'zh-TW' : locale === 'zh-CN' ? 'zh-CN' : 'en-US')}</p></div>
-                {grant.status === 'active' ? <button type="button" disabled={busy?.key === contextKey && busy.id === grant.id} onClick={() => void revoke(grant)} className="min-h-11 shrink-0 rounded-lg border border-red-300/20 px-3 text-sm text-red-100 hover:bg-red-300/10 disabled:opacity-50">{busy?.key === contextKey && busy.id === grant.id ? t('MCPOAuth.processing') : t('MCPOAuth.revoke')}</button> : null}
+                <div className="min-w-0"><p className="break-words font-medium text-white">{grant.client_name}</p><p className="mt-1 break-all font-sans text-xs text-zinc-400">{grant.resource}</p><p className="mt-2 text-xs text-zinc-400">{grant.scope} · {t(`MCPOAuth.status.${grant.status}`)}</p><p className="mt-1 text-xs text-zinc-500">{t('MCPOAuth.expires')}: {new Date(grant.expires_at).toLocaleString(locale === 'zh-TW' ? 'zh-TW' : locale === 'zh-CN' ? 'zh-CN' : 'en-US')}</p></div>
+                {grant.status === 'active' ? <button type="button" disabled={busy?.key === contextKey && busy.id === grant.id} onClick={() => void revoke(grant)} className="min-h-11 shrink-0 rounded border border-red-300/20 px-3 text-sm text-red-100 hover:bg-red-300/10 disabled:opacity-50">{busy?.key === contextKey && busy.id === grant.id ? t('MCPOAuth.processing') : t('MCPOAuth.revoke')}</button> : null}
               </div>
             </li>
           ))}
@@ -206,7 +206,7 @@ export default function AdvancedPage() {
     <div className="space-y-6">
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 aria-label={`${t('MCPOAuth.advancedTitle')} ${t('Shell.betaBadge')}`} className="flex flex-wrap items-center gap-x-3 gap-y-2 font-serif text-2xl font-medium text-[#eeeae4]">
+          <h1 aria-label={`${t('MCPOAuth.advancedTitle')} ${t('Shell.betaBadge')}`} className="flex flex-wrap items-center gap-x-3 gap-y-2 font-sans text-2xl font-medium text-[#F0F3F1]">
             <span>{t('MCPOAuth.advancedTitle')}</span>
             <Badge variant="accent">{t('Shell.betaBadge')}</Badge>
           </h1>
@@ -217,7 +217,7 @@ export default function AdvancedPage() {
             <span className="rounded-full border border-white/10 px-3 py-1 text-zinc-300">{t('MCPOAuth.revocableLabel')}</span>
           </div>
         </div>
-        <Link href="/profile" className="inline-flex min-h-11 items-center rounded-lg border border-white/10 px-4 text-sm text-zinc-300 hover:bg-white/5">{t('MCPOAuth.profileLink')}</Link>
+        <Link href="/profile" className="inline-flex min-h-11 items-center rounded border border-white/10 px-4 text-sm text-zinc-300 hover:bg-white/5">{t('MCPOAuth.profileLink')}</Link>
       </header>
 
                 <AccountGrantPanel accessToken={accessToken} sessionEpoch={sessionEpoch} userId={user.id} t={t} locale={locale} />
@@ -225,7 +225,7 @@ export default function AdvancedPage() {
       {currentProject ? <AgentMcpTabs resourceURL={resourceURL} environmentLabel={environmentLabel} identityKey={contextKey + ':' + resourceURL + ':' + locale + ':' + catalogRevision} locale={locale} t={t} /> : null}
 
       {currentProject ? (
-      <details className="rounded-2xl border border-white/10 bg-[#151515]">
+      <details className="rounded border border-white/10 bg-[#151515]">
         <summary className="flex min-h-16 cursor-pointer list-none items-center justify-between gap-4 px-5 py-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-emerald-300 sm:px-6">
           <span className="min-w-0"><span className="block font-semibold text-white">{t('MCPOAuth.grantsTitle')}</span><span className="mt-1 block text-sm text-zinc-400">{t('MCPOAuth.grantsIntro')}</span></span>
           <span className="flex shrink-0 items-center gap-2">
@@ -236,23 +236,23 @@ export default function AdvancedPage() {
         <section className="border-t border-white/10 p-5 sm:p-6" aria-labelledby="mcp-oauth-grants-title">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div><h2 id="mcp-oauth-grants-title" className="text-lg font-semibold text-white">{t('MCPOAuth.grantsTitle')}</h2><p className="mt-1 text-sm text-zinc-400">{t('MCPOAuth.grantsIntro')}</p></div>
-            <button type="button" onClick={() => void loadGrants()} disabled={grantsLoading} className="min-h-11 rounded-lg border border-white/10 px-4 text-sm text-zinc-200 hover:bg-white/5 disabled:opacity-50">{t('MCPOAuth.refreshGrants')}</button>
+            <button type="button" onClick={() => void loadGrants()} disabled={grantsLoading} className="min-h-11 rounded border border-white/10 px-4 text-sm text-zinc-200 hover:bg-white/5 disabled:opacity-50">{t('MCPOAuth.refreshGrants')}</button>
           </div>
           {visibleNotice ? <p role="status" className="mt-4 text-sm text-emerald-100">{visibleNotice}</p> : null}
           {grantsLoading ? <p role="status" className="mt-5 text-sm text-zinc-400">{t('MCPOAuth.loading')}</p> : null}
           {visibleGrantsError ? <p role="alert" className="mt-5 text-sm text-amber-100">{visibleGrantsError}</p> : null}
-          {!grantsLoading && !visibleGrantsError && visibleGrants.length === 0 ? <p className="mt-5 rounded-lg border border-white/8 bg-black/20 p-4 text-sm text-zinc-400">{t('MCPOAuth.noGrants')}</p> : null}
+          {!grantsLoading && !visibleGrantsError && visibleGrants.length === 0 ? <p className="mt-5 rounded border border-white/8 bg-black/20 p-4 text-sm text-zinc-400">{t('MCPOAuth.noGrants')}</p> : null}
           <ul className="mt-4 space-y-3">
             {visibleGrants.map((grant) => (
-              <li key={grant.id} className="rounded-xl border border-white/8 bg-black/20 p-4">
+              <li key={grant.id} className="rounded border border-white/8 bg-black/20 p-4">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="min-w-0">
                     <p className="break-words font-medium text-white">{grant.client_name}</p>
-                    <p className="mt-1 break-all font-mono text-xs text-zinc-400">{grant.resource}</p>
+                    <p className="mt-1 break-all font-sans text-xs text-zinc-400">{grant.resource}</p>
                     <p className="mt-2 text-xs text-zinc-400">{grant.scope} · {t(`MCPOAuth.status.${grant.status}`)}</p>
                     <p className="mt-1 text-xs text-zinc-500">{t('MCPOAuth.expires')}: {new Date(grant.expires_at).toLocaleString(locale === 'zh-TW' ? 'zh-TW' : locale === 'zh-CN' ? 'zh-CN' : 'en-US')}</p>
                   </div>
-                  {grant.status === 'active' ? <button type="button" disabled={visibleBusyGrant === grant.id} onClick={() => void revoke(grant)} className="min-h-11 shrink-0 rounded-lg border border-red-300/20 px-3 text-sm text-red-100 hover:bg-red-300/10 disabled:opacity-50">{visibleBusyGrant === grant.id ? t('MCPOAuth.processing') : t('MCPOAuth.revoke')}</button> : null}
+                  {grant.status === 'active' ? <button type="button" disabled={visibleBusyGrant === grant.id} onClick={() => void revoke(grant)} className="min-h-11 shrink-0 rounded border border-red-300/20 px-3 text-sm text-red-100 hover:bg-red-300/10 disabled:opacity-50">{visibleBusyGrant === grant.id ? t('MCPOAuth.processing') : t('MCPOAuth.revoke')}</button> : null}
                 </div>
               </li>
             ))}
@@ -262,7 +262,7 @@ export default function AdvancedPage() {
       ) : null}
 
       {currentProject ? (
-      <details className="rounded-2xl border border-white/10 bg-[#151515]">
+      <details className="rounded border border-white/10 bg-[#151515]">
         <summary className="min-h-16 cursor-pointer px-5 py-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-emerald-300 sm:px-6">
           <span className="block font-semibold text-white">{t('MCPOAuth.manualFallback')}</span>
           <span className="mt-1 block text-sm text-zinc-400">{t('MCPOAuth.manualFallbackIntro')}</span>

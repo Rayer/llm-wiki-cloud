@@ -153,7 +153,7 @@ describe('LWC-304 modern login and knowledge home', () => {
     expect(query.className).toContain('text-base');
     expect(query.className).toContain('min-w-0');
     expect(query.compareDocumentPosition(search) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
-    expect(search.className).toContain('rounded-lg');
+    expect(search.className.split(' ')).toContain('rounded');
 
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'modern suggestion' }));

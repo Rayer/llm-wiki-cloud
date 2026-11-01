@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import Image from 'next/image';
 import { usePathname } from 'next/navigation';
 import { Search, FileText, Brain, Activity, Menu, X, ChevronUp, Shield, Pencil, Terminal, Settings as SettingsIcon, LogOut } from 'lucide-react';
 import { useT } from '@/lib/i18n';
@@ -150,14 +151,14 @@ function ShellContent({ children }: { children: React.ReactNode }) {
     <div className="min-h-dvh text-zinc-100 lg:flex lg:items-stretch">
       <a
         href="#main-content"
-        className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[80] focus:rounded-lg focus:bg-emerald-300 focus:px-4 focus:py-2 focus:text-sm focus:font-semibold focus:text-black"
+        className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[80] focus:rounded focus:bg-emerald-300 focus:px-4 focus:py-2 focus:text-sm focus:font-semibold focus:text-black"
       >
         {t('Shell.skipToContent')}
       </a>
       {token ? (
-        <header className="sticky top-0 z-50 flex min-h-14 items-center justify-between border-b border-white/8 bg-zinc-950/85 px-4 backdrop-blur lg:hidden">
+        <header className="sticky top-0 z-50 flex min-h-14 items-center justify-between border-b border-white/8 bg-zinc-950/85 px-4 lg:hidden">
           <NavigationLink href="/" className="min-w-0 text-sm font-semibold tracking-tight text-white">
-            <span className="font-serif">{t('Shell.brand')}</span>
+            <span className="flex items-center gap-3"><Image src="/brand/lwc/mark-sage.svg" width={40} height={34} style={{ height: 'auto' }} alt="" />{t('Shell.brand')}</span>
           </NavigationLink>
           <button
             type="button"
@@ -165,7 +166,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
             aria-expanded={mobileNavOpen}
             aria-label={mobileNavOpen ? t('Shell.closeNavigation') : t('Shell.openNavigation')}
             onClick={() => setMobileNavOpen((open) => !open)}
-            className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-zinc-200 transition hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
+            className="inline-flex min-h-11 min-w-11 items-center justify-center rounded border border-white/10 bg-white/5 text-zinc-200 transition hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
           >
             {mobileNavOpen ? (
               <X className="size-5" aria-hidden="true" />
@@ -195,8 +196,9 @@ function ShellContent({ children }: { children: React.ReactNode }) {
           }`}
         >
           <NavigationLink href="/" className="block px-5 py-5">
-            <div className="font-serif text-base font-medium tracking-tight text-[#eeeae4]">
-              {t('Shell.brand')}
+            <div className="flex items-center gap-3 text-base font-medium tracking-tight text-[#F0F3F1]">
+              <Image src="/brand/lwc/mark-sage.svg" width={40} height={34} style={{ height: 'auto' }} alt="" priority />
+              <span>{t('Shell.brand')}</span>
             </div>
             <div className="mt-0.5 text-xs text-zinc-400">{t('Shell.subtitle')}</div>
           </NavigationLink>
@@ -213,18 +215,16 @@ function ShellContent({ children }: { children: React.ReactNode }) {
                     key={item.href}
                     href={item.href}
                     aria-label={item.beta ? `${item.label} ${t('Shell.betaBadge')}` : undefined}
-                    className={`relative flex min-h-11 items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition ${
+                    aria-current={active ? 'page' : undefined}
+                    className={`relative flex min-h-11 items-center gap-3 rounded px-3 py-2.5 text-sm font-medium transition ${
                       active
                         ? 'bg-white/8 text-white'
                         : 'text-zinc-400 hover:bg-white/5 hover:text-zinc-200'
                     }`}
                   >
-                    {active ? (
-                      <span className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-full bg-emerald-400" />
-                    ) : null}
-                    <Icon className={`size-4 shrink-0 ${active ? 'text-emerald-400' : 'text-zinc-500'}`} />
+                    <Icon className={`size-4 shrink-0 ${active ? 'text-white' : 'text-zinc-500'}`} />
                     <span className="min-w-0 flex-1 truncate">{item.label}</span>
-                    {item.beta ? <Badge variant="accent" className="shrink-0 px-1.5 py-0 text-[10px]">{t('Shell.betaBadge')}</Badge> : null}
+                    {item.beta ? <Badge variant="accent" className="shrink-0 px-1.5 py-0 text-xs">{t('Shell.betaBadge')}</Badge> : null}
                     {count !== null ? (
                       <Badge variant="muted" className="ml-auto shrink-0 tabular-nums">
                         {count}
@@ -243,7 +243,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
             <div className="mx-3 my-2 border-t border-white/8" />
 
             <div className="px-3 pb-2">
-              <p className="px-1 pb-2 text-xs font-semibold uppercase tracking-wider text-zinc-400">
+              <p className="px-1 pb-2 text-xs font-semibold text-zinc-400">
                 {t('Shell.projects')}
               </p>
               {projectsLoading ? (
@@ -262,7 +262,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
                 <button
                   type="button"
                   onClick={openNewProject}
-                  className="mt-1.5 min-h-11 w-full rounded-lg px-3 py-2.5 text-left text-sm text-zinc-500 transition hover:bg-white/5 hover:text-zinc-300"
+                  className="mt-1.5 min-h-11 w-full rounded px-3 py-2.5 text-left text-sm text-zinc-500 transition hover:bg-white/5 hover:text-zinc-300"
                 >
                   {t('Shell.newProject')}
                 </button>
@@ -272,7 +272,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
 
           <div className="shrink-0 border-t border-white/8 px-3 py-3">
             <div className="flex items-center gap-3 px-2">
-              <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-emerald-300 to-teal-400 text-xs font-semibold text-zinc-900">
+              <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-zinc-800 text-xs font-semibold text-zinc-200">
                 {user?.email.slice(0, 1).toUpperCase() ?? 'U'}
               </div>
               <div className="min-w-0 flex-1">
@@ -283,7 +283,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
               <button
                 type="button"
                 onClick={() => setPaletteOpen(true)}
-                className="hidden min-h-11 min-w-11 items-center justify-center rounded-md border border-white/10 bg-white/5 px-2 text-[10px] text-zinc-500 transition hover:bg-white/10 hover:text-zinc-300 lg:inline-flex"
+                className="hidden min-h-11 min-w-11 items-center justify-center rounded-md border border-white/10 bg-white/5 px-2 text-xs text-zinc-500 transition hover:bg-white/10 hover:text-zinc-300 lg:inline-flex"
                 title={t('Command.title')}
               >
                 ⌘K
@@ -302,7 +302,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
       ) : null}
 
       <main id="main-content" className="min-w-0 flex-1">
-        <div className="mx-auto max-w-6xl px-4 pt-4 sm:px-6 lg:px-10">
+        <div className="lwc-utilities mx-auto max-w-6xl px-4 pt-4 sm:px-6 lg:px-10">
           {pathname === '/login' || !loginOpen ? <LocaleControl /> : null}
           <RequestIDPanel />
         </div>
@@ -327,7 +327,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
             {t('Shell.loading')}
           </div>
         ) : token && projectsError && projects.length === 0 ? (
-          <div className="mx-auto mt-20 max-w-lg rounded-xl border border-red-400/20 bg-red-400/10 p-6 text-center animate-scale-in">
+          <div className="mx-auto mt-20 max-w-lg rounded border border-red-400/20 bg-red-400/10 p-6 text-center animate-scale-in">
             <h1 className="text-xl font-semibold text-white">
               {productSetupPending ? t('Shell.workspaceSetupPending') : t('Shell.projectsUnavailable')}
             </h1>
@@ -338,7 +338,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
             <button
               type="button"
               onClick={() => void refreshProjects()}
-              className="mt-5 rounded-lg bg-white px-4 py-2 text-sm font-semibold text-black transition hover:bg-emerald-200"
+              className="mt-5 rounded bg-white px-4 py-2 text-sm font-semibold text-black transition hover:bg-emerald-200"
             >
               {t('Shell.retry')}
             </button>
@@ -396,24 +396,27 @@ function ShellContent({ children }: { children: React.ReactNode }) {
 function ScrollToTopButton() {
   const { t } = useT();
   const [visible, setVisible] = useState(false);
+  const marker = useRef<HTMLSpanElement>(null);
 
   useEffect(() => {
-    const updateVisibility = () => setVisible(window.scrollY > 320);
-    updateVisibility();
-    window.addEventListener('scroll', updateVisibility, { passive: true });
-    return () => window.removeEventListener('scroll', updateVisibility);
+    const observer = new IntersectionObserver(([entry]) => setVisible(!entry.isIntersecting && entry.boundingClientRect.top < 0));
+    if (marker.current) observer.observe(marker.current);
+    return () => observer.disconnect();
   }, []);
 
-  if (!visible) return null;
-
   return (
+    <>
+    <span ref={marker} aria-hidden="true" className="pointer-events-none absolute left-0 top-[320px] h-px w-px" />
+    {visible ? (
     <button
       type="button"
       aria-label={t('Shell.scrollToTop')}
       onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
-      className="fixed bottom-5 right-5 z-20 inline-flex size-12 items-center justify-center rounded-full bg-emerald-400 text-zinc-950 shadow-lg shadow-emerald-500/20 transition hover:-translate-y-0.5 hover:bg-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-200"
+      className="fixed bottom-5 right-5 z-20 inline-flex size-12 items-center justify-center rounded-full bg-emerald-400 text-zinc-950 transition hover:-translate-y-0.5 hover:bg-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-200"
     >
       <ChevronUp className="size-5" aria-hidden="true" />
     </button>
+    ) : null}
+    </>
   );
 }
