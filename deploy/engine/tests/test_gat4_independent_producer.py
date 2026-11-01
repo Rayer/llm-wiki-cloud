@@ -37,6 +37,56 @@ tree_digest = artifact.tree_digest
 
 
 class IndependentProducerTests(unittest.TestCase):
+    def test_provider_auth_image_allowlist_is_exact_and_scoped_to_independent_mode(self):
+        plan = {
+            "release_source_mode": "independent",
+            "normalized": {
+                "environment": "production",
+                "gcp": {
+                    "project_id": "llm-wiki-cloud",
+                    "artifact_registry":
+                        "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images",
+                },
+            },
+        }
+        provider = engine.Providers(plan, ROOT)
+        digest = "sha256:" + "d" * 64
+        independent = (
+            "asia-east1-docker.pkg.dev/llm-wiki-cloud/gateauth-ci-images/gateauth@" + digest
+        )
+        retained = (
+            "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/llm-wiki-auth@" + digest
+        )
+        calls = []
+
+        def digest_readback(command, **kwargs):
+            calls.append((list(map(str, command)), kwargs))
+            return digest
+
+        with patch("providers.run", side_effect=digest_readback):
+            provider.valid_image("auth", independent)
+            provider.valid_image("auth", retained)
+            self.assertEqual(len(calls), 2)
+            self.assertTrue(all(call[0][:5] == [
+                "gcloud", "artifacts", "docker", "images", "describe"
+            ] and call[1].get("stage") == "digest-validate" for call in calls))
+
+            for component, image in (
+                ("auth", independent.replace("gateauth-ci-images/gateauth", "other/gateauth")),
+                ("bff", independent),
+            ):
+                with self.subTest(component=component, image=image):
+                    with self.assertRaisesRegex(engine.Breakpoint, "artifact-config-incompatible"):
+                        provider.valid_image(component, image)
+            mismatched_digest = independent.rsplit("@", 1)[0] + "@sha256:" + "e" * 64
+            with self.assertRaisesRegex(engine.Breakpoint, "artifact-unusable"):
+                provider.valid_image("auth", mismatched_digest)
+            self.assertEqual(len(calls), 3)
+            plan["release_source_mode"] = "legacy_monorepo"
+            with self.assertRaisesRegex(engine.Breakpoint, "artifact-config-incompatible"):
+                provider.valid_image("auth", independent)
+            self.assertEqual(len(calls), 3)
+
     def isolate_github_runtime(self, env: dict[str, str]) -> dict[str, str]:
         env.update(GITHUB_TEST_ENV)
         return env

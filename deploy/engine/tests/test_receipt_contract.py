@@ -45,6 +45,62 @@ class ReceiptContractTests(unittest.TestCase):
             auth, dev, "independent", expected_lwc_source=dev["source"]["lwc"],
             expected_auth_source=dev["source"]["auth"], expected_components=["auth"]))
 
+    def test_independent_auth_image_repositories_are_allowlisted_only_for_auth(self):
+        digest = "sha256:" + "c" * 64
+        allowed_prefixes = (
+            receipt_contract.INDEPENDENT_AUTH_IMAGE_PREFIX,
+            receipt_contract.RETAINED_AUTH_IMAGE_PREFIX,
+        )
+        for selected in (["auth"], ["bff"]):
+            for prefix in allowed_prefixes:
+                with self.subTest(selected=selected, prefix=prefix):
+                    auth = fixture("auth-receipt-v3-independent.json")
+                    dev = fixture("dev-receipt-v2-independent.json")
+                    dev["components"] = selected
+                    dev["images"] = {"auth": prefix + "@" + digest}
+                    auth["artifact"]["image"] = dev["images"]["auth"]
+                    if "bff" in selected:
+                        dev["images"]["bff"] = (
+                            "us-central1-docker.pkg.dev/fixture-project/cloud-run-images/"
+                            "llm-wiki-bff@" + digest
+                        )
+                    self.assertTrue(receipt_contract.validate_receipt_pair(
+                        auth, dev, "independent", expected_lwc_source=dev["source"]["lwc"],
+                        expected_auth_source=dev["source"]["auth"], expected_components=selected))
+
+        for selected in (["auth"], ["bff"]):
+            independent = fixture("dev-receipt-v2-independent.json")
+            independent["components"] = selected
+            independent["images"]["auth"] = (
+                "asia-east1-docker.pkg.dev/llm-wiki-cloud/other-auth/gateauth@" + digest
+            )
+            if "bff" in selected:
+                independent["images"]["bff"] = (
+                    "us-central1-docker.pkg.dev/fixture-project/cloud-run-images/"
+                    "llm-wiki-bff@" + digest
+                )
+            with self.subTest(selected=selected):
+                with self.assertRaisesRegex(receipt_contract.ReceiptError, "unsupported independent"):
+                    receipt_contract.validate_dev_receipt(
+                        independent, "independent", independent["source"]["lwc"],
+                        independent["source"]["auth"], selected)
+
+        legacy = fixture("dev-receipt-v1-legacy.json")
+        legacy["images"]["auth"] = allowed_prefixes[0] + "@" + digest
+        with self.assertRaisesRegex(receipt_contract.ReceiptError, "wrong component repository"):
+            receipt_contract.validate_dev_receipt(
+                legacy, "legacy_monorepo", legacy["source"], expected_components=["auth"])
+
+        sibling = fixture("dev-receipt-v2-independent.json")
+        sibling["components"] = ["bff"]
+        sibling["images"]["bff"] = (
+            "asia-east1-docker.pkg.dev/llm-wiki-cloud/gateauth-ci-images/gateauth@" + digest
+        )
+        with self.assertRaisesRegex(receipt_contract.ReceiptError, "wrong component repository"):
+            receipt_contract.validate_dev_receipt(
+                sibling, "independent", sibling["source"]["lwc"],
+                sibling["source"]["auth"], ["bff"])
+
     def test_independent_auth_source_mixing_and_missing_fields_fail_closed(self):
         auth = fixture("auth-receipt-v3-independent.json")
         dev = fixture("dev-receipt-v2-independent.json")
@@ -68,22 +124,35 @@ class ReceiptContractTests(unittest.TestCase):
                         changed, "independent", changed["source"]["lwc"])
 
     def test_pair_rejects_mixed_auth_receipt_and_dev_image(self):
-        auth = fixture("auth-receipt-v3-independent.json")
-        dev = fixture("dev-receipt-v2-independent.json")
-        cases = []
-        wrong_tree = copy.deepcopy(dev)
-        wrong_tree["source"]["auth"]["tree_sha256"] = "sha256:" + "9" * 64
-        cases.append(wrong_tree)
-        wrong_image = copy.deepcopy(dev)
-        wrong_image["images"]["auth"] = wrong_image["images"]["auth"].rsplit("@", 1)[0] + "@sha256:" + "9" * 64
-        cases.append(wrong_image)
-        wrong_lwc = copy.deepcopy(dev)
-        wrong_lwc["source"]["lwc"]["sha"] = "f" * 40
-        cases.append(wrong_lwc)
-        for changed in cases:
-            with self.subTest(changed=changed["source"]):
-                with self.assertRaises(receipt_contract.ReceiptError):
-                    receipt_contract.validate_receipt_pair(auth, changed, "independent")
+        for selected in (["auth"], ["bff"]):
+            auth = fixture("auth-receipt-v3-independent.json")
+            dev = fixture("dev-receipt-v2-independent.json")
+            dev["components"] = selected
+            if "bff" in selected:
+                dev["images"]["bff"] = (
+                    "us-central1-docker.pkg.dev/fixture-project/cloud-run-images/"
+                    "llm-wiki-bff@sha256:" + "e" * 64
+                )
+            expected_lwc = copy.deepcopy(dev["source"]["lwc"])
+            expected_auth = copy.deepcopy(dev["source"]["auth"])
+            cases = []
+            wrong_tree = copy.deepcopy(dev)
+            wrong_tree["source"]["auth"]["tree_sha256"] = "sha256:" + "9" * 64
+            cases.append(wrong_tree)
+            wrong_image = copy.deepcopy(dev)
+            wrong_image["images"]["auth"] = (
+                wrong_image["images"]["auth"].rsplit("@", 1)[0] + "@sha256:" + "9" * 64
+            )
+            cases.append(wrong_image)
+            wrong_lwc = copy.deepcopy(dev)
+            wrong_lwc["source"]["lwc"]["sha"] = "f" * 40
+            cases.append(wrong_lwc)
+            for changed in cases:
+                with self.subTest(selected=selected, changed=changed["source"]):
+                    with self.assertRaises(receipt_contract.ReceiptError):
+                        receipt_contract.validate_receipt_pair(
+                            auth, changed, "independent", expected_lwc_source=expected_lwc,
+                            expected_auth_source=expected_auth, expected_components=selected)
 
     def test_auth_receipt_shape_and_build_identity_are_strict(self):
         dev = fixture("dev-receipt-v2-independent.json")

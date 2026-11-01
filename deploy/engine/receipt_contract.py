@@ -15,6 +15,8 @@ REPOSITORY_ID_RE = re.compile(
     r"^(?:github|gitlab):(?:[0-9]+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$"
 )
 COMPONENTS = {"auth", "bff", "worker", "exportjob"}
+INDEPENDENT_AUTH_IMAGE_PREFIX = "asia-east1-docker.pkg.dev/llm-wiki-cloud/gateauth-ci-images/gateauth"
+RETAINED_AUTH_IMAGE_PREFIX = "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/llm-wiki-auth"
 
 
 class ReceiptError(ValueError):
@@ -78,6 +80,11 @@ def _validate_components_and_images(dev, mode):
         raise ReceiptError("DEV image map does not match selected components and required Auth pairing")
     for component, image in images.items():
         image_digest(image)
+        repository = image.rsplit("@", 1)[0]
+        if mode == "independent" and component == "auth":
+            if repository not in (INDEPENDENT_AUTH_IMAGE_PREFIX, RETAINED_AUTH_IMAGE_PREFIX):
+                raise ReceiptError("DEV Auth image uses an unsupported independent or retained repository")
+            continue
         if not image.rsplit("@", 1)[0].endswith("/" + {
             "auth": "llm-wiki-auth", "bff": "llm-wiki-bff",
             "worker": "olw-pipeline", "exportjob": "llm-wiki-bff-export-job",
@@ -90,13 +97,19 @@ def validate_dev_receipt(dev, mode, expected_lwc_source, expected_auth_source=No
                          expected_components=None):
     dev = _object(dev, "DEV receipt")
     expected_lwc_source = _object(expected_lwc_source, "expected LWC source")
+    if mode in ("legacy", "legacy_monorepo"):
+        if dev.get("schema") != "lwc-306-dev-image-receipt-v1":
+            raise ReceiptError("legacy_monorepo_source accepts only DEV receipt v1")
+    elif mode == "independent":
+        if dev.get("schema") != "lwc-306-dev-image-receipt-v2":
+            raise ReceiptError("independent mode accepts only DEV receipt v2")
+    else:
+        raise ReceiptError(f"unknown receipt mode {mode!r}")
     _validate_config(dev.get("config"))
     components, images = _validate_components_and_images(dev, mode)
     if expected_components is not None and sorted(components) != sorted(expected_components):
         raise ReceiptError("DEV selected components do not match the release plan")
     if mode in ("legacy", "legacy_monorepo"):
-        if dev.get("schema") != "lwc-306-dev-image-receipt-v1":
-            raise ReceiptError("legacy_monorepo_source accepts only DEV receipt v1")
         if set(dev) != {"schema", "source", "config", "components", "images"}:
             raise ReceiptError("legacy DEV receipt has unknown or missing fields")
         source = _object(dev.get("source"), "legacy LWC source")
@@ -118,10 +131,6 @@ def validate_dev_receipt(dev, mode, expected_lwc_source, expected_auth_source=No
                 raise ReceiptError("expected LWC repository identity is invalid")
         return True
 
-    if mode != "independent":
-        raise ReceiptError(f"unknown receipt mode {mode!r}")
-    if dev.get("schema") != "lwc-306-dev-image-receipt-v2":
-        raise ReceiptError("independent mode accepts only DEV receipt v2")
     if set(dev) != {"schema", "source", "config", "components", "images"}:
         raise ReceiptError("independent DEV receipt has unknown or missing fields")
     source = _object(dev.get("source"), "dual-source identity")

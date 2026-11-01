@@ -40,10 +40,14 @@ class DevReceiptWriterTests(unittest.TestCase):
         legacy = mode in ("legacy", "legacy-explicit")
         source_sha = "a" * 40 if legacy else "b" * 40
         selected_components = selected_components or ["auth"]
+        registry = self.registry
+        if mode == "independent":
+            registry = receipt_contract.RETAINED_AUTH_IMAGE_PREFIX.rsplit("/", 1)[0]
         expected_auth = read_fixture(
             "legacy-auth-receipt.fixture.json" if legacy else "independent-auth-receipt.fixture.json"
         )
-        image = image or f"{self.registry}/llm-wiki-auth@{self.auth_digest}"
+        if image is None:
+            image = f"{registry}/llm-wiki-auth@{self.auth_digest}"
         expected_auth["artifact"]["image"] = image
         if not legacy:
             if metadata is None:
@@ -75,15 +79,15 @@ class DevReceiptWriterTests(unittest.TestCase):
             plan_path.write_text(json.dumps({
                 "normalized": {
                     "selected_components": selected_components,
-                    "gcp": {"artifact_registry": self.registry},
+                    "gcp": {"artifact_registry": registry},
                     "evidence": {"config_fingerprint": "sha256:" + "d" * 64},
                 }
             }))
             component_images = {
                 "auth": image,
-                "bff": f"{self.registry}/llm-wiki-bff@sha256:" + "f" * 64,
-                "worker": f"{self.registry}/olw-pipeline@sha256:" + "1" * 64,
-                "exportjob": f"{self.registry}/llm-wiki-bff-export-job@sha256:" + "2" * 64,
+                "bff": f"{registry}/llm-wiki-bff@sha256:" + "f" * 64,
+                "worker": f"{registry}/olw-pipeline@sha256:" + "1" * 64,
+                "exportjob": f"{registry}/llm-wiki-bff-export-job@sha256:" + "2" * 64,
             }
             for component in selected_components:
                 (image_dir / f"{component}-image-{source_sha}.txt").write_text(component_images[component] + "\n")

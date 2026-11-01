@@ -18,6 +18,8 @@ import tomllib
 
 from support import (ROOT, Breakpoint, InputShapeError, digest, read, require, run,
                      release_source_mode, safe_error_message, structured_cause, write)
+from receipt_contract import (INDEPENDENT_AUTH_IMAGE_PREFIX,
+                              RETAINED_AUTH_IMAGE_PREFIX)
 sys.path.insert(0, str(ROOT / 'deploy/components'))
 import auth_config
 import frontend_build_config
@@ -729,7 +731,11 @@ class Providers:
 
     def valid_image(self, c, image):
         prefix = self.p['gcp']['artifact_registry'] + '/' + self.profiles[c]['image']
-        require(re.fullmatch(re.escape(prefix) + r'@sha256:[0-9a-f]{64}', image), 'artifact-config-incompatible')
+        prefixes = [prefix]
+        if c == 'auth' and release_source_mode(self.plan) == 'independent':
+            prefixes.extend((INDEPENDENT_AUTH_IMAGE_PREFIX, RETAINED_AUTH_IMAGE_PREFIX))
+        require(any(re.fullmatch(re.escape(candidate) + r'@sha256:[0-9a-f]{64}', image)
+                    for candidate in prefixes), 'artifact-config-incompatible')
         actual = run(['gcloud', 'artifacts', 'docker', 'images', 'describe', image,
                       '--project', self.p['gcp']['project_id'], '--format=value(image_summary.digest)', '--quiet'],
                      stage='digest-validate')

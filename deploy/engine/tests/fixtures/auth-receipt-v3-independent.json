@@ -9,7 +9,7 @@
     "identity": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
     "build_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     "artifact": {
-      "image": "us-central1-docker.pkg.dev/fixture-project/cloud-run-images/llm-wiki-auth@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      "image": "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/llm-wiki-auth@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
     },
     "target_config": null,
     "build": {

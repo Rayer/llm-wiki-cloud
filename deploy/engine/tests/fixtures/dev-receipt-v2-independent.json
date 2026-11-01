@@ -29,7 +29,7 @@
     },
     "components": ["auth"],
     "images": {
-      "auth": "us-central1-docker.pkg.dev/fixture-project/cloud-run-images/llm-wiki-auth@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      "auth": "asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images/llm-wiki-auth@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
     }
   }
 }
