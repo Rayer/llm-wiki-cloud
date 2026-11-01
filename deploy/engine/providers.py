@@ -16,8 +16,9 @@ import urllib.error
 import urllib.request
 import tomllib
 
-from support import (ROOT, Breakpoint, InputShapeError, digest, read, require, run,
-                     release_source_mode, safe_error_message, structured_cause, write)
+from support import (ROOT, Breakpoint, InputShapeError, digest, is_frontend_quota_rejection,
+                     read, require, run, release_source_mode, safe_error_message,
+                     structured_cause, write)
 import gat4_ci_artifact
 sys.path.insert(0, str(ROOT / 'deploy/components'))
 import auth_config
@@ -30,6 +31,8 @@ BUILD_POLL_TIMEOUT_SECONDS = 600
 BUILD_POLL_MAX_READS = 120
 BUILD_READ_TIMEOUT_SECONDS = 30
 FRONTEND_BUILD_STREAM_MAX_BYTES = 32 * 1024
+FRONTEND_DEPLOYMENT_PAGE_SIZE = 100
+FRONTEND_DEPLOYMENT_MAX_PAGES = 1000
 BUILD_ID_RE = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.I)
 BUILD_NAME_RE = re.compile(r'^projects/([^/]+)/locations/([^/]+)/builds/([^/]+)$')
 GCP_PROJECT_NUMBER_RE = re.compile(r'^[1-9][0-9]{5,19}$')
@@ -1847,7 +1850,60 @@ class Providers:
                              '--remove-env-vars', auth_config.DEV_FULL_TRACE_SAMPLING_ENV]
             self.cloud(c, *args, mutation=True)
 
-    def reconcile_candidate(self, c, artifact, candidate, save):
+    def _frontend_deployment_matches(self, artifact):
+        project = os.environ.get('VERCEL_PROJECT_ID')
+        require(isinstance(project, str) and project, 'frontend-project-identity-unavailable')
+        cursor = None
+        seen_cursors = set()
+        seen_ids = set()
+        matches = []
+        pages_read = 0
+        for _ in range(FRONTEND_DEPLOYMENT_MAX_PAGES):
+            query = {'projectId': project, 'limit': str(FRONTEND_DEPLOYMENT_PAGE_SIZE)}
+            if cursor is not None:
+                query['until'] = cursor
+            result = self.api('/v6/deployments?' + urllib.parse.urlencode(query),
+                              stage='frontend-deployment-reconcile')
+            pages_read += 1
+            require(isinstance(result, dict) and isinstance(result.get('deployments'), list) and
+                    isinstance(result.get('pagination'), dict),
+                    'frontend-deployment-list-invalid')
+            deployments, pagination = result['deployments'], result['pagination']
+            raw_count = pagination.get('count')
+            count = (raw_count if type(raw_count) is int else
+                     int(raw_count) if isinstance(raw_count, str) and re.fullmatch(r'[0-9]+', raw_count)
+                     else None)
+            require(count is not None and 0 <= count <= FRONTEND_DEPLOYMENT_PAGE_SIZE and
+                    len(deployments) == count and 'next' in pagination,
+                    'frontend-deployment-page-incomplete')
+            for deployment in deployments:
+                require(isinstance(deployment, dict), 'frontend-deployment-list-invalid')
+                identity = deployment.get('uid', deployment.get('id'))
+                require(isinstance(identity, str) and identity and identity not in seen_ids,
+                        'frontend-deployment-list-ambiguous')
+                seen_ids.add(identity)
+                metadata = deployment.get('meta')
+                if (isinstance(metadata, dict) and
+                        metadata.get('lwcAttempt') == self.plan['id'] and
+                        metadata.get('lwcArtifact') == artifact['sha256']):
+                    require(deployment.get('projectId') == project,
+                            'frontend-deployment-project-mismatch')
+                    matches.append(deployment)
+            next_value = pagination['next']
+            if next_value is None:
+                return matches, pages_read
+            next_cursor = (str(next_value) if type(next_value) is int else
+                           next_value if isinstance(next_value, str) and
+                           re.fullmatch(r'[0-9]+', next_value) else None)
+            require(next_cursor is not None and next_cursor not in seen_cursors and count > 0,
+                    'frontend-deployment-pagination-invalid')
+            if cursor is not None:
+                require(int(next_cursor) < int(cursor), 'frontend-deployment-pagination-invalid')
+            seen_cursors.add(next_cursor)
+            cursor = next_cursor
+        require(False, 'frontend-deployment-pagination-incomplete')
+
+    def reconcile_candidate(self, c, artifact, candidate, save, rejection_evidence=None):
         """Discover accepted creation before allowing continuation; never replay creation."""
         if c == 'documentimport' and candidate.get('create_if_absent'):
             raw = self.document_import_job_if_exists()
@@ -1911,13 +1967,18 @@ class Providers:
                 candidate['revision'] = name
                 save()
         if c == 'frontend' and not candidate.get('deployment'):
-            result = self.api('/v6/deployments?projectId='+os.environ['VERCEL_PROJECT_ID']+'&limit=100',
-                              stage='frontend-deployment-reconcile')
-            matches = [d for d in result['deployments'] if d.get('meta', {}).get('lwcAttempt') == self.plan['id']
-                       and d.get('meta', {}).get('lwcArtifact') == artifact['sha256']]
+            matches, pages_read = self._frontend_deployment_matches(artifact)
+            reconciliation = {'provider': 'vercel', 'project_id': os.environ['VERCEL_PROJECT_ID'],
+                              'complete': True, 'pages_read': pages_read,
+                              'matches': len(matches)}
+            if not matches and is_frontend_quota_rejection(rejection_evidence):
+                return reconciliation
             require(len(matches) == 1, 'deployment-identity-unknown')
             candidate['deployment'] = matches[0].get('uid', matches[0].get('id'))
+            require(isinstance(candidate['deployment'], str) and candidate['deployment'],
+                    'deployment-identity-unknown')
             save()
+            return reconciliation
 
     def restore_service(self, c, revision, traffic):
         # Use the retained revision name and exact spec: never mint a substitute

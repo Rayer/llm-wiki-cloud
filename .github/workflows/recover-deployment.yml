@@ -14,6 +14,11 @@ on:
         description: Latest retained checkpoint; diagnostic requires diagnostic-no-receipt and downloads no checkpoint
         required: true
         type: string
+      rejection_artifact_id:
+        description: Optional exact DEV final result artifact proving the original frontend quota rejection
+        required: false
+        default: ''
+        type: string
       release_tag:
         description: Explicit release tag; diagnostic requires diagnostic-36992147920 and creates no tag
         required: true
@@ -53,6 +58,7 @@ jobs:
       release_source_mode: ${{ inputs.release_source_mode }}
       operation: ${{ inputs.operation }}
       artifact_id: ${{ inputs.artifact_id }}
+      rejection_artifact_id: ${{ inputs.rejection_artifact_id }}
   auth-image-diagnostic:
     if: >-
       inputs.operation == 'diagnose-auth-image' &&

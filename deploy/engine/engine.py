@@ -13,8 +13,8 @@ import sys
 import tempfile
 import urllib.parse
 
-from support import (ROOT, Breakpoint, digest, read, release_source_mode, require, run,
-                     structured_cause, write)
+from support import (ROOT, Breakpoint, digest, is_frontend_quota_rejection, read,
+                     release_source_mode, require, run, structured_cause, write)
 from providers import Providers, CLOUD_BUILD_LOCATION
 from receipt_contract import (ReceiptError, validate_auth_component_receipt,
                               validate_dev_receipt, validate_receipt_pair)
@@ -307,6 +307,8 @@ class Engine:
         require(isinstance(self.state['builds'], dict), 'checkpoint-plan-mismatch')
         self.component = None
         self.force_bypass = None
+        self.quota_rejection_evidence_dir = None
+        self.quota_rejection_artifact_id = None
 
     def save(self):
         self.state['checkpoint_schema'] = 1
@@ -999,9 +1001,125 @@ class Engine:
             raise Breakpoint('rollback-not-verified', 'unknown', True, 'inspect-retained-checkpoint',
                              causes=error_causes)
 
-    def reconcile(self, c, artifact, candidate, deploy_error=None):
+    @staticmethod
+    def _quota_reconciliation_valid(reconciliation, *, project=None, matches=None):
+        return (isinstance(reconciliation, dict) and
+                reconciliation.get('provider') == 'vercel' and
+                isinstance(project, str) and project and
+                reconciliation.get('project_id') == project and
+                reconciliation.get('complete') is True and
+                type(reconciliation.get('pages_read')) is int and
+                reconciliation['pages_read'] > 0 and
+                type(reconciliation.get('matches')) is int and
+                reconciliation['matches'] >= 0 and
+                (matches is None or reconciliation['matches'] == matches))
+
+    def _quota_rejection_record_valid(self, record, artifact):
+        if not isinstance(record, dict):
+            return False
+        source = record.get('source')
+        if source == 'provider-cli':
+            source_valid = 'artifact_id' not in record
+        elif source == 'retained-result':
+            source_valid = (isinstance(record.get('artifact_id'), str) and
+                            re.fullmatch(r'[1-9][0-9]*', record['artifact_id']) is not None)
+        else:
+            source_valid = False
+        return (source_valid and record.get('plan') == self.plan['id'] and
+                record.get('artifact_sha256') == artifact.get('sha256') and
+                is_frontend_quota_rejection(record.get('cause')))
+
+    def _quota_rejection_history(self, entry, artifact):
+        history = entry.get('quota_rejections', [])
+        if not isinstance(history, list) or not all(
+                self._quota_rejection_record_valid(record, artifact) for record in history):
+            return []
+        return history
+
+    def _pending_quota_rejection(self, entry, artifact):
+        history = self._quota_rejection_history(entry, artifact)
+        reconciliation = entry.get('quota_retry_reconciliation')
+        project = os.environ.get('VERCEL_PROJECT_ID')
+        if (entry.get('quota_retry_pending') is True and history and
+                self._quota_reconciliation_valid(reconciliation, project=project, matches=0)):
+            return history[-1]
+        return None
+
+    def _save_quota_retry(self, entry, artifact, record, *, pending, reconciliation):
+        history = self._quota_rejection_history(entry, artifact)
+        if record is not None:
+            require(self._quota_rejection_record_valid(record, artifact),
+                    'quota-rejection-record-invalid')
+            if record not in history:
+                history.append(record)
+        entry['quota_rejections'] = history
+        entry['quota_retry_pending'] = pending
+        entry['quota_retry_reconciliation'] = reconciliation
+        self.save()
+
+    def _retained_quota_rejection(self, artifact, entry):
+        if self.quota_rejection_evidence_dir is None:
+            return None
+        history = self._quota_rejection_history(entry, artifact)
+        if any(record.get('source') == 'retained-result' and
+               record.get('artifact_id') == self.quota_rejection_artifact_id
+               for record in history):
+            return None
         try:
-            self.provider.reconcile_candidate(c, artifact, candidate, self.save)
+            root = self.quota_rejection_evidence_dir
+            plan = read(root / 'plan.json')
+            state = read(root / 'state.json')
+            result = read(root / 'result.json')
+            receipt = read(root / 'receipts/frontend.json')
+            component = state['components']['frontend']
+            expected = result['expected']
+            evidence_artifact = receipt['artifact']
+            archive_name = evidence_artifact['archive']
+            archive = root / archive_name
+            require(plan_id(plan) == self.plan['id'] and
+                    compatible_release_identity(plan) == compatible_release_identity(self.plan) and
+                    plan['normalized']['environment'] == 'development' and
+                    plan['selected'] == ['frontend'], 'quota-rejection-evidence-plan-mismatch')
+            require(state['plan'] == plan['id'] and state['status'] == 'unknown' and
+                    type(state['sequence']) is int and component['status'] == 'unknown' and
+                    not component.get('candidate', {}).get('deployment') and
+                    result['attempt'] == plan['id'] and result['release'] == plan['tag'] and
+                    result['component'] == 'frontend' and result['status'] == 'unknown' and
+                    result['reason'] == 'provider-result-unreadable' and
+                    result['last_verified_checkpoint'] == state['sequence'] and
+                    result.get('observed', {}).get('component_status') == 'unknown',
+                    'quota-rejection-evidence-result-mismatch')
+            require(expected.get('source') == self.plan['source'] and
+                    result.get('expected', {}).get('source') == self.plan['source'] and
+                    expected.get('identity') == digest(self.plan['identities']['frontend']) and
+                    receipt.get('component') == 'frontend' and
+                    receipt.get('identity') == self.plan['identities']['frontend'] and
+                    receipt.get('target_config') == digest(self.plan['normalized']['frontend']) and
+                    evidence_artifact.get('sha256') == artifact.get('sha256') and
+                    archive_name == 'frontend.tgz' and archive.is_file() and
+                    not archive.is_symlink() and
+                    hashlib.sha256(archive.read_bytes()).hexdigest() == artifact.get('sha256'),
+                    'quota-rejection-evidence-artifact-mismatch')
+            causes = result.get('causes')
+            rejection = next((cause.get('cause') for cause in causes
+                              if isinstance(cause, dict) and cause.get('phase') == 'deploy' and
+                              cause.get('stage') == 'frontend-vercel-deploy' and
+                              is_frontend_quota_rejection(cause.get('cause'))), None) \
+                if isinstance(causes, list) else None
+            require(is_frontend_quota_rejection(rejection),
+                    'quota-rejection-evidence-cause-missing')
+            return {'source': 'retained-result',
+                    'artifact_id': self.quota_rejection_artifact_id,
+                    'plan': self.plan['id'], 'artifact_sha256': artifact['sha256'],
+                    'cause': rejection}
+        except (Breakpoint, KeyError, OSError, TypeError, ValueError):
+            raise Breakpoint('quota-rejection-evidence-invalid', 'unknown', False,
+                             'inspect-retained-artifact', stage='frontend-deployment-reconcile') from None
+
+    def reconcile(self, c, artifact, candidate, deploy_error=None, rejection_evidence=None):
+        try:
+            return self.provider.reconcile_candidate(c, artifact, candidate, self.save,
+                                                     rejection_evidence=rejection_evidence)
         except (Breakpoint, KeyError, ValueError) as exc:
             stage = 'frontend-deployment-reconcile' if c == 'frontend' else 'unknown'
             causes = ([_phase_cause('deploy', deploy_error,
@@ -1037,22 +1155,63 @@ class Engine:
             self.save()
             try:
                 if was_pending:
-                    self.reconcile(c, artifacts[c], entry['candidate'])
+                    retry_record = None
+                    if c == 'frontend':
+                        retry_record = self._pending_quota_rejection(entry, artifacts[c])
+                        if retry_record is None:
+                            retry_record = self._retained_quota_rejection(artifacts[c], entry)
+                    reconciliation = self.reconcile(
+                        c, artifacts[c], entry['candidate'],
+                        rejection_evidence=retry_record.get('cause') if retry_record else None)
+                    retry_authorized = (
+                        c == 'frontend' and retry_record is not None and
+                        self._quota_reconciliation_valid(
+                            reconciliation, project=os.environ.get('VERCEL_PROJECT_ID'), matches=0))
+                    if c == 'frontend' and isinstance(reconciliation, dict):
+                        if retry_record is not None:
+                            self._save_quota_retry(entry, artifacts[c], retry_record,
+                                                   pending=False, reconciliation=reconciliation)
+                        elif (entry.get('quota_retry_pending') is True and
+                              reconciliation.get('matches') == 1):
+                            self._save_quota_retry(entry, artifacts[c], None,
+                                                   pending=False, reconciliation=reconciliation)
+                    elif c == 'frontend' and entry.get('quota_retry_pending') is True and entry['candidate'].get('deployment'):
+                        entry['quota_retry_pending'] = False
+                        self.save()
                     # A pending operation is never blindly submitted again. Resume
-                    # only a discovered service/deployment identity, or verify Job.
-                    if self.provider.observe(c, artifacts[c], entry['candidate']):
+                    # only a discovered identity, or a quota rejection followed by
+                    # a complete zero-match provider listing.
+                    if (not retry_authorized and
+                            self.provider.observe(c, artifacts[c], entry['candidate'])):
                         entry['status'] = 'verified'
                         self.save()
                         continue
                     if c in ('worker', 'exportjob', 'documentimport'):
                         raise Breakpoint('pending-job-mismatch', 'failed', True, 'rollback')
-                    require(bool(entry['candidate']), 'mutation-result-unknown')
+                    if not retry_authorized:
+                        require(bool(entry['candidate']), 'mutation-result-unknown')
                 deploy_error = None
                 try:
                     self.provider.deploy(c, artifacts[c], entry['candidate'], self.save)
                 except Breakpoint as failure:
                     deploy_error = failure
-                    self.reconcile(c, artifacts[c], entry['candidate'], deploy_error=deploy_error)
+                    quota_record = None
+                    if c == 'frontend' and is_frontend_quota_rejection(failure.cause):
+                        quota_record = {'source': 'provider-cli', 'plan': self.plan['id'],
+                                        'artifact_sha256': artifacts[c]['sha256'],
+                                        'cause': failure.cause}
+                    reconciliation = self.reconcile(
+                        c, artifacts[c], entry['candidate'], deploy_error=deploy_error,
+                        rejection_evidence=quota_record.get('cause') if quota_record else None)
+                    if (quota_record is not None and
+                            self._quota_reconciliation_valid(
+                                reconciliation, project=os.environ.get('VERCEL_PROJECT_ID'), matches=0)):
+                        self._save_quota_retry(entry, artifacts[c], quota_record,
+                                               pending=True, reconciliation=reconciliation)
+                        raise Breakpoint('frontend-quota-rejected', 'unknown', True,
+                                         'retry-deploy', stage='frontend-deployment-reconcile',
+                                         causes=[_phase_cause('deploy', deploy_error,
+                                                              'frontend-vercel-deploy')]) from None
                     # No second update. Readback determines known failure vs unknown.
                 try:
                     self.provider.poll(c, artifacts[c], entry['candidate'])
@@ -1174,6 +1333,8 @@ def main():
     parser.add_argument('--auth-artifact-id')
     parser.add_argument('--auth-run-id')
     parser.add_argument('--auth-run-attempt')
+    parser.add_argument('--rejection-evidence')
+    parser.add_argument('--rejection-artifact-id')
     parser.add_argument('--force', action='store_true')
     args = parser.parse_args()
     directory = Path(args.directory).resolve()
@@ -1189,6 +1350,16 @@ def main():
                 require(all((args.environment, args.source, args.tag, args.components)), 'missing-admission-input')
                 write(directory / 'plan.json', admit(args))
             engine = Engine(directory, args.executor_sha)
+            if args.rejection_evidence is not None or args.rejection_artifact_id is not None:
+                require(args.operation == 'deploy' and args.rejection_evidence is not None and
+                        isinstance(args.rejection_artifact_id, str) and
+                        re.fullmatch(r'[1-9][0-9]*', args.rejection_artifact_id) is not None and
+                        engine.plan['normalized']['environment'] == 'development' and
+                        engine.plan['selected'] == ['frontend'] and
+                        args.components in (None, 'frontend'),
+                        'quota-rejection-evidence-not-allowed')
+                engine.quota_rejection_evidence_dir = Path(args.rejection_evidence).resolve()
+                engine.quota_rejection_artifact_id = args.rejection_artifact_id
             if args.operation in ('prepare', 'auth-preflight'):
                 require(not args.components or selection(args.components) == engine.plan['selected'], 'selection-change-requires-new-plan')
                 require(not args.source or args.source == engine.plan['source'], 'source-change-requires-new-plan')

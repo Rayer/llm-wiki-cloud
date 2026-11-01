@@ -17,6 +17,7 @@ from unittest.mock import patch
 HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(HERE))
 import engine
+import support
 from support import Breakpoint, ROOT, read, write
 import providers
 sys.path.insert(0, str(ROOT / 'scripts'))
@@ -1927,6 +1928,215 @@ class Acceptance(unittest.TestCase):
         self.assertIn('line 1 column 2',result['causes'][1]['message'])
         self.assertNotIn('test-only',rendered)
         self.assertNotIn('frontend deploy failed with test-only',rendered)
+
+    def _ready_frontend(self, name):
+        e=self.make(('frontend',),name=name)
+        with tempfile.TemporaryDirectory() as temp, patch('providers.ROOT',Path(temp)):
+            (Path(temp)/'apps/frontend').mkdir(parents=True)
+            e.prepare()
+        return e
+
+    def _invoke_engine_deploy(self, e, extra_args=()):
+        stdout=io.StringIO()
+        argv=['engine.py','deploy','--directory',str(e.directory),*extra_args]
+        with patch.object(engine.Engine,'runtime_guard'), \
+             patch('sys.argv',argv), patch('sys.stdout',stdout):
+            exit_code=engine.main()
+        return exit_code,read(e.directory/'result.json'),read(e.state_path),stdout.getvalue()
+
+    def _frontend_quota_cause(self):
+        return support.structured_cause(
+            ChildProcessError(), 'frontend-vercel-deploy', code='child-command-failed',
+            message='{"error":{"code":"api-deployments-free-per-day"}}')
+
+    @staticmethod
+    def _frontend_page(deployments, next_cursor=None):
+        return {'deployments':deployments,
+                'pagination':{'count':len(deployments),'next':next_cursor,'prev':None}}
+
+    def test_frontend_quota_classifier_keeps_timeout_and_unproven_errors_unknown(self):
+        message='{"error":{"code":"api-deployments-free-per-day"}}'
+        with patch('support.subprocess.run',return_value=subprocess.CompletedProcess(
+                ['vercel'],1,'',message)):
+            with self.assertRaises(Breakpoint) as caught:
+                support.run(['vercel'],mutation=True,stage='frontend-vercel-deploy')
+        self.assertEqual(caught.exception.status,'unknown')
+        self.assertTrue(caught.exception.mutation)
+        self.assertTrue(support.is_frontend_quota_rejection(caught.exception.cause))
+
+        for error in ('ordinary command failure',message):
+            with patch('support.subprocess.run',return_value=subprocess.CompletedProcess(
+                    ['vercel'],1,'',error)):
+                with self.assertRaises(Breakpoint) as caught:
+                    support.run(['vercel'],mutation=True,stage='frontend-vercel-deploy')
+            if error == message:
+                with self.assertRaises(Breakpoint) as caught_timeout:
+                    with patch('support.subprocess.run',side_effect=subprocess.TimeoutExpired(
+                            ['vercel'],30,stderr=error)):
+                        support.run(['vercel'],mutation=True,stage='frontend-vercel-deploy')
+                self.assertEqual(caught_timeout.exception.status,'unknown')
+                self.assertFalse(support.is_frontend_quota_rejection(caught_timeout.exception.cause))
+            else:
+                self.assertFalse(support.is_frontend_quota_rejection(caught.exception.cause))
+
+    def test_frontend_reconciliation_reads_all_pages_and_fails_closed(self):
+        e=self._ready_frontend('frontend-quota-pages')
+        artifact=e.receipt('frontend')['artifact']
+        cause=self._frontend_quota_cause()
+        first={'uid':'dpl_old_1','projectId':'prj_test','meta':{}}
+        second={'uid':'dpl_old_2','projectId':'prj_test','meta':{}}
+        self.configure(deployment_pages=[
+            self._frontend_page([first],1700000000000),
+            self._frontend_page([second]),
+        ])
+        summary=e.provider.reconcile_candidate('frontend',artifact,{},lambda:None,
+                                               rejection_evidence=cause)
+        self.assertEqual(summary,{'provider':'vercel','project_id':'prj_test',
+                                  'complete':True,'pages_read':2,'matches':0})
+        listing_calls=[call for call in self.calls('curl')
+                       if any('/v6/deployments?' in value for value in call)]
+        self.assertEqual(len(listing_calls),2)
+        self.assertTrue(any('until=1700000000000' in value for value in listing_calls[1]))
+
+        self.configure(deployment_pages=[
+            self._frontend_page([first],1700000000000),
+            {'deployments':[second],'pagination':{'count':2,'next':None,'prev':None}},
+        ])
+        with self.assertRaisesRegex(Breakpoint,'frontend-deployment-page-incomplete'):
+            e.provider.reconcile_candidate('frontend',artifact,{},lambda:None,
+                                           rejection_evidence=cause)
+
+        matched=lambda uid:{'uid':uid,'id':uid,'projectId':'prj_test',
+                            'meta':{'lwcAttempt':e.plan['id'],'lwcArtifact':artifact['sha256']}}
+        self.configure(deployment_pages=[self._frontend_page([matched('dpl_match_1'),
+                                                                matched('dpl_match_2')])])
+        with self.assertRaisesRegex(Breakpoint,'deployment-identity-unknown'):
+            e.provider.reconcile_candidate('frontend',artifact,{},lambda:None,
+                                           rejection_evidence=cause)
+
+        self.configure(deployment_pages=None,deployment_list_unreadable=True)
+        with self.assertRaisesRegex(Breakpoint,'command-failed'):
+            e.provider.reconcile_candidate('frontend',artifact,{},lambda:None,
+                                           rejection_evidence=cause)
+
+    def test_frontend_quota_rejection_roundtrips_checkpoint_before_one_retry(self):
+        e=self._ready_frontend('frontend-quota-roundtrip')
+        self.configure(quota_rejections_remaining=2)
+        first_code,first_result,first_state,_=self._invoke_engine_deploy(e)
+        first_entry=first_state['components']['frontend']
+        self.assertEqual(first_code,1)
+        self.assertEqual(first_result['reason'],'frontend-quota-rejected')
+        self.assertEqual(first_result['allowed_next_action'],'retry-deploy')
+        self.assertEqual(first_entry['status'],'unknown')
+        self.assertTrue(first_entry['quota_retry_pending'])
+        self.assertEqual(first_entry['quota_rejections'][-1]['cause']['stage'],
+                         'frontend-vercel-deploy')
+        self.assertEqual(len([call for call in self.calls('vercel') if call[1]=='deploy']),1,
+                         'one rejected attempt must not auto-retry')
+
+        second_code,second_result,second_state,_=self._invoke_engine_deploy(e)
+        second_entry=second_state['components']['frontend']
+        self.assertEqual(second_code,1)
+        self.assertEqual(second_result['reason'],'frontend-quota-rejected')
+        self.assertTrue(second_entry['quota_retry_pending'])
+        self.assertEqual(second_entry['quota_rejections'][-1]['cause']['code'],
+                         'child-command-failed')
+        self.assertEqual(len([call for call in self.calls('vercel') if call[1]=='deploy']),2,
+                         'a repeated rejection waits for another explicit invocation')
+
+        third_code,third_result,third_state,_=self._invoke_engine_deploy(e)
+        self.assertEqual(third_code,0,third_result)
+        self.assertEqual(third_result['status'],'success')
+        self.assertFalse(third_state['components']['frontend']['quota_retry_pending'])
+        self.assertGreaterEqual(len(third_state['components']['frontend']['quota_rejections']),1)
+        self.assertEqual(len([call for call in self.calls('vercel') if call[1]=='deploy']),3)
+
+    def test_legacy_unknown_uses_exact_retained_result_then_complete_zero_match(self):
+        e=self._ready_frontend('frontend-quota-legacy')
+        self.configure(quota_rejections_remaining=1)
+        rejected,_,_,_=self._invoke_engine_deploy(e)
+        self.assertEqual(rejected,1)
+        legacy=self.root/'retained-original-result'
+        shutil.copytree(e.directory,legacy)
+        original_state=read(legacy/'state.json')
+        original_entry=original_state['components']['frontend']
+        for key in ('quota_rejections','quota_retry_pending','quota_retry_reconciliation'):
+            original_entry.pop(key,None)
+        write(legacy/'state.json',original_state)
+        original_result=read(legacy/'result.json')
+        original_result['reason']='provider-result-unreadable'
+        write(legacy/'result.json',original_result)
+
+        latest=read(e.state_path)
+        latest_entry=latest['components']['frontend']
+        for key in ('quota_rejections','quota_retry_pending','quota_retry_reconciliation'):
+            latest_entry.pop(key,None)
+        write(e.state_path,latest)
+        older={'uid':'dpl_old_a','projectId':'prj_test','meta':{}}
+        older2={'uid':'dpl_old_b','projectId':'prj_test','meta':{}}
+        self.configure(deployment_pages=[
+            self._frontend_page([older],1700000000000),
+            self._frontend_page([older2]),
+        ])
+        code,result,state,_=self._invoke_engine_deploy(
+            e,('--rejection-evidence',str(legacy),
+               '--rejection-artifact-id','13035372075'))
+        entry=state['components']['frontend']
+        self.assertEqual(code,0,result)
+        self.assertEqual(result['status'],'success')
+        self.assertEqual(entry['quota_rejections'][0]['source'],'retained-result')
+        self.assertEqual(entry['quota_rejections'][0]['artifact_id'],'13035372075')
+        self.assertFalse(entry['quota_retry_pending'])
+        self.assertEqual(entry['quota_retry_reconciliation']['pages_read'],2)
+        self.assertEqual(len([call for call in self.calls('vercel') if call[1]=='deploy']),2)
+
+    def test_timeout_zero_match_stays_unknown_and_unique_candidate_is_not_recreated(self):
+        no_match=self._ready_frontend('frontend-timeout-zero')
+        original_run=subprocess.run
+        def timeout_without_acceptance(args,**kwargs):
+            argv=[str(arg) for arg in args]
+            if argv and Path(argv[0]).name=='vercel' and argv[1]=='deploy':
+                state=self.current()
+                state['calls'].append(['vercel',*argv[1:]])
+                write(self.root/'provider.json',state)
+                raise subprocess.TimeoutExpired(args,kwargs.get('timeout'),stderr='TEST ONLY timeout')
+            return original_run(args,**kwargs)
+        with patch('support.subprocess.run',side_effect=timeout_without_acceptance):
+            first_code,first_result,first_state,_=self._invoke_engine_deploy(no_match)
+        self.assertEqual(first_code,1)
+        self.assertEqual(first_result['status'],'unknown')
+        self.assertNotIn('quota_rejections',first_state['components']['frontend'])
+        second_code,second_result,_,_=self._invoke_engine_deploy(no_match)
+        self.assertEqual(second_code,1)
+        self.assertEqual(second_result['status'],'unknown')
+        self.assertEqual(len([call for call in self.calls('vercel') if call[1]=='deploy']),1)
+
+        unique=self._ready_frontend('frontend-timeout-unique')
+        deploy_count_before=len([call for call in self.calls('vercel') if call[1]=='deploy'])
+        original_run=subprocess.run
+        def timeout_after_acceptance(args,**kwargs):
+            argv=[str(arg) for arg in args]
+            if argv and Path(argv[0]).name=='vercel' and argv[1]=='deploy':
+                artifact=unique.receipt('frontend')['artifact']
+                state=self.current()
+                state['calls'].append(['vercel',*argv[1:]])
+                state['deployments']['dpl_aftertimeout']={
+                    'id':'dpl_aftertimeout','projectId':'prj_test','teamId':'team_test',
+                    'readyState':'READY','meta':{'lwcAttempt':unique.plan['id'],
+                                                   'lwcArtifact':artifact['sha256']},
+                    'target':'preview'}
+                state['aliases']['wiki.dev.rayer.idv.tw']='dpl_aftertimeout'
+                write(self.root/'provider.json',state)
+                raise subprocess.TimeoutExpired(args,kwargs.get('timeout'),stderr='TEST ONLY timeout after acceptance')
+            return original_run(args,**kwargs)
+        with patch('support.subprocess.run',side_effect=timeout_after_acceptance):
+            unique_code,unique_result,unique_state,_=self._invoke_engine_deploy(unique)
+        self.assertEqual(unique_code,0,unique_result)
+        self.assertEqual(unique_result['status'],'success')
+        self.assertEqual(unique_state['components']['frontend']['candidate']['deployment'],
+                         'dpl_aftertimeout')
+        self.assertEqual(len([call for call in self.calls('vercel') if call[1]=='deploy']),
+                         deploy_count_before+1)
 
     def test_auth_materialization_failure_survives_poll_and_compensation(self):
         e=self.ready(self.make(('exportjob','auth'),name='auth-materialize-cause'))

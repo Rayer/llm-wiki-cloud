@@ -59,6 +59,15 @@ if (process.env.INPUT_OPERATION === 'auth-preflight' || process.env.INPUT_OPERAT
   if (!['deploy','rollback','reactivate','tag','readback'].includes(op)) process.exit(1);
   const args=[...entry,op,'--directory',path.join(temp,'release'),
     '--components',process.env.COMPONENTS,'--executor-sha',executorSha];
+  const rejectionArtifactId=process.env.REJECTION_ARTIFACT_ID || '';
+  if(rejectionArtifactId){
+    if(!/^[1-9][0-9]*$/.test(rejectionArtifactId) || process.env.TARGET !== 'development' ||
+       op !== 'deploy' || process.env.COMPONENTS !== 'frontend') process.exit(1);
+    const evidence=path.join(temp,'quota-rejection');
+    if(fs.existsSync(evidence)) process.exit(1);
+    run('node',['deploy/engine/artifacts.cjs','download-result',rejectionArtifactId,evidence,'development']);
+    args.push('--rejection-evidence',evidence,'--rejection-artifact-id',rejectionArtifactId);
+  }
   if (process.env.INPUT_FORCE === 'true') {
     if (op !== 'deploy' || process.env.TARGET !== 'development') process.exit(1);
     args.push('--force');
