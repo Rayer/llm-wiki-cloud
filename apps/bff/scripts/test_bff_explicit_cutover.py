@@ -323,6 +323,7 @@ class SharedCDContractTest(unittest.TestCase):
             "components": "${{ inputs.components }}", "release_tag": "${{ inputs.release_tag }}",
             "release_source_mode": "${{ inputs.release_source_mode }}",
             "operation": "${{ inputs.operation }}", "artifact_id": "${{ inputs.artifact_id }}",
+            "rejection_artifact_id": "${{ inputs.rejection_artifact_id }}",
         })
         diagnostic_recovery = recovery["jobs"]["auth-image-diagnostic"]
         self.assertEqual(diagnostic_recovery["uses"], "./.github/workflows/cd-auth-image-diagnostic.yml")
