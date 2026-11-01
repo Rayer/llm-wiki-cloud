@@ -74,7 +74,10 @@ for (const strict of [false, true]) {
       await waitFor(() => expect(navigation.replace).toHaveBeenCalledExactlyOnceWith(consentReturn));
       expect(auth.accessToken).toBe(token('google-account'));
       expect(auth.user?.id).toBe('google-account');
-      expect(sessionStorage.getItem('lwc-google-login-return-to')).toBeNull();
+      expect(JSON.parse(sessionStorage.getItem('lwc-google-login-return-to') ?? 'null')).toMatchObject({
+        transaction_id: transactionId,
+        intent: 'select_account',
+      });
       expect(onJit).toHaveBeenCalledTimes(1);
       expect((onJit.mock.calls[0][0] as CustomEvent).detail.userId).toBe('google-account');
       expect(fetchMock.mock.calls.filter(([url]) => url.endsWith('/refresh'))).toHaveLength(1);

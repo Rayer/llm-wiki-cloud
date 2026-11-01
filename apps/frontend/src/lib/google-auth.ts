@@ -62,10 +62,31 @@ export function hasGoogleLoginReturnTo(): boolean {
   }
 }
 
+export function hasGoogleSelectAccountReturnTo(transactionId: string): boolean {
+  try {
+    const stored = window.sessionStorage.getItem(googleLoginReturnToKey);
+    if (!stored) return false;
+    const value: unknown = JSON.parse(stored);
+    if (!isRecord(value) || value.intent !== 'select_account' || typeof value.transaction_id !== 'string'
+      || value.transaction_id !== transactionId || !storedConsentReturnTo(stored)) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function consumeGoogleLoginReturnTo(): string {
   try {
     const stored = window.sessionStorage.getItem(googleLoginReturnToKey);
-    window.sessionStorage.removeItem(googleLoginReturnToKey);
+    let keepSelectionContext = false;
+    if (stored) {
+      try {
+        const value: unknown = JSON.parse(stored);
+        keepSelectionContext = isRecord(value) && value.intent === 'select_account'
+          && typeof value.transaction_id === 'string' && Boolean(storedConsentReturnTo(stored));
+      } catch { /* invalid context is consumed below */ }
+    }
+    if (!keepSelectionContext) window.sessionStorage.removeItem(googleLoginReturnToKey);
     return stored ? storedConsentReturnTo(stored) ?? '/' : '/';
   } catch {
     return '/';

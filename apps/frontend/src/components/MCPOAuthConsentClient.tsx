@@ -5,8 +5,11 @@ import Link from 'next/link';
 import { useAuth } from '@/lib/auth';
 import { useT } from '@/lib/i18n';
 import { LoginModal } from './LoginModal';
+import { clearGoogleLoginReturnTo, hasGoogleSelectAccountReturnTo } from '@/lib/google-auth';
 import {
   decideMCPOAuthConsent,
+  dailyBriefSignedOutLandingURL,
+  isDailyBriefMcpResource,
   isSafeMCPOAuthReturnURL,
   MCPOAuthApiError,
   readMCPOAuthConsent,
@@ -38,6 +41,11 @@ export function MCPOAuthConsentClient({ transactionId }: { transactionId: string
   const terminal = terminalContextKey === contextKey;
   const selectionRequired = visibleDetails?.prompt === 'select_account' && visibleDetails.account_selected !== true;
   const selectionLoginOpen = selectionLoginContextKey === contextKey;
+  const canReturnToDailyBrief = Boolean(visibleError && (
+    hasGoogleSelectAccountReturnTo(transactionId)
+    || (visibleDetails?.prompt === 'select_account' && isDailyBriefMcpResource(visibleDetails.resource))
+  ));
+  const dailyBriefLanding = canReturnToDailyBrief ? dailyBriefSignedOutLandingURL() : null;
   const fixedResource = visibleDetails?.resource_kind === 'fixed';
   const legacyProjectScopeDescription = visibleDetails && !fixedResource && !visibleDetails.scope_details?.length
     ? visibleDetails.scope === 'mcp:query'
@@ -94,6 +102,7 @@ export function MCPOAuthConsentClient({ transactionId }: { transactionId: string
         return;
       }
       if (result.prompt === 'select_account' && result.account_selected !== true) {
+        clearGoogleLoginReturnTo();
         setDetails(result);
         setDetailsContextKey(identityKey);
         setError('');
@@ -205,6 +214,7 @@ export function MCPOAuthConsentClient({ transactionId }: { transactionId: string
       {visibleError ? (
         <div className="mt-6 rounded border border-amber-300/20 bg-amber-300/5 p-4">
           <p role="alert" className="text-sm leading-6 text-amber-100">{visibleError}</p>
+          {dailyBriefLanding ? <a href={dailyBriefLanding} className="mt-4 mr-5 inline-flex min-h-11 items-center text-sm font-medium text-emerald-300 underline underline-offset-4">{t('MCPOAuth.returnToDailyBrief')}</a> : null}
           <Link href="/advanced" className="mt-4 inline-flex min-h-11 items-center text-sm font-medium text-emerald-300 underline underline-offset-4">{t('MCPOAuth.backToAdvanced')}</Link>
         </div>
       ) : null}

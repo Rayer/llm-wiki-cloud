@@ -3,7 +3,7 @@
   "locale": "zh_tw",
   "migration_source_revision": "b8f167ef9fe3d7e3f6b53c860356eb1c2d87b9bf",
   "migration_catalog_revision": "3a0e6da83c9113423b9582f6fe3b7df6d15ab414fefc197641b1ef1c6bc25e9b",
-  "seed_map_sha256": "e62a1f073c7255b53a8c321a5c0302024eb4fd9cc694f0d89d233d06c9885fe9",
+  "seed_map_sha256": "33e5efc912bacbf10a9f855d08eaac8c6463ee679922baed1d3030cc2ba7593d",
   "entries": {
     "AccountSettings.accountTab": "9d4435cd4778e9d6f90f5797c2e556e1baaffe742ef1b78150f3b61931a4a8b2",
     "AccountSettings.bindingActive": "155e79378bcb9e2d77d0d0c40999baccc08c8b72d2bbfbf835a45ea757ef1177",
@@ -1415,7 +1415,8 @@
     "MCPOAuth.accountRefreshFailed": "72df52c48251056438167d0d1ece35952412e0112acd5f3c84563bea089c3157",
     "MCPOAuth.cancelSelection": "a10608cf436cdad3d3d3b3780fa53a74473b5bdac12c95825787bc7b782d405f",
     "MCPOAuth.continueWithAccount": "a17316a44548c08634f2a3433affc504826e2d536f0c0dc6c78a0b6102a8f34d",
-    "MCPOAuth.useAnotherAccount": "6bb078d5fb4595d8bea3ef4f829ce6445ef31ebdcadacdc14db321b8268cd613"
+    "MCPOAuth.useAnotherAccount": "6bb078d5fb4595d8bea3ef4f829ce6445ef31ebdcadacdc14db321b8268cd613",
+    "MCPOAuth.returnToDailyBrief": "66a4bd54c4680b2bd205bcdb9b787f91ad2a4a2081098cf9b3973668019367c5"
   },
   "candidate_catalog_revision": "049a79128b92240ecce6118e76c0c41622ec00bb9c53edb59fde0d7cb9288de6"
 }

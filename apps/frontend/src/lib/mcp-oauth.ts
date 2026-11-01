@@ -129,6 +129,22 @@ export function dailyBriefMcpResourceURL(): string {
   throw new Error('Daily Brief resource is not configured for this Auth endpoint.');
 }
 
+export function dailyBriefSignedOutLandingURL(): string | null {
+  try {
+    return new URL('/', dailyBriefMcpResourceURL()).href;
+  } catch {
+    return null;
+  }
+}
+
+export function isDailyBriefMcpResource(resource: string): boolean {
+  try {
+    return resource === dailyBriefMcpResourceURL();
+  } catch {
+    return false;
+  }
+}
+
 export function revokeMCPOAuthGrant(grantId: string, accessToken: string): Promise<void> {
   const path = `/grants/${encodeURIComponent(grantId)}`;
   return request(path, accessToken, { method: 'DELETE' });
