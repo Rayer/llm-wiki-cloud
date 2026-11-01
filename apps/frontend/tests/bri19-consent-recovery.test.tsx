@@ -1,7 +1,7 @@
 import React from 'react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { AuthProvider } from '@/lib/auth';
-import { writeStoredAccessToken, writeStoredAuthUser } from '@/lib/auth-core';
+import { readStoredAccessToken, writeStoredAccessToken, writeStoredAuthUser } from '@/lib/auth-core';
 import { setRuntimeConfigForTests } from '@/lib/runtime-config';
 import { installShellIntersectionObserver } from './shell-intersection-observer-helper';
 
@@ -202,5 +202,48 @@ it('offers fixed recovery after a flagged selection becomes terminal and sends n
   const recovery = await screen.findByRole('link', { name: 'MCPOAuth.returnToDailyBrief' });
   expect(recovery.getAttribute('href')).toBe('https://brief.dev.rayer.idv.tw/');
   expect(calls.filter(({ url, method }) => url.includes(`/consent/${transactionId}`) && method === 'POST')).toHaveLength(0);
+  expect(screen.queryByRole('button', { name: 'MCPOAuth.allow' })).toBeNull();
+});
+
+it('retains only fixed Daily Brief navigation context when password sign-in changes A to B before a 410', async () => {
+  writeStoredAccessToken(localStorage, authToken('account-a'));
+  writeStoredAuthUser(localStorage, { id: 'account-a', email: 'account-a@example.test' });
+  let consentReads = 0;
+  let refreshes = 0;
+  const tokenB = authToken('account-b');
+  mocks.fetch.mockImplementation(async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const url = requestURL(input);
+    const method = init?.method ?? 'GET';
+    const authorization = new Headers(init?.headers).get('Authorization');
+    calls.push({ url, method, authorization });
+    if (url.endsWith('/api/v1/auth/refresh')) {
+      refreshes += 1;
+      const account = refreshes === 1 ? 'account-a' : 'account-b';
+      return jsonResponse({ access_token: authToken(account), user: { id: account, email: `${account}@example.test` } });
+    }
+    if (url.endsWith('/api/v1/auth/login')) return jsonResponse({ access_token: tokenB, user: { id: 'account-b', email: 'account-b@example.test' } });
+    if (url.includes(`/api/v1/auth/mcp/oauth/consent/${transactionId}`)) {
+      consentReads += 1;
+      return consentReads === 1 ? jsonResponse(consentDetails()) : jsonResponse({ error: 'expired' }, 410);
+    }
+    return jsonResponse({});
+  });
+  view = render(<App />);
+
+  fireEvent.click(await screen.findByRole('button', { name: 'MCPOAuth.useAnotherAccount' }));
+  await screen.findByRole('dialog');
+  fireEvent.change(screen.getByLabelText('Login.email'), { target: { value: 'account-b@example.test' } });
+  fireEvent.change(screen.getByLabelText('Login.password'), { target: { value: 'password-b' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Login.signIn' }));
+
+  const recovery = await screen.findByRole('link', { name: 'MCPOAuth.returnToDailyBrief' });
+  expect(recovery.getAttribute('href')).toBe('https://brief.dev.rayer.idv.tw/');
+  expect(readStoredAccessToken(localStorage)).toBe(tokenB);
+  expect(refreshes).toBeGreaterThanOrEqual(2);
+  const consentRequests = calls.filter(({ url }) => url.includes(`/consent/${transactionId}`));
+  expect(consentRequests.map(({ authorization }) => authorization)).toContain(`Bearer ${authToken('account-a')}`);
+  expect(consentRequests.map(({ authorization }) => authorization)).toContain(`Bearer ${tokenB}`);
+  expect(consentRequests.some(({ method }) => method === 'POST')).toBe(false);
+  expect(screen.queryByRole('button', { name: 'MCPOAuth.continueWithAccount' })).toBeNull();
   expect(screen.queryByRole('button', { name: 'MCPOAuth.allow' })).toBeNull();
 });

@@ -30,6 +30,7 @@ export function MCPOAuthConsentClient({ transactionId }: { transactionId: string
   const [busyContextKey, setBusyContextKey] = useState('');
   const [terminalContextKey, setTerminalContextKey] = useState('');
   const [selectionLoginContextKey, setSelectionLoginContextKey] = useState('');
+  const [dailyBriefRecoveryTransactionId, setDailyBriefRecoveryTransactionId] = useState('');
   const requestIdRef = useRef(0);
   const contextKey = `${transactionId}:${user?.id ?? ''}`;
   const contextRef = useRef({ key: contextKey, generation: 0 });
@@ -43,6 +44,7 @@ export function MCPOAuthConsentClient({ transactionId }: { transactionId: string
   const selectionLoginOpen = selectionLoginContextKey === contextKey;
   const canReturnToDailyBrief = Boolean(visibleError && (
     hasGoogleSelectAccountReturnTo(transactionId)
+    || dailyBriefRecoveryTransactionId === transactionId
     || (visibleDetails?.prompt === 'select_account' && isDailyBriefMcpResource(visibleDetails.resource))
   ));
   const dailyBriefLanding = canReturnToDailyBrief ? dailyBriefSignedOutLandingURL() : null;
@@ -102,6 +104,7 @@ export function MCPOAuthConsentClient({ transactionId }: { transactionId: string
         return;
       }
       if (result.prompt === 'select_account' && result.account_selected !== true) {
+        if (isDailyBriefMcpResource(result.resource)) setDailyBriefRecoveryTransactionId(transactionId);
         clearGoogleLoginReturnTo();
         setDetails(result);
         setDetailsContextKey(identityKey);
