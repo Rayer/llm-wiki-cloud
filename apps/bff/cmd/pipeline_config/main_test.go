@@ -173,22 +173,25 @@ func TestRealPklBFFPrepareRendersSchema3ConsumerForLocalAndCloud(t *testing.T) {
 	t.Setenv("FRONTEND_PORT", "13000")
 
 	for _, tc := range []struct {
-		environment     string
-		cooldown        int
-		typesafe        string
-		profileAudience string
-		profileService  string
-		resources       []string
+		environment       string
+		cooldown          int
+		typesafe          string
+		documentImportURL string
+		profileAudience   string
+		profileService    string
+		resources         []string
 	}{
 		{environment: "local", cooldown: 60, typesafe: "TEST_ONLY_LOCAL_TYPESAFE_API_KEY"},
 		{environment: "dev", cooldown: 600, typesafe: "TEST_ONLY_SYNTHETIC_CLOUD_SECRET",
-			profileAudience: "https://llm-wiki-bff-dev-a5nkmux6pq-de.a.run.app", profileService: "lwc-bff-dev@llm-wiki-cloud.iam.gserviceaccount.com", resources: []string{
+			documentImportURL: "https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/document-import-job-dev:run",
+			profileAudience:   "https://llm-wiki-bff-dev-a5nkmux6pq-de.a.run.app", profileService: "lwc-bff-dev@llm-wiki-cloud.iam.gserviceaccount.com", resources: []string{
 				"projects/llm-wiki-cloud/secrets/deepseek-apikey/versions/latest",
 				"projects/llm-wiki-cloud/secrets/typesafe-jev-api-key-dev/versions/1",
 				"projects/llm-wiki-cloud/secrets/byok-credential-encryption-key-dev/versions/1",
 			}},
 		{environment: "prod", cooldown: 3600, typesafe: "TEST_ONLY_SYNTHETIC_CLOUD_SECRET",
-			profileAudience: "https://llm-wiki-bff-a5nkmux6pq-de.a.run.app", profileService: "lwc-bff-prod@llm-wiki-cloud.iam.gserviceaccount.com", resources: []string{
+			documentImportURL: "https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/document-import-job:run",
+			profileAudience:   "https://llm-wiki-bff-a5nkmux6pq-de.a.run.app", profileService: "lwc-bff-prod@llm-wiki-cloud.iam.gserviceaccount.com", resources: []string{
 				"projects/llm-wiki-cloud/secrets/deepseek-apikey/versions/latest",
 				"projects/llm-wiki-cloud/secrets/typesafe-jev-api-key-prod/versions/1",
 				"projects/llm-wiki-cloud/secrets/byok-credential-encryption-key-prod/versions/1",
@@ -229,6 +232,7 @@ func TestRealPklBFFPrepareRendersSchema3ConsumerForLocalAndCloud(t *testing.T) {
 			wantSchema := 3
 			if generated.SchemaVersion != wantSchema || generated.Environment != tc.environment || generated.Target != "bff" ||
 				generated.PipelineCooldownSeconds != tc.cooldown || generated.TypeSafeAPIKey != tc.typesafe ||
+				generated.DocumentImportJobURL != tc.documentImportURL ||
 				generated.BYOKCredentialEncryptionKey != wantBYOKKey || generated.DeepSeekAPIKeyReference != wantDeepSeekReference ||
 				generated.ProfileRuntimeAudience != tc.profileAudience || generated.ProfileRuntimeServiceAccount != tc.profileService ||
 				generated.MCP == nil || generated.MCP.DiscoveryTTLMS != wantTTL || generated.MCP.ToolsListTTLMS != wantTTL {
@@ -266,6 +270,7 @@ func TestRealPklBFFPrepareRendersSchema3ConsumerForLocalAndCloud(t *testing.T) {
 			started, err := runtimeconfig.LoadBFFFile(filepath.Join(output, "bff.json"))
 			if err != nil || started.GCPProject != generated.GCPProject ||
 				started.Bucket != generated.Bucket || started.FirestoreDatabaseID != generated.FirestoreDatabaseID ||
+				started.DocumentImportJobURL != tc.documentImportURL ||
 				started.PipelineCooldownSeconds != tc.cooldown || started.TypeSafeAPIKey != tc.typesafe ||
 				started.ProfileRuntimeAudience != tc.profileAudience || started.ProfileRuntimeServiceAccount != tc.profileService ||
 				started.PipelineScheduleCron != generated.PipelineSchedule.Cron ||
@@ -731,6 +736,17 @@ func TestRunTimeoutMustBeExplicit(t *testing.T) {
 	t.Setenv("LWC_PIPELINE_RUN_TIMEOUT_SECONDS", "0")
 	if _, err := runTimeoutFromEnvironment(); err == nil {
 		t.Fatal("zero timeout was accepted")
+	}
+}
+
+func TestDocumentImportJobURLIsEnvironmentScoped(t *testing.T) {
+	dev := "https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/document-import-job-dev:run"
+	prod := "https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/document-import-job:run"
+	if !validateDocumentImportJobURL(dev, "dev") || !validateDocumentImportJobURL(prod, "prod") {
+		t.Fatal("canonical DEV or Production document import target was rejected")
+	}
+	if validateDocumentImportJobURL(dev, "prod") || validateDocumentImportJobURL(prod, "dev") {
+		t.Fatal("document import URL crossed its environment boundary")
 	}
 }
 

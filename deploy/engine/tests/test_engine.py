@@ -52,6 +52,13 @@ class Acceptance(unittest.TestCase):
                     normalize.extend(['--auth-inputs',str(auth_inputs_path)])
                 output=subprocess.check_output(normalize,cwd=ROOT/'apps/bff',env=env,text=True)
                 setattr(cls,attribute,json.loads(output))
+            production_docimport = subprocess.check_output(
+                ['go','run','./cmd/deploy_config','--environment','production',
+                 '--config',str(ROOT/'deploy/environments/production.yaml'),
+                 '--components','bff,documentimport',
+                 '--bff-inputs',str(Path(directory)/'prod'/'bff-inputs.json')],
+                cwd=ROOT/'apps/bff',env=env,text=True)
+            cls.production_document_import_normalized = json.loads(production_docimport)
             cls.production_auth_normalized = auth_contract_fixtures.deployment_plan('production', 'auth')
             cls.production_jobs_normalized = copy.deepcopy(cls.production_normalized)
             cls.production_jobs_normalized['selected_components'] = ['worker', 'exportjob']
@@ -1404,6 +1411,100 @@ class Acceptance(unittest.TestCase):
         e.restore(['documentimport'])
         self.assertEqual(e.state['components']['documentimport']['status'], 'rolled_back')
         self.assertNotIn(name, self.current()['resources'])
+
+    def production_document_import_provider(self):
+        plan = {
+            'id': 'production-document-import', 'source': 'c' * 40, 'branch': 'main',
+            'tag': 'production-document-import', 'selected': ['documentimport', 'bff'],
+            'release_source_mode': 'legacy_monorepo',
+            'normalized': copy.deepcopy(self.production_document_import_normalized),
+        }
+        return providers.Providers(plan, self.root)
+
+    def production_document_import_resource(self, provider, image):
+        config = provider.document_import_job_config()
+        return {'metadata': {'name': provider.p['document_import_job']['job_name']},
+                'spec': {'template': {'spec': {
+                    'parallelism': config['parallelism'], 'taskCount': config['tasks'],
+                    'template': {'spec': {
+                        'serviceAccountName': config['service_account'],
+                        'containers': [{'image': image, 'env': copy.deepcopy(config['env']),
+                                        'resources': {'limits': {'cpu': config['cpu'],
+                                                                 'memory': config['memory']}}}],
+                        'timeoutSeconds': str(config['timeout_seconds']),
+                        'maxRetries': config['max_retries'],
+                    }},
+                }}}}
+
+    def test_production_documentimport_new_job_isolated_and_create_rollback_is_fenced(self):
+        provider = self.production_document_import_provider()
+        cfg = provider.p['document_import_job']
+        name = cfg['job_name']
+        self.provider['resources'].pop(name, None)
+        self.provider.get('iam_policies', {}).pop(name, None)
+        self.flush()
+
+        prior = provider.snapshot('documentimport')
+        self.assertEqual(prior, {'absent': True})
+        artifact = {'image': provider.p['gcp']['artifact_registry'] +
+                    '/llm-wiki-document-import-worker@sha256:' + 'a' * 64}
+        candidate = {'create_if_absent': True}
+        provider.deploy('documentimport', artifact, candidate, lambda: None)
+
+        created = self.current()
+        job = created['resources'][name]
+        config = provider.document_import_job_config()
+        template = provider.job_template(job)
+        self.assertEqual(template['serviceAccountName'],
+                         'lwc-document-import-prod@llm-wiki-cloud.iam.gserviceaccount.com')
+        self.assertEqual(template['containers'][0]['env'], config['env'])
+        self.assertEqual(str(template['timeoutSeconds']), str(config['timeout_seconds']))
+        self.assertTrue(provider.document_import_owner_matches(job, candidate['create_owner']))
+        member = 'serviceAccount:lwc-bff-prod@llm-wiki-cloud.iam.gserviceaccount.com'
+        self.assertTrue(provider.document_import_policy_has(created['iam_policies'][name], member))
+        self.assertTrue(provider.observe('documentimport', artifact, candidate, prior=False))
+        self.assertEqual(len(self.calls('create')), 1)
+
+        provider.rollback('documentimport', prior, candidate)
+        self.assertIsNone(provider.document_import_job_if_exists())
+
+    def test_production_documentimport_existing_job_keeps_config_through_update_and_rollback(self):
+        provider = self.production_document_import_provider()
+        cfg = provider.p['document_import_job']
+        name = cfg['job_name']
+        prior_image = 'prior@sha256:' + 'b' * 64
+        member = 'serviceAccount:' + provider.p['bff']['runtime_service_account']
+        self.provider['resources'][name] = self.production_document_import_resource(provider, prior_image)
+        self.provider.setdefault('iam_policies', {})[name] = {
+            'etag': 'etag-1', 'bindings': [{'role': 'roles/run.jobsExecutorWithOverrides',
+                                            'members': [member]}]}
+        self.flush()
+
+        prior = provider.snapshot('documentimport')
+        self.assertEqual(prior['image'], prior_image)
+        self.assertTrue(provider.observe('documentimport', prior, {}, prior=True))
+        artifact = {'image': provider.p['gcp']['artifact_registry'] +
+                    '/llm-wiki-document-import-worker@sha256:' + 'a' * 64}
+        provider.deploy('documentimport', artifact, {}, lambda: None)
+        self.assertTrue(provider.observe('documentimport', artifact, {}, prior=False))
+        update = self.calls('update')[-1]
+        self.assertNotIn('--set-env-vars', update)
+        self.assertNotIn('--service-account', update)
+
+        provider.rollback('documentimport', prior)
+        self.assertTrue(provider.observe('documentimport', prior, {}, prior=True))
+
+    def test_production_documentimport_receipt_rejects_development_target_config(self):
+        normalized = copy.deepcopy(self.production_document_import_normalized)
+        normalized['document_import_job'] = copy.deepcopy(self.normalized['document_import_job'])
+        plan = {'id': 'production-document-import-mismatch', 'source': 'c' * 40,
+                'release_source_mode': 'legacy_monorepo', 'normalized': normalized}
+        provider = providers.Providers(plan, self.root)
+        artifact = {'image': normalized['gcp']['artifact_registry'] +
+                    '/llm-wiki-document-import-worker@sha256:' + 'a' * 64}
+        with self.assertRaises(Breakpoint) as caught:
+            provider.usable('documentimport', artifact)
+        self.assertEqual(caught.exception.reason, 'artifact-config-incompatible')
 
     def test_documentimport_policy_defaults_only_omitted_bindings_and_keeps_errors_fail_closed(self):
         e = self.make(('documentimport',), name='documentimport-policy-shape')

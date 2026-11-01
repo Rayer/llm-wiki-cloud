@@ -727,7 +727,7 @@ func TestExportJobConfigSupportsBothEnvironmentContracts(t *testing.T) {
 	}
 }
 
-func TestDocumentImportJobIsDevelopmentOnlyAndRequiresItsBFFTarget(t *testing.T) {
+func TestDocumentImportJobIsEnvironmentScopedAndRequiresItsBFFTarget(t *testing.T) {
 	root := repoRoot(t)
 	dev, err := decodeConfig(filepath.Join(root, "deploy/environments/development.yaml"))
 	if err != nil {
@@ -751,8 +751,13 @@ func TestDocumentImportJobIsDevelopmentOnlyAndRequiresItsBFFTarget(t *testing.T)
 	if err := validateConfigForEnvironment("production", prod); err != nil {
 		t.Fatalf("reviewed Production config remains valid: %v", err)
 	}
-	if prod.DocumentImportJob.Enabled {
-		t.Fatal("Production enabled the development-only document import Job")
+	prodJob := prod.DocumentImportJob
+	if !prodJob.Enabled || prodJob.JobName != "document-import-job" ||
+		prodJob.RuntimeServiceAccount != "lwc-document-import-prod@llm-wiki-cloud.iam.gserviceaccount.com" ||
+		prodJob.Bucket != "llm-wiki-data" || prodJob.FirestoreDatabaseID != "llm-wiki-cloud-prod" ||
+		prodJob.Location != "asia-east1" || prodJob.JobTimeout != "180s" || prodJob.MaxRetries != 0 ||
+		prodJob.Parallelism != 1 || prodJob.Tasks != 1 || prodJob.CPU != 1 || prodJob.Memory != "1Gi" {
+		t.Fatalf("Production document import Job config = %#v", prodJob)
 	}
 	inputs := componentInputs(dev, QueryConfigIdentity{}, []string{"bff", "documentimport"})
 	input, ok := inputs["documentimport"].(DocumentImportJobConfig)
@@ -762,9 +767,40 @@ func TestDocumentImportJobIsDevelopmentOnlyAndRequiresItsBFFTarget(t *testing.T)
 	if _, err := Load("development", filepath.Join(root, "deploy/environments/development.yaml"), "documentimport"); err == nil {
 		t.Fatal("documentimport selection unexpectedly omitted the BFF invocation target")
 	}
-	if _, err := LoadWithBFFInputs("production", filepath.Join(root, "deploy/environments/production.yaml"), "bff,documentimport",
-		writeBFFDescriptorFixture(t, "production", 3600)); err == nil {
-		t.Fatal("Production accepted the development-only document import component")
+	prodInputs := componentInputs(prod, QueryConfigIdentity{}, []string{"bff", "documentimport"})
+	prodInput, ok := prodInputs["documentimport"].(DocumentImportJobConfig)
+	if !ok || !reflect.DeepEqual(prodInput, prodJob) {
+		t.Fatalf("Production component inputs omitted the reviewed Job config: %#v", prodInputs)
+	}
+	loaded, err := LoadWithBFFInputs("production", filepath.Join(root, "deploy/environments/production.yaml"), "bff,documentimport",
+		writeBFFDescriptorFixture(t, "production", 3600))
+	if err != nil {
+		t.Fatalf("reviewed Production document import selection: %v", err)
+	}
+	if loaded.BFF.DocumentImportJobURL != documentImportRunURL("llm-wiki-cloud", "asia-east1", "document-import-job") {
+		t.Fatalf("Production BFF target = %q", loaded.BFF.DocumentImportJobURL)
+	}
+	if _, err := Load("production", filepath.Join(root, "deploy/environments/production.yaml"), "documentimport"); err == nil {
+		t.Fatal("Production documentimport selection unexpectedly omitted its BFF target")
+	}
+	for _, tc := range []struct {
+		name   string
+		change func(*EnvironmentConfig)
+	}{
+		{"DEV Job", func(c *EnvironmentConfig) { c.DocumentImportJob.JobName = "document-import-job-dev" }},
+		{"DEV identity", func(c *EnvironmentConfig) {
+			c.DocumentImportJob.RuntimeServiceAccount = "lwc-document-import-dev@llm-wiki-cloud.iam.gserviceaccount.com"
+		}},
+		{"DEV bucket", func(c *EnvironmentConfig) { c.DocumentImportJob.Bucket = "llm-wiki-data-dev" }},
+		{"DEV database", func(c *EnvironmentConfig) { c.DocumentImportJob.FirestoreDatabaseID = "llm-wiki-cloud-dev" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mismatched := prod
+			tc.change(&mismatched)
+			if err := validateConfigForEnvironment("production", mismatched); err == nil {
+				t.Fatal("Production accepted a cross-environment document import target")
+			}
+		})
 	}
 }
 

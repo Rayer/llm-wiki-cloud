@@ -702,6 +702,7 @@ local prodBff = new BffConfig {
   auth_service_url = "https://auth.rayer.idv.tw"
   mcp_resource_origin = prodBffResourceOrigin
   pipeline_job_url = "https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/olw-pipeline:run"
+  document_import_job_url = "https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/document-import-job:run"
   export_job_url = "https://run.googleapis.com/v2/projects/llm-wiki-cloud/locations/asia-east1/jobs/export-job:run"
   export_signing_service_account = "lwc-export-signer-prod@llm-wiki-cloud.iam.gserviceaccount.com"
   allowed_origins = new Listing {

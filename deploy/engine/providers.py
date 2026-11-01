@@ -1164,8 +1164,7 @@ class Providers:
         if c != 'frontend':
             self.valid_image(c, artifact['image'])
             if c == 'documentimport':
-                require(self.p.get('environment') == 'development' and
-                        self.p.get('document_import_job', {}).get('enabled') is True,
+                require(self.document_import_target_matches_environment(),
                         'artifact-config-incompatible')
             if c == 'worker':
                 if artifact.get('pipeline_config') is None:
@@ -1368,7 +1367,31 @@ class Providers:
                 str(t.get('timeoutSeconds')) == '82800' and t.get('maxRetries') == cfg['max_retries'] and
                 execution.get('parallelism') == cfg['parallelism'] and execution.get('taskCount') == cfg['tasks'])
 
+    def document_import_target_matches_environment(self):
+        targets = {
+            'development': ('document-import-job-dev',
+                            'lwc-document-import-dev@llm-wiki-cloud.iam.gserviceaccount.com',
+                            'llm-wiki-data-dev', 'llm-wiki-cloud-dev'),
+            'production': ('document-import-job',
+                           'lwc-document-import-prod@llm-wiki-cloud.iam.gserviceaccount.com',
+                           'llm-wiki-data', 'llm-wiki-cloud-prod'),
+        }
+        target = targets.get(self.p.get('environment'))
+        cfg = self.p.get('document_import_job')
+        if target is None or not isinstance(cfg, dict):
+            return False
+        job, account, bucket, database = target
+        return (cfg.get('enabled') is True and cfg.get('job_name') == job and
+                cfg.get('runtime_service_account') == account and cfg.get('bucket') == bucket and
+                cfg.get('firestore_database_id') == database and
+                cfg.get('location') == self.p.get('gcp', {}).get('region') and
+                self.p.get('worker', {}).get('bucket') == bucket and
+                self.p.get('auth', {}).get('firestore_database_id') == database and
+                self.p.get('bff', {}).get('firestore_database_id') == database)
+
     def document_import_job_config(self):
+        require(self.document_import_target_matches_environment(),
+                'document-import-job-config-incompatible')
         cfg = self.p['document_import_job']
         timeout = cfg['job_timeout']
         require(isinstance(timeout, str) and re.fullmatch(r'[1-9][0-9]*s', timeout),

@@ -49,7 +49,19 @@ export_job:
   tasks: 1
 
 document_import_job:
-  enabled: false
+  enabled: true
+  job_name: document-import-job
+  # Proposed identity; provision and read back before Production selection.
+  runtime_service_account: lwc-document-import-prod@llm-wiki-cloud.iam.gserviceaccount.com
+  bucket: llm-wiki-data
+  firestore_database_id: llm-wiki-cloud-prod
+  location: asia-east1
+  job_timeout: 180s
+  max_retries: 0
+  parallelism: 1
+  tasks: 1
+  cpu: 1
+  memory: 1Gi
 
 frontend:
   project_name: llm-wiki-frontend
