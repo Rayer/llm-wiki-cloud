@@ -172,7 +172,8 @@ class CDContractTests(LegacyMonorepoCDTestMixin, unittest.TestCase):
     def _run_main_eligibility(self, source, *, candidate_sha, checked_out_sha=None,
                               develop_heads=None, main_sha=None, ancestor=True,
                               deploy_result="success", pending_outcome="success",
-                              checkout_outcome="success", with_gh=True):
+                              checkout_outcome="success", result_download_outcome="success",
+                              components="documentimport,bff,worker,frontend", with_gh=True):
         workflow = yaml.safe_load(source)
         job = workflow["jobs"].get("main-fast-forward-eligible")
         self.assertIsNotNone(job, "missing main-fast-forward-eligible job")
@@ -184,6 +185,36 @@ class CDContractTests(LegacyMonorepoCDTestMixin, unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            result_dir = root / "dev-result"
+            result_dir.mkdir()
+            selected = components.split(",")
+            plan_id = "retained-dev-plan"
+            release_tag = "test-retained-dev-release"
+            sequence = 17
+            (result_dir / "plan.json").write_text(json.dumps({
+                "id": plan_id,
+                "source": candidate_sha,
+                "tag": release_tag,
+                "branch": "develop",
+                "release_source_mode": "legacy_monorepo",
+                "normalized": {"environment": "development"},
+                "selected": selected,
+            }))
+            (result_dir / "state.json").write_text(json.dumps({
+                "plan": plan_id,
+                "status": "success",
+                "executor_sha": candidate_sha,
+                "sequence": sequence,
+            }))
+            (result_dir / "result.json").write_text(json.dumps({
+                "attempt": plan_id,
+                "release": release_tag,
+                "expected": {"source": candidate_sha},
+                "status": "success",
+                "stage": "success",
+                "reason": "completed",
+                "last_verified_checkpoint": sequence,
+            }))
             bin_dir = root / "bin"
             bin_dir.mkdir()
             status_log = root / "statuses.log"
@@ -237,19 +268,34 @@ class CDContractTests(LegacyMonorepoCDTestMixin, unittest.TestCase):
                     #!/usr/bin/env bash
                     set -eu
                     [[ "${{1:-}}" == api ]]
-                    state=''
-                    context=''
-                    for argument in "$@"; do
-                      case "$argument" in
-                        state=*) state="${{argument#state=}}" ;;
-                        context=*) context="${{argument#context=}}" ;;
-                      esac
-                    done
-                    [[ "$context" == main-fast-forward-eligible ]]
-                    if [[ "$state" == pending && "${{FAKE_PENDING_FAILURE:-0}}" == 1 ]]; then
-                      exit 97
+                    if [[ "${{2:-}}" == --method && "${{3:-}}" == POST ]]; then
+                      state=''
+                      context=''
+                      for argument in "$@"; do
+                        case "$argument" in
+                          state=*) state="${{argument#state=}}" ;;
+                          context=*) context="${{argument#context=}}" ;;
+                        esac
+                      done
+                      [[ "$context" == main-fast-forward-eligible ]]
+                      if [[ "$state" == pending && "${{FAKE_PENDING_FAILURE:-0}}" == 1 ]]; then
+                        exit 97
+                      fi
+                      printf '%s\\n' "$state" >> {shlex.quote(str(status_log))}
+                      exit 0
                     fi
-                    printf '%s\\n' "$state" >> {shlex.quote(str(status_log))}
+                    ref="${{!#}}"
+                    if [[ "$ref" == */git/ref/heads/develop ]]; then
+                      count=0
+                      [[ -f "$FAKE_DEVELOP_COUNT" ]] && count=$(<"$FAKE_DEVELOP_COUNT")
+                      count=$((count + 1))
+                      printf '%s' "$count" > "$FAKE_DEVELOP_COUNT"
+                      sed -n "${{count}}p" "$FAKE_DEVELOP_HEADS"
+                    elif [[ "$ref" == */git/ref/heads/main ]]; then
+                      printf '%s\\n' "$FAKE_MAIN_SHA"
+                    else
+                      exit 93
+                    fi
                 """).lstrip())
                 (bin_dir / "gh").chmod(0o755)
 
@@ -270,6 +316,13 @@ class CDContractTests(LegacyMonorepoCDTestMixin, unittest.TestCase):
                 "FAKE_DEVELOP_HEADS": str(develop_file),
                 "FAKE_DEVELOP_COUNT": str(root / "develop-count"),
                 "FAKE_PENDING_FAILURE": "1" if pending_outcome == "failure" else "0",
+                "DEPLOY_RESULT": deploy_result,
+                "OPERATION": "release",
+                "EXPECTED_SOURCE": candidate_sha,
+                "RELEASE_TAG": release_tag,
+                "COMPONENTS": components,
+                "RESULT_DIR": str(result_dir),
+                "RESULT_DOWNLOAD_OUTCOME": result_download_outcome,
                 "PENDING_OUTCOME": pending_outcome,
                 "CHECKOUT_OUTCOME": checkout_outcome,
             }
@@ -319,6 +372,65 @@ class CDContractTests(LegacyMonorepoCDTestMixin, unittest.TestCase):
 
 
 
+
+    def test_main_fast_forward_admits_exact_successful_documentimport_release(self):
+        development = (ROOT / ".github/workflows/deploy-dev.yml").read_text()
+        eligibility = yaml.safe_load(development)["jobs"]["main-fast-forward-eligible"]
+        condition = eligibility["if"]
+        self.assertNotIn("documentimport", condition)
+        candidate = "a" * 40
+        pending, validation, failure, statuses, git_log = self._run_main_eligibility(
+            development, candidate_sha=candidate)
+        self.assertEqual(pending.returncode, 0, pending.stderr)
+        self.assertEqual(validation.returncode, 0, validation.stdout + validation.stderr)
+        self.assertEqual(failure.returncode, 0, failure.stderr)
+        self.assertEqual(statuses, ["pending", "success"])
+        self.assertIn(f"merge-base --is-ancestor {'c' * 40} {candidate}", git_log)
+
+    def test_main_fast_forward_keeps_other_component_and_operation_exclusions(self):
+        development = (ROOT / ".github/workflows/deploy-dev.yml").read_text()
+        eligibility = yaml.safe_load(development)["jobs"]["main-fast-forward-eligible"]
+        condition = eligibility["if"]
+        for fence in (
+            "always()",
+            "github.event_name == 'workflow_dispatch'",
+            "github.ref == 'refs/heads/develop'",
+            "inputs.components != 'provision-exportjob-dev'",
+            "inputs.operation != 'diagnose-auth-image'",
+            "inputs.operation != 'config-only'",
+            "inputs.operation != 'frontend-config-only'",
+            "inputs.operation != 'frontend-config-generate'",
+            "inputs.operation != 'readback'",
+        ):
+            with self.subTest(fence=fence):
+                self.assertIn(fence, condition)
+        self.assertNotIn("!contains(inputs.components, 'documentimport')", condition)
+
+    def test_failed_documentimport_dev_result_publishes_failure_not_eligibility(self):
+        development = (ROOT / ".github/workflows/deploy-dev.yml").read_text()
+        pending, validation, failure, statuses, _ = self._run_main_eligibility(
+            development, candidate_sha="a" * 40, deploy_result="failure",
+            result_download_outcome="skipped", checkout_outcome="skipped")
+        self.assertEqual(pending.returncode, 0, pending.stderr)
+        self.assertNotEqual(validation.returncode, 0)
+        self.assertEqual(failure.returncode, 0, failure.stderr)
+        self.assertEqual(statuses, ["pending", "failure"])
+
+    def test_documentimport_dev_result_fails_when_develop_head_or_main_ancestry_moves(self):
+        development = (ROOT / ".github/workflows/deploy-dev.yml").read_text()
+        candidate = "a" * 40
+        cases = (
+            {"develop_heads": [candidate, "b" * 40]},
+            {"ancestor": False},
+        )
+        for overrides in cases:
+            with self.subTest(overrides=overrides):
+                pending, validation, failure, statuses, _ = self._run_main_eligibility(
+                    development, candidate_sha=candidate, **overrides)
+                self.assertEqual(pending.returncode, 0, pending.stderr)
+                self.assertNotEqual(validation.returncode, 0)
+                self.assertEqual(failure.returncode, 0, failure.stderr)
+                self.assertEqual(statuses, ["pending", "failure"])
 
     def test_record_dev_receipt_cli_rejects_partial_backend_images_and_writes_complete_receipt(self):
         source_sha = "0123456789abcdef0123456789abcdef01234567"
@@ -483,7 +595,9 @@ class CDContractTests(LegacyMonorepoCDTestMixin, unittest.TestCase):
         production = (ROOT / ".github/workflows/promote-production.yml").read_text()
         self.assertNotIn("\n  push:", development)
         self.assertNotIn("\n  push:", production)
-        self.assertIn("!contains(inputs.components, 'documentimport')", development)
+        eligibility = yaml.safe_load(development)["jobs"]["main-fast-forward-eligible"]["if"]
+        self.assertNotIn("!contains(inputs.components, 'documentimport')", eligibility)
+        self.assertIn("inputs.components != 'provision-exportjob-dev'", eligibility)
         source = source_bundle()
         consume_start = source.index("consume_dev_images()")
         consume = source[consume_start:source.index("\n}\n\npreflight_shared", consume_start)]
