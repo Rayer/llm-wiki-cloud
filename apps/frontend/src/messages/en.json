@@ -7,6 +7,7 @@
     "password": "Password",
     "showPassword": "Show password",
     "hidePassword": "Hide password",
+    "closeAccountSelection": "Close account sign-in",
     "signIn": "Sign in",
     "continueWithGoogle": "Continue with Google",
     "tryDemo": "Try Demo",
@@ -265,7 +266,8 @@
     "confirm": "Confirm link",
     "supportReference": "Support reference:",
     "copyReference": "Copy reference",
-    "return": "Return to sign in"
+    "return": "Return to sign in",
+    "returnToConsent": "Return to account selection"
   },
   "Admin": {
     "registrationEnabled": "Allow new user registration",
@@ -719,6 +721,10 @@
     "loading": "Loading…",
     "invalidTransaction": "This authorization request is invalid or incomplete. Restart it from your MCP client.",
     "signInRequired": "Sign in with your LLM Wiki Cloud account to review this request.",
+    "accountRefreshFailed": "Sign-in finished, but the verified session could not be refreshed. Try again.",
+    "continueWithAccount": "Continue with this account",
+    "useAnotherAccount": "Use another account",
+    "cancelSelection": "Cancel authorization",
     "expired": "This request has expired. Restart authorization from your MCP client.",
     "notAllowed": "This account cannot authorize access to the requested Project.",
     "loadFailed": "Unable to load this authorization request. Restart from your MCP client.",
@@ -735,6 +741,7 @@
     "invalidReturn": "The authorization return address is invalid. Restart from your MCP client.",
     "decisionFailed": "Unable to save your decision. The request may have expired.",
     "backToAdvanced": "Open MCP OAuth settings",
+    "returnToDailyBrief": "Return to Daily Brief",
     "selectProject": "Select a Project to manage its MCP OAuth access.",
     "sharedInstructions": "@cac:mcp.instructions",
     "sharedInstructionsTitle": "Shared MCP instructions",

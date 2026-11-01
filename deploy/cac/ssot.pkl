@@ -198,6 +198,7 @@ class AuthOAuthResource {
   enabled: Boolean
   uri: String
   name: String
+  account_selection_client_ids: Listing<String> = new Listing {}
   scopes: Listing<AuthOAuthScope>
   allowed_scope_sets: Listing<Listing<String>>
   default_scope_set: Listing<String>
@@ -886,6 +887,7 @@ local devAuth = new AuthConfig {
       enabled = true
       uri = "https://brief.dev.rayer.idv.tw/mcp"
       name = "Daily Brief"
+      account_selection_client_ids = new Listing { "lwc_mcp_client_fDSKqqGmK0oiDXMVzv21-4guS0gtxtSjaIqX9MJpVBk" }
       scopes = new Listing {
         new AuthOAuthScope { name = "brief:manage"; description = "Read and manage Daily Brief reports and annotations in your private account space." }
       }

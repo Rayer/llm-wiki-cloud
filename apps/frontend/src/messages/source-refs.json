@@ -242,6 +242,13 @@
         "name"
       ]
     },
+    "MCPOAuth.returnToDailyBrief": {
+      "kind": "literal",
+      "context": "OAuth consent recovery link to the fixed Daily Brief service root.",
+      "protected_literals": [
+        "Daily Brief"
+      ]
+    },
     "MCPOAuth.sharedInstructions": {
       "kind": "cac",
       "ref": "mcp.instructions",

@@ -92,11 +92,14 @@ func TestSchema2AuthInputSnapshotAdoptsEveryOAuthRegistryField(t *testing.T) {
 	}
 	base := inputs.ConfigID
 	mutations := map[string]func(*AuthInputSnapshot){
-		"resource id":        func(v *AuthInputSnapshot) { v.OAuthResources[1].ID = "daily-brief-next" },
-		"resource kind":      func(v *AuthInputSnapshot) { v.OAuthResources[1].Kind = "project-template" },
-		"enabled":            func(v *AuthInputSnapshot) { v.OAuthResources[1].Enabled = true },
-		"uri":                func(v *AuthInputSnapshot) { v.OAuthResources[1].URI += "/changed" },
-		"resource name":      func(v *AuthInputSnapshot) { v.OAuthResources[1].Name = "Brief renamed" },
+		"resource id":   func(v *AuthInputSnapshot) { v.OAuthResources[1].ID = "daily-brief-next" },
+		"resource kind": func(v *AuthInputSnapshot) { v.OAuthResources[1].Kind = "project-template" },
+		"enabled":       func(v *AuthInputSnapshot) { v.OAuthResources[1].Enabled = true },
+		"uri":           func(v *AuthInputSnapshot) { v.OAuthResources[1].URI += "/changed" },
+		"resource name": func(v *AuthInputSnapshot) { v.OAuthResources[1].Name = "Brief renamed" },
+		"account-selection client allowlist": func(v *AuthInputSnapshot) {
+			v.OAuthResources[1].AccountSelectionClientIDs = []string{"lwc_mcp_client_" + strings.Repeat("A", 43)}
+		},
 		"scope name":         func(v *AuthInputSnapshot) { v.OAuthResources[1].Scopes[0].Name = "brief:read" },
 		"scope description":  func(v *AuthInputSnapshot) { v.OAuthResources[1].Scopes[0].Description += " changed" },
 		"accepted scope set": func(v *AuthInputSnapshot) { v.OAuthResources[1].AllowedScopeSets[0][0] = "brief:read" },

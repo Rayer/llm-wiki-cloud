@@ -28,6 +28,7 @@ let onJit: ReturnType<typeof vi.fn<(event: Event) => void>>;
 
 beforeEach(() => {
   localStorage.clear();
+  sessionStorage.clear();
   writeStoredAccessToken(localStorage, token('prior-account'));
   refresh = deferred();
   completion = deferred();
@@ -44,6 +45,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup();
+  sessionStorage.clear();
   window.removeEventListener('lwc-google-jit-completed', onJit);
   vi.unstubAllGlobals();
   vi.clearAllMocks();
@@ -52,6 +54,14 @@ afterEach(() => {
 for (const strict of [false, true]) {
   for (const first of ['refresh', 'completion']) {
     it(`uses the cookie session with ${first} first, StrictMode=${strict}`, async () => {
+      const transactionId = `lwc_mcp_tx_${'F'.repeat(43)}`;
+      const consentReturn = `/oauth/consent?transaction_id=${transactionId}`;
+      sessionStorage.setItem('lwc-google-login-return-to', JSON.stringify({
+        path: consentReturn,
+        transaction_id: transactionId,
+        intent: 'select_account',
+        attempt_id: '12345678-1234-1234-1234-123456789abc',
+      }));
       const tree = <AuthProvider><Observer /><GoogleCompletionClient /></AuthProvider>;
       render(strict ? <React.StrictMode>{tree}</React.StrictMode> : tree);
       await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => url.endsWith('/google/complete'))).toBe(true));
@@ -61,8 +71,13 @@ for (const strict of [false, true]) {
       expect(navigation.replace).not.toHaveBeenCalled();
       expect(onJit).not.toHaveBeenCalled();
       await act(async () => { (first === 'refresh' ? finishCompletion : finishRefresh)(); });
-      await waitFor(() => expect(navigation.replace).toHaveBeenCalledExactlyOnceWith('/'));
+      await waitFor(() => expect(navigation.replace).toHaveBeenCalledExactlyOnceWith(consentReturn));
       expect(auth.accessToken).toBe(token('google-account'));
+      expect(auth.user?.id).toBe('google-account');
+      expect(JSON.parse(sessionStorage.getItem('lwc-google-login-return-to') ?? 'null')).toMatchObject({
+        transaction_id: transactionId,
+        intent: 'select_account',
+      });
       expect(onJit).toHaveBeenCalledTimes(1);
       expect((onJit.mock.calls[0][0] as CustomEvent).detail.userId).toBe('google-account');
       expect(fetchMock.mock.calls.filter(([url]) => url.endsWith('/refresh'))).toHaveLength(1);

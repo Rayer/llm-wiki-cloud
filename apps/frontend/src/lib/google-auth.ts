@@ -24,11 +24,70 @@ function currentConsentReturnTo(): string | null {
   return safeConsentReturnTo(window.location.href, window.location.origin);
 }
 
+type GoogleLoginOptions = { intent?: 'select_account'; returnTo?: string };
+
+function storedConsentReturnTo(stored: string): string | null {
+  try {
+    const value: unknown = JSON.parse(stored);
+    if (isRecord(value)) {
+      const path = typeof value.path === 'string'
+        ? safeConsentReturnTo(value.path, window.location.origin)
+        : null;
+      const transactionId = typeof value.transaction_id === 'string' ? value.transaction_id : '';
+      const attemptId = typeof value.attempt_id === 'string' ? value.attempt_id : '';
+      const validAttemptId = /^(?:[a-f0-9]{32}|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/i.test(attemptId);
+      if (!path || value.intent !== 'select_account' || !consentTransactionPattern.test(transactionId)
+        || new URL(path, window.location.origin).searchParams.get('transaction_id') !== transactionId || !validAttemptId) return null;
+      return path;
+    }
+  } catch {
+    return safeConsentReturnTo(stored, window.location.origin);
+  }
+  return safeConsentReturnTo(stored, window.location.origin);
+}
+
+function newGoogleLoginAttemptId(): string {
+  if (typeof globalThis.crypto?.randomUUID === 'function') return globalThis.crypto.randomUUID();
+  const bytes = new Uint8Array(16);
+  globalThis.crypto.getRandomValues(bytes);
+  return Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('');
+}
+
+export function hasGoogleLoginReturnTo(): boolean {
+  try {
+    const stored = window.sessionStorage.getItem(googleLoginReturnToKey);
+    return Boolean(stored && storedConsentReturnTo(stored));
+  } catch {
+    return false;
+  }
+}
+
+export function hasGoogleSelectAccountReturnTo(transactionId: string): boolean {
+  try {
+    const stored = window.sessionStorage.getItem(googleLoginReturnToKey);
+    if (!stored) return false;
+    const value: unknown = JSON.parse(stored);
+    if (!isRecord(value) || value.intent !== 'select_account' || typeof value.transaction_id !== 'string'
+      || value.transaction_id !== transactionId || !storedConsentReturnTo(stored)) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function consumeGoogleLoginReturnTo(): string {
   try {
     const stored = window.sessionStorage.getItem(googleLoginReturnToKey);
-    window.sessionStorage.removeItem(googleLoginReturnToKey);
-    return stored ? safeConsentReturnTo(stored, window.location.origin) ?? '/' : '/';
+    let keepSelectionContext = false;
+    if (stored) {
+      try {
+        const value: unknown = JSON.parse(stored);
+        keepSelectionContext = isRecord(value) && value.intent === 'select_account'
+          && typeof value.transaction_id === 'string' && Boolean(storedConsentReturnTo(stored));
+      } catch { /* invalid context is consumed below */ }
+    }
+    if (!keepSelectionContext) window.sessionStorage.removeItem(googleLoginReturnToKey);
+    return stored ? storedConsentReturnTo(stored) ?? '/' : '/';
   } catch {
     return '/';
   }
@@ -130,15 +189,33 @@ async function authenticatedJson<T>(path: string, token: string, init: RequestIn
   });
 }
 
-export function startGoogleLogin(): void {
-  try {
-    clearGoogleLoginReturnTo();
-    const returnTo = currentConsentReturnTo();
-    if (returnTo) window.sessionStorage.setItem(googleLoginReturnToKey, returnTo);
-  } catch {
-    // Session storage is optional; the normal post-login landing page remains available.
+export function startGoogleLogin(options?: GoogleLoginOptions): void {
+  const intent = options?.intent;
+  const returnTo = options?.returnTo === undefined
+    ? currentConsentReturnTo()
+    : safeConsentReturnTo(options.returnTo, window.location.origin);
+  if (intent === 'select_account') {
+    if (!returnTo) throw new Error('Return to the consent account selection and try again.');
+    const transactionId = new URL(returnTo, window.location.origin).searchParams.get('transaction_id');
+    try {
+      if (!transactionId) throw new Error('Consent transaction is invalid.');
+      const context = { path: returnTo, transaction_id: transactionId, intent, attempt_id: newGoogleLoginAttemptId() };
+      window.sessionStorage.setItem(googleLoginReturnToKey, JSON.stringify(context));
+      if (!hasGoogleLoginReturnTo()) throw new Error('Consent return context was not saved.');
+    } catch {
+      throw new Error('Unable to safely save the consent return. Try again from account selection.');
+    }
+  } else {
+    try {
+      clearGoogleLoginReturnTo();
+      if (returnTo) window.sessionStorage.setItem(googleLoginReturnToKey, returnTo);
+    } catch {
+      // Session storage is optional for ordinary Google login.
+    }
   }
-  window.location.assign(`${getRuntimeConfig().auth_url}/api/v1/auth/google/login/start`);
+  const startURL = new URL('/api/v1/auth/google/login/start', getRuntimeConfig().auth_url);
+  if (intent) startURL.searchParams.set('intent', intent);
+  window.location.assign(startURL.toString());
 }
 
 export async function beginGoogleLink(currentPassword: string, token: string): Promise<void> {

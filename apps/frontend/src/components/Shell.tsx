@@ -18,6 +18,7 @@ import { NavigationBlockerProvider, NavigationLink } from './NavigationBlocker';
 import { AccountSettingsModal } from './AccountSettingsModal';
 import { RequestIDPanel } from './RequestIDPanel';
 import { LocaleControl } from './LocaleControl';
+import { dailyBriefSignedOutLandingURL } from '@/lib/mcp-oauth';
 
 export function Shell({ children }: { children: React.ReactNode }) {
   return (
@@ -146,6 +147,9 @@ function ShellContent({ children }: { children: React.ReactNode }) {
   const isGoogleCompletionRoute = pathname === '/login';
   const isCLIPairingRoute = pathname === '/cli-pairing';
   const isMCPConsentRoute = pathname === '/oauth/consent';
+  const dailyBriefLanding = hydrated && !token && isMCPConsentRoute
+    ? dailyBriefSignedOutLandingURL()
+    : null;
 
   return (
     <div className="min-h-dvh text-zinc-100 lg:flex lg:items-stretch">
@@ -155,6 +159,11 @@ function ShellContent({ children }: { children: React.ReactNode }) {
       >
         {t('Shell.skipToContent')}
       </a>
+      {dailyBriefLanding ? (
+        <a href={dailyBriefLanding} className="fixed right-4 top-4 z-[60] rounded border border-white/20 bg-zinc-900 px-4 py-2.5 text-sm font-medium text-emerald-200 underline underline-offset-4 shadow-lg focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400">
+          {t('MCPOAuth.returnToDailyBrief')}
+        </a>
+      ) : null}
       {token ? (
         <header className="sticky top-0 z-50 flex min-h-14 items-center justify-between border-b border-white/8 bg-zinc-950/85 px-4 lg:hidden">
           <NavigationLink href="/" className="min-w-0 text-sm font-semibold tracking-tight text-white">

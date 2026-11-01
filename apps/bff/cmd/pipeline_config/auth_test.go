@@ -13,6 +13,8 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/config"
 )
 
+const briefDevAccountSelectionClientID = "lwc_mcp_client_fDSKqqGmK0oiDXMVzv21-4guS0gtxtSjaIqX9MJpVBk"
+
 type fakeAuthReader struct {
 	versions []string
 	accesses []string
@@ -139,7 +141,8 @@ func TestRealPklAuthPrepareProducesLocalFileAndCloudInputStages(t *testing.T) {
 		t.Fatalf("local Auth resource binding=%q, want the selected BFF port", localConfig.SyncServiceURL)
 	}
 	if len(localConfig.AuthOAuthResources) != 2 || localConfig.AuthOAuthResources[1].Enabled ||
-		localConfig.AuthOAuthResources[1].URI != "https://brief.rayer.idv.tw/mcp" {
+		localConfig.AuthOAuthResources[1].URI != "https://brief.rayer.idv.tw/mcp" ||
+		len(localConfig.AuthOAuthResources[1].AccountSelectionClientIDs) != 0 {
 		t.Fatalf("local disabled Brief policy changed: %#v", localConfig.AuthOAuthResources)
 	}
 	manifest, err := os.ReadFile(filepath.Join(localOutput, "auth", "success.json"))
@@ -186,6 +189,21 @@ func TestRealPklAuthPrepareProducesLocalFileAndCloudInputStages(t *testing.T) {
 				wantResourceURI = "https://brief.rayer.idv.tw/mcp"
 				wantEnabled = true
 			}
+			wantSelectionClientIDs := []string(nil)
+			if environment == "dev" {
+				wantSelectionClientIDs = []string{briefDevAccountSelectionClientID}
+			}
+			assertSelectionClientIDs := func(stage string, got []string) {
+				t.Helper()
+				if len(got) != len(wantSelectionClientIDs) {
+					t.Fatalf("%s %s account-selection clients=%v, want %v", environment, stage, got, wantSelectionClientIDs)
+				}
+				for i := range got {
+					if got[i] != wantSelectionClientIDs[i] {
+						t.Fatalf("%s %s account-selection clients=%v, want %v", environment, stage, got, wantSelectionClientIDs)
+					}
+				}
+			}
 			if len(projection.OAuthResources) != 2 {
 				t.Fatalf("%s Pkl Auth projection has %d OAuth resources, want 2", environment, len(projection.OAuthResources))
 			}
@@ -199,6 +217,7 @@ func TestRealPklAuthPrepareProducesLocalFileAndCloudInputStages(t *testing.T) {
 				t.Fatalf("canonical %s Brief policy enabled=%t caller=%q; want enabled=%t caller=%q", environment,
 					projection.OAuthResources[1].Enabled, projection.OAuthResources[1].VerifierCallerServiceAccount, wantEnabled, wantCaller)
 			}
+			assertSelectionClientIDs("Pkl projection", projection.OAuthResources[1].AccountSelectionClientIDs)
 			if err := runPrepareTargetModeAtSource(context.Background(), "auth", environment, output, true, strings.Repeat("c", 40), func(context.Context) (secretReader, error) {
 				return reader, nil
 			}); err != nil {
@@ -226,6 +245,7 @@ func TestRealPklAuthPrepareProducesLocalFileAndCloudInputStages(t *testing.T) {
 				inputs.AuthSessionEnvironment != "llm-wiki-cloud-"+environment {
 				t.Fatalf("canonical %s Auth snapshot did not preserve Brief policy identity or changed its session namespace", environment)
 			}
+			assertSelectionClientIDs("Stage 1 snapshot", inputs.OAuthResources[1].AccountSelectionClientIDs)
 
 			canonicalRuntimePath := filepath.Join(output, "auth", "canonical-auth.json")
 			if err := materializeAuthSnapshot(context.Background(), inputs, canonicalRuntimePath, func(context.Context) (secretReader, error) {
@@ -245,6 +265,7 @@ func TestRealPklAuthPrepareProducesLocalFileAndCloudInputStages(t *testing.T) {
 				canonicalRuntime.AuthOAuthResources[1].VerifierCallerServiceAccount != wantCaller {
 				t.Fatalf("canonical %s runtime verifier policy was not read back exactly", environment)
 			}
+			assertSelectionClientIDs("runtime config", canonicalRuntime.AuthOAuthResources[1].AccountSelectionClientIDs)
 
 			if environment == "prod" {
 				prodAudience := "https://llm-wiki-auth-a5nkmux6pq-de.a.run.app"

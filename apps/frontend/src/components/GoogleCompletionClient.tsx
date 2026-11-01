@@ -9,6 +9,7 @@ import {
   clearGoogleLoginReturnTo,
   confirmGoogleLink,
   consumeGoogleLoginReturnTo,
+  hasGoogleLoginReturnTo,
   GOOGLE_CANCELLED_COPY,
   GoogleAuthError,
   readGoogleCompletionResult,
@@ -45,6 +46,7 @@ export function GoogleCompletionClient() {
   const [pending, setPending] = useState<GoogleLinkCompletion | null>(null);
   const [error, setError] = useState<GoogleAuthError | null>(null);
   const [busy, setBusy] = useState(false);
+  const [returnToConsent, setReturnToConsent] = useState(false);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -52,17 +54,19 @@ export function GoogleCompletionClient() {
     startedRef.current = true;
     void (async () => {
       try {
-        const [result, session] = await Promise.all([readGoogleCompletionResult(), getHydratedSession()]);
-        if (!mountedRef.current || (session && !session.isCurrent())) return;
+        const result = await readGoogleCompletionResult();
+        if (!mountedRef.current) return;
         if (result.status === 'failure' || result.status === 'cancelled') {
-          clearGoogleLoginReturnTo();
+          setReturnToConsent(hasGoogleLoginReturnTo());
           setError(new GoogleAuthError(result.error || 'Unable to continue with Google sign-in.', 200, result.support_ref));
           setState('failed');
           return;
         }
 
+        const session = await getHydratedSession();
+        if (!mountedRef.current || (session && !session.isCurrent())) return;
         if (!session) {
-          clearGoogleLoginReturnTo();
+          setReturnToConsent(hasGoogleLoginReturnTo());
           setError(new GoogleAuthError('Unable to continue with Google sign-in.', 502, result.support_ref));
           setState('failed');
           return;
@@ -82,8 +86,8 @@ export function GoogleCompletionClient() {
         setPending(completion);
         setState('confirming');
       } catch (completionError) {
-        clearGoogleLoginReturnTo();
         if (!mountedRef.current) return;
+        setReturnToConsent(hasGoogleLoginReturnTo());
         const failure = completionError instanceof GoogleAuthError
           ? completionError
           : new GoogleAuthError('Unable to continue with Google sign-in.', 502);
@@ -143,7 +147,7 @@ export function GoogleCompletionClient() {
             <h1 className="mb-4 text-2xl font-semibold text-white">{t('Login.title')}</h1>
             <p role="alert" className="text-lg font-semibold text-white">{error.message}</p>
             <div className="mt-4 text-left text-sm text-zinc-300"><span className="text-zinc-500">{t('GoogleCompletion.supportReference')}</span> <code className="break-all select-all text-emerald-200">{error.supportRef}</code><button type="button" className="mt-2 min-h-11 rounded border border-white/10 px-3 text-xs text-zinc-200 hover:bg-white/10" onClick={() => { void navigator.clipboard?.writeText(error.supportRef); }}>{t('GoogleCompletion.copyReference')}</button></div>
-            <button type="button" onClick={() => router.replace('/')} className="mt-6 min-h-11 w-full rounded border border-white/10 px-4 py-2.5 text-sm font-medium text-zinc-200 hover:bg-white/10">{t('GoogleCompletion.return')}</button>
+            <button type="button" onClick={() => router.replace(consumeGoogleLoginReturnTo())} className="mt-6 min-h-11 w-full rounded border border-white/10 px-4 py-2.5 text-sm font-medium text-zinc-200 hover:bg-white/10">{t(returnToConsent ? 'GoogleCompletion.returnToConsent' : 'GoogleCompletion.return')}</button>
           </>
         ) : null}
       </section>

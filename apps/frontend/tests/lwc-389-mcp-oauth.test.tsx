@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   apiFetch: vi.fn(),
   resourceURL: vi.fn((projectId = 'project-one') => `http://localhost:18080/mcp/projects/${encodeURIComponent(projectId)}`),
   safeReturnURL: vi.fn(() => true),
+  loginModalProps: vi.fn(),
 }));
 
 vi.mock('@/lib/auth', () => ({ useAuth: () => ({
@@ -46,6 +47,15 @@ vi.mock('@/lib/i18n', async () => {
 });
 
 vi.mock('next/link', () => ({ default: ({ href, children, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement>) => <a href={href as string} {...props}>{children}</a> }));
+
+vi.mock('@/components/LoginModal', () => ({
+  LoginModal: (props: { loginIntent?: string; onClose?: () => void }) => {
+    mocks.loginModalProps(props);
+    return React.createElement('div', { 'data-testid': 'selection-login' },
+      React.createElement('span', null, props.loginIntent),
+      React.createElement('button', { type: 'button', onClick: props.onClose }, 'close-selection-login'));
+  },
+}));
 
 vi.mock('@/lib/mcp-oauth', async () => {
   const actual = await vi.importActual<typeof import('@/lib/mcp-oauth')>('@/lib/mcp-oauth');
@@ -129,6 +139,7 @@ beforeEach(async () => {
   mocks.revokeGrant.mockReset().mockResolvedValue(undefined);
   mocks.apiFetch.mockReset().mockResolvedValue({ ok: true, status: 200, json: async () => ({ keys: [] }) });
   mocks.safeReturnURL.mockReturnValue(true);
+  mocks.loginModalProps.mockReset();
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: vi.fn().mockResolvedValue(undefined) } });
 });
 
@@ -152,6 +163,43 @@ describe('LWC-389 MCP OAuth frontend', () => {
     expect(mocks.decideConsent).toHaveBeenCalledWith(transactionId, 'continue', 'web-session-token');
     expect(screen.getByRole('button', { name: 'MCPOAuth.allow' })).toBeDefined();
     expect(screen.getByRole('button', { name: 'MCPOAuth.deny' })).toBeDefined();
+  });
+
+  it('keeps flagged consent unselected until an explicit account action, then requires separate consent', async () => {
+    const assign = mockLocationAssign();
+    mocks.readConsent.mockResolvedValueOnce({ ...consent, prompt: 'select_account', account_selected: false, can_continue: false });
+    mocks.decideConsent.mockImplementation(async (_id: string, decision: string) => {
+      if (decision === 'select') return { account_selected: true };
+      if (decision === 'continue') return { requires_consent: true };
+      return { redirect_url: 'https://brief.dev.rayer.idv.tw/oauth/callback?code=opaque&state=opaque', requires_consent: false };
+    });
+
+    render(<MCPOAuthConsentClient transactionId={transactionId} />);
+    expect(await screen.findByRole('button', { name: 'MCPOAuth.continueWithAccount' })).toBeDefined();
+    expect(mocks.decideConsent).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'MCPOAuth.useAnotherAccount' }));
+    expect(await screen.findByTestId('selection-login')).toBeDefined();
+    expect(mocks.loginModalProps).toHaveBeenCalledWith(expect.objectContaining({ loginIntent: 'select_account' }));
+    fireEvent.click(screen.getByRole('button', { name: 'close-selection-login' }));
+    expect(screen.queryByTestId('selection-login')).toBeNull();
+    expect(mocks.decideConsent).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'MCPOAuth.continueWithAccount' }));
+    await waitFor(() => expect(mocks.decideConsent).toHaveBeenCalledWith(transactionId, 'continue', 'web-session-token'));
+    expect(mocks.decideConsent.mock.calls.map((call) => call[1])).toEqual(['select', 'continue']);
+    expect(screen.getByRole('button', { name: 'MCPOAuth.allow' })).toBeDefined();
+    fireEvent.click(screen.getByRole('button', { name: 'MCPOAuth.allow' }));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith('https://brief.dev.rayer.idv.tw/oauth/callback?code=opaque&state=opaque'));
+  });
+
+  it('denies flagged consent without selecting an account', async () => {
+    mocks.readConsent.mockResolvedValueOnce({ ...consent, prompt: 'select_account', account_selected: false });
+    mocks.decideConsent.mockResolvedValueOnce({ redirect_url: 'http://127.0.0.1:43124/callback?error=access_denied&state=opaque' });
+    render(<MCPOAuthConsentClient transactionId={transactionId} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'MCPOAuth.cancelSelection' }));
+    await waitFor(() => expect(mocks.decideConsent).toHaveBeenCalledWith(transactionId, 'deny', 'web-session-token'));
+    expect(mocks.decideConsent.mock.calls.some((call) => call[1] === 'select')).toBe(false);
   });
 
   it('keeps continuation processing neutral until the server explicitly requires consent', async () => {

@@ -11,8 +11,13 @@ import { startGoogleLogin } from '@/lib/google-auth';
 import { LegalLinks } from './LegalLinks';
 import { LocaleControl } from './LocaleControl';
 
-export function LoginModal() {
-  const { loginOpen, signIn, signInAsDemo } = useWorkspace();
+export function LoginModal({ forceOpen = false, loginIntent, onClose }: {
+  forceOpen?: boolean;
+  loginIntent?: 'select_account';
+  onClose?: () => void;
+}) {
+  const { loginOpen, signIn, signInAsDemo, refreshLoginSession } = useWorkspace();
+  const isOpen = loginOpen || forceOpen;
   const { t } = useLocale();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -34,7 +39,7 @@ export function LoginModal() {
   const dismissKey = 'llm-wiki:announcement-dismissed-digest';
 
   useEffect(() => {
-    if (!loginOpen) {
+    if (!isOpen) {
       autoOpenedDigest.current = null;
       /* eslint-disable react-hooks/set-state-in-effect -- reset hidden modal state at the login lifecycle boundary. */
       setRegistrationEnabled(false);
@@ -80,7 +85,7 @@ export function LoginModal() {
     return () => {
       cancelled = true;
     };
-  }, [loginOpen]);
+  }, [isOpen]);
 
   const openAnnouncement = useCallback(() => {
     setAnnouncementDismiss(false);
@@ -115,14 +120,14 @@ export function LoginModal() {
     setLoading(true);
     setError('');
     try {
-      startGoogleLogin();
+      startGoogleLogin(loginIntent ? { intent: loginIntent } : undefined);
     } catch (googleError) {
       setLoading(false);
       setError(googleError instanceof Error ? googleError.message : t('Login.error'));
     }
-  }, [loading, t]);
+  }, [loading, loginIntent, t]);
 
-  if (!loginOpen) return null;
+  if (!isOpen) return null;
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -130,6 +135,11 @@ export function LoginModal() {
     setError('');
     try {
       await signIn(email.trim(), password);
+      if (loginIntent === 'select_account') {
+        const refreshed = await refreshLoginSession?.();
+        if (!refreshed) throw new Error(t('MCPOAuth.accountRefreshFailed'));
+        onClose?.();
+      }
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : t('Login.error'));
     } finally {
@@ -159,6 +169,7 @@ export function LoginModal() {
         </section>
 
         <div className="p-6 sm:p-9 lg:p-12">
+          {onClose ? <div className="mb-2 flex justify-end"><button type="button" onClick={onClose} className="min-h-11 rounded px-3 text-sm text-zinc-300 hover:bg-white/10">{t('Login.closeAccountSelection')}</button></div> : null}
           <LocaleControl />
           <div className="text-sm text-zinc-300 md:hidden">
             <Image src="/brand/lwc/lockup-dark.svg" width={220} height={81} style={{ height: 'auto' }} alt="LLM Wiki Cloud" priority />

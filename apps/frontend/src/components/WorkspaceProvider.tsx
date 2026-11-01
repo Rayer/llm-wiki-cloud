@@ -136,6 +136,7 @@ type WorkspaceContextValue = {
   token: string | null;
   user: AuthUser | null;
   sessionEpoch: number;
+  refreshLoginSession?: () => Promise<string | null>;
   projects: Project[];
   currentProject: Project | null;
   projectsLoading: boolean;
@@ -177,6 +178,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     logout,
     isDemoSession,
     sessionEpoch,
+    refreshAccessToken,
   } = useAuth();
   const [projects, setProjects] = useState<Project[]>([]);
   const [currentProject, setCurrentProject] = useState<Project | null>(null);
@@ -588,6 +590,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     token,
     user,
     sessionEpoch,
+    refreshLoginSession: refreshAccessToken,
     projects,
     currentProject,
     projectsLoading,
@@ -600,6 +603,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     markProfileOnboardingPresented,
     navCounts: displayedNavCounts,
     refreshNavCounts,
+    refreshAccessToken,
     signIn,
     signInAsDemo,
     register,
@@ -628,6 +632,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     projects,
     projectsError,
     productSetupPending,
+    refreshAccessToken,
     refreshNavCounts,
     register,
     signIn,
