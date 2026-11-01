@@ -68,6 +68,7 @@ vi.mock('@/components/WorkspaceProvider', () => ({
     navCounts: { sources: null, concepts: null },
     refreshNavCounts: vi.fn(),
     refreshProjects: vi.fn(),
+    refreshLoginSession: mocks.refreshAccessToken,
     selectProject: vi.fn(),
     openNewProject: vi.fn(),
     closeNewProject: vi.fn(),
@@ -138,6 +139,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
   vi.clearAllMocks();
   vi.unstubAllGlobals();
   localStorage.clear();
@@ -156,6 +158,24 @@ describe('LWC-317 Google auth production components', () => {
     expect(mocks.startGoogleLogin).toHaveBeenCalledTimes(1);
   });
 
+  it('starts the forced account-selection modal through Google login intent', async () => {
+    render(<LoginModal forceOpen loginIntent="select_account" onClose={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Login.continueWithGoogle' }));
+    expect(mocks.startGoogleLogin).toHaveBeenCalledWith({ intent: 'select_account' });
+  });
+
+  it('rehydrates the password-selected session before closing account selection', async () => {
+    const onClose = vi.fn();
+    mocks.refreshAccessToken.mockResolvedValue('fresh-B-token');
+    render(<LoginModal forceOpen loginIntent="select_account" onClose={onClose} />);
+    fireEvent.change(screen.getByLabelText('Login.email'), { target: { value: 'b@example.test' } });
+    fireEvent.change(screen.getByLabelText('Login.password'), { target: { value: 'password-b' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Login.signIn' }));
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(mocks.signIn).toHaveBeenCalledWith('b@example.test', 'password-b');
+    expect(mocks.refreshAccessToken).toHaveBeenCalledTimes(1);
+  });
+
   it('uses the browser GET login-start contract', async () => {
     const actual = await vi.importActual<typeof import('@/lib/google-auth')>('@/lib/google-auth');
     actual.startGoogleLogin();
@@ -172,6 +192,32 @@ describe('LWC-317 Google auth production components', () => {
     Object.assign(window.location, { href: `${window.location.origin}/oauth/consent?transaction_id=${transactionId}&next=/admin` });
     actual.startGoogleLogin();
     expect(sessionStorage.getItem('lwc-google-login-return-to')).toBeNull();
+  });
+
+  it('stores a one-time consent selection context and starts Google login with the selection intent', async () => {
+    const transactionId = `lwc_mcp_tx_${'E'.repeat(43)}`;
+    Object.assign(window.location, { href: `${window.location.origin}/oauth/consent?transaction_id=${transactionId}` });
+    const actual = await vi.importActual<typeof import('@/lib/google-auth')>('@/lib/google-auth');
+    actual.startGoogleLogin({ intent: 'select_account' });
+    const stored = JSON.parse(sessionStorage.getItem('lwc-google-login-return-to') ?? 'null') as Record<string, string>;
+    expect(stored).toMatchObject({
+      path: `/oauth/consent?transaction_id=${transactionId}`,
+      transaction_id: transactionId,
+      intent: 'select_account',
+    });
+    expect(stored.attempt_id).toMatch(/^(?:[a-f0-9]{32}|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/i);
+    expect(window.location.assign).toHaveBeenCalledWith(expect.stringMatching(/\/api\/v1\/auth\/google\/login\/start\?intent=select_account$/));
+    expect(window.location.assign).not.toHaveBeenCalledWith(expect.stringContaining('/google/link/'));
+  });
+
+  it('refuses unsafe or unsaved account-selection return context before provider navigation', async () => {
+    const actual = await vi.importActual<typeof import('@/lib/google-auth')>('@/lib/google-auth');
+    expect(() => actual.startGoogleLogin({ intent: 'select_account', returnTo: 'https://attacker.example.test/steal' })).toThrow();
+    const transactionId = `lwc_mcp_tx_${'G'.repeat(43)}`;
+    Object.assign(window.location, { href: `${window.location.origin}/oauth/consent?transaction_id=${transactionId}` });
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new DOMException('blocked', 'SecurityError'); });
+    expect(() => actual.startGoogleLogin({ intent: 'select_account' })).toThrow(/safely save the consent return/i);
+    expect(window.location.assign).not.toHaveBeenCalled();
   });
 
   it('consumes a valid consent return address once after successful Google login', async () => {
@@ -217,14 +263,19 @@ describe('LWC-317 Google auth production components', () => {
     expect(mocks.fetch).toHaveBeenCalledTimes(1);
   });
 
-  it('clears the pending consent return address after Google cancellation or failure', async () => {
+  it('retains the safe consent return after cancellation or failure until the user returns once', async () => {
     for (const status of ['cancelled', 'failure'] as const) {
-      sessionStorage.setItem('lwc-google-login-return-to', '/oauth/consent?transaction_id=lwc_mcp_tx_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
+      const returnTo = '/oauth/consent?transaction_id=lwc_mcp_tx_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+      sessionStorage.setItem('lwc-google-login-return-to', returnTo);
       mocks.fetch.mockResolvedValueOnce(jsonResponse({ status, error: 'provider did not complete', support_ref: 'provider-ref-1234', jit_provisioned: false }));
       const view = render(<GoogleCompletionClient />);
       await screen.findByRole('alert');
+      expect(sessionStorage.getItem('lwc-google-login-return-to')).toBe(returnTo);
+      fireEvent.click(screen.getByRole('button', { name: 'GoogleCompletion.returnToConsent' }));
+      await waitFor(() => expect(mocks.replace).toHaveBeenCalledWith(returnTo));
       expect(sessionStorage.getItem('lwc-google-login-return-to')).toBeNull();
       view.unmount();
+      mocks.replace.mockClear();
     }
   });
 

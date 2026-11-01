@@ -10,6 +10,8 @@ export type MCPOAuthConsent = {
   requires_consent?: boolean;
   transaction_id: string;
   can_continue?: boolean;
+  prompt?: string;
+  account_selected?: boolean;
   account_email: string;
   project_id?: string;
   project_name?: string;
@@ -23,8 +25,9 @@ export type MCPOAuthConsent = {
 };
 
 export type MCPOAuthConsentDecision = {
-  redirect_url: string;
-  requires_consent: boolean;
+  redirect_url?: string;
+  requires_consent?: boolean;
+  account_selected?: boolean;
 };
 
 export type MCPOAuthGrant = {
@@ -90,7 +93,7 @@ export function readMCPOAuthConsent(transactionId: string, accessToken: string):
 
 export function decideMCPOAuthConsent(
   transactionId: string,
-  decision: 'allow' | 'deny' | 'continue',
+  decision: 'allow' | 'deny' | 'continue' | 'select',
   accessToken: string,
 ): Promise<MCPOAuthConsentDecision> {
   const route = `/consent/${encodeURIComponent(transactionId)}`;

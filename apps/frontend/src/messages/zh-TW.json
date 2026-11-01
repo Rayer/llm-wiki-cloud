@@ -7,6 +7,7 @@
     "password": "密碼",
     "showPassword": "顯示密碼",
     "hidePassword": "隱藏密碼",
+    "closeAccountSelection": "關閉帳號登入",
     "signIn": "登入",
     "continueWithGoogle": "使用 Google 登入",
     "tryDemo": "試用 Demo",
@@ -265,7 +266,8 @@
     "confirm": "確認連結",
     "supportReference": "支援參考碼：",
     "copyReference": "複製參考碼",
-    "return": "返回登入"
+    "return": "返回登入",
+    "returnToConsent": "返回帳號選擇"
   },
   "Admin": {
     "registrationEnabled": "允許新使用者註冊",
@@ -719,6 +721,10 @@
     "loading": "載入中…",
     "invalidTransaction": "此授權要求無效或不完整。請從 MCP 用戶端重新開始。",
     "signInRequired": "請使用 LLM Wiki Cloud 帳號登入並檢查此要求。",
+    "accountRefreshFailed": "登入已完成，但無法重新驗證工作階段。請再試一次。",
+    "continueWithAccount": "以此帳號繼續",
+    "useAnotherAccount": "使用其他帳號",
+    "cancelSelection": "取消授權",
     "expired": "此要求已過期。請從 MCP 用戶端重新授權。",
     "notAllowed": "此帳號無權授權所要求的專案。",
     "loadFailed": "無法載入此授權要求。請從 MCP 用戶端重新開始。",
