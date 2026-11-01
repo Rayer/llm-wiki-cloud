@@ -167,6 +167,58 @@ func TestSchema2AuthFileUsesStrictOAuthRegistryAndPreservesSchema1Defaults(t *te
 	}
 }
 
+func TestSchema2AuthAccountSelectionClientAllowlistIsOptionalAndStrict(t *testing.T) {
+	file := validAuthFileForTest()
+	file.SchemaVersion = 2
+	file.OAuthResources = authOAuthResourcesForTest(file.SyncServiceURL, file.Environment)
+
+	legacyShape, err := json.Marshal(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DecodeAuthFile(legacyShape); err != nil {
+		t.Fatalf("DecodeAuthFile(schema 2 without optional allowlist): %v", err)
+	}
+
+	clientID := "lwc_mcp_client_" + strings.Repeat("A", 43)
+	file.OAuthResources[1].AccountSelectionClientIDs = []string{clientID}
+	data, err := json.Marshal(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := DecodeAuthFile(data)
+	if err != nil || len(decoded.OAuthResources[1].AccountSelectionClientIDs) != 1 ||
+		decoded.OAuthResources[1].AccountSelectionClientIDs[0] != clientID {
+		t.Fatalf("DecodeAuthFile(valid account-selection allowlist): %#v err=%v", decoded.OAuthResources, err)
+	}
+	nullList := strings.Replace(string(data), `"account_selection_client_ids":["`+clientID+`"]`, `"account_selection_client_ids":null`, 1)
+	if _, err := DecodeAuthFile([]byte(nullList)); err == nil {
+		t.Fatal("DecodeAuthFile accepted a null account-selection allowlist")
+	}
+
+	for name, mutate := range map[string]func(*AuthFile){
+		"malformed client ID": func(v *AuthFile) { v.OAuthResources[1].AccountSelectionClientIDs = []string{"client-id"} },
+		"duplicate client ID": func(v *AuthFile) {
+			v.OAuthResources[1].AccountSelectionClientIDs = []string{clientID, clientID}
+		},
+		"project resource": func(v *AuthFile) { v.OAuthResources[0].AccountSelectionClientIDs = []string{clientID} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			bad := file
+			bad.OAuthResources = authOAuthResourcesForTest(bad.SyncServiceURL, bad.Environment)
+			bad.OAuthResources[1].AccountSelectionClientIDs = []string{clientID}
+			mutate(&bad)
+			encoded, err := json.Marshal(bad)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := DecodeAuthFile(encoded); err == nil {
+				t.Fatal("DecodeAuthFile accepted an invalid account-selection allowlist")
+			}
+		})
+	}
+}
+
 func TestAuthDailyBriefBindingMatchesSelectedEnvironment(t *testing.T) {
 	for _, test := range []struct {
 		environment string

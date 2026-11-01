@@ -32,6 +32,7 @@ var authDemoEmailPattern = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`)
 var authDemoRolePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
 var authOAuthIDPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,63}$`)
 var authOAuthScopePattern = regexp.MustCompile(`^[a-z][a-z0-9:_-]{0,63}$`)
+var authOAuthAccountSelectionClientIDPattern = regexp.MustCompile(`^lwc_mcp_client_[A-Za-z0-9_-]{43}$`)
 var authServiceAccountPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{4,62}@[a-z0-9.-]+\.iam\.gserviceaccount\.com$`)
 
 const (
@@ -107,6 +108,7 @@ type AuthOAuthResource struct {
 	Enabled                      bool             `json:"enabled"`
 	URI                          string           `json:"uri"`
 	Name                         string           `json:"name"`
+	AccountSelectionClientIDs    []string         `json:"account_selection_client_ids,omitempty"`
 	Scopes                       []AuthOAuthScope `json:"scopes"`
 	AllowedScopeSets             [][]string       `json:"allowed_scope_sets"`
 	DefaultScopeSet              []string         `json:"default_scope_set"`
@@ -374,10 +376,17 @@ func validateOAuthResourcesJSON(name string, raw json.RawMessage) error {
 	}
 	for i, item := range resources {
 		var fields map[string]json.RawMessage
-		if json.Unmarshal(item, &fields) != nil || fields == nil || requireJSONKeys(fields, []string{
+		resourceKeys := []string{
 			"id", "kind", "enabled", "uri", "name", "scopes", "allowed_scope_sets", "default_scope_set",
 			"verifier_caller_service_account", "verifier_audience",
-		}) != nil {
+		}
+		if json.Unmarshal(item, &fields) != nil || fields == nil {
+			return fmt.Errorf("%s[%d] has missing or unknown keys", name, i)
+		}
+		if _, optionalPresent := fields["account_selection_client_ids"]; optionalPresent {
+			resourceKeys = append(resourceKeys, "account_selection_client_ids")
+		}
+		if requireJSONKeys(fields, resourceKeys) != nil {
 			return fmt.Errorf("%s[%d] has missing or unknown keys", name, i)
 		}
 		for _, field := range []struct{ name, kind string }{
@@ -385,6 +394,11 @@ func validateOAuthResourcesJSON(name string, raw json.RawMessage) error {
 			{"verifier_caller_service_account", "string"}, {"verifier_audience", "string"},
 		} {
 			if err := requireAuthJSONType(name+"."+field.name, fields[field.name], field.kind); err != nil {
+				return err
+			}
+		}
+		if raw, optionalPresent := fields["account_selection_client_ids"]; optionalPresent {
+			if err := requireAuthJSONType(name+".account_selection_client_ids", raw, "string_array"); err != nil {
 				return err
 			}
 		}
@@ -427,6 +441,18 @@ func validateAuthOAuthResources(file AuthFile) error {
 			return errors.New("Auth OAuth resource identity or required policy is invalid")
 		}
 		ids[resource.ID] = true
+		if len(resource.AccountSelectionClientIDs) > 0 {
+			if resource.ID != "daily-brief" || resource.Kind != "fixed" {
+				return errors.New("Auth account-selection client allowlist is only valid for the fixed Daily Brief resource")
+			}
+			selectionClientIDs := make(map[string]bool, len(resource.AccountSelectionClientIDs))
+			for _, clientID := range resource.AccountSelectionClientIDs {
+				if !authOAuthAccountSelectionClientIDPattern.MatchString(clientID) || selectionClientIDs[clientID] {
+					return errors.New("Auth account-selection client allowlist is invalid or duplicated")
+				}
+				selectionClientIDs[clientID] = true
+			}
+		}
 		declared := map[string]bool{}
 		for _, scope := range resource.Scopes {
 			if !authOAuthScopePattern.MatchString(scope.Name) || strings.TrimSpace(scope.Description) == "" || scopeNames[scope.Name] {
