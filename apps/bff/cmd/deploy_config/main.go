@@ -563,9 +563,6 @@ func loadWithInputs(environment, configPath, components, bffInputsPath, authInpu
 		if component == "exportjob" && !config.ExportJob.Enabled {
 			return Normalized{}, errors.New("exportjob is disabled until its environment runtime resources are provisioned and read back")
 		}
-		if component == "documentimport" && environment != "development" {
-			return Normalized{}, errors.New("documentimport is enabled only for the reviewed development environment")
-		}
 		if component == "documentimport" && !config.DocumentImportJob.Enabled {
 			return Normalized{}, errors.New("documentimport is disabled until its environment runtime resources are provisioned and read back")
 		}
@@ -1000,9 +997,14 @@ func validDocumentImportRunURL(value, environment string) bool {
 }
 
 func validDocumentImportTarget(job DocumentImportJobConfig, environment string, gcp GCPConfig, worker WorkerConfig, database string) bool {
-	return job.Enabled && environment == "development" && validDocumentImportJobName(job.JobName) &&
-		profileRuntimeServiceAccountPattern.MatchString(job.RuntimeServiceAccount) && job.Bucket != "" &&
-		job.FirestoreDatabaseID != "" && job.Location == gcp.Region && job.JobTimeout == "180s" &&
+	expected := map[string]struct{ name, serviceAccount, bucket, database string }{
+		"development": {"document-import-job-dev", "lwc-document-import-dev@llm-wiki-cloud.iam.gserviceaccount.com", "llm-wiki-data-dev", "llm-wiki-cloud-dev"},
+		"production":  {"document-import-job", "lwc-document-import-prod@llm-wiki-cloud.iam.gserviceaccount.com", "llm-wiki-data", "llm-wiki-cloud-prod"},
+	}[environment]
+	return expected.name != "" && job.Enabled && job.JobName == expected.name &&
+		validDocumentImportJobName(job.JobName) && job.RuntimeServiceAccount == expected.serviceAccount &&
+		profileRuntimeServiceAccountPattern.MatchString(job.RuntimeServiceAccount) && job.Bucket == expected.bucket &&
+		job.FirestoreDatabaseID == expected.database && job.Location == gcp.Region && job.JobTimeout == "180s" &&
 		job.MaxRetries == 0 && job.Parallelism == 1 && job.Tasks == 1 && job.CPU == 1 &&
 		job.Memory == "1Gi" && job.Bucket == worker.Bucket && job.FirestoreDatabaseID == database
 }
