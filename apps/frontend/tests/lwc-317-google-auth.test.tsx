@@ -1,5 +1,6 @@
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { installShellIntersectionObserver } from './shell-intersection-observer-helper';
 
 if (!(React as { act?: (callback: () => unknown) => Promise<unknown> | unknown }).act) {
   Object.defineProperty(React, 'act', {
@@ -109,6 +110,7 @@ function jsonResponse(payload: unknown, status = 200) {
 }
 
 beforeEach(() => {
+  installShellIntersectionObserver();
   localStorage.clear();
   sessionStorage.clear();
   mocks.getPublicConfig.mockResolvedValue({ registration_enabled: false });

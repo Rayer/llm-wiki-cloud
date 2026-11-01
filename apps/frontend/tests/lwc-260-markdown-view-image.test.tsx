@@ -16,7 +16,7 @@ describe('LWC-260 MarkdownView image markdown behavior', () => {
     expect(image.getAttribute('src')).toBe('https://images.example.invalid/lighthouse.webp');
     expect(image.getAttribute('alt')).toBe('Lighthouse');
     expect(image.getAttribute('loading')).toBe('lazy');
-    expect(image.className).toContain('rounded-lg');
+    expect(image.classList.contains('rounded')).toBe(true);
   });
 
   it('renders non-image markdown content without forcing image output', () => {

@@ -39,7 +39,7 @@ test('LWC-161: expanded developer details show only localized allowlisted build 
 
   assert.match(statusClient, /JSON\.stringify\(\{ api: status\?\.raw \?\? null, build: buildInfo \}, null, 2\)/);
   assert.match(expandedDetails, /t\('Status\.buildInfoUnavailable'\)/);
-  assert.match(expandedDetails, /buildInfo\.tag \|\| '—'/);
+  assert.match(expandedDetails, /buildInfo\.tag \|\| t\('Common\.notProvided'\)/);
 
   for (const [label, property] of fields) {
     assert.match(expandedDetails, new RegExp(`t\\('Status\\.${label}'\\)`));

@@ -361,11 +361,11 @@ function DeveloperDetails({
           <dl className="grid gap-2 text-xs sm:grid-cols-2">
             <div>
               <dt className="text-zinc-500">{t('Status.userId')}</dt>
-              <dd className="mt-1 font-sans text-zinc-300">{userId ?? '未提供'}</dd>
+              <dd className="mt-1 font-sans text-zinc-300">{userId ?? t('Common.notProvided')}</dd>
             </div>
             <div>
               <dt className="text-zinc-500">{t('Status.projectId')}</dt>
-              <dd className="mt-1 font-sans text-zinc-300">{projectId ?? '未提供'}</dd>
+              <dd className="mt-1 font-sans text-zinc-300">{projectId ?? t('Common.notProvided')}</dd>
             </div>
             {buildInfo ? (
               <>
@@ -383,7 +383,7 @@ function DeveloperDetails({
                 </div>
                 <div>
                   <dt className="text-zinc-500">{t('Status.gitTag')}</dt>
-                  <dd className="mt-1 font-sans text-zinc-300">{buildInfo.tag || '未提供'}</dd>
+                  <dd className="mt-1 font-sans text-zinc-300">{buildInfo.tag || t('Common.notProvided')}</dd>
                 </div>
                 <div>
                   <dt className="text-zinc-500">{t('Status.imageTag')}</dt>

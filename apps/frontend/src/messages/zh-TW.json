@@ -1552,7 +1552,8 @@
   "Common": {
     "close": "關閉",
     "noContent": "目前沒有可用內容。",
-    "noMarkdownContent": "此項目沒有傳回 Markdown 內容。"
+    "noMarkdownContent": "此項目沒有傳回 Markdown 內容。",
+    "notProvided": "未提供"
   },
   "RuntimeConfig": {
     "loadFailed": "無法載入執行階段設定。",

@@ -37,10 +37,10 @@ function formatBytes(bytes: number) {
   return `${value >= 10 || unit === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unit]}`;
 }
 
-function formatUpdated(value: string, locale: 'zh-TW' | 'zh-CN' | 'en') {
-  if (!value) return '未提供';
+function formatUpdated(value: string, locale: 'zh-TW' | 'zh-CN' | 'en', notProvided: string) {
+  if (!value) return notProvided;
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return '未提供';
+  if (Number.isNaN(date.getTime())) return notProvided;
   return new Intl.DateTimeFormat(locale === 'zh-TW' ? 'zh-TW' : locale === 'zh-CN' ? 'zh-CN' : 'en-US', {
     year: 'numeric',
     month: 'short',
@@ -395,14 +395,14 @@ function RawClientSession() {
                         {formatBytes(file.size)}
                       </td>
                       <td className="whitespace-nowrap px-4 py-3 text-zinc-400">
-                        {formatUpdated(file.updated, locale)}
+                        {formatUpdated(file.updated, locale, t('Common.notProvided'))}
                       </td>
                       <td className="px-4 py-3">
                         <code
                           className="block max-w-[18rem] truncate rounded-md border border-white/10 bg-black/30 px-2 py-1 font-mono text-xs text-zinc-300"
                           title={file.sha256 || undefined}
                         >
-                          {file.sha256 || '未提供'}
+                          {file.sha256 || t('Common.notProvided')}
                         </code>
                       </td>
                       <td className="whitespace-nowrap px-4 py-3">

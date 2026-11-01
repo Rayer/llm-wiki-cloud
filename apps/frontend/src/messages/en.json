@@ -1552,7 +1552,8 @@
   "Common": {
     "close": "Close",
     "noContent": "No content available.",
-    "noMarkdownContent": "No markdown content was returned for this entry."
+    "noMarkdownContent": "No markdown content was returned for this entry.",
+    "notProvided": "Not provided"
   },
   "RuntimeConfig": {
     "loadFailed": "Runtime configuration could not be loaded.",

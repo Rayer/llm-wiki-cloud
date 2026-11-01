@@ -69,7 +69,8 @@ test('requested frontend components read their copy from the locale hook', async
   assert.match(i18n, /export function useT/);
   assert.match(i18n, /export const useLocale = useT/);
   assert.match(loginModal, /useLocale\(\)/);
-  assert.match(loginModal, /t\('Login\.brand'\)/);
+  assert.match(loginModal, /<Image src="\/brand\/lwc\/lockup-dark\.svg"[^>]*alt="LLM Wiki Cloud"/);
+  assert.match(loginModal, /t\('Login\.title'\)/);
   assert.match(loginModal, /t\('Login\.signUp'\)/);
   assert.match(comingSoonModal, /useLocale\(\)/);
   assert.match(comingSoonModal, /t\('ComingSoon\.title'\)/);

@@ -29,8 +29,8 @@ function exportActionError(error: unknown, fallback: string): ExportActionError 
   };
 }
 
-function formatBytes(bytes: number | null, locale: string): string {
-  if (bytes === null || !Number.isFinite(bytes) || bytes < 0) return '未提供';
+function formatBytes(bytes: number | null, locale: string, notProvided: string): string {
+  if (bytes === null || !Number.isFinite(bytes) || bytes < 0) return notProvided;
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
   let value = bytes;
   let unit = 0;
@@ -41,10 +41,10 @@ function formatBytes(bytes: number | null, locale: string): string {
   return `${new Intl.NumberFormat(locale, { maximumFractionDigits: unit === 0 ? 0 : 1 }).format(value)} ${units[unit]}`;
 }
 
-function formatTime(value: string | null, locale: string): string {
-  if (!value) return '未提供';
+function formatTime(value: string | null, locale: string, notProvided: string): string {
+  if (!value) return notProvided;
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? '未提供' : new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short' }).format(date);
+  return Number.isNaN(date.getTime()) ? notProvided : new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short' }).format(date);
 }
 
 export function ExportPanel() {
@@ -230,7 +230,7 @@ export function ExportPanel() {
   const blockReason = currentData.rejection_reason === 'in_progress'
     ? t('Export.blockedRunning')
     : currentData.rejection_reason === 'cooldown'
-      ? t('Export.blockedCooldown', { time: formatTime(currentData.next_allowed_at, locale) })
+      ? t('Export.blockedCooldown', { time: formatTime(currentData.next_allowed_at, locale, t('Common.notProvided')) })
       : '';
   const disableReason = !projectId ? t('Export.selectProject') : blockReason;
 
@@ -257,7 +257,7 @@ export function ExportPanel() {
       {loading && <p className="text-sm text-zinc-400" role="status">{t('Export.loading')}</p>}
       {active && <div className="rounded border border-sky-400/20 bg-sky-400/5 p-3 text-sm text-sky-200" role="status">
         <p className="font-medium">{t('Export.preparing')}</p><p className="mt-1 text-sky-200/70">{t('Export.leaveAndReturn')}</p>
-        {latest?.next_allowed_at && <p className="mt-1 text-sky-200/70">{t('Export.nextAllowed', { time: formatTime(latest.next_allowed_at, locale) })}</p>}
+        {latest?.next_allowed_at && <p className="mt-1 text-sky-200/70">{t('Export.nextAllowed', { time: formatTime(latest.next_allowed_at, locale, t('Common.notProvided')) })}</p>}
       </div>}
       {latest?.status === 'ready' && <p className="text-sm text-emerald-300">{t('Export.ready')}</p>}
       {latest?.status === 'failed' && <div className="rounded border border-red-400/20 bg-red-400/5 p-3 text-sm text-red-200" role="alert">
@@ -267,12 +267,12 @@ export function ExportPanel() {
       {latest?.status === 'expired' && <p className="text-sm text-amber-300" role="status">{t('Export.expired')}</p>}
       {archives.map((archive, index) => <dl key={archive.export_id} className="grid gap-2 rounded border border-white/10 bg-black/10 p-3 text-sm sm:grid-cols-2">
         <div><dt className="text-zinc-500">{t('Export.scope')}</dt><dd className="text-zinc-200">{t(`Export.scope_${archive.scope}`)}</dd></div>
-        <div><dt className="text-zinc-500">{t('Export.size')}</dt><dd className="text-zinc-200">{formatBytes(archive.size_bytes, locale)}</dd></div>
-        <div><dt className="text-zinc-500">{t('Export.snapshot')}</dt><dd className="text-zinc-200">{formatTime(archive.snapshot_at, locale)}</dd></div>
-        <div><dt className="text-zinc-500">{t('Export.expires')}</dt><dd className="text-zinc-200">{formatTime(archive.expires_at, locale)}</dd></div>
+        <div><dt className="text-zinc-500">{t('Export.size')}</dt><dd className="text-zinc-200">{formatBytes(archive.size_bytes, locale, t('Common.notProvided'))}</dd></div>
+        <div><dt className="text-zinc-500">{t('Export.snapshot')}</dt><dd className="text-zinc-200">{formatTime(archive.snapshot_at, locale, t('Common.notProvided'))}</dd></div>
+        <div><dt className="text-zinc-500">{t('Export.expires')}</dt><dd className="text-zinc-200">{formatTime(archive.expires_at, locale, t('Common.notProvided'))}</dd></div>
         {index === 1 && <button type="button" disabled={!archive.download_available} onClick={() => void download(archive)} className="justify-self-start text-sm text-emerald-300 underline disabled:opacity-40">{t('Export.downloadPrevious')}</button>}
       </dl>)}
-      {currentData.next_allowed_at && !active && <p className="text-sm text-zinc-400">{t('Export.nextAllowed', { time: formatTime(currentData.next_allowed_at, locale) })}</p>}
+      {currentData.next_allowed_at && !active && <p className="text-sm text-zinc-400">{t('Export.nextAllowed', { time: formatTime(currentData.next_allowed_at, locale, t('Common.notProvided')) })}</p>}
       {actionError ? <div>
         <p className="text-sm text-red-300" role="alert">{actionError.message}</p>
         <ErrorIdDetails

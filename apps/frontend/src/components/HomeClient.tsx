@@ -1484,9 +1484,10 @@ function StatPill({
   value?: number;
   error?: string;
 }) {
+  const { t } = useT();
   return (
     <span className="inline-flex items-center gap-1.5 text-zinc-400">
-      <span className="tabular-nums text-[#F0F3F1]">{error ? '未提供' : value ?? '…'}</span>
+      <span className="tabular-nums text-[#F0F3F1]">{error ? t('Common.notProvided') : value ?? '…'}</span>
       <span>{label}</span>
     </span>
   );
