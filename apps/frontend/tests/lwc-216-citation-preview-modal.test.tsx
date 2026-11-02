@@ -22,6 +22,9 @@ void testingLibraryAct;
 
 const mocks = vi.hoisted(() => ({
   currentProject: { id: 'project-a', name: 'Project A' },
+  projects: [{ id: 'project-a', name: 'Project A' }],
+  selectProject: vi.fn(),
+  refreshProjects: vi.fn().mockResolvedValue(undefined),
   getConcept: vi.fn(),
   getSource: vi.fn(),
   getStatus: vi.fn(),
@@ -48,7 +51,7 @@ vi.mock('@/lib/i18n', async () => {
 });
 
 vi.mock('@/components/WorkspaceProvider', () => ({
-  useWorkspace: () => ({ currentProject: mocks.currentProject }),
+  useWorkspace: () => ({ currentProject: mocks.currentProject, projects: mocks.projects, selectProject: mocks.selectProject, refreshProjects: mocks.refreshProjects }),
 }));
 
 vi.mock('@/components/NavigationBlocker', async () => {

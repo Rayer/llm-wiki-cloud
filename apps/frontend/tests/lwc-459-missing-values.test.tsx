@@ -10,11 +10,13 @@ import { translate, catalogStatus } from '@/lib/i18n';
 
 const mocks = vi.hoisted(() => ({
   currentProject: { id: 'missing-values', name: 'Missing values' } as { id: string; name: string } | null,
+  refreshProjects: vi.fn().mockResolvedValue(undefined), selectProject: vi.fn(),
   getConcepts: vi.fn(), getStatus: vi.fn(), getRawFiles: vi.fn(),
   getBuildInfo: vi.fn(), getExportState: vi.fn(),
 }));
 vi.mock('@/components/WorkspaceProvider', () => ({ useWorkspace: () => ({
   currentProject: mocks.currentProject, projects: [], token: 'synthetic-session',
+  refreshProjects: mocks.refreshProjects, selectProject: mocks.selectProject,
   user: { id: 'synthetic-owner' }, hydrated: true, projectsLoading: false, sessionEpoch: 1,
 }) }));
 vi.mock('@/lib/auth', () => ({ useAuth: () => ({ user: null }) }));
@@ -36,7 +38,7 @@ beforeEach(() => {
   window.history.replaceState(null, '', '/');
   mocks.currentProject = { id: 'missing-values', name: 'Missing values' };
   mocks.getConcepts.mockResolvedValue([]);
-  mocks.getBuildInfo.mockResolvedValue({ product_version: 'test', commit: 'test', branch: 'test', tag: '', image_tag: 'test', service: 'test', revision: 'test' });
+  mocks.getBuildInfo.mockResolvedValue({ environment: 'unknown', product_version: 'test', commit: 'test', branch: 'test', tag: '', image_tag: 'test', service: 'test', revision: 'test' });
 });
 afterEach(() => { cleanup(); vi.resetAllMocks(); });
 

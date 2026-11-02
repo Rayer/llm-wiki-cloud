@@ -72,6 +72,10 @@ func (unavailableURLSourceJournal) ConfirmSourceCommit(context.Context, sourceau
 	return sourceautomation.CommitResult{State: "unknown", ProcessingStatus: "unknown"}, status.Error(codes.Unavailable, "injected Firestore outage")
 }
 
+func (unavailableURLSourceJournal) RecordNoChangeProjectUse(context.Context, sourceautomation.Ref, sourceautomation.NoChangeUseRequest) (sourceautomation.NoChangeUseReceipt, error) {
+	return sourceautomation.NoChangeUseReceipt{}, sourceautomation.ErrSourceCommitUnconfirmed
+}
+
 func (unavailableURLSourceJournal) ReconcileSourceCommit(context.Context, sourceautomation.Ref) (sourceautomation.CommitResult, error) {
 	return sourceautomation.CommitResult{State: "unknown", ProcessingStatus: "unknown"}, status.Error(codes.Unavailable, "injected Firestore outage")
 }

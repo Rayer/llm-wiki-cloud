@@ -17,6 +17,7 @@ var (
 
 // Info is the explicitly allowlisted deployed build and Cloud Run identity.
 type Info struct {
+	Environment    string `json:"environment"`
 	ProductVersion string `json:"product_version"`
 	Commit         string `json:"commit"`
 	Branch         string `json:"branch"`
@@ -30,6 +31,7 @@ type Info struct {
 // service identity. Local builds retain the package's explicit fallbacks.
 func Current() Info {
 	return Info{
+		Environment:    "unknown",
 		ProductVersion: ProductVersion,
 		Commit:         GitSHA,
 		Branch:         GitBranch,
@@ -57,8 +59,19 @@ func cloudRunValue(value string) string {
 //	@Header			200	{string}	Cache-Control	"no-store"
 //	@Router			/api/v1/public/version [get]
 func Handler() gin.HandlerFunc {
+	return HandlerWithEnvironment("unknown")
+}
+
+// HandlerWithEnvironment reports only the allowlisted environment selected by
+// the validated BFF configuration document.
+func HandlerWithEnvironment(environment string) gin.HandlerFunc {
+	if environment != "local" && environment != "dev" && environment != "prod" {
+		environment = "unknown"
+	}
 	return func(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")
-		c.JSON(http.StatusOK, Current())
+		info := Current()
+		info.Environment = environment
+		c.JSON(http.StatusOK, info)
 	}
 }

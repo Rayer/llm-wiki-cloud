@@ -24,6 +24,11 @@ func TestQueryPromptsRequireExactInternalReferencesInBothModes(t *testing.T) {
 		if strings.Contains(prompt, "[CITATION_REF_0]") || !strings.Contains(prompt, "Use that exact reference") {
 			t.Fatalf("%s prompt lost exact internal-reference rules: %q", mode, prompt)
 		}
+		if mode == "full" && (!strings.Contains(prompt, "Label supplementary general model knowledge separately") ||
+			!strings.Contains(prompt, "If no Wiki evidence is used, say so") || !strings.Contains(prompt, "No live web search is available") ||
+			strings.Contains(prompt, "do not treat it as a constraint")) {
+			t.Fatalf("full prompt does not distinguish general knowledge from Wiki evidence: %q", prompt)
+		}
 	}
 }
 

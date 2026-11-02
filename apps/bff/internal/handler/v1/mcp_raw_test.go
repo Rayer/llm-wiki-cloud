@@ -76,7 +76,7 @@ func TestMCPAddRawToolListFollowsVerifiedCapabilities(t *testing.T) {
 					addRawDescription, _ = tool["description"].(string)
 				}
 			}
-			if names["query_project"] != true || names["get_document_import"] != true || names["pipeline_status"] != true || names["add_raw"] != test.wantRaw || names["import_url"] != test.wantURLImport || names["import_document"] != test.wantURLImport {
+			if names["query_project"] != true || names["confirm_connection"] != true || names["get_document_import"] != true || names["pipeline_status"] != true || names["add_raw"] != test.wantRaw || names["import_url"] != test.wantURLImport || names["import_document"] != test.wantURLImport {
 				t.Fatalf("listed tools = %v", names)
 			}
 			if !test.wantURLImport {
@@ -108,7 +108,7 @@ func TestMCPImportURLIsListedForWritersAndFailsClosedWithoutService(t *testing.T
 		name, _ := item.(map[string]any)["name"].(string)
 		names[name] = true
 	}
-	if len(names) != 6 || !names["query_project"] || !names["get_document_import"] || !names["pipeline_status"] || !names["add_raw"] || !names["import_url"] || !names["import_document"] {
+	if len(names) != 7 || !names["query_project"] || !names["confirm_connection"] || !names["get_document_import"] || !names["pipeline_status"] || !names["add_raw"] || !names["import_url"] || !names["import_document"] {
 		t.Fatalf("raw-write discovery = %v, want query, pipeline/document status, and raw/document import tools", names)
 	}
 
@@ -152,7 +152,7 @@ func TestMCPStreamableSDKClientRetainsRawWriteWithURLTool(t *testing.T) {
 	for _, tool := range discovered.Tools {
 		names[tool.Name] = true
 	}
-	if len(names) != 6 || !names["query_project"] || !names["get_document_import"] || !names["pipeline_status"] || !names["add_raw"] || !names["import_url"] || !names["import_document"] {
+	if len(names) != 7 || !names["query_project"] || !names["confirm_connection"] || !names["get_document_import"] || !names["pipeline_status"] || !names["add_raw"] || !names["import_url"] || !names["import_document"] {
 		t.Fatalf("MCP SDK discovered tools = %v, want query, pipeline/document status, and raw/document import tools", names)
 	}
 	urlResult, urlErr := session.CallTool(ctx, &mcp.CallToolParams{

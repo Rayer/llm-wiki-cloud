@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   push: vi.fn(),
   token: 'auth-token' as string | null,
   user: { id: 'user-1', email: 'owner@example.com', role: 'owner' } as { id: string; email: string; role: string } | null,
+  sessionIdentityEpoch: 1,
   sessionEpoch: 1,
 }));
 
@@ -49,6 +50,7 @@ vi.mock('@/lib/auth', () => ({
     hydrated: true,
     isAuthenticated: true,
     isDemoSession: false,
+    sessionIdentityEpoch: mocks.sessionIdentityEpoch,
     sessionEpoch: mocks.sessionEpoch,
     login: async () => undefined,
     register: async () => undefined,
@@ -180,6 +182,7 @@ beforeEach(() => {
   window.history.replaceState(null, '', '/');
   mocks.token = 'auth-token';
   mocks.user = { id: 'user-1', email: 'owner@example.com', role: 'owner' };
+  mocks.sessionIdentityEpoch = 1;
   mocks.sessionEpoch = 1;
   mocks.getProjects.mockResolvedValue([
     { id: 'project-a', name: 'Project Alpha' },
@@ -225,7 +228,7 @@ afterEach(() => {
   sessionStorage.clear();
 });
 
-it('keeps the completed Query snapshot through token refresh and clears it on Project switch or logout', async () => {
+it('keeps the completed Query snapshot through same-user token refresh without reloading Projects', async () => {
   const entryId = replaceQueryHistoryUrl('/?q=history+result', true);
   expect(entryId).toBeTruthy();
   saveCompletedQueryResult({
@@ -254,7 +257,7 @@ it('keeps the completed Query snapshot through token refresh and clears it on Pr
       <ProjectStateProbe />
     </WorkspaceProvider>,
   );
-  await waitFor(() => expect(mocks.getProjects).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(mocks.getProjects).toHaveBeenCalledTimes(1));
   expect(getCompletedQueryResult(entryId as string)?.aiAnswer).toBe('Saved account result');
 
   fireEvent.click(screen.getByRole('button', { name: 'select project B' }));
@@ -276,6 +279,7 @@ it('keeps the completed Query snapshot through token refresh and clears it on Pr
 
   mocks.token = null;
   mocks.user = null;
+  mocks.sessionIdentityEpoch += 1;
   rendered.rerender(
     <WorkspaceProvider>
       <ProjectStateProbe />
@@ -356,11 +360,13 @@ describe('LWC-174 WorkspaceProvider rename behavior', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'rename success' }));
     mocks.token = null;
+    mocks.sessionIdentityEpoch += 1;
     rendered.rerender(view());
     await waitFor(() => expect(screen.queryByTestId('project-name-project-a')).toBeNull());
 
     mocks.getProjects.mockResolvedValue([{ id: 'project-a', name: 'Replacement Session Name' }]);
     mocks.token = 'auth-token';
+    mocks.sessionIdentityEpoch += 1;
     rendered.rerender(view());
     expect((await screen.findByTestId('project-name-project-a')).textContent).toBe('Replacement Session Name');
 
@@ -379,11 +385,13 @@ describe('LWC-174 WorkspaceProvider rename behavior', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'add project' }));
     mocks.token = null;
+    mocks.sessionIdentityEpoch += 1;
     rendered.rerender(view());
     await waitFor(() => expect(screen.queryByTestId('project-name-project-a')).toBeNull());
 
     mocks.getProjects.mockResolvedValue([{ id: 'replacement', name: 'Replacement Session' }]);
     mocks.token = 'auth-token';
+    mocks.sessionIdentityEpoch += 1;
     rendered.rerender(view());
     await screen.findByTestId('project-name-replacement');
 
@@ -404,6 +412,7 @@ describe('LWC-174 WorkspaceProvider rename behavior', () => {
     fireEvent.click(screen.getByRole('button', { name: 'refresh projects' }));
     await waitFor(() => expect(screen.getByTestId('projects-loading').textContent).toBe('true'));
     mocks.token = null;
+    mocks.sessionIdentityEpoch += 1;
     rendered.rerender(view());
 
     await waitFor(() => expect(screen.getByTestId('projects-loading').textContent).toBe('false'));
@@ -636,6 +645,7 @@ describe('LWC-174 WorkspaceProvider rename behavior', () => {
     await waitFor(() => expect(screen.getByTestId('profile-onboarding-project').textContent).toBe('created'));
 
     mocks.user = { id: 'user-2', email: 'other@example.com', role: 'owner' };
+    mocks.sessionIdentityEpoch += 1;
     mocks.sessionEpoch = 2;
     view.rerender(<WorkspaceProvider><ProjectStateProbe /></WorkspaceProvider>);
     await waitFor(() => expect(screen.getByTestId('profile-onboarding-project').textContent).toBe(''));

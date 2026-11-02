@@ -5,7 +5,7 @@ import { MAX_PROJECT_NAME_LENGTH, type Project } from '@/lib/projects';
 import { useT } from '@/lib/i18n';
 
 type ProjectRenameModalProps = {
-  project: Project;
+  project: Pick<Project, 'id' | 'name'>;
   onSubmit: (name: string) => Promise<void>;
   onClose: () => void;
   provisional?: boolean;

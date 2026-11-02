@@ -51,6 +51,76 @@ func TestStateDocumentRejectsInconsistentAttemptBudgetAndIdentity(t *testing.T) 
 	}
 }
 
+func TestStateDocumentReadsLegacyV1AndRejectsIncompleteV2Overview(t *testing.T) {
+	legacy := validReadyStateDocument()
+	digest := legacy.TargetConceptsSHA
+	legacy.SummaryWork.WorkID = SummaryWorkID("owner", "project", digest, SummaryLegacyPromptRevision, SummaryLegacySelectionVersion)
+	legacy.SummaryWork.PromptRevision = ""
+	legacy.SummaryWork.SelectionVersion = ""
+	legacy.LastGood.PromptRevision = SummaryLegacyPromptRevision
+	legacy.LastGood.SelectionVersion = SummaryLegacySelectionVersion
+	legacy.LastGood.OverviewSchemaVersion = 0
+	legacy.LastGood.ShortTitle = ""
+	legacy.LastGood.TopicTags = nil
+	legacy.LastGood.TotalConcepts = 0
+	legacy.LastGood.SelectedConcepts = 0
+	legacy.LastGood.SelectedSlugs = nil
+	legacy.LastGood.Sampled = false
+	legacy.LastGood.TitleTruncatedConcepts = 0
+	legacy.LastGood.BodyTruncatedConcepts = 0
+	if err := legacy.Validate(); err != nil {
+		t.Fatalf("legacy summary-only state rejected: %v", err)
+	}
+
+	incomplete := validReadyStateDocument()
+	incomplete.LastGood.TopicTags = nil
+	if err := incomplete.Validate(); err == nil {
+		t.Fatal("v2 overview with a missing tag set was accepted")
+	}
+	unknown := validReadyStateDocument()
+	unknown.SummaryWork.SelectionVersion = "selection-v99"
+	if err := unknown.Validate(); err == nil {
+		t.Fatal("unknown summary recipe was accepted")
+	}
+}
+
+func TestNextPublicationUpgradesV1RecipeWithoutOverwritingLastGood(t *testing.T) {
+	legacy := validReadyStateDocument()
+	digest := legacy.TargetConceptsSHA
+	legacy.SummaryWork.WorkID = SummaryWorkID("owner", "project", digest, SummaryLegacyPromptRevision, SummaryLegacySelectionVersion)
+	legacy.SummaryWork.PromptRevision = ""
+	legacy.SummaryWork.SelectionVersion = ""
+	legacy.LastGood.PromptRevision = SummaryLegacyPromptRevision
+	legacy.LastGood.SelectionVersion = SummaryLegacySelectionVersion
+	legacy.LastGood.OverviewSchemaVersion = 0
+	legacy.LastGood.ShortTitle = ""
+	legacy.LastGood.TopicTags = nil
+	legacy.LastGood.TotalConcepts = 0
+	legacy.LastGood.SelectedConcepts = 0
+	legacy.LastGood.SelectedSlugs = nil
+	legacy.LastGood.Sampled = false
+	legacy.LastGood.TitleTruncatedConcepts = 0
+	legacy.LastGood.BodyTruncatedConcepts = 0
+
+	sameManifest := Publication{Generation: "G1", ConceptsDigest: digest, ManifestIdentity: "manifest-G1"}
+	unchanged, changed, err := observePublication(legacy, sameManifest, "owner", "project")
+	if err != nil || changed || unchanged.SummaryWork.SelectionVersion != "" {
+		t.Fatalf("same manifest unexpectedly upgraded the legacy recipe: changed=%t work=%+v err=%v", changed, unchanged.SummaryWork, err)
+	}
+
+	nextPublication := Publication{Generation: "G2", ConceptsDigest: digest, ManifestIdentity: "manifest-G2",
+		SummarySourceGeneration: "G2", SummarySourceManifestIdentity: "manifest-G2"}
+	upgraded, changed, err := observePublication(legacy, nextPublication, "owner", "project")
+	if err != nil || !changed || upgraded.Status != StatusPending || upgraded.SummaryWork.PromptRevision != SummaryPromptRevision ||
+		upgraded.SummaryWork.SelectionVersion != SummarySelectionVersion || upgraded.SummaryWork.SourceGeneration != "G2" ||
+		upgraded.LastGood == nil || upgraded.LastGood.Text != legacy.LastGood.Text || upgraded.LastGood.PromptRevision != SummaryLegacyPromptRevision {
+		t.Fatalf("next same-digest publication did not start v2 while retaining v1 summary: state=%+v changed=%t err=%v", upgraded, changed, err)
+	}
+	if err := upgraded.Validate(); err != nil {
+		t.Fatalf("upgraded state is invalid: %v", err)
+	}
+}
+
 func validReadyStateDocument() StateDocument {
 	digest := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	publication := Publication{Generation: "G1", ConceptsDigest: digest, ManifestIdentity: "manifest-G1"}
@@ -61,11 +131,15 @@ func validReadyStateDocument() StateDocument {
 		TargetConceptsSHA: digest, Status: StatusReady, TargetSequence: 1,
 		LatestPublication: &PublishedHead{Generation: publication.Generation, ConceptsSHA256: digest, ManifestIdentity: publication.ManifestIdentity},
 		SummaryWork: &SummaryWorkRecord{WorkID: SummaryWorkID("owner", "project", digest, SummaryPromptRevision, SummarySelectionVersion),
-			ConceptsSHA256: digest, SourceGeneration: publication.Generation, Status: StatusReady},
+			ConceptsSHA256: digest, SourceGeneration: publication.Generation, Status: StatusReady,
+			PromptRevision: SummaryPromptRevision, SelectionVersion: SummarySelectionVersion},
 		LastGood: &LastGood{Text: completion.Text, SourceGeneration: publication.Generation, ConceptsSHA256: digest,
 			GeneratedAt: now, PromptRevision: completion.PromptRevision, ProfileSource: completion.ProfileSource, ProfileID: completion.ProfileID,
 			ProfileRevision: completion.ProfileRevision, Role: completion.Role, RequestedModel: completion.RequestedModel,
-			ReturnedModel: completion.ReturnedModel, InputDigest: completion.InputDigest, SelectionVersion: completion.SelectionVersion},
+			ReturnedModel: completion.ReturnedModel, InputDigest: completion.InputDigest, SelectionVersion: completion.SelectionVersion,
+			OverviewSchemaVersion: completion.OverviewSchemaVersion, ShortTitle: completion.ShortTitle,
+			TopicTags: completion.TopicTags, TotalConcepts: completion.TotalConcepts, SelectedConcepts: completion.SelectedConcepts,
+			SelectedSlugs: completion.SelectedSlugs, Sampled: completion.Sampled},
 	}
 }
 

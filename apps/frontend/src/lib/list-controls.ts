@@ -6,6 +6,11 @@ export function entryDate(entry: WikiEntry): number | null {
   return Number.isFinite(value) ? value : null;
 }
 
+export function entryObjectUpdatedAt(entry: WikiEntry): number | null {
+  const value = entry.objectUpdatedAt ? Date.parse(entry.objectUpdatedAt) : NaN;
+  return Number.isFinite(value) ? value : null;
+}
+
 export function selectEntries(entries: WikiEntry[], search: string, status: string, dates: string, order: string) {
   const query = search.trim().toLocaleLowerCase();
   return entries.filter((entry) =>
@@ -13,6 +18,12 @@ export function selectEntries(entries: WikiEntry[], search: string, status: stri
     && (status === 'all' || (status === 'missing' ? !entry.status : entry.status === status))
     && (dates === 'all' || (entryDate(entry) !== null) === (dates === 'dated')),
   ).sort((a, b) => {
+    if (order === 'updated-desc') {
+      const left = entryObjectUpdatedAt(a);
+      const right = entryObjectUpdatedAt(b);
+      if (left === null || right === null) return left === right ? collator.compare(a.title, b.title) || collator.compare(a.slug, b.slug) : left === null ? 1 : -1;
+      return right - left || collator.compare(a.title, b.title) || collator.compare(a.slug, b.slug);
+    }
     if (order === 'date-desc' || order === 'date-asc') {
       const left = entryDate(a);
       const right = entryDate(b);

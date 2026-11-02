@@ -6,6 +6,7 @@ import type { Locale } from '@/lib/i18n-core';
 import { configuredLocaleOptions, normalizeLocalePreference } from '@/lib/i18n-core';
 import { LocaleControl } from '@/components/LocaleControl';
 import { AgentMcpTabs } from '@/components/AgentMcpTabs';
+import { ProfileExpectedEffect } from '@/components/ProfileExpectedEffect';
 
 const { act, cleanup, fireEvent, render, screen } = await import('@testing-library/react');
 const resourceURL = 'https://api.example.test/mcp/projects/project-a';
@@ -102,6 +103,28 @@ describe('LWC-447 runtime catalogs and locale UI', () => {
     localStorage.setItem('locale', 'zh_tw');
     act(() => window.dispatchEvent(new StorageEvent('storage', { key: 'locale' })));
     expect(select.value).toBe('zh-TW');
+  });
+
+  it('renders the fixed three-source Profile comparison from real English and Traditional catalogs', () => {
+    for (const locale of ['en', 'zh-TW'] as const) {
+      localStorage.setItem('locale', locale);
+      window.dispatchEvent(new StorageEvent('storage', { key: 'locale' }));
+      const t = (key: string, params?: Record<string, string | number>) => translate(locale, key, params);
+      const view = render(<ProfileExpectedEffect />);
+      expect(screen.getByRole('heading', { name: t('Profile.localUx.multiSource.heading') })).toBeDefined();
+      const sourceNotes = screen.getAllByRole('listitem');
+      for (const id of ['s1', 's2', 's3'] as const) {
+        expect(sourceNotes.some((item) => item.textContent?.includes(t(`Profile.localUx.multiSource.sources.${id}.text`)))).toBe(true);
+      }
+      expect(screen.getByRole('tab', { name: t('Profile.localUx.multiSource.family.needTitle') })).toBeDefined();
+      expect(screen.getByText(t('Profile.localUx.multiSource.family.conceptTitle'))).toBeDefined();
+      fireEvent.click(screen.getByRole('tab', { name: t('Profile.localUx.multiSource.quiet.needTitle') }));
+      expect(screen.getByText(t('Profile.localUx.multiSource.quiet.conceptTitle'))).toBeDefined();
+      expect(screen.getByText(t('Profile.localUx.multiSource.quiet.boundary'))).toBeDefined();
+      view.unmount();
+    }
+    expect(translate('en', 'Shell.versionInfo')).toBe('API version');
+    expect(translate('zh-TW', 'Shell.searchProjects')).toBe('搜尋所有專案');
   });
 
   it('switches locale for this tab when localStorage cannot be written', () => {

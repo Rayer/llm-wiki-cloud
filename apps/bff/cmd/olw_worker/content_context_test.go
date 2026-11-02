@@ -33,6 +33,19 @@ type contentContextTestSummaryClient struct {
 	calls   int
 }
 
+func testContentContextInputMetadata(claim contentcontext.SummaryClaim, inputDigest string) contentcontext.SummaryInputMetadata {
+	return contentcontext.SummaryInputMetadata{
+		ConceptsDigest: claim.ConceptsSHA256, SourceGeneration: claim.SourceGeneration,
+		InputDigest: inputDigest, SelectionVersion: contentcontext.SummarySelectionVersion,
+		PromptRevision: contentcontext.SummaryPromptRevision, SelectedSlugs: []string{"project-context"},
+		TotalConcepts: 1, SelectedConcepts: 1,
+	}
+}
+
+func testContentContextOverviewText(summary string) string {
+	return fmt.Sprintf(`{"short_title":"Project topics","topic_tags":["Project"],"summary":%q}`, summary)
+}
+
 func (c *contentContextTestSummaryClient) Complete(_ context.Context, system, input string) (llm.CompletionResult, error) {
 	c.calls++
 	if system != contentcontext.SummarySystemPrompt || input == "" {
@@ -298,7 +311,7 @@ func TestContentContextCompletionAndFailureRecordKeepOperationCause(t *testing.T
 		UserID: "content-owner", ProjectID: "content-project", PipelineProfileSource: "bootstrap", BootstrapLLMSource: true,
 	}
 	testClient := &contentContextTestSummaryClient{result: llm.CompletionResult{
-		Text: `{"summary":"synthetic completed summary"}`,
+		Text: testContentContextOverviewText("synthetic completed summary"),
 		Metadata: llm.CompletionMetadata{
 			Provider: "synthetic-provider", Protocol: string(llm.ProtocolOpenAIChatCompletions),
 			Role: string(llm.ProfileRoleFast), RequestedModel: "synthetic-fast", ReturnedModel: "synthetic-fast-v1",
@@ -307,10 +320,7 @@ func TestContentContextCompletionAndFailureRecordKeepOperationCause(t *testing.T
 	newBootstrapContentContextSummaryClient = func(string) (contentContextSummaryClient, llm.ModelIdentity, error) {
 		return testClient, llm.ModelIdentity{Provider: "synthetic-provider", Model: "synthetic-fast"}, nil
 	}
-	metadata := contentcontext.SummaryInputMetadata{
-		ConceptsDigest: digest, SourceGeneration: publication.Generation,
-		InputDigest: strings.Repeat("c", 64), SelectionVersion: contentcontext.SummarySelectionVersion,
-	}
+	metadata := testContentContextInputMetadata(claim, strings.Repeat("c", 64))
 	input := []byte(`{"concepts":[{"slug":"synthetic"}]}`)
 	completeErr := runClaimedContentContextSummary(ctx, cfg, contentcontext.NewFirestoreRepository(nil), authority, claim, input, metadata, nil)
 	var completeOperation *contentContextOperationError
@@ -513,13 +523,10 @@ func TestCloudContentContextUsesThePinnedFastProfileAndPersistsOneSummary(t *tes
 		loadContentContextSummaryInput, newContentContextSummaryClient = oldInputLoader, oldClientFactory
 	})
 	loadContentContextSummaryInput = func(_ context.Context, _ workerConfig, claim contentcontext.SummaryClaim) ([]byte, contentcontext.SummaryInputMetadata, error) {
-		return []byte(`{"concepts":[{"slug":"project-context","title":"Project Context","body":"Published project content"}]}`), contentcontext.SummaryInputMetadata{
-			ConceptsDigest: claim.ConceptsSHA256, SourceGeneration: claim.SourceGeneration,
-			InputDigest: strings.Repeat("b", 64), SelectionVersion: contentcontext.SummarySelectionVersion,
-		}, nil
+		return []byte(`{"concepts":[{"slug":"project-context","title":"Project Context","body":"Published project content"}]}`), testContentContextInputMetadata(claim, strings.Repeat("b", 64)), nil
 	}
 	testClient := &contentContextTestSummaryClient{profile: cfg.ProfileCandidates[0], result: llm.CompletionResult{
-		Text: `{"summary":"This Project contains published project context."}`,
+		Text: testContentContextOverviewText("This Project contains published project context."),
 		Metadata: llm.CompletionMetadata{
 			ProfileID: "fast-profile", ProfileRevision: 7, Role: string(llm.ProfileRoleFast),
 			Provider: "custom", Protocol: string(llm.ProtocolOpenAIChatCompletions),
@@ -616,13 +623,10 @@ func TestCloudContentContextSharedEligibilityIsBoundToTheClaim(t *testing.T) {
 				loadContentContextSummaryInput, newContentContextSummaryClient = oldInputLoader, oldClientFactory
 			})
 			loadContentContextSummaryInput = func(_ context.Context, _ workerConfig, claim contentcontext.SummaryClaim) ([]byte, contentcontext.SummaryInputMetadata, error) {
-				return []byte(`{"concepts":[]}`), contentcontext.SummaryInputMetadata{
-					ConceptsDigest: claim.ConceptsSHA256, SourceGeneration: claim.SourceGeneration,
-					InputDigest: strings.Repeat("c", 64), SelectionVersion: contentcontext.SummarySelectionVersion,
-				}, nil
+				return []byte(`{"concepts":[{"slug":"project-context","title":"Project Context","body":"Published project content"}]}`), testContentContextInputMetadata(claim, strings.Repeat("c", 64)), nil
 			}
 			testClient := &contentContextTestSummaryClient{profile: pinned, result: llm.CompletionResult{
-				Text: `{"summary":"Shared published topics"}`,
+				Text: testContentContextOverviewText("Shared published topics"),
 				Metadata: llm.CompletionMetadata{
 					ProfileID: pinned.ID, ProfileRevision: pinned.Revision, Provider: pinned.Provider,
 					Protocol: string(pinned.Protocol), Role: string(llm.ProfileRoleFast),
@@ -698,13 +702,10 @@ func TestCloudContentContextBootstrapUsesRealPlatformFastIdentity(t *testing.T) 
 		newContentContextSummaryClient = oldProfileFactory
 	})
 	loadContentContextSummaryInput = func(_ context.Context, _ workerConfig, claim contentcontext.SummaryClaim) ([]byte, contentcontext.SummaryInputMetadata, error) {
-		return []byte(`{"concepts":[]}`), contentcontext.SummaryInputMetadata{
-			ConceptsDigest: claim.ConceptsSHA256, SourceGeneration: claim.SourceGeneration,
-			InputDigest: strings.Repeat("d", 64), SelectionVersion: contentcontext.SummarySelectionVersion,
-		}, nil
+		return []byte(`{"concepts":[{"slug":"project-context","title":"Project Context","body":"Published project content"}]}`), testContentContextInputMetadata(claim, strings.Repeat("d", 64)), nil
 	}
 	testClient := &contentContextTestSummaryClient{result: llm.CompletionResult{
-		Text: `{"summary":"Published topics"}`,
+		Text: testContentContextOverviewText("Published topics"),
 		Metadata: llm.CompletionMetadata{
 			Provider: "deepseek", Protocol: string(llm.ProtocolOpenAIChatCompletions),
 			Role: string(llm.ProfileRoleFast), RequestedModel: "deepseek-flash", ReturnedModel: "deepseek-v2",

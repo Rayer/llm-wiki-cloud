@@ -1,12 +1,12 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ChevronLeft, FileText } from 'lucide-react';
 import { MarkdownView } from './MarkdownView';
 import { ErrorState, LoadingState, useErrorIdCopy } from './States';
 import { Badge } from './ui/Badge';
 import { Surface } from './ui/Surface';
-import { ApiError, getConcepts, type WikiEntry } from '@/lib/api';
+import { ApiError, getConcepts, getRawFilePreview, safeWikiRouteSegment, type WikiEntry, type WikiReference } from '@/lib/api';
 import { useT } from '@/lib/i18n';
 import { primaryRawFileName, rawFileNameFromSource } from '@/lib/raw-file-name';
 import { NavigationLink } from './NavigationBlocker';
@@ -96,8 +96,11 @@ function DetailClientSession({ slug, labelKey, label: labelOverride, backHref, l
   // LWC-139: prominent raw link on source pages (source_file / sources[0] / slug fallback)
   const primaryRawFile =
     entryType === 'source'
-      ? primaryRawFileName(entry.frontmatter, { slugFallback: entry.slug })
+      ? entry.rawPath
+        ? rawFileNameFromSource(entry.rawPath)
+        : primaryRawFileName(entry.frontmatter, { slugFallback: entry.slug })
       : null;
+  const rawMappingVerified = Boolean(entry.rawPath);
 
   return (
     <div className="space-y-8">
@@ -141,12 +144,132 @@ function DetailClientSession({ slug, labelKey, label: labelOverride, backHref, l
       </header>
 
       {entryType === 'concept' ? <ConceptProvenance data={entry.frontmatter} /> : null}
+      {entry.relatedConcepts !== undefined ? (
+        <RelatedReferences
+          titleKey="Detail.relatedConcepts"
+          reasonKey="Detail.relatedConceptsReason"
+          references={entry.relatedConcepts}
+        />
+      ) : null}
+      {entry.relatedSources !== undefined ? (
+        <RelatedReferences
+          titleKey="Detail.relatedSources"
+          reasonKey="Detail.relatedSourcesReason"
+          references={entry.relatedSources}
+        />
+      ) : null}
+      {entryType === 'source' ? (
+        <RawFileSection rawPath={primaryRawFile} verified={rawMappingVerified} />
+      ) : null}
       {entry.frontmatter ? <Frontmatter data={entry.frontmatter} /> : null}
       <MarkdownView content={entry.content} existingConceptSlugs={existingConceptSlugs} />
       {entryType === 'source' && entry.annotationAllowed && entry.id ? (
         <SourceAnnotationEditor key={entry.id} sourceId={entry.id} onSaved={reloadEntry} />
       ) : null}
     </div>
+  );
+}
+
+function RelatedReferences({ titleKey, reasonKey, references }: {
+  titleKey: 'Detail.relatedConcepts' | 'Detail.relatedSources';
+  reasonKey: 'Detail.relatedConceptsReason' | 'Detail.relatedSourcesReason';
+  references: WikiReference[];
+}) {
+  const { t } = useT();
+  return (
+    <Surface variant="glass" className="p-5">
+      <h2 className="text-base font-semibold text-white">{t(titleKey)}</h2>
+      <p className="mt-1 text-sm leading-6 text-zinc-400">{t(reasonKey)}</p>
+      {references.length === 0 ? <p role="status" className="mt-3 text-sm text-zinc-400">{t('Detail.noRelatedEntries')}</p> : (
+        <ul className="mt-4 grid gap-3 sm:grid-cols-2">
+          {references.map((reference) => {
+            const slug = safeWikiRouteSegment(reference.slug);
+            const href = slug ? `/${reference.type === 'concept' ? 'concepts' : 'sources'}/${encodeURIComponent(slug)}` : null;
+            return (
+              <li key={`${reference.type}:${reference.id ?? reference.slug}`} className="min-w-0 rounded border border-white/10 bg-black/15 p-3">
+                {href ? (
+                  <NavigationLink href={href} className="break-words text-sm font-medium text-emerald-200 underline decoration-emerald-200/30 underline-offset-4 hover:text-emerald-100">
+                    {reference.title}
+                  </NavigationLink>
+                ) : <span className="break-words text-sm text-zinc-300">{reference.title}</span>}
+                <p className="mt-1 break-all font-mono text-xs text-zinc-500">{reference.slug}</p>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </Surface>
+  );
+}
+
+function RawFileSection({ rawPath, verified }: { rawPath: string | null; verified: boolean }) {
+  const { t } = useT();
+  const [open, setOpen] = useState(false);
+  const [content, setContent] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const mountedRef = useRef(false);
+  const requestRef = useRef(0);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      requestRef.current += 1;
+    };
+  }, []);
+
+  const loadRaw = async () => {
+    if (!rawPath) return;
+    const request = ++requestRef.current;
+    setLoading(true);
+    setError('');
+    try {
+      const value = await getRawFilePreview(rawPath);
+      if (mountedRef.current && requestRef.current === request) setContent(value);
+    } catch (cause) {
+      if (mountedRef.current && requestRef.current === request) {
+        setError(cause instanceof Error ? cause.message : t('Source.rawPreviewFailed'));
+      }
+    } finally {
+      if (mountedRef.current && requestRef.current === request) setLoading(false);
+    }
+  };
+
+  const togglePreview = () => {
+    if (!open) {
+      setOpen(true);
+      if (content === null && !loading) void loadRaw();
+      return;
+    }
+    requestRef.current += 1;
+    setLoading(false);
+    setOpen(false);
+  };
+
+  return (
+    <Surface variant="glass" className="border border-emerald-200/15 p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h2 className="text-base font-semibold text-white">{t('Detail.rawSectionTitle')}</h2>
+          {rawPath ? <code className="mt-1 block break-all font-mono text-xs text-zinc-400">{rawPath}</code> : null}
+          {verified ? <p className="mt-2 text-xs text-emerald-100">{t('Detail.rawMappingVerified')}</p> : rawPath ? <p className="mt-2 text-xs text-amber-100">{t('Detail.rawMappingUnverified')}</p> : <p className="mt-2 text-sm text-zinc-400">{t('Detail.rawMappingUnavailable')}</p>}
+        </div>
+        {rawPath ? (
+          <div className="flex flex-wrap gap-2">
+            <button type="button" aria-expanded={open} onClick={togglePreview} className="min-h-11 rounded border border-emerald-200/25 px-3 text-sm font-medium text-emerald-100 hover:bg-emerald-200/5">
+              {open ? t('Detail.closeRawPreview') : t('Source.previewRaw')}
+            </button>
+            <NavigationLink href={`/raw?file=${encodeURIComponent(rawPath)}`} className="inline-flex min-h-11 items-center rounded border border-white/15 px-3 text-sm text-zinc-200 hover:bg-white/5">
+              {t('Detail.openRawLibrary')}
+            </NavigationLink>
+          </div>
+        ) : null}
+      </div>
+      {open && loading ? <p role="status" className="mt-4 text-sm text-zinc-400">{t('States.loadingDetail', { label: t('Detail.rawSectionTitle') })}</p> : null}
+      {open && error ? <div className="mt-4 flex flex-wrap items-center gap-3"><p role="alert" className="text-sm text-amber-100">{error}</p><button type="button" onClick={() => void loadRaw()} className="min-h-11 rounded border border-white/15 px-3 text-sm text-zinc-100">{t('Detail.retryRawPreview')}</button></div> : null}
+      {open && content !== null ? <pre className="mt-4 max-h-[70dvh] overflow-auto whitespace-pre-wrap break-words rounded border border-white/10 bg-black/30 p-4 font-mono text-xs leading-5 text-zinc-200">{content}</pre> : null}
+    </Surface>
   );
 }
 
@@ -211,16 +334,7 @@ function renderFrontmatterValue(key: string, value: unknown) {
     if (sources.length > 0) {
       return (
         <ul className="space-y-1">
-          {sources.map((source) => (
-            <li key={source}>
-              <NavigationLink
-                href={`/raw?file=${encodeURIComponent(rawFileNameFromSource(source))}`}
-                className="text-emerald-300 underline hover:text-emerald-200"
-              >
-                {source}
-              </NavigationLink>
-            </li>
-          ))}
+          {sources.map((source) => <li key={source} className="break-all font-mono text-xs">{source}</li>)}
         </ul>
       );
     }

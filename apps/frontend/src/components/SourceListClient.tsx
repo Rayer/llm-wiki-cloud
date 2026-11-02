@@ -15,6 +15,7 @@ import { DocumentImportsPanel, documentImportPipelineStatusKey } from './Documen
 import { MarkdownView } from './MarkdownView';
 import { selectSources } from '@/lib/list-controls';
 import { ListToolbar } from './ListToolbar';
+import { AddMaterialAction } from './AddMaterialAction';
 
 const lifecycleVariant: Record<SourceListItem['lifecycle'], 'muted' | 'published' | 'draft'> = {
   new: 'muted',
@@ -28,8 +29,8 @@ type SourceListError = { message: string; requestId?: string; diagnosticId?: str
 type PreviewError = SourceListError & { path: string };
 
 export function SourceListClient() {
-  const { currentProject, token, sessionEpoch } = useWorkspace();
-  const identityKey = JSON.stringify([currentProject?.id ?? 'no-project', token, sessionEpoch]);
+  const { currentProject, user, sessionIdentityEpoch } = useWorkspace();
+  const identityKey = JSON.stringify([user?.id ?? null, sessionIdentityEpoch, currentProject?.id ?? 'no-project']);
   return <SourceListSession key={identityKey} />;
 }
 
@@ -198,6 +199,7 @@ function SourceListSession() {
       <header>
         <h1 className="text-3xl font-semibold tracking-tight text-white sm:text-4xl">{t('List.sourcesTitle')}</h1>
         <p className="mt-2 max-w-2xl text-zinc-400">{t('List.sourcesDescription')}</p>
+        <AddMaterialAction className="mt-4" />
       </header>
 
       <ListToolbar search={search} onSearch={setSearch} searchLabel={t('List.searchPlaceholder', { title: t('List.sourcesTitle').toLowerCase() })}

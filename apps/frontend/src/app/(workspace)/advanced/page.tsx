@@ -222,7 +222,7 @@ export default function AdvancedPage() {
 
                 <AccountGrantPanel accessToken={accessToken} sessionEpoch={sessionEpoch} userId={user.id} t={t} locale={locale} />
 
-      {currentProject ? <AgentMcpTabs resourceURL={resourceURL} environmentLabel={environmentLabel} identityKey={contextKey + ':' + resourceURL + ':' + locale + ':' + catalogRevision} locale={locale} t={t} /> : null}
+      {currentProject ? <AgentMcpTabs projectId={currentProject.id} resourceURL={resourceURL} environmentLabel={environmentLabel} identityKey={contextKey + ':' + resourceURL + ':' + locale + ':' + catalogRevision} locale={locale} t={t} /> : null}
 
       {currentProject ? (
       <details className="rounded border border-white/10 bg-[#151515]">

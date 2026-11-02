@@ -11,8 +11,11 @@ const mocks = vi.hoisted(() => ({ searchWiki: vi.fn() }));
 
 const workspace = vi.hoisted(() => ({
   currentProject: { id: 'project-a' },
+  projects: [{ id: 'project-a', name: 'Project A' }],
   token: 'session-a',
   isDemoSession: false,
+  selectProject: vi.fn(),
+  refreshProjects: vi.fn().mockResolvedValue(undefined),
   refreshNavCounts: vi.fn().mockResolvedValue(undefined),
 }));
 

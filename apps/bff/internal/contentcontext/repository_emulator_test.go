@@ -197,7 +197,7 @@ func TestFirestoreRepositoryClaimTimestampsMatchNativePrecisionForTerminals(t *t
 	}
 }
 
-func TestFirestoreRepositoryReplaysOwnedPendingReadbackThroughSDK(t *testing.T) {
+func TestFirestoreRepositoryReadsLegacyPendingStateButDoesNotClaimIt(t *testing.T) {
 	endpoint := strings.TrimSpace(os.Getenv("FIRESTORE_EMULATOR_HOST"))
 	if endpoint == "" {
 		t.Skip("FIRESTORE_EMULATOR_HOST is not set")
@@ -272,6 +272,10 @@ func TestFirestoreRepositoryReplaysOwnedPendingReadbackThroughSDK(t *testing.T) 
 		state.SummaryWork.SourceManifestIdentity != state.LatestPublication.ManifestIdentity {
 		t.Fatalf("captured publication identity changed during decode: %+v", state)
 	}
+	legacyPrompt, legacySelection := summaryWorkRecipe(*state.SummaryWork)
+	if legacyPrompt != SummaryLegacyPromptRevision || legacySelection != SummaryLegacySelectionVersion {
+		t.Fatalf("captured work recipe=%q/%q; want legacy v1 recipe", legacyPrompt, legacySelection)
+	}
 
 	now := *state.AttemptStartedAt
 	repository.SetClockForTest(func() time.Time { return now })
@@ -284,35 +288,12 @@ func TestFirestoreRepositoryReplaysOwnedPendingReadbackThroughSDK(t *testing.T) 
 	}
 	now = state.SummaryWork.LeaseUntil.Add(time.Second)
 	claim, err := repository.Claim(ctx, ownerID, projectID, authority)
-	if err != nil || claim == nil || claim.RetryCount != 1 || claim.WorkID != state.SummaryWork.WorkID {
-		t.Fatalf("expired captured claim takeover=%+v err=%v", claim, err)
-	}
-	completed, err := repository.Complete(ctx, ownerID, projectID, authority, *claim, testSummaryCompletion("replayed summary"))
-	if err != nil || !completed {
-		t.Fatalf("complete replayed state accepted=%t err=%v", completed, err)
+	if err != nil || claim != nil {
+		t.Fatalf("expired v1 work was claimed by the v2 worker: claim=%+v err=%v", claim, err)
 	}
 	state, err = repository.Read(ctx, ownerID, projectID)
-	if err != nil || state.Status != StatusReady || state.LastGood == nil || state.LastGood.Text != "replayed summary" || state.LastGood.SourceGeneration != claim.SourceGeneration {
-		t.Fatalf("replayed state did not complete through SDK: state=%+v err=%v", state, err)
-	}
-
-	seedCapturedContentContextFields()
-	state, err = repository.Read(ctx, ownerID, projectID)
-	if err != nil || state.Status != StatusPending || state.LastGood != nil {
-		t.Fatalf("reset captured state=%+v err=%v", state, err)
-	}
-	now = state.SummaryWork.LeaseUntil.Add(time.Second)
-	claim, err = repository.Claim(ctx, ownerID, projectID, authority)
-	if err != nil || claim == nil || claim.RetryCount != 1 {
-		t.Fatalf("failure-path captured claim=%+v err=%v", claim, err)
-	}
-	failed, err := repository.Fail(ctx, ownerID, projectID, authority, *claim, "provider_timeout")
-	if err != nil || !failed {
-		t.Fatalf("fail replayed state updated=%t err=%v", failed, err)
-	}
-	state, err = repository.Read(ctx, ownerID, projectID)
-	if err != nil || state.Status != StatusFailed || state.ErrorClass != "provider_timeout" || state.LastGood != nil {
-		t.Fatalf("replayed state did not fail through SDK: state=%+v err=%v", state, err)
+	if err != nil || state.Status != StatusPending || state.SummaryWork == nil || state.SummaryWork.RetryCount != 0 || state.LastGood != nil {
+		t.Fatalf("legacy work changed while remaining read-only: state=%+v err=%v", state, err)
 	}
 }
 
@@ -325,6 +306,8 @@ func testSummaryCompletion(text string) SummaryCompletion {
 		Text: text, PromptRevision: SummaryPromptRevision, ProfileSource: "personal", ProfileID: "profile-1", ProfileRevision: 2,
 		Role: SummaryRole, RequestedModel: "model-requested", ReturnedModel: "model-returned",
 		InputDigest: strings.Repeat("e", 64), SelectionVersion: SummarySelectionVersion,
+		OverviewSchemaVersion: 1, ShortTitle: "Project overview", TopicTags: []string{"Project topic"},
+		TotalConcepts: 1, SelectedConcepts: 1, SelectedSlugs: []string{"concept-1"},
 	}
 }
 

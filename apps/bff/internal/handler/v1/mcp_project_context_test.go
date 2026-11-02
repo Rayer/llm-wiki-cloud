@@ -67,12 +67,24 @@ func TestAuthenticatedMCPMetadataContainsBoundProjectDescriptionAndPublishedSumm
 	list := mcpMetadataWireRequest(t, h.mcpAuthenticatedHandler(identity),
 		`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"fixture-client","version":"1"},"io.modelcontextprotocol/clientCapabilities":{}}}}`, "2026-07-28")
 	tools := mcpMetadataResult(t, list)["tools"].([]interface{})
-	query := tools[0].(map[string]interface{})
+	query := findMCPTool(t, tools, "query_project")
 	queryDescription := query["description"].(string)
 	if query["name"] != "query_project" || !strings.Contains(queryDescription, "untrusted advisory JSON") ||
 		!strings.Contains(queryDescription, "Paper archive") || !strings.Contains(queryDescription, "Published summary from generation 1") {
 		t.Fatalf("query tool description omitted the context hint: %#v", query)
 	}
+}
+
+func findMCPTool(t *testing.T, tools []interface{}, name string) map[string]interface{} {
+	t.Helper()
+	for _, item := range tools {
+		tool, ok := item.(map[string]interface{})
+		if ok && tool["name"] == name {
+			return tool
+		}
+	}
+	t.Fatalf("MCP tool %q is missing from %#v", name, tools)
+	return nil
 }
 
 func TestFirestoreRepositorySummaryIsProjectedToAuthenticatedMCPMetadata(t *testing.T) {
@@ -118,6 +130,8 @@ func TestFirestoreRepositorySummaryIsProjectedToAuthenticatedMCPMetadata(t *test
 		ProfileSource: "personal", ProfileID: "selected-profile", ProfileRevision: 5, Role: contentcontext.SummaryRole,
 		RequestedModel: "fast-requested", ReturnedModel: "fast-returned",
 		InputDigest: testContentContextDigest('e'), SelectionVersion: contentcontext.SummarySelectionVersion,
+		OverviewSchemaVersion: 1, ShortTitle: "Engineering topics", TopicTags: []string{"Engineering", "Product"},
+		TotalConcepts: 1, SelectedConcepts: 1, SelectedSlugs: []string{"concept-1"},
 	}
 	if saved, err := repository.Complete(ctx, owner, projectID, authority, *claim, completion); err != nil || !saved {
 		t.Fatalf("save source summary after carry-forward: saved=%t err=%v", saved, err)

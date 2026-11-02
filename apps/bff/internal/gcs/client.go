@@ -52,9 +52,10 @@ type Project = store.Project
 type MarkdownFile = store.MarkdownFile
 
 type wikiPageFrontmatter struct {
-	ID         string `yaml:"id"`
-	Title      string `yaml:"title"`
-	SourceFile string `yaml:"source_file"`
+	ID         string   `yaml:"id"`
+	Title      string   `yaml:"title"`
+	SourceFile string   `yaml:"source_file"`
+	Sources    []string `yaml:"sources"`
 }
 
 const (
@@ -387,6 +388,55 @@ func (c *Client) ListConceptsFromCache(ctx context.Context) ([]WikiPage, error) 
 		return nil, err
 	}
 	return WikiPagesFromConceptsJSONL(data)
+}
+
+// PopulateConceptObjectUpdatedAt reads updated metadata from each canonical
+// concept object in the client's already pinned view. Missing or superseded
+// objects remain null so cache and frontmatter dates are never substituted.
+func (c *Client) PopulateConceptObjectUpdatedAt(ctx context.Context, pages []WikiPage) []WikiPage {
+	view, err := c.operationView(ctx)
+	if err != nil {
+		return pages
+	}
+	const maxMetadataWorkers = 8
+	workers := min(len(pages), maxMetadataWorkers)
+	indices := make(chan int)
+	var wait sync.WaitGroup
+	for range workers {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			for index := range indices {
+				if err := ctx.Err(); err != nil || !canonicalConceptPath(pages[index].Path) {
+					continue
+				}
+				relPath := pages[index].Path
+				objectPath, expectedGeneration, err := c.resolveReadPath(relPath, view)
+				if err != nil {
+					continue
+				}
+				object, err := c.objectAttrs(ctx, objectPath, expectedGeneration)
+				if err != nil || expectedGeneration > 0 && object.Generation != expectedGeneration || object.Updated.IsZero() {
+					continue
+				}
+				updated := object.Updated.UTC().Format(time.RFC3339Nano)
+				pages[index].UpdatedAt = &updated
+			}
+		}()
+	}
+	for index := range pages {
+		indices <- index
+	}
+	close(indices)
+	wait.Wait()
+	return pages
+}
+
+func canonicalConceptPath(relPath string) bool {
+	if !strings.HasPrefix(relPath, "wiki/") || !strings.HasSuffix(relPath, ".md") || path.Clean(relPath) != relPath || strings.Contains(relPath, "\\") {
+		return false
+	}
+	return relPath != "wiki/index.md" && relPath != "wiki/log.md" && !strings.HasPrefix(relPath, "wiki/sources/")
 }
 
 // ListSourcesFromCache returns wiki sources from the generated ID map cache.
@@ -1036,6 +1086,7 @@ func applyWikiPageFrontmatter(page WikiPage, data []byte) (WikiPage, error) {
 	if raw := strings.TrimSpace(matter.SourceFile); raw != "" {
 		page.RawPath = raw
 	}
+	page.Sources = normalizedReferences(matter.Sources)
 	return page, nil
 }
 
@@ -1069,17 +1120,51 @@ func WikiPagesFromConceptsJSONL(data []byte) ([]WikiPage, error) {
 			title = slug
 		}
 		pages = append(pages, WikiPage{
-			Slug:   slug,
-			Title:  title,
-			ID:     frontmatterStringValue(entry.Frontmatter, "id"),
-			Path:   fmt.Sprintf("wiki/%s.md", slug),
-			Status: "published",
+			Slug:    slug,
+			Title:   title,
+			ID:      frontmatterStringValue(entry.Frontmatter, "id"),
+			Path:    fmt.Sprintf("wiki/%s.md", slug),
+			Status:  "published",
+			Sources: stringSliceValue(entry.Frontmatter["sources"]),
 		})
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("scan concepts cache: %w", err)
 	}
 	return pages, nil
+}
+
+func stringSliceValue(value any) []string {
+	items, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	values := make([]string, 0, len(items))
+	for _, item := range items {
+		if current, ok := item.(string); ok {
+			if current = strings.TrimSpace(current); current != "" {
+				values = append(values, current)
+			}
+		}
+	}
+	return normalizedReferences(values)
+}
+
+func normalizedReferences(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
 }
 
 func WikiPagesFromSourceIDMap(data []byte) ([]WikiPage, error) {

@@ -8,6 +8,9 @@ if (!(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRON
 
 const mocks = vi.hoisted(() => ({
   currentProject: { id: 'project-a', name: 'Project A' },
+  projects: [{ id: 'project-a', name: 'Project A' }],
+  selectProject: vi.fn(),
+  refreshProjects: vi.fn().mockResolvedValue(undefined),
   getConcept: vi.fn(),
   getConcepts: vi.fn(),
   getStatus: vi.fn(),
@@ -20,7 +23,7 @@ vi.mock('@/lib/api', async () => {
 });
 
 vi.mock('@/lib/i18n', () => ({ useT: () => ({ t: (key: string) => key }) }));
-vi.mock('@/components/WorkspaceProvider', () => ({ useWorkspace: () => ({ currentProject: mocks.currentProject }) }));
+vi.mock('@/components/WorkspaceProvider', () => ({ useWorkspace: () => ({ currentProject: mocks.currentProject, projects: mocks.projects, selectProject: mocks.selectProject, refreshProjects: mocks.refreshProjects }) }));
 vi.mock('@/components/NavigationBlocker', async () => {
   const actual = await vi.importActual<typeof import('@/components/NavigationBlocker')>('@/components/NavigationBlocker');
   return {

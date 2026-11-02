@@ -4,6 +4,9 @@ import { cleanup, fireEvent, render, screen, within } from '@testing-library/rea
 
 const mocks = vi.hoisted(() => ({
   currentProject: { id: 'project-a', name: 'Project A' },
+  projects: [{ id: 'project-a', name: 'Project A' }],
+  selectProject: vi.fn(),
+  refreshProjects: vi.fn().mockResolvedValue(undefined),
   getConcept: vi.fn(),
   getConcepts: vi.fn(),
   getSource: vi.fn(),
@@ -29,7 +32,7 @@ vi.mock('@/lib/i18n', async () => {
   return { useT: () => ({ t: (key: string, params?: Record<string, string | number>) => i18nLaneTestTranslate(actual.translate, key, params) }) };
 });
 vi.mock('@/components/WorkspaceProvider', () => ({
-  useWorkspace: () => ({ currentProject: mocks.currentProject }),
+  useWorkspace: () => ({ currentProject: mocks.currentProject, projects: mocks.projects, selectProject: mocks.selectProject, refreshProjects: mocks.refreshProjects }),
 }));
 vi.mock('@/components/NavigationBlocker', async () => {
   const actual = await vi.importActual<typeof import('@/components/NavigationBlocker')>('@/components/NavigationBlocker');
@@ -89,7 +92,7 @@ afterEach(() => {
 });
 
 describe('LWC-274 query citation links', () => {
-  it('renders every API citation in order and opens inventory B by canonical identity', async () => {
+  it('creates a source card only for a valid server citation used by the answer', async () => {
     mocks.searchWiki.mockResolvedValue({
       results: [],
       aiAnswer: 'Only [A] is mentioned inline.',
@@ -99,14 +102,28 @@ describe('LWC-274 query citation links', () => {
     await runSearch();
 
     const inventory = screen.getByRole('list', { name: 'Demo.sources' });
-    expect(within(inventory).getAllByRole('listitem')).toHaveLength(3);
-    expect(within(inventory).getAllByRole('button').map((button) => button.textContent)).toEqual([
-      'A',
-      'Shared title',
-      'Shared title',
-    ]);
+    expect(within(inventory).getAllByRole('listitem')).toHaveLength(1);
+    expect(within(inventory).getAllByRole('button').map((button) => button.textContent)).toEqual(['A']);
     expect(screen.getAllByRole('button', { name: 'A' })).toHaveLength(1);
     expect(screen.getByText('Demo.sourcesCount')).toBeTruthy();
+    expect(screen.queryByText('Shared title')).toBeNull();
+  });
+
+  it('opens each used source card by canonical identity, independent of its display label', async () => {
+    const usedCitations = [
+      citations[0],
+      { ...citations[1], text: 'Source B' },
+      { ...citations[2], text: 'Concept C' },
+    ];
+    mocks.searchWiki.mockResolvedValue({
+      results: [],
+      aiAnswer: 'Use [A], [Source B], and [Concept C] from these notes.',
+      citations: usedCitations,
+    });
+
+    await runSearch();
+    const inventory = screen.getByRole('list', { name: 'Demo.sources' });
+    expect(within(inventory).getAllByRole('button').map((button) => button.textContent)).toEqual(['A', 'Source B', 'Concept C']);
 
     fireEvent.click(within(inventory).getAllByRole('button')[1]);
 
@@ -120,7 +137,7 @@ describe('LWC-274 query citation links', () => {
     expect(mocks.getConcept).toHaveBeenCalledWith('concept-c');
   });
 
-  it('fails closed for an ambiguous inline label while keeping both inventory identities bound', async () => {
+  it('fails closed for an ambiguous inline label and creates no citation card', async () => {
     mocks.searchWiki.mockResolvedValue({
       results: [],
       aiAnswer: 'Inline [Shared title] stays plain.',
@@ -132,20 +149,9 @@ describe('LWC-274 query citation links', () => {
     const answer = screen.getByRole('article');
     expect(within(answer).queryByRole('button', { name: 'Shared title' })).toBeNull();
 
-    const inventory = screen.getByRole('list', { name: 'Demo.sources' });
-    const inventoryItems = within(inventory).getAllByRole('button');
-    expect(inventoryItems).toHaveLength(2);
-    expect(inventoryItems.map((button) => button.textContent)).toEqual(['Shared title', 'Shared title']);
-
-    fireEvent.click(inventoryItems[0]);
-    expect(await screen.findByText('source-b content')).toBeTruthy();
-    expect(mocks.getSource).toHaveBeenCalledWith('source-b');
-    expect(mocks.getConcept).not.toHaveBeenCalledWith('source-b');
-
-    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Close' }));
-    fireEvent.click(inventoryItems[1]);
-    expect(await screen.findByText('concept-c content')).toBeTruthy();
-    expect(mocks.getConcept).toHaveBeenCalledWith('concept-c');
+    expect(screen.queryByRole('list', { name: 'Demo.sources' })).toBeNull();
+    expect(mocks.getSource).not.toHaveBeenCalled();
+    expect(mocks.getConcept).not.toHaveBeenCalled();
   });
 
   it('keeps repeated inline A references separate while keeping one source inventory item', async () => {
@@ -173,7 +179,7 @@ describe('LWC-274 query citation links', () => {
     await runSearch();
 
     const answer = screen.getByRole('article');
-    expect(within(answer).getAllByRole('list', { name: 'Demo.sources' })).toHaveLength(1);
+    expect(within(answer).queryByRole('list', { name: 'Demo.sources' })).toBeNull();
     expect(within(answer).queryAllByRole('button', { name: 'A' })).toHaveLength(0);
     expect(within(answer).queryByRole('button', { name: 'unknown' })).toBeNull();
     expect(within(answer).getByRole('link', { name: 'Shared title' })).toBeTruthy();

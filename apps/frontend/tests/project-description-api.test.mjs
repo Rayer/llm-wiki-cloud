@@ -42,7 +42,7 @@ test('createProject persists the optional description and stable idempotency key
     assert.equal(headers.get('Idempotency-Key'), 'same-request-key');
     assert.equal(headers.has('X-Project-ID'), false);
     assert.equal(requestedInit.body, '{"name":"Wiki","project":"Wiki","project_name":"Wiki","description":"Purpose"}');
-    assert.deepEqual(project, { id: 'project-a', name: 'Wiki', description: 'Purpose', descriptionRevision: 1 });
+    assert.deepEqual(project, { id: 'project-a', name: 'Wiki', createdAt: null, lastUsedAt: null, description: 'Purpose', descriptionRevision: 1 });
   } finally {
     globalThis.fetch = originalFetch;
   }

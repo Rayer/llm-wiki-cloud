@@ -54,7 +54,9 @@ type WikiPage struct {
 	Title             string   `json:"title"`
 	ID                string   `json:"id"`
 	Path              string   `json:"path"`
+	Sources           []string `json:"sources,omitempty"`
 	Status            string   `json:"status"`
+	UpdatedAt         *string  `json:"updated_at"`
 	Quality           string   `json:"quality,omitempty"`
 	Concepts          []string `json:"concepts,omitempty"`
 	SourceURL         string   `json:"source_url,omitempty"`

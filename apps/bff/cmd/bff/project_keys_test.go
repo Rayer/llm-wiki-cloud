@@ -309,8 +309,8 @@ func TestProjectKeyManagementAndQueryRoutes(t *testing.T) {
 	for _, tool := range toolsResult.Result.Tools {
 		toolNames[tool.Name] = true
 	}
-	if len(toolNames) != 3 || !toolNames["query_project"] || !toolNames["pipeline_status"] || !toolNames["get_document_import"] {
-		t.Fatalf("MCP tools=%+v, want existing query_project plus additive pipeline_status and get_document_import", toolsResult.Result.Tools)
+	if len(toolNames) != 4 || !toolNames["query_project"] || !toolNames["confirm_connection"] || !toolNames["pipeline_status"] || !toolNames["get_document_import"] {
+		t.Fatalf("MCP tools=%+v, want query_project plus additive confirm_connection, pipeline_status, and get_document_import", toolsResult.Result.Tools)
 	}
 	toolCall := `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"query_project","arguments":{"q":"coffee"}}}`
 	called := mcpRequest(http.MethodPost, created.Secret, toolCall, "", "fixture-session")

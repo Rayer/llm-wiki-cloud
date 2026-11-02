@@ -44,6 +44,7 @@ type PrepareRequest struct {
 	Entrypoint                string
 	RawPath                   string
 	ExpectedSHA256            string
+	UsePayloadSHA256          string
 	ExpectedStorageGeneration string
 	BatchID                   string
 }
@@ -65,12 +66,26 @@ type CommitResult struct {
 	SourceRevision   int64  `json:"source_revision"`
 }
 
+type NoChangeUseReceipt struct {
+	AcceptedAt         time.Time
+	ObservedSHA256     string
+	ObservedGeneration string
+}
+
+type NoChangeUseRequest struct {
+	PayloadSHA256      string
+	ObservedSHA256     string
+	ObservedGeneration string
+	Equivalent         func([]byte) bool
+}
+
 // Journal is the shared producer contract for raw writers, including LWC-450.
 // Prepare must precede the raw write; Confirm follows storage readback. Reconcile
 // is used when a storage result is ambiguous.
 type Journal interface {
 	PrepareSourceCommit(context.Context, VerifiedProject, PrepareRequest) (Ref, error)
 	ConfirmSourceCommit(context.Context, Ref, ConfirmRequest) (CommitResult, error)
+	RecordNoChangeProjectUse(context.Context, Ref, NoChangeUseRequest) (NoChangeUseReceipt, error)
 	ReconcileSourceCommit(context.Context, Ref) (CommitResult, error)
 }
 
@@ -130,7 +145,8 @@ func (j *FirestoreJournal) PrepareSourceCommit(ctx context.Context, project Veri
 		return tx.Create(eventRef, map[string]interface{}{
 			"schema_version": 1, "operation_id": request.OperationID, "entrypoint": request.Entrypoint,
 			"raw_path": request.RawPath, "expected_sha256": request.ExpectedSHA256,
-			"batch_id": request.BatchID, "commit_state": "prepared", "created_at": now,
+			"use_payload_sha256": request.UsePayloadSHA256,
+			"batch_id":           request.BatchID, "commit_state": "prepared", "created_at": now,
 			"expected_storage_generation": request.ExpectedStorageGeneration,
 			"reconcile_deadline":          now.Add(sourceCommitReconcileGrace),
 			"updated_at":                  now,
@@ -240,7 +256,7 @@ func (j *FirestoreJournal) ConfirmSourceCommit(ctx context.Context, ref Ref, req
 			}, cloudfirestore.MergeAll); err != nil {
 				return err
 			}
-			if err := tx.Update(projectRef, []cloudfirestore.Update{
+			projectUpdates := []cloudfirestore.Update{
 				{Path: "pipeline_source_revision", Value: revision},
 				{Path: "pipeline_pending_source_revision", Value: revision},
 				{Path: "pipeline_automation_status", Value: processingStatus},
@@ -248,7 +264,13 @@ func (j *FirestoreJournal) ConfirmSourceCommit(ctx context.Context, ref Ref, req
 				{Path: "pipeline_last_source_sha256", Value: actualDigest},
 				{Path: "pipeline_last_source_generation", Value: generation},
 				{Path: "updated_at", Value: now},
-			}); err != nil {
+			}
+			if entrypoint, _ := eventData["entrypoint"].(string); entrypoint != "document_import" {
+				projectUpdates = append(projectUpdates, cloudfirestore.Update{
+					Path: "last_used_at", Value: maxProjectUseTimestamp(projectData["last_used_at"], sourceAcceptedAt(eventData, now)),
+				})
+			}
+			if err := tx.Update(projectRef, projectUpdates); err != nil {
 				return err
 			}
 			if err := profileruntime.Enqueue(tx, j.fs, profileruntime.Work{
@@ -257,10 +279,19 @@ func (j *FirestoreJournal) ConfirmSourceCommit(ctx context.Context, ref Ref, req
 			}); err != nil {
 				return err
 			}
-		} else if current == nil {
-			// A prepared event may be replayed after an event with a newer GCS
-			// generation already advanced the path watermark.
-			revision, _ = projectData["pipeline_source_revision"].(int64)
+		} else {
+			if entrypoint, _ := eventData["entrypoint"].(string); entrypoint != "document_import" {
+				if err := tx.Update(projectRef, []cloudfirestore.Update{{
+					Path: "last_used_at", Value: maxProjectUseTimestamp(projectData["last_used_at"], sourceAcceptedAt(eventData, now)),
+				}}); err != nil {
+					return err
+				}
+			}
+			if current == nil {
+				// A prepared event may be replayed after an event with a newer GCS
+				// generation already advanced the path watermark.
+				revision, _ = projectData["pipeline_source_revision"].(int64)
+			}
 		}
 		if err := tx.Update(eventRef, []cloudfirestore.Update{
 			{Path: "commit_state", Value: "committed"}, {Path: "confirmed_sha256", Value: actualDigest},
@@ -275,6 +306,130 @@ func (j *FirestoreJournal) ConfirmSourceCommit(ctx context.Context, ref Ref, req
 		return nil
 	})
 	return result, err
+}
+
+func (j *FirestoreJournal) RecordNoChangeProjectUse(ctx context.Context, ref Ref, request NoChangeUseRequest) (NoChangeUseReceipt, error) {
+	if j == nil || j.fs == nil || j.store == nil || !validRef(ref) || !storage.ValidRawSyncSHA256(request.PayloadSHA256) ||
+		!storage.ValidRawSyncSHA256(request.ObservedSHA256) || !validGeneration(request.ObservedGeneration) || request.Equivalent == nil {
+		return NoChangeUseReceipt{}, ErrInvalidSourceCommit
+	}
+	project := VerifiedProject{OwnerID: ref.OwnerID, ProjectID: ref.ProjectID}
+	projectRef := projectDocument(j.fs, project)
+	eventRef := eventDocument(j.fs, ref)
+	var receipt NoChangeUseReceipt
+	var rawPath string
+	var acceptedAt time.Time
+	replayed := false
+	err := j.fs.RunTransaction(ctx, func(ctx context.Context, tx *cloudfirestore.Transaction) error {
+		replayed = false
+		projectSnapshot, err := tx.Get(projectRef)
+		if err != nil {
+			return err
+		}
+		if !readyProject(projectSnapshot.Data(), project) {
+			return ErrInvalidSourceCommit
+		}
+		eventSnapshot, err := tx.Get(eventRef)
+		if err != nil {
+			return err
+		}
+		event := eventSnapshot.Data()
+		storedPayload, _ := event["use_payload_sha256"].(string)
+		if event["operation_id"] != ref.OperationID || event["entrypoint"] != "mcp_add_raw" || storedPayload != request.PayloadSHA256 {
+			return ErrSourceCommitConflict
+		}
+		if event["use_state"] == "recorded_no_change" {
+			accepted, ok := event["use_accepted_at"].(time.Time)
+			observedDigest, _ := event["observed_sha256"].(string)
+			generation, _ := event["observed_generation"].(string)
+			if !ok || !storage.ValidRawSyncSHA256(observedDigest) || !validGeneration(generation) {
+				return ErrSourceCommitConflict
+			}
+			receipt = NoChangeUseReceipt{AcceptedAt: accepted.UTC(), ObservedSHA256: observedDigest, ObservedGeneration: generation}
+			replayed = true
+			return nil
+		}
+		state, _ := event["commit_state"].(string)
+		if state != "prepared" && state != "unknown" {
+			return ErrSourceCommitConflict
+		}
+		var ok bool
+		acceptedAt, ok = event["created_at"].(time.Time)
+		if !ok || acceptedAt.IsZero() {
+			return ErrSourceCommitConflict
+		}
+		rawPath, _ = event["raw_path"].(string)
+		if storage.ValidateRawSyncPath(rawPath) != nil {
+			return ErrSourceCommitConflict
+		}
+		return nil
+	})
+	if err != nil || replayed {
+		return receipt, err
+	}
+	reader, ok := j.store.Scope(ref.OwnerID, ref.ProjectID).(storage.ConditionalWriter)
+	if !ok {
+		return NoChangeUseReceipt{}, ErrSourceCommitUnconfirmed
+	}
+	readback, generation, err := reader.ReadFileWithGeneration(ctx, "raw/"+rawPath)
+	if err != nil || strconv.FormatInt(generation, 10) != request.ObservedGeneration || digest(readback) != request.ObservedSHA256 || !request.Equivalent(readback) {
+		return NoChangeUseReceipt{}, ErrSourceCommitUnconfirmed
+	}
+	err = j.fs.RunTransaction(ctx, func(ctx context.Context, tx *cloudfirestore.Transaction) error {
+		projectSnapshot, err := tx.Get(projectRef)
+		if err != nil {
+			return err
+		}
+		projectData := projectSnapshot.Data()
+		if !readyProject(projectData, project) {
+			return ErrInvalidSourceCommit
+		}
+		eventSnapshot, err := tx.Get(eventRef)
+		if err != nil {
+			return err
+		}
+		event := eventSnapshot.Data()
+		storedPayload, _ := event["use_payload_sha256"].(string)
+		if event["operation_id"] != ref.OperationID || event["entrypoint"] != "mcp_add_raw" || storedPayload != request.PayloadSHA256 || event["raw_path"] != rawPath {
+			return ErrSourceCommitConflict
+		}
+		if event["use_state"] == "recorded_no_change" {
+			accepted, ok := event["use_accepted_at"].(time.Time)
+			observedDigest, _ := event["observed_sha256"].(string)
+			observedGeneration, _ := event["observed_generation"].(string)
+			if !ok || !storage.ValidRawSyncSHA256(observedDigest) || !validGeneration(observedGeneration) {
+				return ErrSourceCommitConflict
+			}
+			receipt = NoChangeUseReceipt{AcceptedAt: accepted.UTC(), ObservedSHA256: observedDigest, ObservedGeneration: observedGeneration}
+			return nil
+		}
+		state, _ := event["commit_state"].(string)
+		createdAt, createdAtOK := event["created_at"].(time.Time)
+		if (state != "prepared" && state != "unknown") || !createdAtOK || !createdAt.Equal(acceptedAt) {
+			return ErrSourceCommitConflict
+		}
+		now := time.Now().UTC()
+		if err := tx.Update(eventRef, []cloudfirestore.Update{
+			{Path: "use_state", Value: "recorded_no_change"},
+			{Path: "use_accepted_at", Value: acceptedAt.UTC()},
+			{Path: "observed_sha256", Value: request.ObservedSHA256},
+			{Path: "observed_generation", Value: request.ObservedGeneration},
+			{Path: "commit_state", Value: "aborted"},
+			{Path: "abort_reason", Value: "equivalent_no_change"},
+			{Path: "processing_status", Value: "not_started"},
+			{Path: "updated_at", Value: now},
+		}); err != nil {
+			return err
+		}
+		if err := tx.Update(projectRef, []cloudfirestore.Update{{
+			Path: "last_used_at", Value: maxProjectUseTimestamp(projectData["last_used_at"], acceptedAt),
+		}}); err != nil {
+			return err
+		}
+		receipt = NoChangeUseReceipt{AcceptedAt: acceptedAt.UTC(), ObservedSHA256: request.ObservedSHA256, ObservedGeneration: request.ObservedGeneration}
+		return nil
+	})
+	return receipt, err
 }
 
 func (j *FirestoreJournal) ReconcileSourceCommit(ctx context.Context, ref Ref) (CommitResult, error) {
@@ -399,6 +554,12 @@ func validPrepareRequest(request *PrepareRequest) bool {
 		return false
 	}
 	request.ExpectedSHA256 = strings.ToLower(request.ExpectedSHA256)
+	if request.UsePayloadSHA256 != "" {
+		if request.Entrypoint != "mcp_add_raw" || !storage.ValidRawSyncSHA256(strings.ToLower(request.UsePayloadSHA256)) {
+			return false
+		}
+		request.UsePayloadSHA256 = strings.ToLower(request.UsePayloadSHA256)
+	}
 	if request.OperationID != "" && (!auth.ValidPathSegment(request.OperationID) || len(request.OperationID) > 128) {
 		return false
 	}
@@ -439,9 +600,25 @@ func generationAtLeast(current, stored string) bool {
 
 func samePrepare(data map[string]interface{}, request PrepareRequest) bool {
 	expectedGeneration, _ := data["expected_storage_generation"].(string)
+	usePayloadSHA256, _ := data["use_payload_sha256"].(string)
 	return data["operation_id"] == request.OperationID && data["entrypoint"] == request.Entrypoint &&
 		data["raw_path"] == request.RawPath && data["expected_sha256"] == request.ExpectedSHA256 &&
-		expectedGeneration == request.ExpectedStorageGeneration && data["batch_id"] == request.BatchID
+		expectedGeneration == request.ExpectedStorageGeneration && data["batch_id"] == request.BatchID && usePayloadSHA256 == request.UsePayloadSHA256
+}
+
+func sourceAcceptedAt(event map[string]interface{}, fallback time.Time) time.Time {
+	if acceptedAt, ok := event["created_at"].(time.Time); ok && !acceptedAt.IsZero() {
+		return acceptedAt.UTC()
+	}
+	return fallback.UTC()
+}
+
+func maxProjectUseTimestamp(existing interface{}, acceptedAt time.Time) time.Time {
+	current, ok := existing.(time.Time)
+	if ok && !current.Before(acceptedAt) {
+		return current.UTC()
+	}
+	return acceptedAt.UTC()
 }
 
 func readyProject(data map[string]interface{}, project VerifiedProject) bool {

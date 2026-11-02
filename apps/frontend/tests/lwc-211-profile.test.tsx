@@ -180,7 +180,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
-  vi.clearAllMocks();
+  vi.resetAllMocks();
 });
 
 type ProfileCard = 'requirements' | 'interpretation' | 'active';
@@ -287,7 +287,7 @@ describe('LWC-211 Project Profile', () => {
     expect(mocks.getRecompileAllCapability).not.toHaveBeenCalled();
   });
 
-  it('shows first-compile guidance effects, explicitly confirms it, and keeps it separate from an active Profile', async () => {
+  it('shows first-compile guidance as a read-only preview separate from an active Profile', async () => {
     const profile = {
       ...emptyProfile('project-a', 1),
       requirements: [{ id: 'req-1', text: 'write concise summaries' }],
@@ -295,8 +295,6 @@ describe('LWC-211 Project Profile', () => {
     };
     mocks.getProfile.mockResolvedValue(profile);
     mocks.getProfileBootstrapGuidance.mockResolvedValue({ bootstrap_guidance: bootstrapGuidance() });
-    mocks.confirmProfileBootstrapGuidance.mockResolvedValue({ bootstrap_guidance: bootstrapGuidance('confirmed') });
-
     await renderProfile('project-a', 'interpretation');
 
     expect(await screen.findByText('Prefer concrete, dated explanations.')).toBeDefined();
@@ -307,16 +305,9 @@ describe('LWC-211 Project Profile', () => {
     expect(screen.getByText(/req-1: Compile guidance/)).toBeDefined();
     expect(screen.getByText(/req-2: Limitation/)).toBeDefined();
     expect(screen.getAllByText(/No generation-bound Profile is active yet/).length).toBeGreaterThan(0);
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm for first compile' }));
-
-    await waitFor(() => expect(mocks.confirmProfileBootstrapGuidance).toHaveBeenCalledWith(
-      'project-a',
-      'sha256-bootstrap-1',
-      1,
-      'input-digest-1',
-    ));
-    expect((await screen.findAllByText(/Confirmed for first compile/)).length).toBeGreaterThan(0);
-    expect(screen.getByText(/does not start tagging/)).toBeDefined();
+    expect(screen.getAllByText('Preview ready; the first Pipeline can use it without separate confirmation.').length).toBeGreaterThan(0);
+    expect(screen.queryByRole('button', { name: 'Confirm for first compile' })).toBeNull();
+    expect(mocks.confirmProfileBootstrapGuidance).not.toHaveBeenCalled();
     expect(screen.queryByText(/Active profile:/)).toBeNull();
     expect(screen.queryByText(/Tagging work:/)).toBeNull();
   });
@@ -360,44 +351,35 @@ describe('LWC-211 Project Profile', () => {
     expect(screen.getByText(/1,500-character adapter budget/)).toBeDefined();
   });
 
-  it('keeps confirmation after a polling GET resolves late with the same-revision preview', async () => {
+  it('keeps first-compile guidance read-only while a polling GET resolves', async () => {
     const pending = {
       ...emptyProfile('project-a', 1),
       requirements: [{ id: 'req-1', text: 'write concise summaries' }],
       derivation_status: 'pending' as const,
     };
     const delayedRead = deferred<{ bootstrap_guidance: ProfileBootstrapGuidance }>();
-    const delayedConfirmation = deferred<{ bootstrap_guidance: ProfileBootstrapGuidance }>();
     mocks.getProfile.mockResolvedValue(pending);
     mocks.getProfileBootstrapGuidance
       .mockResolvedValueOnce({ bootstrap_guidance: bootstrapGuidance() })
       .mockReturnValueOnce(delayedRead.promise);
-    mocks.confirmProfileBootstrapGuidance.mockReturnValue(delayedConfirmation.promise);
     vi.useFakeTimers();
 
     await renderProfile('project-a', 'interpretation');
     await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
     expect(screen.getByRole('region', { name: 'First-compile guidance' }).getAttribute('aria-busy')).toBe('false');
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm for first compile' }));
+    expect(screen.queryByRole('button', { name: 'Confirm for first compile' })).toBeNull();
     await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
     expect(mocks.getProfileBootstrapGuidance).toHaveBeenCalledTimes(2);
     expect(screen.getByRole('region', { name: 'First-compile guidance' }).getAttribute('aria-busy')).toBe('true');
-
-    await act(async () => {
-      delayedConfirmation.resolve({ bootstrap_guidance: bootstrapGuidance('confirmed') });
-      await delayedConfirmation.promise;
-      await Promise.resolve();
-    });
-    expect(screen.getAllByText(/Confirmed for first compile/).length).toBeGreaterThan(0);
-    expect(screen.getByRole('region', { name: 'First-compile guidance' }).getAttribute('aria-busy')).toBe('false');
 
     await act(async () => {
       delayedRead.resolve({ bootstrap_guidance: bootstrapGuidance('preview_ready') });
       await delayedRead.promise;
       await Promise.resolve();
     });
-    expect(screen.getAllByText(/Confirmed for first compile/).length).toBeGreaterThan(0);
+    expect(screen.getByText('Prefer concrete, dated explanations.')).toBeDefined();
     expect(screen.queryByRole('button', { name: 'Confirm for first compile' })).toBeNull();
+    expect(mocks.confirmProfileBootstrapGuidance).not.toHaveBeenCalled();
   });
 
   it('does not confirm a bootstrap preview for a stale Profile revision', async () => {
@@ -411,66 +393,53 @@ describe('LWC-211 Project Profile', () => {
 
     await renderProfile('project-a', 'interpretation');
 
-    expect((await screen.findAllByText(/first compile is waiting for confirmed bootstrap guidance/i)).length).toBeGreaterThan(0);
+    expect(screen.getByRole('region', { name: 'First-compile guidance' })).toBeDefined();
+    expect(screen.queryByText('Prefer concrete, dated explanations.')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Confirm for first compile' })).toBeNull();
     expect(mocks.confirmProfileBootstrapGuidance).not.toHaveBeenCalled();
   });
 
-  it('preserves the requirement draft and refreshes readback after a stale guidance digest conflict', async () => {
+  it('keeps bootstrap guidance read-only when requirements are edited and saved', async () => {
     const profile = {
       ...emptyProfile('project-a', 1),
       requirements: [{ id: 'req-1', text: 'my saved requirement' }],
       derivation_status: 'ready' as const,
     };
-    const latest = {
-      ...emptyProfile('project-a', 2),
-      requirements: [{ id: 'req-1', text: 'server updated requirement' }],
-      derivation_status: 'pending' as const,
-    };
-    mocks.getProfile.mockResolvedValueOnce(profile).mockResolvedValueOnce(latest);
-    mocks.getProfileBootstrapGuidance
-      .mockResolvedValueOnce({ bootstrap_guidance: bootstrapGuidance('preview_ready', 1, 'stale-digest') })
-      .mockResolvedValueOnce({ bootstrap_guidance: null });
-    mocks.confirmProfileBootstrapGuidance.mockRejectedValue(Object.assign(new Error('input digest conflict'), { status: 409 }));
+    mocks.getProfile.mockResolvedValue(profile);
+    mocks.getProfileBootstrapGuidance.mockResolvedValue({ bootstrap_guidance: bootstrapGuidance('preview_ready', 1) });
 
-    await renderProfile('project-a', 'interpretation');
-    fireEvent.click(await screen.findByRole('button', { name: 'Confirm for first compile' }));
-
-    expect(await screen.findByText('Bootstrap guidance changed elsewhere. Latest Profile state was reloaded; your requirements draft is kept.')).toBeDefined();
-    await openProfileCard('requirements');
-    expect((screen.getByRole('textbox', { name: 'Requirement 1' }) as HTMLInputElement).value).toBe('my saved requirement');
-    expect(mocks.getProfileBootstrapGuidance).toHaveBeenCalledTimes(2);
-    expect(screen.queryByText(/Confirmed for first compile/)).toBeNull();
+    await renderProfile('project-a');
+    const input = await screen.findByRole('textbox', { name: 'Requirement 1' });
+    fireEvent.change(input, { target: { value: 'edited requirement' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save requirements' }));
     await waitFor(() => expect(mocks.saveProfile).toHaveBeenCalledWith(
       'project-a',
-      2,
-      [{ id: 'req-1', text: 'my saved requirement' }],
+      1,
+      [{ id: 'req-1', text: 'edited requirement' }],
     ));
+    expect(mocks.confirmProfileBootstrapGuidance).not.toHaveBeenCalled();
   });
 
-  it('does not claim latest Profile state was reloaded when a 409 readback fails', async () => {
+  it('keeps the requirements draft without claiming a successful readback after a save conflict', async () => {
     const profile = {
       ...emptyProfile('project-a', 1),
       requirements: [{ id: 'req-1', text: 'keep my draft' }],
       derivation_status: 'ready' as const,
     };
     mocks.getProfile.mockResolvedValueOnce(profile).mockRejectedValueOnce(new Error('readback unavailable'));
-    mocks.getProfileBootstrapGuidance.mockResolvedValue({ bootstrap_guidance: bootstrapGuidance() });
-    mocks.confirmProfileBootstrapGuidance.mockRejectedValue(Object.assign(new Error('digest conflict'), { status: 409 }));
+    mocks.saveProfile.mockRejectedValue(Object.assign(new Error('revision conflict'), { status: 409 }));
 
-    await renderProfile('project-a', 'interpretation');
-    fireEvent.click(await screen.findByRole('button', { name: 'Confirm for first compile' }));
+    await renderProfile('project-a');
+    const input = await screen.findByRole('textbox', { name: 'Requirement 1' });
+    fireEvent.change(input, { target: { value: 'keep my changed draft' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save requirements' }));
 
-    expect(await screen.findByText('Bootstrap guidance changed elsewhere. The latest Profile state could not be confirmed; your requirements draft is kept.')).toBeDefined();
-    await openProfileCard('requirements');
-    expect((screen.getByRole('textbox', { name: 'Requirement 1' }) as HTMLInputElement).value).toBe('keep my draft');
-    await openProfileCard('interpretation');
-    expect(screen.getByRole('button', { name: 'Confirm for first compile' })).toBeDefined();
-    expect(screen.queryByText(/Latest Profile state was reloaded/)).toBeNull();
+    expect(await screen.findByRole('alert')).toBeDefined();
+    expect((screen.getByRole('textbox', { name: 'Requirement 1' }) as HTMLTextAreaElement).value).toBe('keep my changed draft');
+    expect(screen.queryByText(/latest Profile state was reloaded/i)).toBeNull();
   });
 
-  it('keeps guidance confirmation retryable after a transient failure', async () => {
+  it('does not offer a mutation when bootstrap guidance is available', async () => {
     const profile = {
       ...emptyProfile('project-a', 1),
       requirements: [{ id: 'req-1', text: 'write concise summaries' }],
@@ -478,18 +447,10 @@ describe('LWC-211 Project Profile', () => {
     };
     mocks.getProfile.mockResolvedValue(profile);
     mocks.getProfileBootstrapGuidance.mockResolvedValue({ bootstrap_guidance: bootstrapGuidance() });
-    mocks.confirmProfileBootstrapGuidance
-      .mockRejectedValueOnce(new Error('temporary network failure'))
-      .mockResolvedValueOnce({ bootstrap_guidance: bootstrapGuidance('confirmed') });
-
     await renderProfile('project-a', 'interpretation');
-    fireEvent.click(await screen.findByRole('button', { name: 'Confirm for first compile' }));
-
-    expect(await screen.findByText(/Guidance confirmation was not confirmed: temporary network failure/)).toBeDefined();
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm for first compile' }));
-
-    expect((await screen.findAllByText(/Confirmed for first compile/)).length).toBeGreaterThan(0);
-    expect(mocks.confirmProfileBootstrapGuidance).toHaveBeenCalledTimes(2);
+    expect(await screen.findByText('Prefer concrete, dated explanations.')).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Confirm for first compile' })).toBeNull();
+    expect(mocks.confirmProfileBootstrapGuidance).not.toHaveBeenCalled();
   });
 
   it('clears a superseded bootstrap preview after a requirements save', async () => {
@@ -509,7 +470,7 @@ describe('LWC-211 Project Profile', () => {
     expect(await screen.findByText('Prefer concrete, dated explanations.')).toBeDefined();
     fireEvent.change(input, { target: { value: 'updated requirement' } });
     await openProfileCard('interpretation');
-    expect((screen.getByRole('button', { name: 'Confirm for first compile' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole('button', { name: 'Confirm for first compile' })).toBeNull();
     await openProfileCard('requirements');
     fireEvent.click(screen.getByRole('button', { name: 'Save requirements' }));
 
@@ -755,8 +716,7 @@ describe('LWC-211 Project Profile', () => {
     expect(screen.queryByRole('button', { name: 'Confirm for first compile' })).toBeNull();
   });
 
-  it('ignores a late bootstrap confirmation response after an account switch', async () => {
-    const deferredConfirmation = deferred<{ bootstrap_guidance: ProfileBootstrapGuidance }>();
+  it('keeps first-compile guidance read-only while the account changes', async () => {
     const accountAProfile = {
       ...emptyProfile('project-a', 1),
       requirements: [{ id: 'req-1', text: 'account A requirement' }],
@@ -767,17 +727,15 @@ describe('LWC-211 Project Profile', () => {
     );
     mocks.getProfile.mockResolvedValueOnce(accountAProfile).mockResolvedValueOnce(emptyProfile('project-a'));
     mocks.getProfileBootstrapGuidance.mockResolvedValue({ bootstrap_guidance: bootstrapGuidance() });
-    mocks.confirmProfileBootstrapGuidance.mockReturnValue(deferredConfirmation.promise);
 
     const view = render(<AccountScopedPanel accountId="account-a" />);
     await openProfileCard('interpretation');
-    fireEvent.click(await screen.findByRole('button', { name: 'Confirm for first compile' }));
+    expect(await screen.findByText('Prefer concrete, dated explanations.')).toBeDefined();
     view.rerender(<AccountScopedPanel accountId="account-b" />);
     await openProfileCard('requirements');
     await screen.findByRole('textbox', { name: 'Requirement 1' });
-    deferredConfirmation.resolve({ bootstrap_guidance: bootstrapGuidance('confirmed') });
 
-    expect(screen.queryByText(/Confirmed for first compile/)).toBeNull();
+    expect(mocks.confirmProfileBootstrapGuidance).not.toHaveBeenCalled();
     expect(screen.queryByText('Prefer concrete, dated explanations.')).toBeNull();
   });
 
@@ -982,11 +940,10 @@ describe('LWC-211 Project Profile', () => {
     const conceptStage = screen.getByRole('button', { name: '2. Organized knowledge' });
     fireEvent.click(conceptStage);
     expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'The same facts can be organized around different needs' }));
-    expect(screen.getByText(/There is a paid parking lot nearby, about a three-minute walk away/)).toBeDefined();
-    expect(screen.getAllByText(/I often eat out with children/).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/stroller access has not been confirmed/i).length).toBeGreaterThan(0);
-    expect(screen.getByText('Tags · general information')).toBeDefined();
-    expect(screen.getByText('Tags · preference details and limits')).toBeDefined();
+    expect(screen.getByText(/Use the station-to-museum walk and its uncovered stretch from S1/)).toBeDefined();
+    expect(screen.getByText(/The notes do not establish that every route is covered/)).toBeDefined();
+    expect(screen.getByRole('tablist', { name: 'Choose a fixed example' })).toBeDefined();
+    expect(screen.getByRole('tab', { name: 'Rainy day with a child' }).getAttribute('aria-selected')).toBe('true');
     expect(screen.queryByRole('checkbox')).toBeNull();
     expect(screen.queryByRole('radio')).toBeNull();
     expect(mocks.saveProfile).not.toHaveBeenCalled();

@@ -39,7 +39,7 @@ func TestContentContextPublicationRequiresDescriptorDigestMatch(t *testing.T) {
 		InputErrorClass:       "empty_concepts",
 		SummaryMetadata: contentcontext.SummaryInputMetadata{
 			ConceptsDigest: digestText, SourceGeneration: "local-transaction-1",
-			SelectionVersion: contentcontext.SummarySelectionVersion,
+			SelectionVersion: contentcontext.SummarySelectionVersion, PromptRevision: contentcontext.SummaryPromptRevision,
 		},
 	}
 	descriptorData, err := contentcontext.EncodeLocalPublicationDescriptor(descriptor)

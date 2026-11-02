@@ -129,6 +129,9 @@ func (h *Handler) mcpSDKHandlerWithContext(ctx context.Context, identity mcpProj
 		addRawDescription = metadata.ToolDescriptions.AddRaw
 		importURLDescription = metadata.ToolDescriptions.ImportURL
 	}
+	if hasMCPCapability(capabilities, mcpQueryCapability) && !strings.Contains(instructions, confirmConnectionInstructions) {
+		instructions = strings.TrimSpace(instructions + "\n\n" + confirmConnectionInstructions)
+	}
 	if h.firestore != nil && h.firestore.Raw() != nil && h.store != nil {
 		projectContext := h.authenticatedMCPProjectContext(ctx, identity)
 		instructions = appendMCPProjectContext(instructions, projectContext)
@@ -187,6 +190,11 @@ func (h *Handler) mcpSDKHandlerWithContext(ctx context.Context, identity mcpProj
 		OutputSchema: queryProjectOutputSchema,
 	}, h.callMCPQuery)
 	if hasMCPCapability(capabilities, mcpQueryCapability) {
+		mcp.AddTool[confirmConnectionInput, any](server, &mcp.Tool{
+			Name: "confirm_connection", Title: "Confirm Wiki connection setup", Description: confirmConnectionDescription,
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: boolHint(false), IdempotentHint: true, OpenWorldHint: boolHint(false)},
+			InputSchema: confirmConnectionInputSchema, OutputSchema: confirmConnectionOutputSchema,
+		}, h.callMCPConfirmConnection)
 		mcp.AddTool[mcpGetDocumentImportInput, any](server, &mcp.Tool{
 			Name: "get_document_import", Title: "Get document import status", Description: mcpGetDocumentImportDescription,
 			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true}, InputSchema: mcpGetDocumentImportInputSchema,

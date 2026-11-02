@@ -14,9 +14,13 @@ test('home first-run UX avoids generic examples and exposes latest concept previ
   assert.doesNotMatch(homeClient, /'RAG'/);
   assert.doesNotMatch(homeClient, /'向量資料庫'/);
   assert.match(homeClient, /const \[latestConcepts, setLatestConcepts\] = useState<WikiEntry\[\]>\(\[\]\);/);
-  assert.match(homeClient, /getConcepts\(\)[\s\S]*setLatestConcepts\(data\.slice\(0, 4\)\)/);
-  assert.match(homeClient, /!searched && latestConcepts\.length > 0/);
-  assert.match(homeClient, /t\('Demo\.latestConcepts'\)/);
+  assert.match(homeClient, /getConcepts\(\)[\s\S]*const recent = \[\.\.\.data\]\.sort\(/);
+  assert.match(homeClient, /objectUpdatedAt/);
+  assert.match(homeClient, /left\.title\.localeCompare\(right\.title\) \|\| left\.slug\.localeCompare\(right\.slug\)/);
+  assert.match(homeClient, /setLatestConcepts\(recent\.slice\(0, 6\)\)/);
+  assert.match(homeClient, /!searched && currentProject \? \([\s\S]*?latestConcepts\.length > 0/);
+  assert.match(homeClient, /Home\.noRecentKnowledge/);
+  assert.match(homeClient, /t\('Home\.recentKnowledge'\)/);
   assert.match(homeClient, /const href = conceptHref\(concept\);/);
   assert.match(homeClient, /if \(!href\) return null;/);
   assert.match(homeClient, /href=\{href\}/);

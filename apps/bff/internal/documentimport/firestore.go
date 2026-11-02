@@ -199,6 +199,7 @@ func (r *FirestoreRepository) CompleteAcceptance(ctx context.Context, ownerID, p
 			"document_import_failed_count":            state.FailedCount,
 			"document_import_latest_failure_sequence": state.LatestFailureSequence,
 			"document_import_revision":                state.Revision,
+			"last_used_at":                            maxDocumentProjectUse(projectSnap.Data()["last_used_at"], record.UpdatedAt),
 		}, cloudfirestore.MergeAll); err != nil {
 			return err
 		}
@@ -211,6 +212,13 @@ func (r *FirestoreRepository) CompleteAcceptance(ctx context.Context, ownerID, p
 		return Record{}, err
 	}
 	return r.Get(ctx, ownerID, projectID, documentID)
+}
+
+func maxDocumentProjectUse(existing interface{}, acceptedAt time.Time) time.Time {
+	if current, ok := existing.(time.Time); ok && !current.Before(acceptedAt) {
+		return current.UTC()
+	}
+	return acceptedAt.UTC()
 }
 
 func (r *FirestoreRepository) SetDispatchState(ctx context.Context, ownerID, projectID, documentID, state, executionID string) error {

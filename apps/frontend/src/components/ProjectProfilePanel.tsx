@@ -4,7 +4,6 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { useRouter } from 'next/navigation';
 import {
   confirmProfileCandidate,
-  confirmProfileBootstrapGuidance,
   getProfile,
   getProfileBootstrapGuidance,
   getProfileGuidanceArtifact,
@@ -113,7 +112,7 @@ function ProfileGuidanceArtifactDetails({ projectId, revision, title }: { projec
   );
 }
 
-type RequestScope = { projectId: string; ownerId: string; sessionEpoch: number; identity: object };
+type RequestScope = { projectId: string; ownerId: string; sessionIdentityEpoch: number; identity: object };
 type ProfileSettingsCard = 'requirements' | 'interpretation' | 'active';
 type ProjectSettingsTab = 'project-info' | 'pipeline' | 'knowledge' | 'ai-service';
 const PROJECT_SETTINGS_TABS: ProjectSettingsTab[] = ['project-info', 'pipeline', 'knowledge', 'ai-service'];
@@ -125,8 +124,9 @@ const PROJECT_SETTINGS_HASH_TARGETS: Record<string, { tab: ProjectSettingsTab; t
 export function ProjectProfilePanel({ projectId }: { projectId: string }) {
   const router = useRouter();
   const { t } = useT();
-  const { user, sessionEpoch } = useAuth();
+  const { user, sessionEpoch, sessionIdentityEpoch } = useAuth();
   const { profileOnboarding, markProfileOnboardingPresented } = useWorkspace();
+  const contentContextScopeKey = JSON.stringify([user?.id ?? null, sessionIdentityEpoch, projectId]);
   const { confirmNavigation, setBlocked } = useNavigationBlocker();
   const [profile, setProfile] = useState<ProfileState | null>(null);
   const [bootstrapGuidance, setBootstrapGuidance] = useState<ProfileBootstrapGuidance | null>(null);
@@ -156,8 +156,8 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
   const bootstrapRequestRef = useRef(0);
   const loadedRef = useRef(false);
   const currentScope = useMemo<RequestScope>(
-    () => ({ projectId, ownerId: user?.id ?? '', sessionEpoch, identity: {} }),
-    [projectId, sessionEpoch, user?.id],
+    () => ({ projectId, ownerId: user?.id ?? '', sessionIdentityEpoch, identity: {} }),
+    [projectId, sessionIdentityEpoch, user?.id],
   );
   const currentScopeRef = useRef<RequestScope | null>(null);
   const mountedRef = useRef(false);
@@ -355,7 +355,6 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
     && visibleProfile
     && visibleBootstrapGuidance.profile_revision === visibleProfile.revision,
   );
-  const bootstrapMatchesDraft = Boolean(visibleProfile && sameRequirements(draft, visibleProfile.requirements));
 
   async function saveRequirements() {
     if (!visibleProfile || saving || working) return;
@@ -431,78 +430,6 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
     }
   }
 
-  async function confirmBootstrapGuidance() {
-    const guidance = visibleBootstrapGuidance;
-    if (
-      !visibleProfile
-      || !guidance
-      || guidance.status !== 'preview_ready'
-      || guidance.profile_revision !== visibleProfile.revision
-      || !sameRequirements(draft, visibleProfile.requirements)
-      || saving
-      || working
-    ) return;
-
-    const scope = currentScope;
-    setWorkingScope(scope);
-    setError('');
-    setNotice('');
-    try {
-      const result = await confirmProfileBootstrapGuidance(
-        projectId,
-        guidance.revision,
-        visibleProfile.revision,
-        guidance.input_digest,
-      );
-      if (!requestIsCurrent(scope)) return;
-      const confirmed = result.bootstrap_guidance;
-      if (
-        !confirmed
-        || confirmed.revision !== guidance.revision
-        || confirmed.input_digest !== guidance.input_digest
-        || confirmed.profile_revision !== visibleProfile.revision
-        || confirmed.status !== 'confirmed'
-        || !confirmed.confirmed_at
-      ) {
-        throw new Error(t('Profile.errors.bootstrapPreviewNotConfirmed'));
-      }
-      bootstrapRequestRef.current += 1;
-      setBootstrapLoading(false);
-      setBootstrapGuidance(confirmed);
-      setBootstrapScope(scope);
-      setNotice(t('Profile.bootstrapConfirmedNotice'));
-    } catch (confirmError: unknown) {
-      if (!requestIsCurrent(scope)) return;
-      if (errorStatus(confirmError) === 409) {
-        let profileReadbackSucceeded = false;
-        try {
-          const latest = await getProfile(projectId);
-          if (!requestIsCurrent(scope)) return;
-          if (latest.project_id === projectId) {
-            profileReadbackSucceeded = true;
-            applyProfile(latest);
-            setBootstrapGuidance(null);
-            if (latest.requirements.length > 0 && latest.active === null) {
-              await loadBootstrapGuidance(scope, latest.revision);
-            } else {
-              setBootstrapLoading(false);
-            }
-          }
-        } catch {
-          // The user draft remains available if the latest server state cannot be read.
-        }
-        if (!requestIsCurrent(scope)) return;
-        showError(profileReadbackSucceeded
-          ? t('Profile.errors.bootstrapChangedReloaded')
-          : t('Profile.errors.bootstrapChangedUnconfirmed'));
-      } else {
-        showError(t('Profile.errors.guidanceConfirm', { error: errorMessage(confirmError, t('Profile.requestFailed')) }));
-      }
-    } finally {
-      if (requestIsCurrent(scope)) setWorkingScope(null);
-    }
-  }
-
   async function confirmCandidate() {
     const candidate = visibleProfile?.candidate;
     if (!visibleProfile || !candidate || candidate.source !== 'manual' || working) return;
@@ -553,7 +480,7 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
   useEffect(() => {
     setBlocked(hasUnsavedChanges);
     return () => setBlocked(false);
-  }, [hasUnsavedChanges, projectId, sessionEpoch, setBlocked]);
+  }, [hasUnsavedChanges, projectId, sessionIdentityEpoch, setBlocked]);
   const introOwnerId = user?.id ?? '';
   const introKey = `${introOwnerId}:${projectId}:${sessionEpoch}`;
   const introIsPending = Boolean(
@@ -686,7 +613,7 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
       >
         <div className="mt-5 space-y-4">
           <ProjectDescriptionEditor projectId={projectId} />
-          <ProjectContentContextPanel projectId={projectId} />
+          <ProjectContentContextPanel key={`content-context:${contentContextScopeKey}`} projectId={projectId} />
         </div>
       </div>
       <div
@@ -892,24 +819,12 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
                     {t('Profile.firstCompileDescription')}
                   </p>
                 </div>
-                {visibleBootstrapGuidance?.status === 'preview_ready' ? (
-                  <button
-                    type="button"
-                    disabled={saving || working || !bootstrapMatchesProfile || !bootstrapMatchesDraft}
-                    onClick={() => void confirmBootstrapGuidance()}
-                    className="min-h-10 rounded bg-sky-200 px-3 text-sm font-semibold text-zinc-950 hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {working ? t('Profile.confirming') : t('Profile.confirmForFirstCompile')}
-                  </button>
-                ) : null}
               </div>
 
               {visibleBootstrapGuidance ? (
                 <>
                   {!bootstrapMatchesProfile ? (
                     <p className="mt-3 text-sm text-amber-100" role="status">{t('Profile.bootstrapOutOfDate')}</p>
-                  ) : !bootstrapMatchesDraft ? (
-                    <p className="mt-3 text-sm text-amber-100" role="status">{t('Profile.saveBeforeBootstrap')}</p>
                   ) : visibleBootstrapGuidance.status === 'confirmed' ? (
                     <p className="mt-3 text-sm text-emerald-200" role="status">
                       {visibleBootstrapGuidance.confirmed_at
@@ -917,7 +832,7 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
                         : t('Profile.bootstrapConfirmedWithoutTime')}
                     </p>
                   ) : (
-                    <p className="mt-3 text-sm text-amber-100" role="status">{t('Profile.bootstrapPreviewReady')}</p>
+                    <p className="mt-3 text-sm text-sky-100" role="status">{t('Profile.bootstrapPreviewReady')}</p>
                   )}
 
                   <div className="mt-4 rounded border border-white/10 p-3">

@@ -48,22 +48,33 @@ type SummaryWorkRecord struct {
 	LeaseUntil             *time.Time `json:"lease" firestore:"lease"`
 	RetryCount             int        `json:"retry_count" firestore:"retry_count"`
 	Status                 Status     `json:"status" firestore:"status"`
+	PromptRevision         string     `json:"prompt_revision,omitempty" firestore:"prompt_revision,omitempty"`
+	SelectionVersion       string     `json:"selection_version,omitempty" firestore:"selection_version,omitempty"`
 }
 
 type LastGood struct {
-	Text             string    `json:"text" firestore:"text"`
-	SourceGeneration string    `json:"source_generation" firestore:"source_generation"`
-	ConceptsSHA256   string    `json:"concepts_sha256" firestore:"concepts_sha256"`
-	GeneratedAt      time.Time `json:"generated_at" firestore:"generated_at"`
-	PromptRevision   string    `json:"prompt_revision" firestore:"prompt_revision"`
-	ProfileSource    string    `json:"profile_source" firestore:"profile_source"`
-	ProfileID        string    `json:"profile_id,omitempty" firestore:"profile_id"`
-	ProfileRevision  int64     `json:"profile_revision,omitempty" firestore:"profile_revision"`
-	Role             string    `json:"role" firestore:"role"`
-	RequestedModel   string    `json:"requested_model" firestore:"requested_model"`
-	ReturnedModel    string    `json:"returned_model" firestore:"returned_model"`
-	InputDigest      string    `json:"input_digest" firestore:"input_digest"`
-	SelectionVersion string    `json:"selection_version" firestore:"selection_version"`
+	Text                   string    `json:"text" firestore:"text"`
+	SourceGeneration       string    `json:"source_generation" firestore:"source_generation"`
+	ConceptsSHA256         string    `json:"concepts_sha256" firestore:"concepts_sha256"`
+	GeneratedAt            time.Time `json:"generated_at" firestore:"generated_at"`
+	PromptRevision         string    `json:"prompt_revision" firestore:"prompt_revision"`
+	ProfileSource          string    `json:"profile_source" firestore:"profile_source"`
+	ProfileID              string    `json:"profile_id,omitempty" firestore:"profile_id"`
+	ProfileRevision        int64     `json:"profile_revision,omitempty" firestore:"profile_revision"`
+	Role                   string    `json:"role" firestore:"role"`
+	RequestedModel         string    `json:"requested_model" firestore:"requested_model"`
+	ReturnedModel          string    `json:"returned_model" firestore:"returned_model"`
+	InputDigest            string    `json:"input_digest" firestore:"input_digest"`
+	SelectionVersion       string    `json:"selection_version" firestore:"selection_version"`
+	OverviewSchemaVersion  int       `json:"overview_schema_version,omitempty" firestore:"overview_schema_version,omitempty"`
+	ShortTitle             string    `json:"short_title,omitempty" firestore:"short_title,omitempty"`
+	TopicTags              []string  `json:"topic_tags,omitempty" firestore:"topic_tags,omitempty"`
+	TotalConcepts          int       `json:"total_concepts,omitempty" firestore:"total_concepts,omitempty"`
+	SelectedConcepts       int       `json:"selected_concepts,omitempty" firestore:"selected_concepts,omitempty"`
+	SelectedSlugs          []string  `json:"selected_slugs,omitempty" firestore:"selected_slugs,omitempty"`
+	Sampled                bool      `json:"sampled" firestore:"sampled"`
+	TitleTruncatedConcepts int       `json:"title_truncated_concepts" firestore:"title_truncated_concepts"`
+	BodyTruncatedConcepts  int       `json:"body_truncated_concepts" firestore:"body_truncated_concepts"`
 }
 
 func (d StateDocument) Validate() error {
@@ -89,7 +100,8 @@ func (d StateDocument) Validate() error {
 	if d.SummaryWork != nil {
 		workDigest, workDigestValid := NormalizeSHA256(d.SummaryWork.ConceptsSHA256)
 		targetDigest, targetDigestValid := NormalizeSHA256(d.TargetConceptsSHA)
-		if !validStatus(d.SummaryWork.Status) || !workDigestValid || !targetDigestValid || workDigest != targetDigest ||
+		workPrompt, workSelection := summaryWorkRecipe(*d.SummaryWork)
+		if !validStatus(d.SummaryWork.Status) || !validSummaryRecipe(workPrompt, workSelection) || !workDigestValid || !targetDigestValid || workDigest != targetDigest ||
 			d.SummaryWork.WorkID == "" || d.SummaryWork.SourceGeneration == "" || d.SummaryWork.RetryCount < 0 || d.SummaryWork.RetryCount >= SummaryMaxClaims ||
 			(d.SummaryWork.Status == StatusPending && d.SummaryWork.SourceManifestIdentity == "") {
 			return errors.New("invalid content-context summary work")
@@ -116,11 +128,12 @@ func (d StateDocument) Validate() error {
 	if d.LastGood != nil {
 		profileIdentityValid := d.LastGood.ProfileSource == "bootstrap" && d.LastGood.ProfileID == "" && d.LastGood.ProfileRevision == 0 ||
 			(d.LastGood.ProfileSource == "personal" || d.LastGood.ProfileSource == "shared") && d.LastGood.ProfileID != "" && d.LastGood.ProfileRevision >= 1
+		lastPrompt, lastSelection := summaryLastGoodRecipe(*d.LastGood)
 		if strings.TrimSpace(d.LastGood.Text) == "" || utf8.RuneCountInString(d.LastGood.Text) > 1000 ||
 			d.LastGood.SourceGeneration == "" || !validSHA256(d.LastGood.ConceptsSHA256) || d.LastGood.GeneratedAt.IsZero() ||
 			d.LastGood.PromptRevision == "" || !profileIdentityValid ||
 			d.LastGood.Role != SummaryRole || d.LastGood.RequestedModel == "" || d.LastGood.ReturnedModel == "" ||
-			!validSHA256(d.LastGood.InputDigest) || d.LastGood.SelectionVersion != SummarySelectionVersion {
+			!validSHA256(d.LastGood.InputDigest) || !validSummaryRecipe(lastPrompt, lastSelection) || !validOverviewMetadata(*d.LastGood) {
 			return errors.New("invalid content-context last-good summary")
 		}
 	}
@@ -133,7 +146,9 @@ func (d StateDocument) Validate() error {
 		}
 		lastDigest, lastDigestValid := NormalizeSHA256(d.LastGood.ConceptsSHA256)
 		targetDigest, targetDigestValid := NormalizeSHA256(d.TargetConceptsSHA)
-		if !lastDigestValid || !targetDigestValid || lastDigest != targetDigest {
+		workPrompt, workSelection := summaryWorkRecipe(*d.SummaryWork)
+		lastPrompt, lastSelection := summaryLastGoodRecipe(*d.LastGood)
+		if !lastDigestValid || !targetDigestValid || lastDigest != targetDigest || workPrompt != lastPrompt || workSelection != lastSelection {
 			return errors.New("ready content-context summary does not match target")
 		}
 	}
@@ -141,6 +156,50 @@ func (d StateDocument) Validate() error {
 		return errors.New("unexpected content-context error class")
 	}
 	return nil
+}
+
+func validSummaryRecipe(prompt, selection string) bool {
+	return prompt == SummaryLegacyPromptRevision && selection == SummaryLegacySelectionVersion ||
+		prompt == SummaryPromptRevision && selection == SummarySelectionVersion
+}
+
+func validOverviewMetadata(last LastGood) bool {
+	prompt, selection := summaryLastGoodRecipe(last)
+	if prompt == SummaryLegacyPromptRevision && selection == SummaryLegacySelectionVersion {
+		return last.OverviewSchemaVersion == 0 && last.ShortTitle == "" && len(last.TopicTags) == 0 &&
+			last.TotalConcepts == 0 && last.SelectedConcepts == 0 && len(last.SelectedSlugs) == 0 &&
+			!last.Sampled && last.TitleTruncatedConcepts == 0 && last.BodyTruncatedConcepts == 0
+	}
+	if last.OverviewSchemaVersion != 1 || !utf8.ValidString(last.ShortTitle) || strings.TrimSpace(last.ShortTitle) == "" || utf8.RuneCountInString(last.ShortTitle) > 24 ||
+		len(last.TopicTags) < 1 || len(last.TopicTags) > 5 || last.TotalConcepts < 1 || last.SelectedConcepts < 1 ||
+		last.SelectedConcepts > SummaryMaxConcepts || last.SelectedConcepts > last.TotalConcepts || len(last.SelectedSlugs) != last.SelectedConcepts ||
+		last.Sampled != (last.TotalConcepts > last.SelectedConcepts) || last.TitleTruncatedConcepts < 0 ||
+		last.BodyTruncatedConcepts < 0 || last.TitleTruncatedConcepts > last.SelectedConcepts || last.BodyTruncatedConcepts > last.SelectedConcepts {
+		return false
+	}
+	seenTags, seenSlugs := map[string]struct{}{}, map[string]struct{}{}
+	for _, tag := range last.TopicTags {
+		if !utf8.ValidString(tag) || strings.TrimSpace(tag) == "" || tag != strings.TrimSpace(tag) || utf8.RuneCountInString(tag) > 16 || strings.ContainsAny(tag, "<>") {
+			return false
+		}
+		key := strings.ToLower(tag)
+		if _, exists := seenTags[key]; exists {
+			return false
+		}
+		seenTags[key] = struct{}{}
+	}
+	previousSlug := ""
+	for _, slug := range last.SelectedSlugs {
+		if strings.TrimSpace(slug) == "" || slug <= previousSlug {
+			return false
+		}
+		if _, exists := seenSlugs[slug]; exists {
+			return false
+		}
+		seenSlugs[slug] = struct{}{}
+		previousSlug = slug
+	}
+	return true
 }
 
 func validStatus(status Status) bool {

@@ -4,12 +4,15 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/rayer/llm-wiki-bff/internal/handler"
 	"github.com/rayer/llm-wiki-bff/internal/llm"
 	"github.com/rayer/llm-wiki-bff/internal/query"
 	"github.com/rayer/llm-wiki-bff/internal/storage"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type queryFailure struct {
@@ -33,6 +36,16 @@ func queryExecutorFailure(err error, reader storage.Store) *queryFailure {
 // the same pinned store and profile before calling it, and use the same
 // privacy-safe QueryResponse projection.
 func (h *Handler) executeQuery(ctx context.Context, reader storage.Store, profile *query.ProfileSnapshot, request query.Request, scope ...string) (handler.QueryResponse, *query.RuntimeConfigIdentity, *queryFailure) {
+	if len(scope) == 2 && strings.TrimSpace(request.Query) != "" && (request.Mode == "wiki" || request.Mode == "full") {
+		acceptedAt := time.Now().UTC()
+		if err := h.recordProjectUse(ctx, scope[0], scope[1], acceptedAt); err != nil {
+			if diagnostic := queryDiagnosticFrom(ctx); diagnostic != nil {
+				diagnostic.span.AddEvent("project.last_used_at.write_failed", trace.WithAttributes(
+					attribute.String("failure.class", "metadata_write"),
+				))
+			}
+		}
+	}
 	if h.queryExecutor == nil {
 		return handler.QueryResponse{}, nil, queryFailureFor("runtime", errors.New("query executor is not configured"), reader)
 	}

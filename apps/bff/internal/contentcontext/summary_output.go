@@ -11,6 +11,12 @@ import (
 
 const SummaryMaxOutputBytes = 64 << 10
 
+type SummaryOverview struct {
+	Summary    string   `json:"summary"`
+	ShortTitle string   `json:"short_title"`
+	TopicTags  []string `json:"topic_tags"`
+}
+
 // ParseSummaryOutput accepts exactly one strict JSON object with one nonempty
 // plain-text summary field bounded by the public 1000-codepoint contract.
 func ParseSummaryOutput(raw []byte) (string, error) {
@@ -64,4 +70,84 @@ func ParseSummaryOutput(raw []byte) (string, error) {
 		return "", errors.New("invalid content-context summary output")
 	}
 	return summary, nil
+}
+
+// ParseSummaryOverviewOutput accepts one strict three-field JSON object. The
+// complete overview is validated together so the stored values always describe
+// the same inference and publication batch.
+func ParseSummaryOverviewOutput(raw []byte) (SummaryOverview, error) {
+	invalid := func() (SummaryOverview, error) {
+		return SummaryOverview{}, errors.New("invalid content-context overview output")
+	}
+	if len(raw) == 0 || len(raw) > SummaryMaxOutputBytes || !utf8.Valid(raw) {
+		return invalid()
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	token, err := decoder.Token()
+	if err != nil {
+		return invalid()
+	}
+	delimiter, ok := token.(json.Delim)
+	if !ok || delimiter != '{' {
+		return invalid()
+	}
+	fields := make(map[string]json.RawMessage, 3)
+	for decoder.More() {
+		token, err = decoder.Token()
+		if err != nil {
+			return invalid()
+		}
+		key, ok := token.(string)
+		if !ok {
+			return invalid()
+		}
+		if _, exists := fields[key]; exists {
+			return invalid()
+		}
+		var value json.RawMessage
+		if decoder.Decode(&value) != nil {
+			return invalid()
+		}
+		fields[key] = value
+	}
+	if _, err := decoder.Token(); err != nil || len(fields) != 3 {
+		return invalid()
+	}
+	if _, ok := fields["summary"]; !ok {
+		return invalid()
+	}
+	if _, ok := fields["short_title"]; !ok {
+		return invalid()
+	}
+	if _, ok := fields["topic_tags"]; !ok {
+		return invalid()
+	}
+	if decoder.Decode(new(any)) != io.EOF {
+		return invalid()
+	}
+	var overview SummaryOverview
+	if json.Unmarshal(raw, &overview) != nil {
+		return invalid()
+	}
+	if !validOverviewText(overview.Summary, 1000) || !validOverviewText(overview.ShortTitle, 24) || len(overview.TopicTags) < 1 || len(overview.TopicTags) > 5 {
+		return invalid()
+	}
+	seen := make(map[string]struct{}, len(overview.TopicTags))
+	for _, tag := range overview.TopicTags {
+		trimmed := strings.TrimSpace(tag)
+		if !validOverviewText(trimmed, 16) || trimmed != tag {
+			return invalid()
+		}
+		key := strings.ToLower(trimmed)
+		if _, duplicate := seen[key]; duplicate {
+			return invalid()
+		}
+		seen[key] = struct{}{}
+	}
+	return overview, nil
+}
+
+func validOverviewText(value string, maxRunes int) bool {
+	return utf8.ValidString(value) && strings.TrimSpace(value) != "" && utf8.RuneCountInString(value) <= maxRunes &&
+		!strings.Contains(value, "<") && !strings.Contains(value, ">")
 }

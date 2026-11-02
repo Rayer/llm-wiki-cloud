@@ -350,6 +350,7 @@ func TestNoopAndAmbiguousOutcomesNeverClaimSuccessOrRetry(t *testing.T) {
 	})
 
 	t.Run("transaction error after possible commit", func(t *testing.T) {
+		t.Setenv("FIRESTORE_EMULATOR_HOST", "")
 		store := newMemoryRotationStore(t)
 		store.updateError = errors.New("synthetic password and hash details must stay private")
 		store.commitOnError = true

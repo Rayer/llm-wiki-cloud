@@ -51,6 +51,7 @@ import {
 import { recentRequestSnapshot } from '../src/lib/request-ids.ts';
 
 const buildInfoPayload = {
+  environment: 'dev',
   product_version: '1.2.3',
   commit: 'abc1234',
   branch: 'main',
@@ -120,6 +121,20 @@ test('getBuildInfo reads the unauthenticated no-store public version endpoint', 
     assert.equal(requestedInit.headers?.Authorization, undefined);
     assert.equal(requestedInit.headers?.['X-Project-ID'], undefined);
     assert.deepEqual(buildInfo, buildInfoPayload);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('getBuildInfo treats an absent or unrecognized server environment as unknown', async () => {
+  const originalFetch = globalThis.fetch;
+  const oldServerPayload = { ...buildInfoPayload };
+  delete oldServerPayload.environment;
+  globalThis.fetch = async () => Response.json(oldServerPayload);
+  try {
+    assert.equal((await getBuildInfo()).environment, 'unknown');
+    globalThis.fetch = async () => Response.json({ ...buildInfoPayload, environment: 'staging' });
+    assert.equal((await getBuildInfo()).environment, 'unknown');
   } finally {
     globalThis.fetch = originalFetch;
   }

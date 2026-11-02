@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
-// LWC-137: Source detail frontmatter.sources should link back to raw files.
-test('DetailClient renders frontmatter.sources as raw file links', async () => {
+// LWC-137: Raw file navigation is driven by the verified source mapping; other source metadata stays text.
+test('DetailClient renders frontmatter.sources as text and keeps a prominent Raw reader', async () => {
   const detailClient = await readFile(
     new URL('../src/components/DetailClient.tsx', import.meta.url),
     'utf8',
@@ -13,7 +13,9 @@ test('DetailClient renders frontmatter.sources as raw file links', async () => {
   assert.match(detailClient, /from '@\/lib\/raw-file-name'/);
   assert.match(detailClient, /function renderFrontmatterValue\(/);
   assert.match(detailClient, /key === 'sources' && Array\.isArray\(value\)/);
-  assert.match(detailClient, /href=\{`\/raw\?file=\$\{encodeURIComponent\(rawFileNameFromSource\(source\)\)\}`\}/);
+  assert.match(detailClient, /{sources\.map\(\(source\) => <li key=\{source\} className="break-all font-mono text-xs">{source}<\/li>\)}/);
+  assert.match(detailClient, /function RawFileSection/);
+  assert.match(detailClient, /getRawFilePreview\(rawPath\)/);
   assert.match(detailClient, /{source}/);
 });
 

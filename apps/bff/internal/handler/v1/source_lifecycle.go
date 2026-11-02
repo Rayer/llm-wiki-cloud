@@ -98,7 +98,16 @@ func (h *Handler) sourceDetailResponse(c *gin.Context, s store.Store, page store
 		return handler.SourceDetailResponse{}, err
 	}
 	if page, ok := sourceByID(pages, page.ID); ok {
-		return handler.SourceDetailResponse{ID: page.ID, Slug: page.Slug, Title: page.Title, Type: "source", Frontmatter: frontmatter, Body: body, Raw: string(data), RawPath: page.RawPath, AnnotationAllowed: page.AnnotationAllowed, HasAnnotation: page.HasAnnotation, AnnotationDirty: page.AnnotationDirty, RawDirty: page.RawDirty, Dirty: page.Dirty, LifecycleStatus: page.LifecycleStatus, AnnUpdatedAt: page.AnnUpdatedAt}, nil
+		var rawPath *string
+		if strings.TrimSpace(page.RawPath) != "" {
+			value := page.RawPath
+			rawPath = &value
+		}
+		relatedConcepts, relatedSources, err := resolveWikiRelations(c.Request.Context(), s, "source", page, frontmatter)
+		if err != nil {
+			return handler.SourceDetailResponse{}, err
+		}
+		return handler.SourceDetailResponse{ID: page.ID, Slug: page.Slug, Title: page.Title, Type: "source", Frontmatter: frontmatter, Body: body, Raw: string(data), RawPath: rawPath, RelatedConcepts: relatedConcepts, RelatedSources: relatedSources, AnnotationAllowed: page.AnnotationAllowed, HasAnnotation: page.HasAnnotation, AnnotationDirty: page.AnnotationDirty, RawDirty: page.RawDirty, Dirty: page.Dirty, LifecycleStatus: page.LifecycleStatus, AnnUpdatedAt: page.AnnUpdatedAt}, nil
 	}
 	return handler.SourceDetailResponse{}, errors.New("source missing from lifecycle response")
 }

@@ -22,7 +22,7 @@ test('shell reads nav counts from workspace instead of local getStatus', async (
 
   assert.match(shell, /navCounts/);
   assert.match(shell, /useWorkspace\(\)/);
-  assert.doesNotMatch(shell, /from '@\/lib\/api'/);
+  assert.match(shell, /getBuildInfo/);
   assert.doesNotMatch(shell, /getStatus\(\)/);
 });
 

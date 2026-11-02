@@ -502,7 +502,7 @@ func runClaimedContentContextSummary(ctx context.Context, cfg workerConfig, repo
 	if err != nil {
 		return failCloudContentContextSummary(ctx, repository, authority, cfg, claim, "fast_call", contentContextProviderErrorClass(err), err)
 	}
-	text, err := contentcontext.ParseSummaryOutput([]byte(result.Text))
+	overview, err := contentcontext.ParseSummaryOverviewOutput([]byte(result.Text))
 	if err != nil || result.Metadata.ProfileID != identity.profileID || result.Metadata.ProfileRevision != identity.profileRevision ||
 		result.Metadata.Provider != identity.provider || result.Metadata.Protocol != identity.protocol ||
 		result.Metadata.Role != string(llm.ProfileRoleFast) || result.Metadata.RequestedModel != identity.model || result.Metadata.ReturnedModel == "" {
@@ -512,11 +512,15 @@ func runClaimedContentContextSummary(ctx context.Context, cfg workerConfig, repo
 		return failCloudContentContextSummary(ctx, repository, authority, cfg, claim, "validate_response", "summary_invalid", err)
 	}
 	completion := contentcontext.SummaryCompletion{
-		Text: text, PromptRevision: contentcontext.SummaryPromptRevision, ProfileSource: identity.source,
+		Text: overview.Summary, PromptRevision: contentcontext.SummaryPromptRevision, ProfileSource: identity.source,
 		ProfileID: result.Metadata.ProfileID, ProfileRevision: result.Metadata.ProfileRevision,
 		Role: result.Metadata.Role, RequestedModel: result.Metadata.RequestedModel,
 		ReturnedModel: result.Metadata.ReturnedModel, InputDigest: metadata.InputDigest,
-		SelectionVersion: metadata.SelectionVersion,
+		SelectionVersion:      metadata.SelectionVersion,
+		OverviewSchemaVersion: 1, ShortTitle: overview.ShortTitle, TopicTags: overview.TopicTags,
+		TotalConcepts: metadata.TotalConcepts, SelectedConcepts: metadata.SelectedConcepts,
+		SelectedSlugs: metadata.SelectedSlugs, Sampled: metadata.Sampled,
+		TitleTruncatedConcepts: metadata.TitleTruncatedConcepts, BodyTruncatedConcepts: metadata.BodyTruncatedConcepts,
 	}
 	completed, err := repository.Complete(ctx, cfg.UserID, cfg.ProjectID, authority, claim, completion)
 	if err != nil {
@@ -532,7 +536,8 @@ func validSummaryInputMetadata(metadata contentcontext.SummaryInputMetadata, cla
 	digest, digestOK := contentcontext.NormalizeSHA256(metadata.ConceptsDigest)
 	claimDigest, claimOK := contentcontext.NormalizeSHA256(claim.ConceptsSHA256)
 	_, inputDigestOK := contentcontext.NormalizeSHA256(metadata.InputDigest)
-	return digestOK && claimOK && inputDigestOK && digest == claimDigest
+	return digestOK && claimOK && inputDigestOK && digest == claimDigest &&
+		metadata.PromptRevision == contentcontext.SummaryPromptRevision && metadata.SelectionVersion == contentcontext.SummarySelectionVersion
 }
 
 func newContentContextFastClient(ctx context.Context, cfg workerConfig) (contentContextSummaryClient, contentContextFastIdentity, error) {

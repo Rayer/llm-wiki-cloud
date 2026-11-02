@@ -527,7 +527,7 @@ func newProductionRouter(
 		AllowCredentials: true,
 	})))
 
-	registerPublicRoutes(r, settingsStore, cfg.AuthServiceURL, !localMode, registrationProvider)
+	registerPublicRoutes(r, settingsStore, cfg.AuthServiceURL, cfg.AuthEnvironment, !localMode, registrationProvider)
 	r.POST("/internal/profile/dispatch", productionProfileDispatcher(hV1, cfg).Gin)
 	r.POST("/internal/pipeline/schedule", hV1.ScheduledPipeline)
 	r.POST("/internal/pipeline/llm-profile", hV1.PipelineLLMProfile)
@@ -591,6 +591,8 @@ func newProductionRouter(
 
 	v1.Use(auth.ProjectMiddleware())
 	{
+		v1.POST("/projects/:pid/agent-connection-check", hV1.CreateAgentConnectionCheck)
+		v1.GET("/projects/:pid/agent-connection-check", hV1.GetAgentConnectionCheck)
 		v1.GET("/projects/:pid/pipeline/automation", hV1.GetProjectPipelineAutomation)
 		v1.PUT("/projects/:pid/pipeline/automation", hV1.PutProjectPipelineAutomation)
 		v1.GET("/projects/:pid/content-context", hV1.GetContentContext)
@@ -716,7 +718,7 @@ func newExportHTTPHandler(localMode bool, cfg config.Config, repo exportjob.Repo
 	return exportjob.NewHTTPHandler(repo, projects, archives, starter)
 }
 
-func registerPublicRoutes(r *gin.Engine, settingsStore syssettings.RegistrationGate, authServiceURL string, demoEnabled bool,
+func registerPublicRoutes(r *gin.Engine, settingsStore syssettings.RegistrationGate, authServiceURL, environment string, demoEnabled bool,
 	registrationProviders ...syssettings.PublicRegistrationSettingsProvider) {
 	// Public routes are registered on the root router, outside JWT and project middleware.
 	_ = authServiceURL
@@ -725,7 +727,7 @@ func registerPublicRoutes(r *gin.Engine, settingsStore syssettings.RegistrationG
 		registration = registrationProviders[0]
 	}
 	r.GET("/api/v1/public/config", syssettings.PublicConfigHandlerWithRegistration(settingsStore, demoEnabled, registration))
-	r.GET("/api/v1/public/version", buildinfo.Handler())
+	r.GET("/api/v1/public/version", buildinfo.HandlerWithEnvironment(environment))
 }
 
 type authConsumerPublicRegistrationProvider struct {

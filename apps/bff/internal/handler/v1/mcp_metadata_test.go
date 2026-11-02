@@ -32,7 +32,7 @@ func TestMCPMetadataUsesCaCForModernAndLegacyWireMethods(t *testing.T) {
 	modernDiscover := mcpMetadataWireRequest(t, h.mcpAuthenticatedHandler(queryOnly),
 		`{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"fixture-client","version":"1"},"io.modelcontextprotocol/clientCapabilities":{}}}}`, "2026-07-28")
 	modernResult := mcpMetadataResult(t, modernDiscover)
-	if modernResult["instructions"] != metadata.Instructions || modernResult["ttlMs"] != float64(metadata.DiscoveryTTLMS) || modernResult["cacheScope"] != "private" {
+	if !strings.Contains(modernResult["instructions"].(string), metadata.Instructions) || !strings.Contains(modernResult["instructions"].(string), confirmConnectionInstructions) || modernResult["ttlMs"] != float64(metadata.DiscoveryTTLMS) || modernResult["cacheScope"] != "private" {
 		t.Fatalf("modern discover metadata = %#v", modernResult)
 	}
 	if got := modernResult["instructions"].(string); !strings.Contains(got, "import_url") ||
@@ -67,7 +67,7 @@ func TestMCPMetadataUsesCaCForModernAndLegacyWireMethods(t *testing.T) {
 		`{"jsonrpc":"2.0","id":4,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"fixture-client","version":"1"}}}`, "2025-11-25")
 	legacyResult := mcpMetadataResult(t, legacyInitialize)
 	legacyCapabilities := legacyResult["capabilities"].(map[string]any)
-	if legacyResult["instructions"] != metadata.Instructions || legacyCapabilities["tools"].(map[string]any)["listChanged"] == true || legacyCapabilities["logging"] == nil {
+	if !strings.Contains(legacyResult["instructions"].(string), metadata.Instructions) || !strings.Contains(legacyResult["instructions"].(string), confirmConnectionInstructions) || legacyCapabilities["tools"].(map[string]any)["listChanged"] == true || legacyCapabilities["logging"] == nil {
 		t.Fatalf("legacy initialize metadata/capabilities = %#v", legacyResult)
 	}
 	t.Logf("wire legacy initialize: %s", strings.TrimSpace(legacyInitialize.Body.String()))
@@ -174,13 +174,13 @@ func TestMCPMetadataLegacySchema2BehaviorStaysPrivate(t *testing.T) {
 	discover := mcpMetadataWireRequest(t, h.mcpAuthenticatedHandler(identity),
 		`{"jsonrpc":"2.0","id":7,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"fixture-client","version":"1"},"io.modelcontextprotocol/clientCapabilities":{}}}}`, "2026-07-28")
 	discoverResult := mcpMetadataResult(t, discover)
-	if discoverResult["instructions"] != nil || discoverResult["ttlMs"] != float64(0) || discoverResult["cacheScope"] != "private" {
+	if !strings.Contains(discoverResult["instructions"].(string), confirmConnectionInstructions) || discoverResult["ttlMs"] != float64(0) || discoverResult["cacheScope"] != "private" {
 		t.Fatalf("legacy schema2 discover behavior = %#v", discoverResult)
 	}
 	initialize := mcpMetadataWireRequest(t, h.mcpAuthenticatedHandler(identity),
 		`{"jsonrpc":"2.0","id":9,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"fixture-client","version":"1"}}}`, "2025-11-25")
-	if result := mcpMetadataResult(t, initialize); result["instructions"] != nil {
-		t.Fatalf("legacy schema2 initialize unexpectedly included instructions: %#v", result)
+	if result := mcpMetadataResult(t, initialize); !strings.Contains(result["instructions"].(string), confirmConnectionInstructions) {
+		t.Fatalf("legacy schema2 initialize omitted setup instructions: %#v", result)
 	}
 	list := mcpMetadataWireRequest(t, h.mcpAuthenticatedHandler(identity),
 		`{"jsonrpc":"2.0","id":8,"method":"tools/list","params":{}}`, "2025-11-25")
@@ -193,13 +193,14 @@ func TestMCPMetadataLegacySchema2BehaviorStaysPrivate(t *testing.T) {
 		tool := item.(map[string]any)
 		want := map[string]string{
 			"query_project":       mcpQueryProjectToolDescription,
+			"confirm_connection":  confirmConnectionDescription,
 			"get_document_import": mcpGetDocumentImportDescription,
 			"pipeline_status":     mcpPipelineStatusToolDescription,
 			"add_raw":             mcpAddRawToolDescription,
 			"import_url":          mcpImportURLToolDescription,
 			"import_document":     mcpImportDocumentDescription,
 		}[tool["name"].(string)]
-		if tool["description"] != want {
+		if want == "" || tool["description"] != want {
 			t.Fatalf("legacy schema2 description for %q = %v", tool["name"], tool["description"])
 		}
 	}
@@ -327,9 +328,9 @@ func assertMCPMetadataTools(t *testing.T, result map[string]any, metadata *confi
 	if !ok {
 		t.Fatalf("tools/list result = %#v", result)
 	}
-	wantCount := 3
+	wantCount := 4
 	if writer {
-		wantCount = 6
+		wantCount = 7
 	}
 	if len(items) != wantCount {
 		t.Fatalf("tools/list returned %d tools, want %d", len(items), wantCount)
@@ -345,6 +346,7 @@ func assertMCPMetadataTools(t *testing.T, result map[string]any, metadata *confi
 		names[name] = true
 		wantDescription := map[string]string{
 			"query_project":       metadata.ToolDescriptions.QueryProject,
+			"confirm_connection":  confirmConnectionDescription,
 			"get_document_import": mcpGetDocumentImportDescription,
 			"pipeline_status":     mcpPipelineStatusToolDescription,
 			"add_raw":             metadata.ToolDescriptions.AddRaw,
@@ -358,7 +360,7 @@ func assertMCPMetadataTools(t *testing.T, result map[string]any, metadata *confi
 			querySchema, _ = json.Marshal(tool["inputSchema"])
 		}
 	}
-	if !names["query_project"] || !names["get_document_import"] || !names["pipeline_status"] ||
+	if !names["query_project"] || !names["confirm_connection"] || !names["get_document_import"] || !names["pipeline_status"] ||
 		(writer && (!names["add_raw"] || !names["import_url"] || !names["import_document"])) ||
 		(!writer && (names["add_raw"] || names["import_url"] || names["import_document"])) || len(querySchema) == 0 {
 		t.Fatalf("tools/list names or code-owned schema = %v schema=%s", names, querySchema)

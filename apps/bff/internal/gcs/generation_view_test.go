@@ -36,6 +36,9 @@ type memoryBackend struct {
 	commitManifestOnWrite   []byte
 	manifestAfterLeaseWrite []byte
 	manifestReadErr         error
+	attrsDelay              time.Duration
+	attrsActive             int
+	attrsMaxActive          int
 	manifestWriteErr        error
 	interfereCurrentWrite   bool
 	corruptGeneratedUploads bool
@@ -104,7 +107,20 @@ func (m *memoryBackend) Attrs(_ context.Context, name string, generation int64) 
 		return backendObject{}, m.manifestReadErr
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.attrsActive++
+	if m.attrsActive > m.attrsMaxActive {
+		m.attrsMaxActive = m.attrsActive
+	}
+	delay := m.attrsDelay
+	m.mu.Unlock()
+	if delay > 0 {
+		time.Sleep(delay)
+	}
+	m.mu.Lock()
+	defer func() {
+		m.attrsActive--
+		m.mu.Unlock()
+	}()
 	object, ok := m.objects[name]
 	if !ok || (generation > 0 && object.Generation != generation) {
 		return backendObject{}, storage.ErrObjectNotExist
@@ -352,6 +368,62 @@ func TestGenerationViewCapturesManifestOnceForWholeList(t *testing.T) {
 		if strings.HasPrefix(request.Name, projectObject(generation.Prefix)) && !strings.HasPrefix(request.Name, projectObject(generation.Prefix+"generation-one/")) {
 			t.Fatalf("read mixed generation object: %#v", request)
 		}
+	}
+}
+
+func TestPopulateConceptObjectUpdatedAtUsesBoundedPinnedMetadataReads(t *testing.T) {
+	client, backend := newMemoryClient()
+	const generationID = "concept-metadata"
+	files := make(map[string]backendObject, 24)
+	pages := make([]WikiPage, 0, 25)
+	for index := range 24 {
+		relPath := fmt.Sprintf("wiki/concept-%02d.md", index)
+		files[relPath] = backendObject{Data: []byte(fmt.Sprintf("# Concept %d\n", index)), Generation: int64(200 + index)}
+		pages = append(pages, WikiPage{Slug: fmt.Sprintf("concept-%02d", index), Path: relPath})
+	}
+	seedManifest(t, backend, generationID, files)
+	wrongGenerationPath := path.Join(generation.Prefix, generationID, "wiki/concept-23.md")
+	backend.put(projectObject(wrongGenerationPath), files["wiki/concept-23.md"].Data, 999, nil)
+	pages = append(pages, WikiPage{Slug: "source", Path: "wiki/sources/source.md"})
+	backend.mu.Lock()
+	backend.attrsDelay = 10 * time.Millisecond
+	backend.mu.Unlock()
+
+	updated := client.PopulateConceptObjectUpdatedAt(context.Background(), pages)
+	for index := 0; index < 23; index++ {
+		if updated[index].UpdatedAt == nil {
+			t.Fatalf("concept %d lost its pinned object timestamp", index)
+		}
+		if _, err := time.Parse(time.RFC3339Nano, *updated[index].UpdatedAt); err != nil {
+			t.Fatalf("concept %d updated_at %q is invalid: %v", index, *updated[index].UpdatedAt, err)
+		}
+	}
+	if updated[23].UpdatedAt != nil || updated[24].UpdatedAt != nil {
+		t.Fatalf("stale generation or non-concept acquired an updated_at: %#v %#v", updated[23], updated[24])
+	}
+	backend.mu.Lock()
+	maxConcurrent := backend.attrsMaxActive
+	backend.mu.Unlock()
+	if maxConcurrent < 2 || maxConcurrent > 8 {
+		t.Fatalf("attrs concurrency=%d, want a parallel bounded batch of 2..8", maxConcurrent)
+	}
+}
+
+func TestPopulateConceptObjectUpdatedAtSkipsAttrsAfterCancellation(t *testing.T) {
+	client, backend := newMemoryClient()
+	files := map[string]backendObject{"wiki/alpha.md": {Data: []byte("alpha"), Generation: 201}}
+	seedManifest(t, backend, "cancelled-metadata", files)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	pages := client.PopulateConceptObjectUpdatedAt(ctx, []WikiPage{{Slug: "alpha", Path: "wiki/alpha.md"}})
+	if pages[0].UpdatedAt != nil {
+		t.Fatalf("cancelled metadata read produced timestamp %q", *pages[0].UpdatedAt)
+	}
+	backend.mu.Lock()
+	maxConcurrent := backend.attrsMaxActive
+	backend.mu.Unlock()
+	if maxConcurrent != 0 {
+		t.Fatalf("cancelled request performed %d attrs reads", maxConcurrent)
 	}
 }
 

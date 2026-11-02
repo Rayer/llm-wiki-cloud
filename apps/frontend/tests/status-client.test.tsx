@@ -95,6 +95,7 @@ function deferred<T>() {
 
 function buildInfo() {
   return {
+    environment: 'dev' as const,
     product_version: 'test',
     commit: 'test',
     branch: 'test',

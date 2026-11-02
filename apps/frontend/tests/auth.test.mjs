@@ -238,7 +238,7 @@ test('auth provider hydrates stored user with token', () => {
   assert.match(authSource, /readStoredAuthUser/);
   assert.match(authSource, /writeStoredAuthUser/);
   assert.match(authSource, /clearStoredAuthUser/);
-  assert.match(authSource, /setUser\(readStoredAuthUser\(storage\)\)/);
+  assert.match(authSource, /const storedUser = readStoredAuthUser\(storage\);[\s\S]*?setUser\(storedUser\);[\s\S]*?userRef\.current = storedUser;/);
 });
 
 test('auth provider normalizes registration responses into non-demo sessions', () => {
