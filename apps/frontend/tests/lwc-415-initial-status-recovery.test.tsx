@@ -164,7 +164,8 @@ it('shows an initial read failure, resumes the same intent and tracks its termin
 
   renderPipeline();
   const readFailure = await screen.findByTestId('pipeline-status-read-failed');
-  expect(readFailure.textContent).toContain('Retrying automatically');
+  expect(readFailure.textContent).toContain('Retry to verify current eligibility');
+  expect(screen.getByRole('button', { name: 'Retry status refresh' })).toBeDefined();
   expect(screen.getByRole('button', { name: 'Run Pipeline' }).hasAttribute('disabled')).toBe(true);
   await waitFor(() => expect(intervals.size).toBe(1));
 
@@ -182,6 +183,49 @@ it('shows an initial read failure, resumes the same intent and tracks its termin
   await screen.findByText('Pipeline complete');
   expect(mocks.triggerPipeline).not.toHaveBeenCalled();
   expect(intervals.size).toBe(0);
+});
+
+it('does not resume an initial intent after the enabled automation monitor accepts its terminal state', async () => {
+  const capability = deferred<{ allowed: boolean; compile_mode: 'full'; quota: null }>();
+  let automationStatus = 'pending';
+  let statusReads = 0;
+  const executionPolls: Array<{ projectId: string; executionId?: string; intentId?: string }> = [];
+  mocks.getRecompileAllCapability.mockReturnValue(capability.promise);
+  mocks.getProjectPipelineAutomation.mockImplementation(async () => ({
+    enabled: true, revision: 1, admin_allowed: true, effective_enabled: true,
+    backlog_scan_status: 'idle', pipeline_status: automationStatus, source_revision: 1,
+    processed_revision: automationStatus === 'succeeded' ? 1 : 0,
+  }));
+  mocks.getPipelineStatus.mockImplementation((projectId: string, executionId?: string, intentId?: string) => {
+    if (executionId || intentId) {
+      executionPolls.push({ projectId, executionId, intentId });
+      return Promise.resolve(intentStatus(projectId, 'preparing', 'intent-a'));
+    }
+    statusReads += 1;
+    return Promise.resolve(intentStatus(projectId, statusReads === 1 ? 'preparing' : 'succeeded', 'intent-a'));
+  });
+
+  renderPipeline();
+  await screen.findByText('Preparing saved Profile guidance…');
+  await waitFor(() => expect(statusReads).toBe(1));
+  await waitFor(() => expect(mocks.getRecompileAllCapability).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(intervals.size).toBe(1));
+
+  automationStatus = 'succeeded';
+  await tickAutomationPoll();
+  await screen.findByText('Pipeline complete');
+  await waitFor(() => expect(intervals.size).toBe(0));
+  expect(executionPolls).toEqual([]);
+
+  await act(async () => {
+    capability.resolve({ allowed: false, compile_mode: 'full', quota: null });
+    await capability.promise;
+  });
+
+  expect(executionPolls).toEqual([]);
+  expect(screen.getByText('Pipeline complete')).toBeDefined();
+  expect(screen.queryByText('Preparing saved Profile guidance…')).toBeNull();
+  expect(mocks.triggerPipeline).not.toHaveBeenCalled();
 });
 
 it('refreshes automatic processing status during mounted Pipeline polling through publication', async () => {

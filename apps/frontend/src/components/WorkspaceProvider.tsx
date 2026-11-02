@@ -150,7 +150,9 @@ type WorkspaceContextValue = {
   markProfileOnboardingPresented: (ownerId: string, projectId: string, sessionEpoch: number) => boolean;
   /** Live status counts for sidebar badges; null fields mean unavailable / no project. */
   navCounts: NavCounts;
-  refreshNavCounts: () => Promise<void>;
+  /** Changes after a successful current-Project status read for mounted Home/Pipeline views. */
+  materialStatusRevision: number;
+  refreshNavCounts: () => Promise<boolean>;
   signIn: (email: string, password: string) => Promise<void>;
   signInAsDemo: () => Promise<void>;
   register: (email: string, password: string) => Promise<void>;
@@ -190,9 +192,17 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [profileOnboarding, setProfileOnboarding] = useState<ProfileOnboardingIntent | null>(null);
   const [navCounts, setNavCounts] = useState<NavCounts>(emptyNavCounts);
+  const [materialStatusRevision, setMaterialStatusRevision] = useState(0);
+  const materialStatusReadSequenceRef = useRef(0);
   const projectsReadyRef = useRef(false);
   const currentProjectRef = useRef(currentProject);
   const requestIdentityRef = useRef({ projectId: currentProject?.id ?? null, token, sessionEpoch });
+  const materialScopeRef = useRef({
+    projectId: currentProject?.id ?? null,
+    ownerId: user?.id ?? null,
+    sessionIdentityEpoch,
+    generation: 0,
+  });
   const projectStateActiveRef = useRef(false);
   const projectListGenerationRef = useRef(0);
   const activeProjectLoadRef = useRef<{ token: string; sessionEpoch: number; generation: number } | null>(null);
@@ -210,6 +220,23 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   useLayoutEffect(() => {
     requestIdentityRef.current = { projectId: currentProject?.id ?? null, token, sessionEpoch };
   }, [currentProject?.id, sessionEpoch, token]);
+
+  useLayoutEffect(() => {
+    const previous = materialScopeRef.current;
+    const next = {
+      projectId: currentProject?.id ?? null,
+      ownerId: user?.id ?? null,
+      sessionIdentityEpoch,
+    };
+    if (
+      previous.projectId !== next.projectId
+      || previous.ownerId !== next.ownerId
+      || previous.sessionIdentityEpoch !== next.sessionIdentityEpoch
+    ) {
+      materialScopeRef.current = { ...next, generation: previous.generation + 1 };
+      materialStatusReadSequenceRef.current += 1;
+    }
+  }, [currentProject?.id, sessionIdentityEpoch, user?.id]);
 
   useLayoutEffect(() => {
     currentProjectRef.current = currentProject;
@@ -268,37 +295,41 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     });
   }, [hydrated, sessionEpoch, token, user?.id]);
 
-  const refreshNavCounts = useCallback(async () => {
-    if (!token || !currentProject) return;
-    const requestIdentity = requestIdentityRef.current;
+  const refreshNavCounts = useCallback(async (): Promise<boolean> => {
+    if (!token || !currentProject) return false;
     const projectId = currentProject.id;
+    const materialScope = materialScopeRef.current;
+    if (materialScope.projectId !== projectId) return false;
+    const readSequence = ++materialStatusReadSequenceRef.current;
+    let statusRefreshed = false;
     try {
       const status = await getStatus(projectId);
-      if (
-        requestIdentityRef.current !== requestIdentity
-        || requestIdentity.projectId !== projectId
-        || requestIdentity.token !== token
-        || requestIdentity.sessionEpoch !== sessionEpoch
-      ) return;
+      if (materialScopeRef.current !== materialScope || materialStatusReadSequenceRef.current !== readSequence) return false;
       setNavCounts((current) => ({
         sources: status.sourcesCount,
         concepts: status.conceptsCount,
         documentImportFailures: current.documentImportFailures,
       }));
+      setMaterialStatusRevision((revision) => revision + 1);
+      statusRefreshed = true;
     } catch {
       // Keep previous badge values on refresh failure (LWC-129).
     }
     try {
       const summary = await getDocumentImportFailureSummary(projectId);
+      const requestIdentity = requestIdentityRef.current;
       if (
-        requestIdentityRef.current !== requestIdentity || requestIdentity.projectId !== projectId
-        || requestIdentity.token !== token || requestIdentity.sessionEpoch !== sessionEpoch
-      ) return;
+        materialScopeRef.current !== materialScope
+        || materialStatusReadSequenceRef.current !== readSequence
+        || requestIdentity.projectId !== projectId
+      ) return false;
       setNavCounts((current) => ({ ...current, documentImportFailures: summary.failed_count }));
     } catch {
       // Preserve the last known count when the failure summary is unavailable.
     }
-  }, [token, currentProject, sessionEpoch]);
+    return statusRefreshed && materialScopeRef.current === materialScope
+      && materialStatusReadSequenceRef.current === readSequence;
+  }, [token, currentProject]);
 
   const loadProjects = useCallback(async (background = false) => {
     const operationToken = token;
@@ -588,9 +619,14 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
     let ignore = false;
     const requestIdentity = requestIdentityRef.current;
+    const materialScope = materialScopeRef.current;
+    const readSequence = ++materialStatusReadSequenceRef.current;
+    const isCurrentRead = () => !ignore
+      && materialScopeRef.current === materialScope
+      && materialStatusReadSequenceRef.current === readSequence;
     void getStatus(currentProject.id)
       .then((status) => {
-        if (ignore || requestIdentityRef.current !== requestIdentity) return;
+        if (!isCurrentRead() || requestIdentityRef.current !== requestIdentity) return;
         setNavCounts((current) => ({
           sources: status.sourcesCount,
           concepts: status.conceptsCount,
@@ -602,7 +638,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       });
     void getDocumentImportFailureSummary(currentProject.id)
       .then((summary) => {
-        if (ignore || requestIdentityRef.current !== requestIdentity) return;
+        if (!isCurrentRead() || requestIdentityRef.current !== requestIdentity) return;
         setNavCounts((current) => ({ ...current, documentImportFailures: summary.failed_count }));
       })
       .catch(() => {
@@ -637,6 +673,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     profileOnboarding,
     markProfileOnboardingPresented,
     navCounts: displayedNavCounts,
+    materialStatusRevision,
     refreshNavCounts,
     refreshAccessToken,
     signIn,
@@ -659,6 +696,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     updateProjectDescription,
     currentProject,
     displayedNavCounts,
+    materialStatusRevision,
     hydrated,
     isDemoSession,
     newProjectOpen,

@@ -173,7 +173,8 @@ test('PipelineClient wires quota line, disabled Run, status fetch, and checklist
   assert.match(pipelineClient, /onQueueSettled=\{handleUploadQueueSettled\}/);
   assert.match(pipelineClient, /handleUploadQueueSettled[\s\S]*?refreshPipelineStatus/);
   assert.match(rawUploadPanel, /rawResult\?\.status === 'created'/);
-  assert.match(rawUploadPanel, /if \(documentResult\) void refreshNavCounts\(\)/);
+  assert.match(rawUploadPanel, /if \(onQueueSettledRef\.current\) onQueueSettledRef\.current\(result\);/);
+  assert.match(pipelineClient, /handleUploadQueueSettled[\s\S]*?void refreshNavCounts\(\)/);
   // Demo early-return remains belt-and-suspenders on click.
   assert.match(pipelineClient, /handleRunPipeline[\s\S]*?isDemoSession/);
   // Toast path for API/race errors.

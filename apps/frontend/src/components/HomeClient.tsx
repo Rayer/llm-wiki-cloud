@@ -14,6 +14,7 @@ import {
   getConcept,
   getConcepts,
   getSource,
+  getSources,
   getStatus,
   safeWikiRouteSegment,
   searchWiki,
@@ -186,6 +187,8 @@ function entryDetailHref(entry: ModalEntry): string | null {
 
   if (id) return `/${collection}/${encodeURIComponent(id)}`;
 
+  if (entry.type === 'source') return null;
+
   if (entry.path) {
     const pathSegment = citationPathSegment(entry.type, entry.path);
     if (pathSegment) {
@@ -202,7 +205,7 @@ export function HomeClient() {
   const searchParams = useSearchParams();
   const routeSearch = searchParams?.toString() ?? '';
   const routeLocation = `${pathname ?? ''}?${routeSearch}`;
-  const { currentProject, projects, selectProject, refreshProjects, token, user, hydrated, projectsLoading, isDemoSession, sessionEpoch, sessionIdentityEpoch } = useWorkspace();
+  const { currentProject, projects, selectProject, refreshProjects, token, user, hydrated, projectsLoading, isDemoSession, sessionEpoch, sessionIdentityEpoch, materialStatusRevision, refreshNavCounts } = useWorkspace();
   const homeScopeKey = JSON.stringify([user?.id ?? null, sessionIdentityEpoch, currentProject?.id ?? null]);
   const tokenRef = useRef(token);
   useLayoutEffect(() => { tokenRef.current = token; }, [token]);
@@ -618,9 +621,11 @@ export function HomeClient() {
   }, [currentProject?.id]);
 
   useEffect(() => {
-    getStatus()
+    let ignore = false;
+    getStatus(currentProject?.id)
       .then((data) => {
         if (ignore) return;
+        setStatusError('');
         setStatus(data);
         if (!hasSampledQueriesRef.current || sampledProjectIdRef.current !== currentProject?.id) {
           sampledProjectIdRef.current = currentProject?.id;
@@ -631,11 +636,10 @@ export function HomeClient() {
       .catch((err: Error) => {
         if (!ignore) setStatusError(err.message);
       });
-    let ignore = false;
     return () => {
       ignore = true;
     };
-  }, [currentProject]);
+  }, [currentProject?.id, materialStatusRevision]);
 
   useEffect(() => {
     let ignore = false;
@@ -799,7 +803,20 @@ export function HomeClient() {
       const entry: WikiEntry = await fetch(lookup);
       if (requestId !== citationRequestId.current) return;
       const entrySlug = safeWikiRouteSegment(entry.slug) ?? safeSlug ?? pathSlug ?? '';
-      const entryId = safeWikiRouteSegment(entry.id) ?? safeId ?? undefined;
+      let entryId = safeWikiRouteSegment(entry.id) ?? safeId ?? undefined;
+      if (citation.type === 'source' && !entryId) {
+        try {
+          const sources = await getSources(currentProject?.id);
+          if (requestId !== citationRequestId.current) return;
+          const matches = entry.rawPath
+            ? sources.filter((item) => item.rawPath === entry.rawPath)
+            : sources.filter((item) => item.slug === entrySlug);
+          entryId = matches.length === 1 ? safeWikiRouteSegment(matches[0].id) ?? undefined : undefined;
+        } catch {
+          // Keep the preview available without linking to a noncanonical source route.
+        }
+      }
+      if (requestId !== citationRequestId.current) return;
       setModal({
         title: entry.title,
         content: typeof entry.content === 'string'
@@ -831,7 +848,7 @@ export function HomeClient() {
         setModalLoading(false);
       }
     }
-  }, [t]);
+  }, [currentProject?.id, t]);
 
   // Close modal on Escape
   useEffect(() => {
@@ -880,7 +897,7 @@ export function HomeClient() {
   return (
     <div className="lwc-home space-y-8">
       <section className="lwc-search-section">
-        {currentProject && !isDemoSession ? <div className="mb-4 flex justify-end"><AddMaterialAction key={`add-material:${homeScopeKey}`} /></div> : null}
+        {currentProject && !isDemoSession ? <div className="mb-4 flex justify-end"><AddMaterialAction key={`add-material:${homeScopeKey}`} onMaterialPersisted={() => refreshNavCounts()} /></div> : null}
         <h1 className="relative max-w-3xl text-[2rem] font-medium leading-tight tracking-tight text-[#F0F3F1]">
           {t('Demo.heading')}
         </h1>

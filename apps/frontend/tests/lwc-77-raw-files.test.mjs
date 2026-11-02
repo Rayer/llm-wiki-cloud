@@ -59,7 +59,7 @@ test('raw client fences and reloads files when project or session identity chang
   );
 
   assert.match(client, /import \{ useWorkspace \} from '\.\/WorkspaceProvider';/);
-  assert.match(client, /const \{\s*currentProject\s*,\s*projects\s*,\s*token\s*\} = useWorkspace\(\);/s);
+  assert.match(client, /const \{[^}]*\bcurrentProject\b[^}]*\bprojects\b[^}]*\btoken\b[^}]*\} = useWorkspace\(\);/s);
   assert.match(client, /const currentProjectId = currentProject\?\.id;/);
   assert.match(client, /const refreshRawFiles = useCallback\(async \(\) =>/);
   assert.match(client, /getRawFiles\(rawProjectId\)/);

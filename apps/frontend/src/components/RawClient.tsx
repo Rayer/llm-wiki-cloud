@@ -69,7 +69,7 @@ export function RawClient() {
 
 function RawClientSession() {
   const { t, locale } = useT();
-  const { currentProject, projects, token } = useWorkspace();
+  const { currentProject, projects, token, refreshNavCounts } = useWorkspace();
   const currentProjectId = currentProject?.id;
   const searchParams = useSearchParams();
   const projectParam = searchParams.get('project');
@@ -167,8 +167,9 @@ function RawClientSession() {
 
   const handleUploadsSettled = useCallback(({ projectId }: RawUploadsSettled) => {
     if (projectId !== rawProjectId) return;
+    void refreshNavCounts();
     void refreshRawFiles();
-  }, [rawProjectId, refreshRawFiles]);
+  }, [rawProjectId, refreshNavCounts, refreshRawFiles]);
 
   useEffect(() => {
     openedQueryFileRef.current = '';
