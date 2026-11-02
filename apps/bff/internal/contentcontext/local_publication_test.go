@@ -75,6 +75,7 @@ func TestLocalPublicationDescriptorAllowsBoundEmptyAndInvalidInputStates(t *test
 			SummarySourceIdentity: LocalSummarySourceIdentity("txn-7", digest), InputErrorClass: class,
 			SummaryMetadata: SummaryInputMetadata{
 				ConceptsDigest: digest, SourceGeneration: "local-txn-7", SelectionVersion: SummarySelectionVersion,
+				PromptRevision: SummaryPromptRevision,
 			},
 		}
 		if _, err := EncodeLocalPublicationDescriptor(descriptor); err != nil {

@@ -190,7 +190,11 @@ func (h *Handler) reconcileMCPAddRaw(ctx context.Context, writer store.Condition
 	if sameMCPAddRawPayload(existing, input) {
 		digest := sha256.Sum256(existing)
 		if journal != nil {
-			_, recordErr := journal.RecordNoChangeProjectUse(ctx, sourceRef, mcpAddRawPayloadFingerprint(input), hex.EncodeToString(digest[:]), strconv.FormatInt(generation, 10))
+			_, recordErr := journal.RecordNoChangeProjectUse(ctx, sourceRef, sourceautomation.NoChangeUseRequest{
+				PayloadSHA256: mcpAddRawPayloadFingerprint(input), ObservedSHA256: hex.EncodeToString(digest[:]),
+				ObservedGeneration: strconv.FormatInt(generation, 10),
+				Equivalent:         func(readback []byte) bool { return sameMCPAddRawPayload(readback, input) },
+			})
 			if recordErr != nil {
 				return addRawToolResult(addRawResponse{
 					Status: string(rawintake.StatusAlreadyExists), Path: "raw/" + relativePath,

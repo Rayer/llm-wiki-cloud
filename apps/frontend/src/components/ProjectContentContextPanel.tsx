@@ -10,6 +10,10 @@ type PanelState =
   | { kind: 'loaded'; context: ProjectContentContext };
 
 export function ProjectContentContextPanel({ projectId }: { projectId: string }) {
+  return <ProjectContentContextPanelSession key={projectId} projectId={projectId} />;
+}
+
+function ProjectContentContextPanelSession({ projectId }: { projectId: string }) {
   const { t } = useT();
   const [state, setState] = useState<PanelState>({ kind: 'loading' });
 

@@ -185,6 +185,51 @@ func TestAcceptedJobKeepsWorkAndClaimRecoveryFencesStaleWorker(t *testing.T) {
 	}
 }
 
+func TestCompleteAcceptanceRecordsProjectUseBeforeBackgroundConversion(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	repo, closeClient := newDocumentImportRepository(t)
+	t.Cleanup(closeClient)
+	ownerID, projectID, documentID := "acceptance-owner", "acceptance-project", "document-acceptance"
+	projectRef := repo.projectRef(ownerID, projectID)
+	recordRef := repo.documentsRef(ownerID, projectID).Doc(documentID)
+	priorUse := time.Now().UTC().Add(-time.Minute)
+	if _, err := projectRef.Set(ctx, map[string]any{"user_id": ownerID, "project_id": projectID, "last_used_at": priorUse}); err != nil {
+		t.Fatalf("seed Project: %v", err)
+	}
+	record := Record{
+		SchemaVersion: SchemaVersion, OwnerID: ownerID, ProjectID: projectID, DocumentID: documentID,
+		OriginalFilename: "source.pdf", Bytes: 128, SHA256: strings.Repeat("a", 64),
+		AttemptID: documentID + "-a1", ConversionState: ConversionReceiving, SourceState: SourceNotStarted,
+		DeletionState: DeletionPresent, DispatchState: "prepared", UpdatedAt: time.Now().UTC(), Revision: 1,
+	}
+	if _, err := recordRef.Set(ctx, record); err != nil {
+		t.Fatalf("seed receiving document: %v", err)
+	}
+	work := profileruntime.Work{UserID: ownerID, ProjectID: projectID, Kind: "document_import", Revision: 2, ID: record.AttemptID, DocumentID: documentID}
+	workRef := scopedfirestore.Collection(repo.client, profileruntime.WorkCollection).Doc(profileruntime.WorkID(work))
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = workRef.Delete(cleanupCtx)
+		_, _ = recordRef.Delete(cleanupCtx)
+		_, _ = projectRef.Delete(cleanupCtx)
+	})
+
+	accepted, err := repo.CompleteAcceptance(ctx, ownerID, projectID, documentID, 7)
+	if err != nil || accepted.ConversionState != ConversionAccepted || accepted.OriginalGeneration != 7 {
+		t.Fatalf("accept document=%+v err=%v", accepted, err)
+	}
+	projectSnapshot, err := projectRef.Get(ctx)
+	if err != nil {
+		t.Fatalf("read Project after acceptance: %v", err)
+	}
+	lastUsedAt, ok := projectSnapshot.Data()["last_used_at"].(time.Time)
+	if !ok || !lastUsedAt.Equal(accepted.UpdatedAt) || !lastUsedAt.After(priorUse) {
+		t.Fatalf("acceptance did not record its first-confirmation time: last_used_at=%#v accepted=%s", projectSnapshot.Data()["last_used_at"], accepted.UpdatedAt)
+	}
+}
+
 func newDocumentImportRepository(t *testing.T) (*FirestoreRepository, func()) {
 	t.Helper()
 	emulator := strings.TrimSpace(os.Getenv("FIRESTORE_EMULATOR_HOST"))

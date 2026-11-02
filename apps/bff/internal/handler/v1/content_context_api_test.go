@@ -296,7 +296,7 @@ func TestLocalPublicationFeedsPersistedGETAndAuthenticatedMCPContext(t *testing.
 	response = mcpMetadataWireRequest(t, h.mcpAuthenticatedHandler(identity),
 		`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"fixture-client","version":"1"},"io.modelcontextprotocol/clientCapabilities":{}}}}`, "2026-07-28")
 	tools := mcpMetadataResult(t, response)["tools"].([]interface{})
-	queryTool := tools[0].(map[string]interface{})
+	queryTool := findMCPTool(t, tools, "query_project")
 	if queryTool["name"] != "query_project" || !strings.Contains(queryTool["description"].(string), "Local research") ||
 		!strings.Contains(queryTool["description"].(string), "Local summary from committed concepts") {
 		t.Fatalf("authenticated MCP tool description omitted the local publication: %#v", queryTool)
@@ -337,9 +337,28 @@ func TestFirestoreRepositoryProducerStateFlowsThroughContentContextAPI(t *testin
 		ProfileSource: "personal", ProfileID: "selected-profile", ProfileRevision: 4, Role: contentcontext.SummaryRole,
 		RequestedModel: "fast-requested", ReturnedModel: "fast-returned",
 		InputDigest: testContentContextDigest('e'), SelectionVersion: contentcontext.SummarySelectionVersion,
+		OverviewSchemaVersion: 1, ShortTitle: "Small Wiki", TopicTags: []string{"Local research"},
+		TotalConcepts: 1, SelectedConcepts: 1, SelectedSlugs: []string{"one-concept"},
+		Sampled: false, TitleTruncatedConcepts: 0, BodyTruncatedConcepts: 0,
 	}
 	if saved, err := repository.Complete(ctx, owner, projectID, authority, *claim, completion); err != nil || !saved {
 		t.Fatalf("persist producer summary: saved=%t err=%v", saved, err)
+	}
+	persisted, err := stateRef.Get(ctx)
+	if err != nil {
+		t.Fatalf("read persisted producer state: %v", err)
+	}
+	lastGood, ok := persisted.Data()["last_good"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("persisted producer state has no last_good map: %#v", persisted.Data()["last_good"])
+	}
+	for _, field := range []string{"sampled", "title_truncated_concepts", "body_truncated_concepts"} {
+		if _, ok := lastGood[field]; !ok {
+			t.Errorf("Firestore omitted valid zero value %q: %#v", field, lastGood)
+		}
+	}
+	if lastGood["sampled"] != false || fmt.Sprint(lastGood["title_truncated_concepts"]) != "0" || fmt.Sprint(lastGood["body_truncated_concepts"]) != "0" {
+		t.Fatalf("Firestore changed valid zero overview values: %#v", lastGood)
 	}
 
 	root := newContentContextTestRoot(t, storage.QueryGenerationIdentity{
@@ -353,6 +372,14 @@ func TestFirestoreRepositoryProducerStateFlowsThroughContentContextAPI(t *testin
 	var body contentContextResponse
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode producer summary: %v", err)
+	}
+	var jsonBody map[string]interface{}
+	if err := json.Unmarshal(response.Body.Bytes(), &jsonBody); err != nil {
+		t.Fatalf("decode producer summary JSON: %v", err)
+	}
+	jsonSummary, ok := jsonBody["summary"].(map[string]interface{})
+	if !ok || jsonSummary["sampled"] != false || jsonSummary["title_truncated_concepts"] != float64(0) || jsonSummary["body_truncated_concepts"] != float64(0) {
+		t.Fatalf("HTTP omitted valid zero overview values: %#v", jsonBody["summary"])
 	}
 	if body.Status != contentcontext.StatusReady || body.CurrentGeneration == nil || *body.CurrentGeneration != "published-G1" ||
 		body.CurrentConceptsSHA256 == nil || *body.CurrentConceptsSHA256 != digest || body.Summary == nil ||

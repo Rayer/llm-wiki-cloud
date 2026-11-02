@@ -35,6 +35,7 @@
     "otherWikis": "其他 Wiki",
     "otherWikisHint": "繼續使用其他工作空間。搜尋即可找到帳戶中的任何 Wiki。",
     "findWiki": "尋找其他 Wiki",
+    "viewAllWikis": "查看所有 Wiki",
     "openWiki": "開啟此 Wiki"
   },
   "Login": {
@@ -390,27 +391,6 @@
     "subtitle": "管理專案、使用者與 Pipeline 作業。",
     "refresh": "重新整理",
     "projects": "專案",
-    "searchProjects": "搜尋所有專案",
-    "noProjectMatches": "找不到符合的專案。",
-    "versionInfo": "API 版本",
-    "loadingVersion": "正在載入版本…",
-    "versionUnavailable": "目前無法取得版本資訊。",
-    "retryVersionInfo": "重試",
-    "closeVersionInfo": "關閉版本資訊",
-    "environment": "環境",
-    "environmentNotProvided": "未提供環境資訊",
-    "productVersion": "產品版本",
-    "commit": "BFF commit",
-    "revision": "BFF revision",
-    "branch": "分支",
-    "tag": "標籤",
-    "imageTag": "映像標籤",
-    "service": "服務",
-    "additionalBuildDetails": "其他建置資訊",
-    "buildSourceNote": "此資訊識別 API/BFF 建置。前端 bundle 使用各自的建置識別。",
-    "copyVersionInfo": "複製版本資訊",
-    "versionCopied": "已複製",
-    "versionCopyFailed": "複製失敗。請選取下方文字並複製。",
     "sharedLlmTab": "共用 LLM",
     "users": "使用者",
     "settings": "設定",
@@ -479,6 +459,18 @@
   "Detail": {
     "backTo": "返回 {label}",
     "rawFile": "原始檔案",
+    "rawSectionTitle": "原始材料",
+    "rawMappingVerified": "此來源已連結至原始檔案。",
+    "rawMappingUnverified": "此檔名是依來源中繼資料推測。",
+    "rawMappingUnavailable": "目前沒有可用的原始檔案對應。",
+    "closeRawPreview": "關閉預覽",
+    "openRawLibrary": "在原始檔案庫開啟",
+    "retryRawPreview": "重試預覽",
+    "relatedConcepts": "相關概念",
+    "relatedConceptsReason": "已發布的知識索引將這些概念連結至此來源。",
+    "relatedSources": "相關來源",
+    "relatedSourcesReason": "已發布的知識索引將這些來源連結至此條目。",
+    "noRelatedEntries": "目前沒有相關條目。",
     "citationLoading": "正在載入引用內容…",
     "citationLoadFailed": "無法載入引用內容，請再試一次。",
     "retryCitation": "重試載入引用",
@@ -667,7 +659,28 @@
     "localeEnglish": "English",
     "translationFallback": "部分內容目前以英文顯示。",
     "useEnglish": "切換為英文",
-    "scrollToTop": "回到頁首"
+    "scrollToTop": "回到頁首",
+    "searchProjects": "搜尋所有專案",
+    "noProjectMatches": "找不到符合的專案。",
+    "versionInfo": "API 版本",
+    "loadingVersion": "正在載入版本…",
+    "versionUnavailable": "目前無法取得版本資訊。",
+    "retryVersionInfo": "重試",
+    "closeVersionInfo": "關閉版本資訊",
+    "environment": "環境",
+    "environmentNotProvided": "未提供環境資訊",
+    "productVersion": "產品版本",
+    "commit": "BFF commit",
+    "revision": "BFF revision",
+    "branch": "分支",
+    "tag": "標籤",
+    "imageTag": "映像標籤",
+    "service": "服務",
+    "additionalBuildDetails": "其他建置資訊",
+    "buildSourceNote": "此資訊識別 API/BFF 建置。前端 bundle 使用各自的建置識別。",
+    "copyVersionInfo": "複製版本資訊",
+    "versionCopied": "已複製",
+    "versionCopyFailed": "複製失敗。請選取下方文字並複製。"
   },
   "NewProject": {
     "title": "建立專案",
@@ -1050,6 +1063,42 @@
         "useGeneralSettings": "先用一般設定",
         "previous": "上一段",
         "next": "下一段：{stage}"
+      },
+      "multiSource": {
+        "heading": "同一組筆記可依不同需求整理",
+        "description": "切換同一組三份合成來源的兩種預先撰寫成果。這是固定示例，不是你的 Project 資料。",
+        "fixed": "預先撰寫的示例 · 不會寫入 Project 或呼叫模型",
+        "tabs": "選擇固定示例",
+        "family": {
+          "needTitle": "帶幼兒雨天出遊",
+          "need": "請幫我整理帶幼兒、雨天也可使用的出遊判斷。",
+          "conceptTitle": "雨天親子備案",
+          "concept": "結合 S1 從車站步行到室內館的路程與無遮蔭路段，以及 S2 室內親子空間和週三休館資訊。保留 S3 不適合大型嬰兒車的限制；安靜咖啡店不能代替親子場地。",
+          "boundary": "筆記沒有證明全程都有遮蔭，也沒有說明咖啡店能否容納大型嬰兒車。出發前仍要確認開放時間與通行狀況。"
+        },
+        "quiet": {
+          "needTitle": "安靜閱讀或短暫工作",
+          "need": "請幫我整理適合安靜閱讀或短暫工作的地點，並列出實際限制。",
+          "conceptTitle": "京都安靜停留選擇",
+          "concept": "結合 S1 車站周邊交通與無遮蔭路段，以及 S3 安靜座位和插座較少的限制。S2 的親子空間與週三休館資訊只作情境差異，不把它說成適合工作的場地。",
+          "boundary": "筆記沒有說明咖啡店的 Wi-Fi、插座是否足夠或是否適合工作。使用前請先確認。"
+        },
+        "sourcesHeading": "三份合成來源筆記",
+        "sources": {
+          "s1": {
+            "title": "京都雨天交通記錄",
+            "text": "從車站步行到室內館約 8 分鐘，其中有一段沒有遮蔭。"
+          },
+          "s2": {
+            "title": "親子場館筆記",
+            "text": "室內親子空間設有電梯，週三休館。"
+          },
+          "s3": {
+            "title": "咖啡店走訪",
+            "text": "座位安靜、插座少，不適合大型嬰兒車。"
+          }
+        },
+        "note": "這些預先撰寫的示例不會建立 Concept、修改 Profile，也不預測實際整理結果。"
       }
     },
     "requirementsDescription": "選填。描述你在意的情境與資訊。需求可自由編輯，不保證產生特定標籤或搜尋結果。",
@@ -1072,7 +1121,7 @@
     "noCompileGuidance": "尚未設定編譯指引。",
     "adapterBudgetNote": "合併後的 vault schema 與此指引若超過 1,500 字元的 adapter 上限，Synto 會拒絕執行。Profile 輸入沒有獨立的 1,500 字元限制。",
     "requirementsAlreadySaved": "這些需求已儲存在伺服器。",
-      "bootstrapConfirmedNotice": "指引預覽已確認。它與依世代綁定而生效的 Profile 分開，也不會啟動標記工作。",
+    "bootstrapConfirmedNotice": "指引預覽已確認。它與依世代綁定而生效的 Profile 分開，也不會啟動標記工作。",
     "previewConfirmedNotice": "預覽已確認；只有標記工作就緒後才會生效。",
     "disposition": {
       "compileGuidance": "編譯指引",

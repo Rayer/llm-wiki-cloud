@@ -6,21 +6,25 @@ import type { Locale } from '@/lib/i18n-core';
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;
 
-export function AgentConnectionCheck({ projectId, identityKey, locale, t }: {
+type AgentConnectionCheckProps = {
   projectId: string;
   identityKey: string;
   locale: Locale;
   t: Translate;
-}) {
+};
+
+export function AgentConnectionCheck(props: AgentConnectionCheckProps) {
+  return <AgentConnectionCheckSession key={`${props.identityKey}:${props.projectId}`} {...props} />;
+}
+
+function AgentConnectionCheckSession({ projectId, identityKey, locale, t }: AgentConnectionCheckProps) {
   const key = `${identityKey}:${projectId}`;
-  const identityRef = useRef({ key, generation: 0 });
-  if (identityRef.current.key !== key) {
-    identityRef.current = { key, generation: identityRef.current.generation + 1 };
-  }
   const stateRef = useRef<AgentConnectionCheck | null>(null);
   const requestSequence = useRef(0);
   const reloadRef = useRef<(() => Promise<void>) | null>(null);
   const startPollingRef = useRef<() => void>(() => {});
+  const creatingRef = useRef(false);
+  const mountedRef = useRef(false);
   const [state, setState] = useState<AgentConnectionCheck | null>(null);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
@@ -29,14 +33,11 @@ export function AgentConnectionCheck({ projectId, identityKey, locale, t }: {
   const [replaced, setReplaced] = useState(false);
   const [copyStatus, setCopyStatus] = useState<'prompt' | 'example' | 'error' | null>(null);
 
-  stateRef.current = state;
-
   useEffect(() => {
     let active = true;
-    const identity = identityRef.current;
+    mountedRef.current = true;
     let interval: number | null = null;
-    const isCurrent = () => active && identityRef.current.key === key
-      && identityRef.current.generation === identity.generation;
+    const isCurrent = () => active && mountedRef.current;
     const stopPolling = () => {
       if (interval !== null) window.clearInterval(interval);
       interval = null;
@@ -50,6 +51,7 @@ export function AgentConnectionCheck({ projectId, identityKey, locale, t }: {
       }, 5000);
     };
     const loadCurrent = async () => {
+      if (creatingRef.current) return;
       const sequence = ++requestSequence.current;
       try {
         const next = await getAgentConnectionCheck(projectId);
@@ -83,14 +85,10 @@ export function AgentConnectionCheck({ projectId, identityKey, locale, t }: {
     const onFocus = () => { void loadCurrent(); };
     document.addEventListener('visibilitychange', onVisibilityChange);
     window.addEventListener('focus', onFocus);
-    setState(null);
-    setLoading(true);
-    setLoadFailed(false);
-    setReplaced(false);
-    setCopyStatus(null);
     void loadCurrent();
     return () => {
       active = false;
+      mountedRef.current = false;
       requestSequence.current += 1;
       stopPolling();
       document.removeEventListener('visibilitychange', onVisibilityChange);
@@ -101,7 +99,8 @@ export function AgentConnectionCheck({ projectId, identityKey, locale, t }: {
   }, [key, projectId]);
 
   const createSetup = async () => {
-    const identity = identityRef.current;
+    if (creatingRef.current) return;
+    creatingRef.current = true;
     const sequence = ++requestSequence.current;
     setCreating(true);
     setCreateFailed(false);
@@ -110,36 +109,38 @@ export function AgentConnectionCheck({ projectId, identityKey, locale, t }: {
     setCopyStatus(null);
     stateRef.current = null;
     setState(null);
+    let failed = false;
     try {
       const next = await createAgentConnectionCheck(projectId);
-      if (identityRef.current.key !== key || identityRef.current.generation !== identity.generation
-        || requestSequence.current !== sequence) return;
+      if (!mountedRef.current || requestSequence.current !== sequence) return;
       stateRef.current = next;
       setState(next);
       setLoading(false);
       startPollingRef.current();
     } catch {
-      if (identityRef.current.key === key && identityRef.current.generation === identity.generation
-        && requestSequence.current === sequence) {
+      failed = true;
+      if (mountedRef.current && requestSequence.current === sequence) {
         setLoadFailed(true);
         setLoading(false);
         setCreateFailed(true);
-        void reloadRef.current?.();
       }
     } finally {
-      if (identityRef.current.key === key && identityRef.current.generation === identity.generation) setCreating(false);
+      creatingRef.current = false;
+      if (mountedRef.current && requestSequence.current === sequence) {
+        setCreating(false);
+        if (failed) void reloadRef.current?.();
+      }
     }
   };
 
   const copyText = async (text: string, kind: 'prompt' | 'example') => {
-    const identity = identityRef.current;
     setCopyStatus(null);
     try {
       await navigator.clipboard.writeText(text);
-      if (identityRef.current.key !== key || identityRef.current.generation !== identity.generation) return;
+      if (!mountedRef.current) return;
       setCopyStatus(kind);
     } catch {
-      if (identityRef.current.key === key && identityRef.current.generation === identity.generation) setCopyStatus('error');
+      if (mountedRef.current) setCopyStatus('error');
     }
   };
 

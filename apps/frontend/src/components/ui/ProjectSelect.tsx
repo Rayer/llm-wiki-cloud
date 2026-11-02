@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ChevronDown, Check, Search } from 'lucide-react';
 
 export type ProjectOption = {
@@ -16,6 +16,9 @@ export function ProjectSelect({
   searchPlaceholder,
   noMatches,
   maxResults,
+  onOpen,
+  open: controlledOpen,
+  onOpenChange,
 }: {
   projects: ProjectOption[];
   value: string;
@@ -24,8 +27,16 @@ export function ProjectSelect({
   searchPlaceholder?: string;
   noMatches?: string;
   maxResults?: number;
+  onOpen?: () => void;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }) {
-  const [open, setOpen] = useState(false);
+  const [internalOpen, setInternalOpen] = useState(false);
+  const open = controlledOpen ?? internalOpen;
+  const setOpen = useCallback((next: boolean) => {
+    if (controlledOpen === undefined) setInternalOpen(next);
+    onOpenChange?.(next);
+  }, [controlledOpen, onOpenChange]);
   const [search, setSearch] = useState('');
   const rootRef = useRef<HTMLDivElement>(null);
   const selected = projects.find((p) => p.id === value);
@@ -50,13 +61,16 @@ export function ProjectSelect({
       document.removeEventListener('mousedown', handleClick);
       document.removeEventListener('keydown', handleKey);
     };
-  }, [open]);
+  }, [open, setOpen]);
 
   return (
     <div ref={rootRef} className="relative">
       <button
         type="button"
-        onClick={() => setOpen((prev) => { if (!prev) setSearch(''); return !prev; })}
+        onClick={() => {
+          if (!open) { setSearch(''); onOpen?.(); }
+          setOpen(!open);
+        }}
         className="flex w-full items-center justify-between gap-2 rounded border border-white/10 bg-zinc-900/60 px-3 py-2 text-left text-sm font-medium text-zinc-100 outline-none transition hover:bg-white/5 focus:border-emerald-400/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
         aria-haspopup="listbox"
         aria-expanded={open}

@@ -73,7 +73,6 @@ function ShellContent({ children }: { children: React.ReactNode }) {
   const versionWasOpenRef = useRef(false);
 
   const reloadBuildInfo = async () => {
-    setBuildInfoError('');
     try {
       const info = await getBuildInfo();
       setBuildInfo(info);
@@ -83,7 +82,19 @@ function ShellContent({ children }: { children: React.ReactNode }) {
     }
   };
 
-  useEffect(() => { void reloadBuildInfo(); }, []);
+  useEffect(() => {
+    let active = true;
+    getBuildInfo()
+      .then((info) => {
+        if (!active) return;
+        setBuildInfo(info);
+        setBuildInfoError('');
+      })
+      .catch((error: unknown) => {
+        if (active) setBuildInfoError(error instanceof Error ? error.message : String(error));
+      });
+    return () => { active = false; };
+  }, []);
 
   useEffect(() => {
     if (!versionDialogOpen) {
@@ -340,6 +351,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
                   placeholder={t('Shell.noProjects')}
                   searchPlaceholder={t('Shell.searchProjects')}
                   noMatches={t('Shell.noProjectMatches')}
+                  onOpen={() => { void refreshProjects(); }}
                 />
               )}
               {!isDemoSession ? (

@@ -146,9 +146,12 @@ test('Project content context accepts a proven bootstrap summary without a fabri
     current_concepts_sha256: 'a'.repeat(64), stale: false,
     summary: {
       text: 'Published topics', source_generation: 'generation-1', concepts_sha256: 'a'.repeat(64),
-      generated_at: '2026-10-30T00:00:00Z', prompt_revision: 'project-summary-v1', profile_source: 'bootstrap',
+      generated_at: '2026-10-30T00:00:00Z', prompt_revision: 'project-summary-v2-overview', profile_source: 'bootstrap',
       role: 'fast', requested_model: 'deepseek-flash', returned_model: 'deepseek-v2',
-      input_digest: 'b'.repeat(64), selection_version: 'selection-v1',
+      input_digest: 'b'.repeat(64), selection_version: 'selection-v2-source-spread-15',
+      overview_schema_version: 1, short_title: 'Small Wiki', topic_tags: ['Local research'],
+      total_concepts: 1, selected_concepts: 1, selected_slugs: ['one-concept'],
+      sampled: false, title_truncated_concepts: 0, body_truncated_concepts: 0,
     },
     error_class: null,
   };
@@ -159,6 +162,9 @@ test('Project content context accepts a proven bootstrap summary without a fabri
     assert.equal(result.summary?.profile_source, 'bootstrap');
     assert.equal(result.summary?.profile_id, undefined);
     assert.equal(result.summary?.profile_revision, undefined);
+    assert.equal(result.summary?.sampled, false);
+    assert.equal(result.summary?.title_truncated_concepts, 0);
+    assert.equal(result.summary?.body_truncated_concepts, 0);
   } finally {
     globalThis.fetch = originalFetch;
   }

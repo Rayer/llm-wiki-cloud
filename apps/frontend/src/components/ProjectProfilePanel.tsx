@@ -126,6 +126,7 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
   const { t } = useT();
   const { user, sessionEpoch } = useAuth();
   const { profileOnboarding, markProfileOnboardingPresented } = useWorkspace();
+  const contentContextScopeKey = JSON.stringify([user?.id ?? null, sessionEpoch, projectId]);
   const { confirmNavigation, setBlocked } = useNavigationBlocker();
   const [profile, setProfile] = useState<ProfileState | null>(null);
   const [bootstrapGuidance, setBootstrapGuidance] = useState<ProfileBootstrapGuidance | null>(null);
@@ -612,7 +613,7 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
       >
         <div className="mt-5 space-y-4">
           <ProjectDescriptionEditor projectId={projectId} />
-          <ProjectContentContextPanel projectId={projectId} />
+          <ProjectContentContextPanel key={`content-context:${contentContextScopeKey}`} projectId={projectId} />
         </div>
       </div>
       <div

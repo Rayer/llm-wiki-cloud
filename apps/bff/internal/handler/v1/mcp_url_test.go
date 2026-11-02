@@ -76,7 +76,7 @@ func (j *unavailableMCPURLJournal) ConfirmSourceCommit(context.Context, sourceau
 	return sourceautomation.CommitResult{State: "unknown", ProcessingStatus: "unknown"}, status.Error(codes.Unavailable, "injected Firestore outage")
 }
 
-func (*unavailableMCPURLJournal) RecordNoChangeProjectUse(context.Context, sourceautomation.Ref, string, string, string) (sourceautomation.NoChangeUseReceipt, error) {
+func (*unavailableMCPURLJournal) RecordNoChangeProjectUse(context.Context, sourceautomation.Ref, sourceautomation.NoChangeUseRequest) (sourceautomation.NoChangeUseReceipt, error) {
 	return sourceautomation.NoChangeUseReceipt{}, status.Error(codes.Unavailable, "injected Firestore outage")
 }
 

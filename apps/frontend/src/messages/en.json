@@ -35,6 +35,7 @@
     "otherWikis": "Other Wikis",
     "otherWikisHint": "Continue in another workspace. Search to find any Wiki in your account.",
     "findWiki": "Find another Wiki",
+    "viewAllWikis": "View all Wikis",
     "openWiki": "Open this Wiki"
   },
   "Login": {
@@ -390,27 +391,6 @@
     "subtitle": "Manage projects, users, and pipeline operations.",
     "refresh": "Refresh",
     "projects": "Projects",
-    "searchProjects": "Search all projects",
-    "noProjectMatches": "No matching projects.",
-    "versionInfo": "API version",
-    "loadingVersion": "Loading version…",
-    "versionUnavailable": "Version information is unavailable.",
-    "retryVersionInfo": "Retry",
-    "closeVersionInfo": "Close version information",
-    "environment": "Environment",
-    "environmentNotProvided": "Environment information not provided",
-    "productVersion": "Product version",
-    "commit": "BFF commit",
-    "revision": "BFF revision",
-    "branch": "Branch",
-    "tag": "Tag",
-    "imageTag": "Image tag",
-    "service": "Service",
-    "additionalBuildDetails": "Additional build details",
-    "buildSourceNote": "These details identify the API/BFF build. The frontend bundle has its own build identity.",
-    "copyVersionInfo": "Copy version details",
-    "versionCopied": "Copied",
-    "versionCopyFailed": "Copy failed. Select and copy the text below.",
     "sharedLlmTab": "Shared LLM",
     "users": "Users",
     "settings": "Settings",
@@ -479,6 +459,18 @@
   "Detail": {
     "backTo": "Back to {label}",
     "rawFile": "Raw file",
+    "rawSectionTitle": "Original material",
+    "rawMappingVerified": "This source is linked to its original raw file.",
+    "rawMappingUnverified": "This filename is inferred from source metadata.",
+    "rawMappingUnavailable": "No original raw file mapping is available.",
+    "closeRawPreview": "Close preview",
+    "openRawLibrary": "Open in Raw library",
+    "retryRawPreview": "Retry preview",
+    "relatedConcepts": "Related concepts",
+    "relatedConceptsReason": "Concepts connected to this source by the published knowledge index.",
+    "relatedSources": "Related sources",
+    "relatedSourcesReason": "Sources connected to this entry by the published knowledge index.",
+    "noRelatedEntries": "No related entries were returned.",
     "citationLoading": "Loading citation…",
     "citationLoadFailed": "Unable to load this citation. Try again.",
     "retryCitation": "Retry citation",
@@ -667,7 +659,28 @@
     "localeEnglish": "English",
     "translationFallback": "Some text is currently shown in English.",
     "useEnglish": "Switch to English",
-    "scrollToTop": "Scroll to top"
+    "scrollToTop": "Scroll to top",
+    "searchProjects": "Search all projects",
+    "noProjectMatches": "No matching projects.",
+    "versionInfo": "API version",
+    "loadingVersion": "Loading version…",
+    "versionUnavailable": "Version information is unavailable.",
+    "retryVersionInfo": "Retry",
+    "closeVersionInfo": "Close version information",
+    "environment": "Environment",
+    "environmentNotProvided": "Environment information not provided",
+    "productVersion": "Product version",
+    "commit": "BFF commit",
+    "revision": "BFF revision",
+    "branch": "Branch",
+    "tag": "Tag",
+    "imageTag": "Image tag",
+    "service": "Service",
+    "additionalBuildDetails": "Additional build details",
+    "buildSourceNote": "These details identify the API/BFF build. The frontend bundle has its own build identity.",
+    "copyVersionInfo": "Copy version details",
+    "versionCopied": "Copied",
+    "versionCopyFailed": "Copy failed. Select and copy the text below."
   },
   "NewProject": {
     "title": "Create project",
@@ -1050,6 +1063,42 @@
         "useGeneralSettings": "Use general settings",
         "previous": "Previous",
         "next": "Next: {stage}"
+      },
+      "multiSource": {
+        "heading": "The same notes can support different needs",
+        "description": "Switch between two prewritten outcomes from the same three synthetic source notes. This comparison is fixed example content, not your Project data.",
+        "fixed": "Prewritten example · no Project writes or model calls",
+        "tabs": "Choose a fixed example",
+        "family": {
+          "needTitle": "Rainy day with a child",
+          "need": "Help me plan an outing with a young child that still works in the rain.",
+          "conceptTitle": "Rainy-day family backup",
+          "concept": "Use the station-to-museum walk and its uncovered stretch from S1, plus the indoor family space and Wednesday closure from S2. Keep S3’s limited stroller access visible; a quiet café is not a substitute for a child-friendly place.",
+          "boundary": "The notes do not establish that every route is covered or that the café can accommodate a large stroller. Check current hours and access before going."
+        },
+        "quiet": {
+          "needTitle": "A quiet place to read or work",
+          "need": "Help me find a quiet place for reading or a short work session, with practical limits called out.",
+          "conceptTitle": "Quiet stops in Kyoto",
+          "concept": "Combine S1’s route from the station and uncovered stretch with S3’s quiet seats and limited outlets. Use S2’s family-space details and Wednesday closure as context, without treating it as a work venue.",
+          "boundary": "The notes do not say that the café has reliable Wi-Fi, enough outlets, or a suitable work setup. Confirm those details first."
+        },
+        "sourcesHeading": "Three synthetic source notes",
+        "sources": {
+          "s1": {
+            "title": "Kyoto rainy-day transit notes",
+            "text": "The walk from the station to the indoor museum takes about eight minutes and includes an uncovered stretch."
+          },
+          "s2": {
+            "title": "Family venue notes",
+            "text": "An indoor family space has an elevator and is closed on Wednesdays."
+          },
+          "s3": {
+            "title": "Café visit notes",
+            "text": "The café has quiet seating and few outlets; it is not suitable for a large stroller."
+          }
+        },
+        "note": "These prewritten examples do not create Concepts, change a Profile, or predict what a real compilation will produce."
       }
     },
     "requirementsDescription": "Optional. Describe the situations and details that matter to you. Requirements remain editable and do not guarantee particular tags or search behavior.",

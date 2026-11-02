@@ -67,6 +67,25 @@ describe('LWC-468 Agent connection check', () => {
     expect(screen.getByText(t('MCPOAuth.connection.confirmPrompt', { setup_id: 'setup-new', confirmation_token: 'A'.repeat(43) }))).toBeDefined();
   });
 
+  it('does not let a focus read overtake an in-flight create receipt', async () => {
+    let resolveCreate!: (value: ReturnType<typeof waiting>) => void;
+    mocks.create.mockReturnValue(new Promise((resolve) => { resolveCreate = resolve; }));
+    mocks.get.mockResolvedValue({ project_id: 'project-a', status: 'not_started', confirmed_at: null });
+    renderCheck();
+    await screen.findByText(t('MCPOAuth.connection.notStarted'));
+
+    fireEvent.click(screen.getByRole('button', { name: t('MCPOAuth.connection.createSetup') }));
+    await waitFor(() => expect(mocks.create).toHaveBeenCalledWith('project-a'));
+    await act(async () => { fireEvent(window, new Event('focus')); });
+    expect(mocks.get).toHaveBeenCalledTimes(1);
+
+    await act(async () => { resolveCreate(waiting('setup-created')); });
+    expect(await screen.findByText(t('MCPOAuth.connection.waiting'))).toBeDefined();
+    expect(screen.getByText(t('MCPOAuth.connection.confirmPrompt', {
+      setup_id: 'setup-created', confirmation_token: 'A'.repeat(43),
+    }))).toBeDefined();
+  });
+
   it('shows the server receipt time and explicitly says Query was not tested', async () => {
     mocks.get.mockResolvedValue({
       project_id: 'project-a', status: 'confirmed', setup_id: 'setup-a', created_at: now,

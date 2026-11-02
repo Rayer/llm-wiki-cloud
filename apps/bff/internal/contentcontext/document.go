@@ -72,9 +72,9 @@ type LastGood struct {
 	TotalConcepts          int       `json:"total_concepts,omitempty" firestore:"total_concepts,omitempty"`
 	SelectedConcepts       int       `json:"selected_concepts,omitempty" firestore:"selected_concepts,omitempty"`
 	SelectedSlugs          []string  `json:"selected_slugs,omitempty" firestore:"selected_slugs,omitempty"`
-	Sampled                bool      `json:"sampled,omitempty" firestore:"sampled,omitempty"`
-	TitleTruncatedConcepts int       `json:"title_truncated_concepts,omitempty" firestore:"title_truncated_concepts,omitempty"`
-	BodyTruncatedConcepts  int       `json:"body_truncated_concepts,omitempty" firestore:"body_truncated_concepts,omitempty"`
+	Sampled                bool      `json:"sampled" firestore:"sampled"`
+	TitleTruncatedConcepts int       `json:"title_truncated_concepts" firestore:"title_truncated_concepts"`
+	BodyTruncatedConcepts  int       `json:"body_truncated_concepts" firestore:"body_truncated_concepts"`
 }
 
 func (d StateDocument) Validate() error {

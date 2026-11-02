@@ -202,7 +202,8 @@ export function HomeClient() {
   const searchParams = useSearchParams();
   const routeSearch = searchParams?.toString() ?? '';
   const routeLocation = `${pathname ?? ''}?${routeSearch}`;
-  const { currentProject, projects, selectProject, token, user, hydrated, projectsLoading, isDemoSession, sessionEpoch } = useWorkspace();
+  const { currentProject, projects, selectProject, refreshProjects, token, user, hydrated, projectsLoading, isDemoSession, sessionEpoch } = useWorkspace();
+  const homeScopeKey = JSON.stringify([user?.id ?? null, sessionEpoch, currentProject?.id ?? null]);
   const [initialSearch] = useState(() => readSearchParams());
   const historyResult = initialSearch.historyEntry.entryId && initialSearch.historyEntry.isCurrentDocument
     ? getCompletedQueryResult(initialSearch.historyEntry.entryId)
@@ -269,6 +270,19 @@ export function HomeClient() {
   useEffect(() => {
     searchErrorRef.current = error;
   }, [error]);
+  useEffect(() => {
+    if (pathname !== '/' || !token) return;
+    void refreshProjects();
+    const refreshWhenActive = () => {
+      if (document.visibilityState === 'visible') void refreshProjects();
+    };
+    window.addEventListener('focus', refreshWhenActive);
+    document.addEventListener('visibilitychange', refreshWhenActive);
+    return () => {
+      window.removeEventListener('focus', refreshWhenActive);
+      document.removeEventListener('visibilitychange', refreshWhenActive);
+    };
+  }, [pathname, refreshProjects, token]);
   const previousProjectIdRef = useRef<string | undefined>(currentProject?.id);
   const sampledProjectIdRef = useRef<string | undefined>(undefined);
   const hasSampledQueriesRef = useRef(false);
@@ -279,6 +293,7 @@ export function HomeClient() {
     () => true,
   );
   const [latestConcepts, setLatestConcepts] = useState<WikiEntry[]>([]);
+  const [otherWikiPickerOpen, setOtherWikiPickerOpen] = useState(false);
   const [searchButtonCue, setSearchButtonCue] = useState<0 | 1 | 2>(0);
 
   const isCurrentSearch = useCallback((requestId: number, identity: SearchIdentity, entryId: string | null) => (
@@ -863,7 +878,7 @@ export function HomeClient() {
   return (
     <div className="lwc-home space-y-8">
       <section className="lwc-search-section">
-        {currentProject && !isDemoSession ? <div className="mb-4 flex justify-end"><AddMaterialAction /></div> : null}
+        {currentProject && !isDemoSession ? <div className="mb-4 flex justify-end"><AddMaterialAction key={`add-material:${homeScopeKey}`} /></div> : null}
         <h1 className="relative max-w-3xl text-[2rem] font-medium leading-tight tracking-tight text-[#F0F3F1]">
           {t('Demo.heading')}
         </h1>
@@ -984,7 +999,7 @@ export function HomeClient() {
             </div>
             <NavigationLink href="/concepts" className="inline-flex min-h-11 items-center text-sm text-zinc-300 transition hover:text-white">{t('Demo.allConcepts')}</NavigationLink>
           </div>
-          {token && !isDemoSession ? <ProjectContentContextPanel projectId={currentProject.id} /> : null}
+          {token && !isDemoSession ? <ProjectContentContextPanel key={`content-context:${homeScopeKey}`} projectId={currentProject.id} /> : null}
           {latestConcepts.length > 0 ? (
         <section className="space-y-4" aria-labelledby="latest-concepts-heading">
           <h3 id="latest-concepts-heading" className="font-sans text-lg font-medium text-[#F0F3F1]">{t('Home.recentKnowledge')}</h3>
@@ -1036,7 +1051,15 @@ export function HomeClient() {
                 searchPlaceholder={t('Shell.searchProjects')}
                 noMatches={t('Shell.noProjectMatches')}
                 maxResults={4}
+                onOpen={() => { void refreshProjects(); }}
+                open={otherWikiPickerOpen}
+                onOpenChange={setOtherWikiPickerOpen}
               />
+              {projects.filter((project) => project.id !== currentProject?.id).length > 4 ? (
+                <button type="button" onClick={() => { void refreshProjects(); setOtherWikiPickerOpen(true); }} className="mt-2 min-h-10 text-xs font-medium text-emerald-200 underline underline-offset-4 hover:text-emerald-100">
+                  {t('Home.viewAllWikis')}
+                </button>
+              ) : null}
             </div>
           </div>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
