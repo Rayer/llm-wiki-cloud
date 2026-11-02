@@ -178,6 +178,19 @@ export function PipelineClient() {
   const [retryingPipeline, setRetryingPipeline] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [showPrereq, setShowPrereq] = useState(false);
+  const acceptPipelineStatusSnapshot = useCallback((scope: PipelineAutomationPollScope, status: PipelineStatus) => {
+    const latest = pipelineProjectContextRef.current;
+    if (!pipelineMountedRef.current
+      || latest.projectId !== scope.projectId
+      || latest.generation !== scope.contextGeneration
+      || status.project_id !== scope.projectId) return false;
+    latestPipelineStatusRef.current = {
+      projectId: scope.projectId,
+      contextGeneration: scope.contextGeneration,
+      status,
+    };
+    return true;
+  }, []);
   const refreshPipelineStatus = useCallback(async (scope: PipelineRequestScope): Promise<PipelineStatusRead> => {
     if (!isPipelineRequestCurrent(scope)) return { current: false, status: null };
     const sequence = ++pipelineStatusReadSequenceRef.current;
@@ -235,11 +248,7 @@ export function PipelineClient() {
           : current);
         return { current: true, status };
       }
-      latestPipelineStatusRef.current = {
-        projectId: scope.projectId,
-        contextGeneration: scope.contextGeneration,
-        status,
-      };
+      if (!acceptPipelineStatusSnapshot(scope, status)) return { current: false, status: null };
       setPipelineStatus(status);
       return { current: true, status };
     } catch {
@@ -247,7 +256,7 @@ export function PipelineClient() {
       setPipelineStatusReadFailedProjectId(scope.projectId);
       return { current: true, status: null };
     }
-  }, [isPipelineRequestCurrent]);
+  }, [acceptPipelineStatusSnapshot, isPipelineRequestCurrent]);
 
   const retryPipelineStatusRead = useCallback(async () => {
     const context = pipelineProjectContextRef.current;
@@ -349,6 +358,7 @@ export function PipelineClient() {
       }
       pipelinePollErrorNotifiedRef.current = false;
       setPipelineStatusReadFailedProjectId(null);
+      if (!acceptPipelineStatusSnapshot(scope, status)) return;
       setPipelineStatus((current) => {
         if (pipelineStatusSnapshotRevisionRef.current === snapshotRevision || current?.project_id !== scope.projectId) return status;
         return {
@@ -383,7 +393,8 @@ export function PipelineClient() {
         addToast(err instanceof Error ? err.message : 'Pipeline status failed', 'error');
       }
     }
-  }, [addToast, isPipelineRequestCurrent, refreshPipelineAutomation, stopPipelineAutomationPolling, stopPipelinePolling]);
+  }, [acceptPipelineStatusSnapshot, addToast, isPipelineRequestCurrent, refreshPipelineAutomation,
+    stopPipelineAutomationPolling, stopPipelinePolling]);
 
   useEffect(() => stopPipelinePolling, [currentProject?.id, stopPipelinePolling]);
   useEffect(() => stopPipelineAutomationPolling, [currentProject?.id, stopPipelineAutomationPolling]);
@@ -414,6 +425,7 @@ export function PipelineClient() {
         if (isPendingPipelineIntent(nextIntent)) {
           // Let an already-running intent finish before taking ownership of a newer one.
           if (!pipelinePollRef.current || !isPendingPipelineIntent(currentIntent)) {
+            if (!acceptPipelineStatusSnapshot(scope, status)) return;
             stopPipelinePolling();
             pipelineTerminalPollScopeRef.current = null;
             pipelinePollErrorNotifiedRef.current = false;
@@ -430,6 +442,7 @@ export function PipelineClient() {
             poll();
           }
         } else if (!pipelinePollRef.current) {
+          if (!acceptPipelineStatusSnapshot(scope, status)) return;
           setPipelineStatusReadFailedProjectId(null);
           setPipelineStatus(status);
         }
@@ -438,7 +451,7 @@ export function PipelineClient() {
     } finally {
       pipelineAutomationPollInFlightRef.current = false;
     }
-  }, [pipelineStatus?.pipeline_intent, pollPipelineStatus, refreshPipelineAutomation,
+  }, [acceptPipelineStatusSnapshot, pipelineStatus?.pipeline_intent, pollPipelineStatus, refreshPipelineAutomation,
     setPipelineStatus, setPipelineStatusReadFailedProjectId, stopPipelineAutomationPolling, stopPipelinePolling]);
 
   useEffect(() => {
