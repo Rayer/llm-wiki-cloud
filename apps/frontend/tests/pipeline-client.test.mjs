@@ -25,7 +25,7 @@ test('pipeline client resumes the persisted intent and derives Cloud Run state f
   );
 
   assert.match(pipelineClient, /executionStatus === 'RUNNING'/);
-  assert.match(pipelineClient, /resumableIntent = status\.pipeline_intent \?\? null/);
+  assert.match(pipelineClient, /resumableIntent = initialRead\.status\.pipeline_intent \?\? null/);
   assert.match(pipelineClient, /isPendingPipelineIntent\(resumableIntent\)/);
   assert.match(pipelineClient, /pollPipelineStatus\(resumedScope, intent\.execution_id, intent\.id\)/);
   assert.doesNotMatch(pipelineClient, /status: 'RUNNING'/);
