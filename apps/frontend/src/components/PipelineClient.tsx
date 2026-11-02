@@ -122,6 +122,11 @@ export function PipelineClient() {
   const { isDemoSession, currentProject, token, materialStatusRevision = 0, refreshNavCounts } = useWorkspace();
   const projectId = currentProject?.id ?? null;
   const pipelineProjectContextRef = useRef<PipelineProjectContext>({ projectId, generation: 0 });
+  const latestPipelineStatusRef = useRef<{
+    projectId: string;
+    contextGeneration: number;
+    status: PipelineStatus;
+  } | null>(null);
   const scrapeRequestGenerationRef = useRef(0);
   const [scrapeLoading, setScrapeLoading] = useState(false);
   const [scrapeError, setScrapeError] = useState<string | null>(null);
@@ -140,6 +145,7 @@ export function PipelineClient() {
         projectId,
         generation: pipelineProjectContextRef.current.generation + 1,
       };
+      latestPipelineStatusRef.current = null;
       pipelineExecutionOwnerRef.current = null;
       setPipelineStatusReadFailedProjectId(null);
       setPipelineStatusRetrying(false);
@@ -229,6 +235,11 @@ export function PipelineClient() {
           : current);
         return { current: true, status };
       }
+      latestPipelineStatusRef.current = {
+        projectId: scope.projectId,
+        contextGeneration: scope.contextGeneration,
+        status,
+      };
       setPipelineStatus(status);
       return { current: true, status };
     } catch {
@@ -530,7 +541,6 @@ export function PipelineClient() {
     setPipelineResult(null);
     setLoading(null);
     void (async () => {
-      let resumableIntent: PipelineIntentStatus | null = null;
       const resumeIntent = (intent: PipelineIntentStatus) => {
         if (!isCurrentContext()) return;
         const resumedScope: PipelineRequestScope = {
@@ -568,8 +578,7 @@ export function PipelineClient() {
       };
       const initialRead = await refreshPipelineStatus(initialScope);
       if (isCurrentContext() && initialRead.current) {
-        if (initialRead.status) resumableIntent = initialRead.status.pipeline_intent ?? null;
-        else initialStatusReadFailed = true;
+        if (!initialRead.status) initialStatusReadFailed = true;
       }
       if (initialStatusReadFailed && isCurrentContext()) {
         pipelinePollRef.current = setInterval(() => void retryInitialStatus(), 5000);
@@ -580,8 +589,14 @@ export function PipelineClient() {
       } catch {
         if (isCurrentContext()) setFullCapability(null);
       }
-      if (isCurrentContext() && isPendingPipelineIntent(resumableIntent)) {
-        resumeIntent(resumableIntent);
+      const latestSnapshot = latestPipelineStatusRef.current;
+      if (
+        isCurrentContext()
+        && latestSnapshot?.projectId === projectId
+        && latestSnapshot.contextGeneration === context.generation
+        && isPendingPipelineIntent(latestSnapshot.status.pipeline_intent)
+      ) {
+        resumeIntent(latestSnapshot.status.pipeline_intent);
       }
     })();
 

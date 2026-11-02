@@ -187,14 +187,14 @@ function entryDetailHref(entry: ModalEntry): string | null {
 
   if (id) return `/${collection}/${encodeURIComponent(id)}`;
 
+  if (entry.type === 'source') return null;
+
   if (entry.path) {
     const pathSegment = citationPathSegment(entry.type, entry.path);
     if (pathSegment) {
       return `/${collection}/${encodeURIComponent(pathSegment)}`;
     }
   }
-
-  if (entry.type === 'source') return null;
 
   return slug ? `/${collection}/${encodeURIComponent(slug)}` : null;
 }
@@ -808,10 +808,10 @@ export function HomeClient() {
         try {
           const sources = await getSources(currentProject?.id);
           if (requestId !== citationRequestId.current) return;
-          const source = entry.rawPath
-            ? sources.find((item) => item.rawPath === entry.rawPath)
-            : sources.find((item) => item.slug === entrySlug);
-          entryId = safeWikiRouteSegment(source?.id) ?? undefined;
+          const matches = entry.rawPath
+            ? sources.filter((item) => item.rawPath === entry.rawPath)
+            : sources.filter((item) => item.slug === entrySlug);
+          entryId = matches.length === 1 ? safeWikiRouteSegment(matches[0].id) ?? undefined : undefined;
         } catch {
           // Keep the preview available without linking to a noncanonical source route.
         }

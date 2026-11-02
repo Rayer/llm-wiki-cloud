@@ -153,6 +153,10 @@ function pipelineStatus(projectId: string, newRawFiles: number) {
   };
 }
 
+function pipelineIntent(id: string, executionId: string, status = 'preparing') {
+  return { id, execution_id: executionId, status, compile_mode: 'incremental' };
+}
+
 const urlPreview = {
   status: 'preview', message: 'Review the rendered candidate before saving.',
   candidate_id: 'candidate-a', candidate_revision: 'candidate-revision-a', expires_at: '2026-11-03T12:00:00Z',
@@ -398,6 +402,72 @@ it.each(['resolve', 'reject'] as const)('does not let a delayed initial Pipeline
   expect(screen.getByTestId('pipeline-quota-line').textContent).toContain('New files: 1');
   expect(screen.queryByTestId('pipeline-status-read-failed')).toBeNull();
   expect(mocks.uploadRawFile).toHaveBeenCalledTimes(1);
+  expect(mocks.triggerPipeline).not.toHaveBeenCalled();
+});
+
+it.each([
+  {
+    name: 'newer terminal intent A',
+    latestIntent: pipelineIntent('intent-a', 'execution-a', 'succeeded'),
+    expectedPoll: null,
+  },
+  {
+    name: 'newer pending intent B',
+    latestIntent: pipelineIntent('intent-b', 'execution-b'),
+    expectedPoll: { executionId: 'execution-b', intentId: 'intent-b' },
+  },
+  {
+    name: 'the still-current pending intent A',
+    latestIntent: null,
+    expectedPoll: { executionId: 'execution-a', intentId: 'intent-a' },
+  },
+])('continues initial Pipeline recovery from $name after capability lookup', async ({ latestIntent, expectedPoll }) => {
+  const capability = deferred<{ allowed: boolean; compile_mode: 'full'; quota: null }>();
+  const intentA = pipelineIntent('intent-a', 'execution-a');
+  let rawCount = 0;
+  let genericReads = 0;
+  const executionPolls: Array<{ executionId?: string; intentId?: string }> = [];
+  mocks.getStatus.mockImplementation(async () => ({ sourcesCount: 0, conceptsCount: 0, rawCount, suggestedQueries: [], lastExecution: null, raw: {} }));
+  mocks.getRecompileAllCapability.mockReturnValue(capability.promise);
+  mocks.getPipelineStatus.mockImplementation((projectId: string, executionId?: string, intentId?: string) => {
+    if (executionId) {
+      executionPolls.push({ executionId, intentId });
+      return Promise.resolve({ ...pipelineStatus(projectId, rawCount), pipeline_intent: intentA });
+    }
+    genericReads += 1;
+    const intent = genericReads === 1 ? intentA : latestIntent ?? intentA;
+    return Promise.resolve({ ...pipelineStatus(projectId, rawCount), pipeline_intent: intent });
+  });
+  mocks.uploadRawFile.mockImplementation(async () => {
+    rawCount = 1;
+    return savedReceipt;
+  });
+
+  renderPage();
+  await waitFor(() => expect(genericReads).toBe(1));
+  await waitFor(() => expect(mocks.getRecompileAllCapability).toHaveBeenCalledTimes(1));
+
+  if (latestIntent) {
+    fireEvent.click(screen.getByRole('button', { name: translate('en', 'AddMaterial.open') }));
+    fireEvent.change(screen.getByLabelText(translate('en', 'AddMaterial.textTitle')), { target: { value: 'Updated Pipeline evidence' } });
+    fireEvent.change(screen.getByLabelText(translate('en', 'AddMaterial.textBody')), { target: { value: 'A persisted note updates lifecycle status.' } });
+    fireEvent.click(screen.getByRole('button', { name: translate('en', 'AddMaterial.saveText') }));
+    expect(await screen.findByText(new RegExp(savedReceipt.path))).toBeTruthy();
+    await waitFor(() => expect(genericReads).toBe(2));
+    await waitFor(() => expect(screen.getByTestId('pipeline-quota-line').textContent).toContain('New files: 1'));
+  }
+
+  await act(async () => {
+    capability.resolve({ allowed: false, compile_mode: 'full', quota: null });
+    await capability.promise;
+  });
+
+  if (expectedPoll) {
+    await waitFor(() => expect(executionPolls).toContainEqual(expectedPoll));
+    expect(executionPolls).toEqual([expectedPoll]);
+  } else {
+    expect(executionPolls).toEqual([]);
+  }
   expect(mocks.triggerPipeline).not.toHaveBeenCalled();
 });
 

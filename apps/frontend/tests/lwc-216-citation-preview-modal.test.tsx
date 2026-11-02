@@ -276,6 +276,63 @@ describe('LWC-216 citation preview modal behavior', () => {
     expect(screen.queryByRole('link', { name: 'Detail.openFullPage' })).toBeNull();
   });
 
+  it('keeps the source preview without linking when raw-path identity is duplicated', async () => {
+    const rawPath = 'raw/shared-note.md';
+    const slug = 'shared note';
+    mocks.searchWiki.mockResolvedValue({
+      results: [],
+      aiAnswer: 'Inspect [Shared note].',
+      citations: [{ text: 'Shared note', slug, type: 'source' }],
+    });
+    mocks.getSource.mockResolvedValue(sourceEntry({ title: 'Shared note', slug, rawPath, content: 'Preview survives ambiguous identity.' }));
+    mocks.getSources.mockResolvedValue([
+      { id: 'source-a', slug: 'first', rawPath },
+      { id: 'source-b', slug: 'second', rawPath },
+    ]);
+
+    await runSearch();
+    fireEvent.click(await screen.findByRole('button', { name: 'Shared note' }));
+
+    expect(await screen.findByText('Preview survives ambiguous identity.')).toBeTruthy();
+    expect(screen.queryByRole('link', { name: 'Detail.openFullPage' })).toBeNull();
+  });
+
+  it('keeps the source preview without linking when slug identity is duplicated', async () => {
+    const slug = 'same source slug';
+    mocks.searchWiki.mockResolvedValue({
+      results: [],
+      aiAnswer: 'Inspect [Repeated slug].',
+      citations: [{ text: 'Repeated slug', slug, type: 'source' }],
+    });
+    mocks.getSource.mockResolvedValue(sourceEntry({ title: 'Repeated slug', slug, content: 'Preview survives duplicate slugs.' }));
+    mocks.getSources.mockResolvedValue([
+      { id: 'source-a', slug, rawPath: 'raw/first.md' },
+      { id: 'source-b', slug, rawPath: 'raw/second.md' },
+    ]);
+
+    await runSearch();
+    fireEvent.click(await screen.findByRole('button', { name: 'Repeated slug' }));
+
+    expect(await screen.findByText('Preview survives duplicate slugs.')).toBeTruthy();
+    expect(screen.queryByRole('link', { name: 'Detail.openFullPage' })).toBeNull();
+  });
+
+  it('does not use an unresolved bare source citation path as a full-page route', async () => {
+    mocks.searchWiki.mockResolvedValue({
+      results: [],
+      aiAnswer: 'Inspect [Unresolved path].',
+      citations: [{ text: 'Unresolved path', type: 'source', path: '/sources/unresolved-bare-source' }],
+    });
+    mocks.getSource.mockResolvedValue(sourceEntry({ title: 'Unresolved path', slug: 'unrelated-slug', content: 'Inline-only source preview.' }));
+    mocks.getSources.mockResolvedValue([]);
+
+    await runSearch();
+    fireEvent.click(await screen.findByRole('button', { name: 'Unresolved path' }));
+
+    expect(await screen.findByText('Inline-only source preview.')).toBeTruthy();
+    expect(screen.queryByRole('link', { name: 'Detail.openFullPage' })).toBeNull();
+  });
+
   it('rejects unsafe explicit citation locators before detail fetch', async () => {
     mocks.searchWiki.mockResolvedValue({
       results: [],
