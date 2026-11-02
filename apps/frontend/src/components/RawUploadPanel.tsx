@@ -132,7 +132,6 @@ export function RawUploadPanel({
   const activeUploadsRef = useRef(0);
   const uploadItemsRef = useRef<UploadItem[]>([]);
   const settledProjectIdsRef = useRef(new Set<string>());
-  const createdProjectIdsRef = useRef(new Set<string>());
   const changedProjectIdsRef = useRef(new Set<string>());
   const onQueueSettledRef = useRef(onQueueSettled);
   const [fileLabel, setFileLabel] = useState(t('Pipeline.selectFiles'));
@@ -204,7 +203,6 @@ export function RawUploadPanel({
             settledProjectIdsRef.current.add(next.projectId);
             const documentResult = 'document_id' in result ? result : null;
             const rawResult = documentResult ? null : result as RawUploadResult;
-            if (rawResult?.status === 'created') createdProjectIdsRef.current.add(next.projectId);
             if (rawResult?.status === 'created' || rawResult?.status === 'replaced') changedProjectIdsRef.current.add(next.projectId);
             uploadItemsRef.current = uploadItemsRef.current.map((item) =>
               item.id === next.id
@@ -212,7 +210,6 @@ export function RawUploadPanel({
                 : item,
             );
             setUploadItems(uploadItemsRef.current);
-            if (documentResult) void refreshNavCounts();
           } catch (err) {
             if (!mountedRef.current) return;
             uploadItemsRef.current = uploadItemsRef.current.map((item) =>
@@ -233,16 +230,13 @@ export function RawUploadPanel({
             );
             if (!stillBusy) {
               const settledProjectIds = [...settledProjectIdsRef.current];
-              const createdProjectIds = createdProjectIdsRef.current;
               const changedProjectIds = changedProjectIdsRef.current;
-              if (currentProjectRef.current && createdProjectIds.has(currentProjectRef.current.id)) {
-                void refreshNavCounts();
-              }
               for (const projectId of settledProjectIds) {
-                onQueueSettledRef.current?.({ changed: changedProjectIds.has(projectId), projectId });
+                const result = { changed: changedProjectIds.has(projectId), projectId };
+                if (onQueueSettledRef.current) onQueueSettledRef.current(result);
+                else void refreshNavCounts();
               }
               settledProjectIdsRef.current = new Set();
-              createdProjectIdsRef.current = new Set();
               changedProjectIdsRef.current = new Set();
             }
             queueMicrotask(pump);

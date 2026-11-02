@@ -3,7 +3,7 @@
   "locale": "zh_tw",
   "migration_source_revision": "b8f167ef9fe3d7e3f6b53c860356eb1c2d87b9bf",
   "migration_catalog_revision": "3a0e6da83c9113423b9582f6fe3b7df6d15ab414fefc197641b1ef1c6bc25e9b",
-  "seed_map_sha256": "52e1f84fa8ab87295e5fc94a42ee244b68a44ebfef4651589c6b33b1008b0b8b",
+  "seed_map_sha256": "73839bf56bfd390a06d47c862af1de3b9fc5dac16c0f8f3ed512ce9f6bcc0c94",
   "entries": {
     "AccountSettings.accountTab": "9d4435cd4778e9d6f90f5797c2e556e1baaffe742ef1b78150f3b61931a4a8b2",
     "AccountSettings.bindingActive": "155e79378bcb9e2d77d0d0c40999baccc08c8b72d2bbfbf835a45ea757ef1177",
@@ -1543,7 +1543,10 @@
     "Status.stageSyntoRun": "56b823a54423d6bad61971edf5181394dfd530782ac265b493b77ecbfa5924c6",
     "Status.started": "710326bb912829c50fb91d7133e2d3975c6d8a6abae3585c4232d0152bc6249f",
     "Status.title": "18a8ffe5d86b40a3c43916aa9732af8351eda5ac1d6d9a97eef8c8b06ea552de",
-    "Status.userId": "64686fb5bf34f712038a9bc40c80410c189662c575a6a166d9c6ff9e8dbc69b5"
+    "Status.userId": "64686fb5bf34f712038a9bc40c80410c189662c575a6a166d9c6ff9e8dbc69b5",
+    "AddMaterial.refreshFailed": "a409976107ccb4b75097c593216387f9757662e1856f3dbac3f21e6fc2a90c4c",
+    "AddMaterial.refreshingStatus": "9b0927b8b6c69ae99a54e2728601db40db6c44a8a2dab14c8497d501c70ea27b",
+    "AddMaterial.retryRefresh": "a0afb106eef85515398710085a04e9eedd19a711b78c0d1bc77cb08056e4fdac"
   },
   "candidate_catalog_revision": "049a79128b92240ecce6118e76c0c41622ec00bb9c53edb59fde0d7cb9288de6"
 }

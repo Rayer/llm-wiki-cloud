@@ -118,7 +118,7 @@ function isPipelineAutomationInFlight(settings: ProjectPipelineAutomation | null
 
 export function PipelineClient() {
   const { t, locale } = useT();
-  const { isDemoSession, currentProject, token } = useWorkspace();
+  const { isDemoSession, currentProject, token, materialStatusRevision = 0, refreshNavCounts } = useWorkspace();
   const projectId = currentProject?.id ?? null;
   const pipelineProjectContextRef = useRef<PipelineProjectContext>({ projectId, generation: 0 });
   const scrapeRequestGenerationRef = useRef(0);
@@ -382,6 +382,17 @@ export function PipelineClient() {
   }, [stopPipelineAutomationPolling]);
 
   useEffect(() => {
+    if (!projectId || materialStatusRevision === 0) return;
+    const context = pipelineProjectContextRef.current;
+    if (context.projectId !== projectId) return;
+    const scope = { projectId, contextGeneration: context.generation };
+    void refreshPipelineStatus({ ...scope, requestGeneration: pipelineRequestGenerationRef.current });
+    void refreshPipelineAutomation(scope).then((settings) => {
+      if (settings && isPipelineAutomationInFlight(settings)) startPipelineAutomationPolling(scope);
+    });
+  }, [materialStatusRevision, projectId, refreshPipelineAutomation, refreshPipelineStatus, startPipelineAutomationPolling]);
+
+  useEffect(() => {
     if (!projectId) return;
     const scope = { projectId, contextGeneration: pipelineProjectContextRef.current.generation };
     let cancelled = false;
@@ -394,9 +405,10 @@ export function PipelineClient() {
   }, [projectId, refreshPipelineAutomation, startPipelineAutomationPolling]);
 
   const handleUploadQueueSettled = useCallback(({ changed, projectId: uploadedProjectId }: RawUploadsSettled) => {
-    if (!changed) return;
     const context = pipelineProjectContextRef.current;
     if (context.projectId === uploadedProjectId) {
+      void refreshNavCounts();
+      if (!changed) return;
       void refreshPipelineStatus({
         projectId: uploadedProjectId,
         contextGeneration: context.generation,
@@ -405,7 +417,7 @@ export function PipelineClient() {
       void refreshPipelineAutomation({ projectId: uploadedProjectId, contextGeneration: context.generation });
       startPipelineAutomationPolling({ projectId: uploadedProjectId, contextGeneration: context.generation });
     }
-  }, [refreshPipelineAutomation, refreshPipelineStatus, startPipelineAutomationPolling]);
+  }, [refreshNavCounts, refreshPipelineAutomation, refreshPipelineStatus, startPipelineAutomationPolling]);
 
   useEffect(() => {
     const refreshAfterAnnotationSave = () => {
