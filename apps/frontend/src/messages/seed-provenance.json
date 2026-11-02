@@ -3,7 +3,7 @@
   "locale": "zh_tw",
   "migration_source_revision": "b8f167ef9fe3d7e3f6b53c860356eb1c2d87b9bf",
   "migration_catalog_revision": "3a0e6da83c9113423b9582f6fe3b7df6d15ab414fefc197641b1ef1c6bc25e9b",
-  "seed_map_sha256": "73839bf56bfd390a06d47c862af1de3b9fc5dac16c0f8f3ed512ce9f6bcc0c94",
+  "seed_map_sha256": "bf0e93da5f6fd3a675b9ef86266da5a83575e6cef5d151650ed7d49a92426b17",
   "entries": {
     "AccountSettings.accountTab": "9d4435cd4778e9d6f90f5797c2e556e1baaffe742ef1b78150f3b61931a4a8b2",
     "AccountSettings.bindingActive": "155e79378bcb9e2d77d0d0c40999baccc08c8b72d2bbfbf835a45ea757ef1177",
@@ -887,7 +887,7 @@
     "Pipeline.select": "83266470fb3922d68d762fbfe74bb171fd8a9f91644ca49f4254b108393bb1dc",
     "Pipeline.selectFiles": "db4c5667e675d84a7c608c326cf52c4c40385b7902d118d1aa10e83d9a4187e4",
     "Pipeline.sourceProfileRevision": "1619bbbbabf71fcf5f1a3d2f53e46983c6282b20b8da11524369a2623a524b9d",
-    "Pipeline.statusReadFailed": "273fcae259141376132da48c384f9c8b97d5a26e494ece999aa8d8c69da1bdd3",
+    "Pipeline.statusReadFailed": "b14e7de3355f0ede4325b06089355d450a4d091b5a1862d902dc96c33cab311e",
     "Pipeline.uploadFiles": "ba78ace7bc39695f82e878b56713151eb489fbe1324361fb50ce7e886ac66c59",
     "Pipeline.uploadHint": "deabaa9fe9e0fc6a786da76039db939cd9512226d5622362bfd2a8cb9cd4db38",
     "Pipeline.urlAlreadySaved": "85fd3647486578ee3c2357493a106d6ea00d5dafbf45b7cc4f62a25f2e45b83c",

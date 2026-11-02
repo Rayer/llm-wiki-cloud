@@ -46,6 +46,7 @@ type PipelineProjectContext = { projectId: string | null; generation: number };
 type PipelineRequestScope = { projectId: string; contextGeneration: number; requestGeneration: number };
 type PipelineAutomationPollScope = Pick<PipelineRequestScope, 'projectId' | 'contextGeneration'>;
 type PipelineExecutionOwner = { projectId: string; contextGeneration: number };
+type PipelineStatusRead = { current: boolean; status: PipelineStatus | null };
 
 function scrapeErrorMessageKey(error: unknown): 'Pipeline.urlUncertain' | 'Pipeline.urlUnavailable' {
   return error instanceof ApiError && (error.status === 0 || (error.status >= 500 && error.status < 600))
@@ -140,6 +141,7 @@ export function PipelineClient() {
       };
       pipelineExecutionOwnerRef.current = null;
       setPipelineStatusReadFailedProjectId(null);
+      setPipelineStatusRetrying(false);
       setPipelineAutomation(null);
       setPipelineAutomationError(null);
       scrapeRequestGenerationRef.current += 1;
@@ -150,6 +152,8 @@ export function PipelineClient() {
     }
   }, [projectId]);
   const pipelineRequestGenerationRef = useRef(0);
+  const pipelineStatusReadSequenceRef = useRef(0);
+  const pipelineStatusSnapshotRevisionRef = useRef(0);
   const pipelineMountedRef = useRef(false);
   const isPipelineRequestCurrent = useCallback((scope: PipelineRequestScope) => {
     const latest = pipelineProjectContextRef.current;
@@ -161,23 +165,25 @@ export function PipelineClient() {
   const [scrapeUrlText, setScrapeUrlText] = useState('');
   const [pipelineResult, setPipelineResult] = useState<PipelineResult | null>(null);
   const [pipelineStatus, setPipelineStatus] = useState<PipelineStatus | null>(null);
+  const [pipelineStatusRetrying, setPipelineStatusRetrying] = useState(false);
   const [compileMode, setCompileMode] = useState<'incremental' | 'full'>('incremental');
   const [fullCapability, setFullCapability] = useState<RecompileAllCapability | null>(null);
   const [loading, setLoading] = useState<string | null>(null); // 'pipeline'
   const [retryingPipeline, setRetryingPipeline] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [showPrereq, setShowPrereq] = useState(false);
-  const refreshPipelineStatus = useCallback(async (scope: PipelineRequestScope) => {
-    if (!isPipelineRequestCurrent(scope)) return;
+  const refreshPipelineStatus = useCallback(async (scope: PipelineRequestScope): Promise<PipelineStatusRead> => {
+    if (!isPipelineRequestCurrent(scope)) return { current: false, status: null };
+    const sequence = ++pipelineStatusReadSequenceRef.current;
+    const isCurrentRead = () => sequence === pipelineStatusReadSequenceRef.current && isPipelineRequestCurrent(scope);
     try {
       const status = await getPipelineStatus(scope.projectId);
-      const latest = pipelineProjectContextRef.current;
-      if (
-        !pipelineMountedRef.current
-        || latest.projectId !== scope.projectId
-        || latest.generation !== scope.contextGeneration
-        || status.project_id !== scope.projectId
-      ) return;
+      if (!isCurrentRead()) return { current: false, status: null };
+      if (status.project_id !== scope.projectId) {
+        setPipelineStatusReadFailedProjectId(scope.projectId);
+        return { current: true, status: null };
+      }
+      pipelineStatusSnapshotRevisionRef.current += 1;
       setPipelineStatusReadFailedProjectId(null);
       const executionOwner = pipelineExecutionOwnerRef.current;
       if (
@@ -194,14 +200,37 @@ export function PipelineClient() {
               ...(status.suggested_queries !== undefined ? { suggested_queries: status.suggested_queries } : {}),
             }
           : current);
-        return;
+        return { current: true, status };
       }
-      if (pipelineRequestGenerationRef.current !== scope.requestGeneration) return;
       setPipelineStatus(status);
+      return { current: true, status };
     } catch {
-      // Keep the current status when a best-effort refresh fails.
+      if (!isCurrentRead()) return { current: false, status: null };
+      setPipelineStatusReadFailedProjectId(scope.projectId);
+      return { current: true, status: null };
     }
   }, [isPipelineRequestCurrent]);
+
+  const retryPipelineStatusRead = useCallback(async () => {
+    const context = pipelineProjectContextRef.current;
+    if (!context.projectId) return;
+    const requestGeneration = pipelineRequestGenerationRef.current;
+    setPipelineStatusRetrying(true);
+    try {
+      await refreshPipelineStatus({
+        projectId: context.projectId,
+        contextGeneration: context.generation,
+        requestGeneration,
+      });
+    } finally {
+      const latest = pipelineProjectContextRef.current;
+      if (latest.projectId === context.projectId
+        && latest.generation === context.generation
+        && pipelineRequestGenerationRef.current === requestGeneration) {
+        setPipelineStatusRetrying(false);
+      }
+    }
+  }, [refreshPipelineStatus]);
 
   const refreshPipelineAutomation = useCallback(async (scope: PipelineAutomationPollScope): Promise<ProjectPipelineAutomation | null> => {
     try {
@@ -260,6 +289,7 @@ export function PipelineClient() {
     if (!isPipelineRequestCurrent(scope)) return;
     const terminalScope = pipelineTerminalPollScopeRef.current;
     if (terminalScope && isSamePipelineRequestScope(terminalScope, scope)) return;
+    const snapshotRevision = pipelineStatusSnapshotRevisionRef.current;
     try {
       const status = intentId
         ? await getPipelineStatus(scope.projectId, executionId, intentId)
@@ -281,7 +311,16 @@ export function PipelineClient() {
       }
       pipelinePollErrorNotifiedRef.current = false;
       setPipelineStatusReadFailedProjectId(null);
-      setPipelineStatus(status);
+      setPipelineStatus((current) => {
+        if (pipelineStatusSnapshotRevisionRef.current === snapshotRevision || current?.project_id !== scope.projectId) return status;
+        return {
+          ...status,
+          ...(current.quota !== undefined ? { quota: current.quota } : {}),
+          ...(current.full_quota !== undefined ? { full_quota: current.full_quota } : {}),
+          ...(current.scheduled_pipeline !== undefined ? { scheduled_pipeline: current.scheduled_pipeline } : {}),
+          ...(current.suggested_queries !== undefined ? { suggested_queries: current.suggested_queries } : {}),
+        };
+      });
       void refreshPipelineAutomation({ projectId: scope.projectId, contextGeneration: scope.contextGeneration }).then((settings) => {
         if (isPipelineRequestCurrent(scope) && settings && !isPipelineAutomationInFlight(settings)) {
           stopPipelineAutomationPolling();
@@ -323,13 +362,15 @@ export function PipelineClient() {
     try {
       const settings = await refreshPipelineAutomation(scope);
       let status: PipelineStatus | null = null;
+      const statusReadSequence = ++pipelineStatusReadSequenceRef.current;
       try {
         status = await getPipelineStatus(scope.projectId);
       } catch {
         // Keep the independent monitor alive so a later interval can recover.
       }
-      if (!isCurrent()) return;
+      if (!isCurrent() || statusReadSequence !== pipelineStatusReadSequenceRef.current) return;
       if (status?.project_id === scope.projectId) {
+        pipelineStatusSnapshotRevisionRef.current += 1;
         const currentIntent = pipelineStatus?.pipeline_intent;
         const nextIntent = status.pipeline_intent;
         if (isPendingPipelineIntent(nextIntent)) {
@@ -479,43 +520,29 @@ export function PipelineClient() {
       };
       let initialStatusReadFailed = false;
       let recoveryReadInFlight = false;
+      const initialScope: PipelineRequestScope = {
+        projectId,
+        contextGeneration: context.generation,
+        requestGeneration,
+      };
       const retryInitialStatus = async () => {
         if (!isCurrentContext() || recoveryReadInFlight) return;
         recoveryReadInFlight = true;
         try {
-          const status = await getPipelineStatus(projectId);
-          if (!isCurrentContext()) return;
-          if (status.project_id !== projectId) {
-            setPipelineStatusReadFailedProjectId(projectId);
-            return;
-          }
-          setPipelineStatus(status);
-          setPipelineStatusReadFailedProjectId(null);
+          const read = await refreshPipelineStatus(initialScope);
+          if (!isCurrentContext() || !read.current || !read.status) return;
+          const status = read.status;
+          initialStatusReadFailed = false;
           stopPipelinePolling();
           if (isPendingPipelineIntent(status.pipeline_intent)) resumeIntent(status.pipeline_intent);
-        } catch {
-          if (isCurrentContext()) setPipelineStatusReadFailedProjectId(projectId);
         } finally {
           recoveryReadInFlight = false;
         }
       };
-      try {
-        const status = await getPipelineStatus(projectId);
-        if (isCurrentContext()) {
-          if (status.project_id === projectId) {
-            setPipelineStatus(status);
-            setPipelineStatusReadFailedProjectId(null);
-            resumableIntent = status.pipeline_intent ?? null;
-          } else {
-            initialStatusReadFailed = true;
-            setPipelineStatusReadFailedProjectId(projectId);
-          }
-        }
-      } catch {
-        if (isCurrentContext()) {
-          initialStatusReadFailed = true;
-          setPipelineStatusReadFailedProjectId(projectId);
-        }
+      const initialRead = await refreshPipelineStatus(initialScope);
+      if (isCurrentContext() && initialRead.current) {
+        if (initialRead.status) resumableIntent = initialRead.status.pipeline_intent ?? null;
+        else initialStatusReadFailed = true;
       }
       if (initialStatusReadFailed && isCurrentContext()) {
         pipelinePollRef.current = setInterval(() => void retryInitialStatus(), 5000);
@@ -535,7 +562,7 @@ export function PipelineClient() {
       cancelled = true;
       stopPipelinePolling();
     };
-  }, [currentProject?.id, pollPipelineStatus, stopPipelinePolling]);
+  }, [currentProject?.id, pollPipelineStatus, refreshPipelineStatus, stopPipelinePolling]);
 
   const handleScrape = useCallback(async (event: FormEvent) => {
     event.preventDefault();
@@ -982,8 +1009,18 @@ export function PipelineClient() {
             {quotaLine}
           </p>
           {pipelineStatusReadFailed ? (
-            <p className="mt-2 text-xs text-amber-200/90" data-testid="pipeline-status-read-failed" role="status">
+            <p className="mt-2 flex flex-wrap items-center gap-2 text-xs text-amber-200/90" data-testid="pipeline-status-read-failed" role="status">
               {t('Pipeline.statusReadFailed')}
+              <button
+                type="button"
+                onClick={() => void retryPipelineStatusRead()}
+                disabled={pipelineStatusRetrying}
+                aria-busy={pipelineStatusRetrying}
+                className="rounded border border-amber-200/30 px-2 py-1 font-medium text-amber-100 disabled:opacity-50"
+                data-testid="pipeline-status-retry"
+              >
+                {t('Status.retryRefresh')}
+              </button>
             </p>
           ) : null}
           {pipelineStatus?.scheduled_pipeline ? (

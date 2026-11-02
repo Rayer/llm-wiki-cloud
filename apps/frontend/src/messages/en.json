@@ -1470,7 +1470,7 @@
     "intentSucceeded": "Pipeline complete",
     "intentFailed": "Pipeline needs attention",
     "intentCancelled": "Pipeline cancelled",
-    "statusReadFailed": "Pipeline status could not be read. Retrying automatically; an accepted run may still be active.",
+    "statusReadFailed": "Pipeline status could not be read. Retry to verify current eligibility; running stays disabled until it is available.",
     "savedProfileSnapshot": "Saved Profile snapshot",
     "preparedGuidance": "Prepared guidance source",
     "sourceProfileRevision": "source Profile revision",

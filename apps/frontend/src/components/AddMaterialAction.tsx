@@ -35,6 +35,7 @@ export function AddMaterialAction({ className = '', onMaterialPersisted }: AddMa
   const triggerRef = useRef<HTMLButtonElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
   const mountedRef = useRef(false);
+  const materialRefreshSequenceRef = useRef(0);
   const scopeRef = useRef({
     projectId: currentProject?.id ?? null,
     ownerId: user?.id ?? null,
@@ -71,15 +72,18 @@ export function AddMaterialAction({ className = '', onMaterialPersisted }: AddMa
 
   async function refreshAfterMaterialPersisted(projectId: string, generation: number) {
     if (!isCurrentScope(projectId, generation)) return;
+    const sequence = ++materialRefreshSequenceRef.current;
+    const isCurrentRefresh = () => isCurrentScope(projectId, generation)
+      && sequence === materialRefreshSequenceRef.current;
     setRefreshPending(true);
     setRefreshError(false);
     try {
       const refreshed = await (onMaterialPersisted ?? refreshNavCounts)();
-      if (isCurrentScope(projectId, generation)) setRefreshError(!refreshed);
+      if (isCurrentRefresh()) setRefreshError(!refreshed);
     } catch {
-      if (isCurrentScope(projectId, generation)) setRefreshError(true);
+      if (isCurrentRefresh()) setRefreshError(true);
     } finally {
-      if (isCurrentScope(projectId, generation)) setRefreshPending(false);
+      if (isCurrentRefresh()) setRefreshPending(false);
     }
   }
 
@@ -151,12 +155,14 @@ export function AddMaterialAction({ className = '', onMaterialPersisted }: AddMa
     if (!urlResult?.candidate_id || !urlResult.candidate_revision || !currentProject) return;
     const projectId = currentProject.id;
     const scopeGeneration = scopeRef.current.generation;
-    setUrlBusy(true); setUrlError(null);
+    setUrlBusy(true); setUrlError(null); setRefreshError(false);
     try {
       const result = await acceptScrapeCandidate(urlResult.candidate_id, urlResult.candidate_revision, nextTitle, projectId);
       if (!isCurrentScope(projectId, scopeGeneration)) return;
       setUrlResult(result);
-      await refreshAfterMaterialPersisted(projectId, scopeGeneration);
+      if (result.status === 'stored' && result.storage) {
+        await refreshAfterMaterialPersisted(projectId, scopeGeneration);
+      }
     } catch (cause) {
       if (isCurrentScope(projectId, scopeGeneration)) setUrlError(cause instanceof Error ? cause.message : t('AddMaterial.urlFailed'));
     } finally {
@@ -172,10 +178,21 @@ export function AddMaterialAction({ className = '', onMaterialPersisted }: AddMa
   }
   async function resolveUrl() {
     if (!urlResult?.candidate_id || !currentProject) return;
-    setUrlBusy(true); setUrlError(null);
-    try { setUrlResult(await resolveScrapeCandidate(urlResult.candidate_id, currentProject.id)); }
-    catch (cause) { setUrlError(cause instanceof Error ? cause.message : t('AddMaterial.urlFailed')); }
-    finally { setUrlBusy(false); }
+    const projectId = currentProject.id;
+    const scopeGeneration = scopeRef.current.generation;
+    setUrlBusy(true); setUrlError(null); setRefreshError(false);
+    try {
+      const result = await resolveScrapeCandidate(urlResult.candidate_id, projectId);
+      if (!isCurrentScope(projectId, scopeGeneration)) return;
+      setUrlResult(result);
+      if (result.status === 'stored' && result.storage) {
+        await refreshAfterMaterialPersisted(projectId, scopeGeneration);
+      }
+    } catch (cause) {
+      if (isCurrentScope(projectId, scopeGeneration)) setUrlError(cause instanceof Error ? cause.message : t('AddMaterial.urlFailed'));
+    } finally {
+      if (isCurrentScope(projectId, scopeGeneration)) setUrlBusy(false);
+    }
   }
 
   const urlLabels = {

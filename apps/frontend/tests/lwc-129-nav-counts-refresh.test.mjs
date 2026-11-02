@@ -33,10 +33,9 @@ test('pipeline client refreshes nav counts after created uploads', async () => {
   ]);
 
   assert.match(pipeline, /onQueueSettled=\{handleUploadQueueSettled\}/);
-  assert.match(pipeline, /handleUploadQueueSettled[\s\S]*?refreshPipelineStatus/);
-  assert.match(uploadPanel, /createdProjectIdsRef\.current\.add\(next\.projectId\)/);
-  assert.match(uploadPanel, /if \(currentProjectRef\.current && createdProjectIds\.has\(currentProjectRef\.current\.id\)\)[\s\S]*?void refreshNavCounts\(\)/);
+  assert.match(pipeline, /handleUploadQueueSettled[\s\S]*?void refreshNavCounts\(\)[\s\S]*?refreshPipelineStatus/);
+  assert.match(uploadPanel, /changedProjectIdsRef\.current\.add\(next\.projectId\)/);
+  assert.match(uploadPanel, /if \(onQueueSettledRef\.current\) onQueueSettledRef\.current\(result\);[\s\S]*?else void refreshNavCounts\(\)/);
   assert.match(uploadPanel, /rawResult\?\.status === 'created'/);
-  assert.match(uploadPanel, /if \(documentResult\) void refreshNavCounts\(\)/);
-  assert.match(uploadPanel, /void refreshNavCounts\(\)/);
+  assert.match(uploadPanel, /if \(record\.source_state === 'saved'\)[\s\S]*?changedProjectIdsRef\.current\.add\(item\.projectId\)[\s\S]*?void refreshNavCounts\(\)/);
 });

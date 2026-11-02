@@ -183,8 +183,14 @@ function RelatedReferences({ titleKey, reasonKey, references }: {
       {references.length === 0 ? <p role="status" className="mt-3 text-sm text-zinc-400">{t('Detail.noRelatedEntries')}</p> : (
         <ul className="mt-4 grid gap-3 sm:grid-cols-2">
           {references.map((reference) => {
+            const id = safeWikiRouteSegment(reference.id);
             const slug = safeWikiRouteSegment(reference.slug);
-            const href = slug ? `/${reference.type === 'concept' ? 'concepts' : 'sources'}/${encodeURIComponent(slug)}` : null;
+            const collection = reference.type === 'concept' ? 'concepts' : 'sources';
+            const href = id
+              ? `/${collection}/${encodeURIComponent(id)}${slug ? `-${encodeURIComponent(slug)}` : ''}`
+              : reference.type === 'concept' && slug
+                ? `/${collection}/${encodeURIComponent(slug)}`
+                : null;
             return (
               <li key={`${reference.type}:${reference.id ?? reference.slug}`} className="min-w-0 rounded border border-white/10 bg-black/15 p-3">
                 {href ? (

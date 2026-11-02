@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   triggerPipeline: vi.fn(),
   scrapeUrl: vi.fn(),
   acceptScrapeCandidate: vi.fn(),
+  resolveScrapeCandidate: vi.fn(),
   pathname: '/',
   authResponses: [] as Array<{ access_token: string; user: { id: string; email: string } }>,
   homeMounts: 0,
@@ -60,6 +61,7 @@ vi.mock('@/lib/api', async () => {
     triggerPipeline: mocks.triggerPipeline,
     scrapeUrl: mocks.scrapeUrl,
     acceptScrapeCandidate: mocks.acceptScrapeCandidate,
+    resolveScrapeCandidate: mocks.resolveScrapeCandidate,
     getProfile: mocks.getProfile,
     getProfileBootstrapGuidance: mocks.getProfileBootstrapGuidance,
     saveProfile: mocks.saveProfile,
@@ -204,8 +206,10 @@ beforeEach(() => {
   mocks.triggerPipeline.mockReset().mockResolvedValue({ status: 'accepted', project_id: 'project-a', execution_id: 'execution-a' });
   mocks.scrapeUrl.mockReset();
   mocks.acceptScrapeCandidate.mockReset();
+  mocks.resolveScrapeCandidate.mockReset();
   mocks.scrapeUrl.mockResolvedValue(urlPreview);
   mocks.acceptScrapeCandidate.mockResolvedValue(storedUrl);
+  mocks.resolveScrapeCandidate.mockResolvedValue(storedUrl);
   mocks.getDocumentImportFailureSummary.mockReset().mockResolvedValue({ failed_count: 0 });
   mocks.getConcepts.mockReset().mockResolvedValue([]);
   mocks.getProjectContentContext.mockReset().mockResolvedValue({
@@ -355,6 +359,169 @@ it('refreshes mounted Home and Pipeline after delayed text persistence, then wai
   await waitFor(() => expect(mocks.triggerPipeline).toHaveBeenCalledTimes(1));
 });
 
+it.each(['resolve', 'reject'] as const)('does not let a delayed initial Pipeline GET %s replace post-save eligibility', async (lateOutcome) => {
+  const oldInitialRead = deferred<ReturnType<typeof pipelineStatus>>();
+  let rawCount = 0;
+  let pipelineReads = 0;
+  mocks.getStatus.mockImplementation(async () => ({ sourcesCount: 0, conceptsCount: 0, rawCount, suggestedQueries: [], lastExecution: null, raw: {} }));
+  mocks.getPipelineStatus.mockImplementation((projectId: string) => {
+    pipelineReads += 1;
+    return pipelineReads === 1 ? oldInitialRead.promise : Promise.resolve(pipelineStatus(projectId, rawCount));
+  });
+  mocks.uploadRawFile.mockImplementation(async () => {
+    rawCount = 1;
+    return savedReceipt;
+  });
+
+  renderPage();
+  await waitFor(() => expect(mocks.workspace?.currentProject?.id).toBe('project-a'));
+  await waitFor(() => expect(pipelineReads).toBe(1));
+  fireEvent.click(screen.getByRole('button', { name: translate('en', 'AddMaterial.open') }));
+  fireEvent.change(screen.getByLabelText(translate('en', 'AddMaterial.textTitle')), { target: { value: 'Fresh eligibility' } });
+  fireEvent.change(screen.getByLabelText(translate('en', 'AddMaterial.textBody')), { target: { value: 'A saved note.' } });
+  fireEvent.click(screen.getByRole('button', { name: translate('en', 'AddMaterial.saveText') }));
+
+  await waitFor(() => expect(pipelineReads).toBe(2));
+  await waitFor(() => expect(screen.getByTestId('pipeline-quota-line').textContent).toContain('New files: 1'));
+  await waitFor(() => expect(pipelineRunButton().disabled).toBe(false));
+  await act(async () => {
+    if (lateOutcome === 'resolve') {
+      oldInitialRead.resolve(pipelineStatus('project-a', 0));
+      await oldInitialRead.promise;
+    } else {
+      oldInitialRead.reject(new Error('late initial status error'));
+      await oldInitialRead.promise.catch(() => undefined);
+    }
+  });
+
+  expect(pipelineRunButton().disabled).toBe(false);
+  expect(screen.getByTestId('pipeline-quota-line').textContent).toContain('New files: 1');
+  expect(screen.queryByTestId('pipeline-status-read-failed')).toBeNull();
+  expect(mocks.uploadRawFile).toHaveBeenCalledTimes(1);
+  expect(mocks.triggerPipeline).not.toHaveBeenCalled();
+});
+
+it('keeps the latest eligibility when an older second Pipeline refresh fails late', async () => {
+  const olderRefresh = deferred<ReturnType<typeof pipelineStatus>>();
+  let rawCount = 0;
+  let pipelineReads = 0;
+  mocks.getStatus.mockImplementation(async () => ({ sourcesCount: 0, conceptsCount: 0, rawCount, suggestedQueries: [], lastExecution: null, raw: {} }));
+  mocks.getPipelineStatus.mockImplementation((projectId: string) => {
+    pipelineReads += 1;
+    if (pipelineReads === 3) return olderRefresh.promise;
+    return Promise.resolve(pipelineStatus(projectId, rawCount));
+  });
+  mocks.uploadRawFile.mockImplementation(async () => {
+    rawCount = 1;
+    return savedReceipt;
+  });
+
+  renderPage();
+  await waitFor(() => expect(mocks.workspace?.currentProject?.id).toBe('project-a'));
+  await waitFor(() => expect(pipelineReads).toBe(1));
+  fireEvent.click(screen.getByRole('button', { name: translate('en', 'AddMaterial.open') }));
+  fireEvent.change(screen.getByLabelText(translate('en', 'AddMaterial.textTitle')), { target: { value: 'Latest eligibility' } });
+  fireEvent.change(screen.getByLabelText(translate('en', 'AddMaterial.textBody')), { target: { value: 'A saved note.' } });
+  fireEvent.click(screen.getByRole('button', { name: translate('en', 'AddMaterial.saveText') }));
+  await waitFor(() => expect(pipelineReads).toBe(2));
+  await waitFor(() => expect(screen.getByTestId('pipeline-quota-line').textContent).toContain('New files: 1'));
+
+  rawCount = 2;
+  await act(async () => { await mocks.workspace!.refreshNavCounts(); });
+  await waitFor(() => expect(pipelineReads).toBe(3));
+  await act(async () => { await mocks.workspace!.refreshNavCounts(); });
+  await waitFor(() => expect(pipelineReads).toBe(4));
+  await waitFor(() => expect(screen.getByTestId('pipeline-quota-line').textContent).toContain('New files: 2'));
+
+  await act(async () => {
+    olderRefresh.reject(new Error('late older refresh error'));
+    await olderRefresh.promise.catch(() => undefined);
+  });
+  expect(pipelineRunButton().disabled).toBe(false);
+  expect(screen.getByTestId('pipeline-quota-line').textContent).toContain('New files: 2');
+  expect(screen.queryByTestId('pipeline-status-read-failed')).toBeNull();
+  expect(mocks.uploadRawFile).toHaveBeenCalledTimes(1);
+  expect(mocks.triggerPipeline).not.toHaveBeenCalled();
+});
+
+it('fences older Workspace and Home status reads after a successful material refresh', async () => {
+  const oldWorkspaceRead = deferred<{ sourcesCount: number; conceptsCount: number; rawCount: number; suggestedQueries: string[]; lastExecution: null; raw: Record<string, never> }>();
+  const oldHomeRead = deferred<{ sourcesCount: number; conceptsCount: number; rawCount: number; suggestedQueries: string[]; lastExecution: null; raw: Record<string, never> }>();
+  let rawCount = 0;
+  let sourcesCount = 0;
+  let statusReads = 0;
+  mocks.getStatus.mockImplementation(async () => {
+    statusReads += 1;
+    const record = { sourcesCount, conceptsCount: 0, rawCount, suggestedQueries: [], lastExecution: null, raw: {} };
+    if (statusReads === 1) return oldWorkspaceRead.promise;
+    if (statusReads === 2) return oldHomeRead.promise;
+    return record;
+  });
+  mocks.getPipelineStatus.mockImplementation(async (projectId: string) => pipelineStatus(projectId, rawCount));
+  mocks.uploadRawFile.mockImplementation(async () => {
+    rawCount = 1;
+    sourcesCount = 1;
+    return savedReceipt;
+  });
+
+  renderPage();
+  await waitFor(() => expect(mocks.workspace?.currentProject?.id).toBe('project-a'));
+  await waitFor(() => expect(statusReads).toBe(2));
+  fireEvent.click(screen.getByRole('button', { name: translate('en', 'AddMaterial.open') }));
+  fireEvent.change(screen.getByLabelText(translate('en', 'AddMaterial.textTitle')), { target: { value: 'Fresh counts' } });
+  fireEvent.change(screen.getByLabelText(translate('en', 'AddMaterial.textBody')), { target: { value: 'New source material.' } });
+  fireEvent.click(screen.getByRole('button', { name: translate('en', 'AddMaterial.saveText') }));
+  await waitFor(() => expect(mocks.workspace?.navCounts.sources).toBe(1));
+  expect(await screen.findByText(new RegExp(savedReceipt.path))).toBeTruthy();
+
+  await act(async () => {
+    oldWorkspaceRead.resolve({ sourcesCount: 0, conceptsCount: 0, rawCount: 0, suggestedQueries: [], lastExecution: null, raw: {} });
+    oldHomeRead.resolve({ sourcesCount: 0, conceptsCount: 0, rawCount: 0, suggestedQueries: [], lastExecution: null, raw: {} });
+    await Promise.all([oldWorkspaceRead.promise, oldHomeRead.promise]);
+  });
+  expect(mocks.workspace?.navCounts.sources).toBe(1);
+  expect(mocks.uploadRawFile).toHaveBeenCalledTimes(1);
+  expect(mocks.triggerPipeline).not.toHaveBeenCalled();
+});
+
+it('shows Pipeline status retry when its GET fails after save, without reuploading or running', async () => {
+  let rawCount = 0;
+  let pipelineReads = 0;
+  mocks.getStatus.mockImplementation(async () => ({ sourcesCount: 0, conceptsCount: 0, rawCount, suggestedQueries: [], lastExecution: null, raw: {} }));
+  mocks.getPipelineStatus.mockImplementation(async (projectId: string) => {
+    pipelineReads += 1;
+    if (pipelineReads === 2) throw new Error('temporary Pipeline status outage');
+    return pipelineStatus(projectId, rawCount);
+  });
+  mocks.uploadRawFile.mockImplementation(async () => {
+    rawCount = 1;
+    return savedReceipt;
+  });
+
+  renderPage();
+  await waitFor(() => expect(mocks.workspace?.currentProject?.id).toBe('project-a'));
+  await waitFor(() => expect(pipelineReads).toBe(1));
+  fireEvent.click(screen.getByRole('button', { name: translate('en', 'AddMaterial.open') }));
+  fireEvent.change(screen.getByLabelText(translate('en', 'AddMaterial.textTitle')), { target: { value: 'Saved once' } });
+  fireEvent.change(screen.getByLabelText(translate('en', 'AddMaterial.textBody')), { target: { value: 'Receipt remains visible.' } });
+  fireEvent.click(screen.getByRole('button', { name: translate('en', 'AddMaterial.saveText') }));
+
+  expect(await screen.findByText(new RegExp(savedReceipt.path))).toBeTruthy();
+  await waitFor(() => expect(pipelineReads).toBe(2));
+  expect(await screen.findByTestId('pipeline-status-read-failed')).toBeTruthy();
+  expect(pipelineRunButton().disabled).toBe(true);
+  expect(mocks.uploadRawFile).toHaveBeenCalledTimes(1);
+  expect(mocks.triggerPipeline).not.toHaveBeenCalled();
+
+  fireEvent.click(screen.getByTestId('pipeline-status-retry'));
+  await waitFor(() => expect(pipelineRunButton().disabled).toBe(false));
+  await waitFor(() => expect(screen.queryByTestId('pipeline-status-read-failed')).toBeNull());
+  expect(screen.getByTestId('pipeline-quota-line').textContent).toContain('New files: 1');
+  expect(mocks.getPipelineStatus).toHaveBeenCalledTimes(3);
+  expect(mocks.uploadRawFile).toHaveBeenCalledTimes(1);
+  expect(mocks.triggerPipeline).not.toHaveBeenCalled();
+});
+
 it('refreshes mounted Pipeline eligibility after a successful accepted URL write', async () => {
   let rawCount = 0;
   mocks.getStatus.mockImplementation(async () => ({ sourcesCount: 0, conceptsCount: 0, rawCount, suggestedQueries: [], lastExecution: null, raw: {} }));
@@ -375,6 +542,73 @@ it('refreshes mounted Pipeline eligibility after a successful accepted URL write
   fireEvent.click(screen.getByRole('button', { name: translate('en', 'Pipeline.urlConfirmCandidate') }));
   await waitFor(() => expect(mocks.acceptScrapeCandidate).toHaveBeenCalledWith('candidate-a', 'candidate-revision-a', 'Kyoto guide', 'project-a'));
   await waitFor(() => expect(pipelineRunButton().disabled).toBe(false));
+  expect(mocks.triggerPipeline).not.toHaveBeenCalled();
+});
+
+it('refreshes after uncertain URL acceptance resolves to stored without accepting or uploading twice', async () => {
+  let rawCount = 0;
+  const uncertain = { ...urlPreview, status: 'uncertain', message: 'Check whether this save completed.' };
+  mocks.getStatus.mockImplementation(async () => ({ sourcesCount: 0, conceptsCount: 0, rawCount, suggestedQueries: [], lastExecution: null, raw: {} }));
+  mocks.getPipelineStatus.mockImplementation(async (projectId: string) => pipelineStatus(projectId, rawCount));
+  mocks.acceptScrapeCandidate.mockResolvedValue(uncertain);
+  mocks.resolveScrapeCandidate.mockImplementation(async (candidateId: string, projectId: string) => {
+    expect(candidateId).toBe('candidate-a');
+    expect(projectId).toBe('project-a');
+    rawCount = 1;
+    return storedUrl;
+  });
+
+  renderPage();
+  await waitFor(() => expect(mocks.workspace?.currentProject?.id).toBe('project-a'));
+  await waitFor(() => expect(pipelineRunButton().disabled).toBe(true));
+  fireEvent.click(screen.getByRole('button', { name: translate('en', 'AddMaterial.open') }));
+  fireEvent.click(screen.getByRole('tab', { name: translate('en', 'AddMaterial.urlTab') }));
+  fireEvent.change(screen.getByLabelText('URL', { exact: true }), { target: { value: 'https://example.test/kyoto' } });
+  fireEvent.click(screen.getByRole('button', { name: translate('en', 'AddMaterial.previewUrl') }));
+  expect(await screen.findByText('Readable body.')).toBeTruthy();
+  const statusReadsBeforeAccept = mocks.getStatus.mock.calls.length;
+  fireEvent.click(screen.getByRole('button', { name: translate('en', 'Pipeline.urlConfirmCandidate') }));
+
+  expect(await screen.findByRole('button', { name: translate('en', 'Pipeline.urlCheckSaveStatus') })).toBeTruthy();
+  expect(mocks.acceptScrapeCandidate).toHaveBeenCalledTimes(1);
+  expect(mocks.getStatus).toHaveBeenCalledTimes(statusReadsBeforeAccept);
+  expect(screen.queryByText(translate('en', 'AddMaterial.refreshFailed'))).toBeNull();
+
+  fireEvent.click(screen.getByRole('button', { name: translate('en', 'Pipeline.urlCheckSaveStatus') }));
+  await waitFor(() => expect(mocks.resolveScrapeCandidate).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(pipelineRunButton().disabled).toBe(false));
+  expect(await screen.findByText(new RegExp(storedUrl.storage.path))).toBeTruthy();
+  expect(mocks.acceptScrapeCandidate).toHaveBeenCalledTimes(1);
+  expect(mocks.resolveScrapeCandidate).toHaveBeenCalledWith('candidate-a', 'project-a');
+  expect(mocks.uploadRawFile).not.toHaveBeenCalled();
+  expect(mocks.triggerPipeline).not.toHaveBeenCalled();
+});
+
+it.each(['uncertain', 'rejected', 'conflict'] as const)('does not refresh or claim persistence after URL status resolves to %s', async (status) => {
+  let rawCount = 0;
+  const uncertain = { ...urlPreview, status: 'uncertain', message: 'Check whether this save completed.' };
+  mocks.getStatus.mockImplementation(async () => ({ sourcesCount: 0, conceptsCount: 0, rawCount, suggestedQueries: [], lastExecution: null, raw: {} }));
+  mocks.getPipelineStatus.mockImplementation(async (projectId: string) => pipelineStatus(projectId, rawCount));
+  mocks.acceptScrapeCandidate.mockResolvedValue(uncertain);
+  mocks.resolveScrapeCandidate.mockResolvedValue({ ...uncertain, status, message: `Save status: ${status}.` });
+
+  renderPage();
+  await waitFor(() => expect(mocks.workspace?.currentProject?.id).toBe('project-a'));
+  fireEvent.click(screen.getByRole('button', { name: translate('en', 'AddMaterial.open') }));
+  fireEvent.click(screen.getByRole('tab', { name: translate('en', 'AddMaterial.urlTab') }));
+  fireEvent.change(screen.getByLabelText('URL', { exact: true }), { target: { value: 'https://example.test/kyoto' } });
+  fireEvent.click(screen.getByRole('button', { name: translate('en', 'AddMaterial.previewUrl') }));
+  expect(await screen.findByText('Readable body.')).toBeTruthy();
+  const statusReadsBeforeAccept = mocks.getStatus.mock.calls.length;
+  fireEvent.click(screen.getByRole('button', { name: translate('en', 'Pipeline.urlConfirmCandidate') }));
+  fireEvent.click(await screen.findByRole('button', { name: translate('en', 'Pipeline.urlCheckSaveStatus') }));
+  await waitFor(() => expect(screen.getAllByText(`Save status: ${status}.`).length).toBeGreaterThan(0));
+
+  expect(mocks.getStatus).toHaveBeenCalledTimes(statusReadsBeforeAccept);
+  expect(screen.queryByText(translate('en', 'AddMaterial.refreshFailed'))).toBeNull();
+  expect(mocks.acceptScrapeCandidate).toHaveBeenCalledTimes(1);
+  expect(mocks.resolveScrapeCandidate).toHaveBeenCalledTimes(1);
+  expect(mocks.uploadRawFile).not.toHaveBeenCalled();
   expect(mocks.triggerPipeline).not.toHaveBeenCalled();
 });
 

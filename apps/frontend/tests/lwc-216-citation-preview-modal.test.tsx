@@ -27,6 +27,7 @@ const mocks = vi.hoisted(() => ({
   refreshProjects: vi.fn().mockResolvedValue(undefined),
   getConcept: vi.fn(),
   getSource: vi.fn(),
+  getSources: vi.fn(),
   getStatus: vi.fn(),
   getConcepts: vi.fn(),
   searchWiki: vi.fn(),
@@ -38,6 +39,7 @@ vi.mock('@/lib/api', async () => {
     ...actual,
     getConcept: mocks.getConcept,
     getSource: mocks.getSource,
+    getSources: mocks.getSources,
     getStatus: mocks.getStatus,
     getConcepts: mocks.getConcepts,
     searchWiki: mocks.searchWiki,
@@ -127,6 +129,7 @@ async function runSearch() {
 beforeEach(async () => {
   mocks.getStatus.mockResolvedValue(status());
   mocks.getConcepts.mockResolvedValue([]);
+  mocks.getSources.mockResolvedValue([]);
   mocks.searchWiki.mockResolvedValue({
     results: [],
     aiAnswer: '',
@@ -230,6 +233,47 @@ describe('LWC-216 citation preview modal behavior', () => {
     expect(screen.getByRole('link', { name: 'Detail.openFullPage' }).getAttribute('href')).toEqual(
       '/sources/s-id-source-canonical',
     );
+  });
+
+  it('resolves a source citation to the canonical ID route when detail data omits its ID', async () => {
+    const rawPath = 'raw/note-6f7a52f2-88a2-4a7a-a3cf-e82ecc959344.md';
+    const slug = 'note 6f7a52f2-88a2-4a7a-a3cf-e82ecc959344';
+    mocks.searchWiki.mockResolvedValue({
+      results: [],
+      aiAnswer: 'Inspect [Walking note].',
+      citations: [{ text: 'Walking note', slug, type: 'source' }],
+    });
+    mocks.getSource.mockResolvedValue(sourceEntry({ title: 'Walking note', slug, rawPath, content: 'Walk details.' }));
+    mocks.getSources.mockResolvedValue([{
+      id: '2e3270fc51cd', slug, rawPath, lifecycle: 'synced',
+      annotationPresent: false, annotationAllowed: false, raw: {},
+    }]);
+
+    await runSearch();
+    fireEvent.click(await screen.findByRole('button', { name: 'Walking note' }));
+
+    expect(await screen.findByText('Walk details.')).toBeTruthy();
+    expect(mocks.getSources).toHaveBeenCalledWith('project-a');
+    expect(screen.getByRole('link', { name: 'Detail.openFullPage' }).getAttribute('href')).toBe(
+      '/sources/2e3270fc51cd-note%206f7a52f2-88a2-4a7a-a3cf-e82ecc959344',
+    );
+  });
+
+  it('omits a source full-page link when no canonical source ID can be resolved', async () => {
+    const slug = 'note 6f7a52f2-88a2-4a7a-a3cf-e82ecc959344';
+    mocks.searchWiki.mockResolvedValue({
+      results: [],
+      aiAnswer: 'Inspect [Unindexed note].',
+      citations: [{ text: 'Unindexed note', slug, type: 'source' }],
+    });
+    mocks.getSource.mockResolvedValue(sourceEntry({ title: 'Unindexed note', slug, content: 'Still previewable.' }));
+    mocks.getSources.mockRejectedValue(new Error('source list unavailable'));
+
+    await runSearch();
+    fireEvent.click(await screen.findByRole('button', { name: 'Unindexed note' }));
+
+    expect(await screen.findByText('Still previewable.')).toBeTruthy();
+    expect(screen.queryByRole('link', { name: 'Detail.openFullPage' })).toBeNull();
   });
 
   it('rejects unsafe explicit citation locators before detail fetch', async () => {

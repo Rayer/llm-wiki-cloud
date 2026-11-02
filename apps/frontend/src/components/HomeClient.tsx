@@ -14,6 +14,7 @@ import {
   getConcept,
   getConcepts,
   getSource,
+  getSources,
   getStatus,
   safeWikiRouteSegment,
   searchWiki,
@@ -192,6 +193,8 @@ function entryDetailHref(entry: ModalEntry): string | null {
       return `/${collection}/${encodeURIComponent(pathSegment)}`;
     }
   }
+
+  if (entry.type === 'source') return null;
 
   return slug ? `/${collection}/${encodeURIComponent(slug)}` : null;
 }
@@ -800,7 +803,20 @@ export function HomeClient() {
       const entry: WikiEntry = await fetch(lookup);
       if (requestId !== citationRequestId.current) return;
       const entrySlug = safeWikiRouteSegment(entry.slug) ?? safeSlug ?? pathSlug ?? '';
-      const entryId = safeWikiRouteSegment(entry.id) ?? safeId ?? undefined;
+      let entryId = safeWikiRouteSegment(entry.id) ?? safeId ?? undefined;
+      if (citation.type === 'source' && !entryId) {
+        try {
+          const sources = await getSources(currentProject?.id);
+          if (requestId !== citationRequestId.current) return;
+          const source = entry.rawPath
+            ? sources.find((item) => item.rawPath === entry.rawPath)
+            : sources.find((item) => item.slug === entrySlug);
+          entryId = safeWikiRouteSegment(source?.id) ?? undefined;
+        } catch {
+          // Keep the preview available without linking to a noncanonical source route.
+        }
+      }
+      if (requestId !== citationRequestId.current) return;
       setModal({
         title: entry.title,
         content: typeof entry.content === 'string'
@@ -832,7 +848,7 @@ export function HomeClient() {
         setModalLoading(false);
       }
     }
-  }, [t]);
+  }, [currentProject?.id, t]);
 
   // Close modal on Escape
   useEffect(() => {
