@@ -5,6 +5,8 @@ import { usePathname, useSearchParams } from 'next/navigation';
 import { ChevronDown } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkParse from 'remark-parse';
+import { unified } from 'unified';
 import type { Content, PhrasingContent, Root, Text } from 'mdast';
 import {
   citationPathSegment,
@@ -39,10 +41,13 @@ import {
 } from '@/lib/query-result-history';
 import { displayErrorId, EmptyState, ErrorIdDetails, ErrorState, LoadingState, useErrorIdCopy } from './States';
 import { useWorkspace } from './WorkspaceProvider';
+import { ProjectSelect } from './ui/ProjectSelect';
 import { SharedServiceOnboardingNotice } from './SharedServiceNotice';
 import { Badge } from './ui/Badge';
 import { Surface } from './ui/Surface';
 import { NavigationLink } from './NavigationBlocker';
+import { AddMaterialAction } from './AddMaterialAction';
+import { ProjectContentContextPanel } from './ProjectContentContextPanel';
 
 function readSearchParams(): { q: string; mode: 'wiki' | 'full'; historyEntry: QueryHistoryEntry } {
   if (typeof window === 'undefined') {
@@ -197,7 +202,7 @@ export function HomeClient() {
   const searchParams = useSearchParams();
   const routeSearch = searchParams?.toString() ?? '';
   const routeLocation = `${pathname ?? ''}?${routeSearch}`;
-  const { currentProject, token, user, hydrated, projectsLoading, isDemoSession, sessionEpoch } = useWorkspace();
+  const { currentProject, projects, selectProject, token, user, hydrated, projectsLoading, isDemoSession, sessionEpoch } = useWorkspace();
   const [initialSearch] = useState(() => readSearchParams());
   const historyResult = initialSearch.historyEntry.entryId && initialSearch.historyEntry.isCurrentDocument
     ? getCompletedQueryResult(initialSearch.historyEntry.entryId)
@@ -619,7 +624,18 @@ export function HomeClient() {
     let ignore = false;
     getConcepts()
       .then((data) => {
-        if (!ignore) setLatestConcepts(data.slice(0, 4));
+        if (!ignore) {
+          const recent = [...data].sort((left, right) => {
+            const leftUpdated = left.objectUpdatedAt ? Date.parse(left.objectUpdatedAt) : NaN;
+            const rightUpdated = right.objectUpdatedAt ? Date.parse(right.objectUpdatedAt) : NaN;
+            const leftValid = Number.isFinite(leftUpdated);
+            const rightValid = Number.isFinite(rightUpdated);
+            if (leftValid !== rightValid) return leftValid ? -1 : 1;
+            if (leftValid && rightValid && leftUpdated !== rightUpdated) return rightUpdated - leftUpdated;
+            return left.title.localeCompare(right.title) || left.slug.localeCompare(right.slug);
+          });
+          setLatestConcepts(recent.slice(0, 6));
+        }
       })
       .catch(() => {
         if (!ignore) setLatestConcepts([]);
@@ -841,11 +857,13 @@ export function HomeClient() {
   const showModelPriorDisclosure = submittedMode === 'full'
     && Boolean(aiAnswer)
     && (queryOutcome.answer_basis === 'model_prior' || queryOutcome.disclosure_required === true);
+  const usedAnswerCitations = aiAnswer ? answerCitationsUsed(aiAnswer, citations) : [];
   const searchButtonCueState = searchButtonCue > 0 ? searchButtonCue.toString() : undefined;
 
   return (
     <div className="lwc-home space-y-8">
       <section className="lwc-search-section">
+        {currentProject && !isDemoSession ? <div className="mb-4 flex justify-end"><AddMaterialAction /></div> : null}
         <h1 className="relative max-w-3xl text-[2rem] font-medium leading-tight tracking-tight text-[#F0F3F1]">
           {t('Demo.heading')}
         </h1>
@@ -957,17 +975,20 @@ export function HomeClient() {
         />
       ) : null}
 
-      {!searched && latestConcepts.length > 0 ? (
-        <section className="space-y-4" aria-labelledby="latest-concepts-heading">
-          <div className="flex items-center justify-between gap-4">
-            <h2 id="latest-concepts-heading" className="font-sans text-xl font-medium text-[#F0F3F1]">
-              {t('Demo.latestConcepts')}
-            </h2>
-            <NavigationLink href="/concepts" className="inline-flex min-h-11 items-center text-sm text-zinc-300 transition hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300">
-              {t('Demo.allConcepts')}
-            </NavigationLink>
+      {!searched && currentProject ? (
+        <section className="space-y-4" aria-labelledby="current-wiki-heading">
+          <div className="flex flex-wrap items-end justify-between gap-4">
+            <div>
+              <p className="text-xs font-medium uppercase tracking-[0.16em] text-zinc-500">{t('Home.currentWiki')}</p>
+              <h2 id="current-wiki-heading" className="mt-1 text-xl font-medium text-[#F0F3F1]">{currentProject.name}</h2>
+            </div>
+            <NavigationLink href="/concepts" className="inline-flex min-h-11 items-center text-sm text-zinc-300 transition hover:text-white">{t('Demo.allConcepts')}</NavigationLink>
           </div>
-          <div className="grid gap-3 md:grid-cols-2">
+          {token && !isDemoSession ? <ProjectContentContextPanel projectId={currentProject.id} /> : null}
+          {latestConcepts.length > 0 ? (
+        <section className="space-y-4" aria-labelledby="latest-concepts-heading">
+          <h3 id="latest-concepts-heading" className="font-sans text-lg font-medium text-[#F0F3F1]">{t('Home.recentKnowledge')}</h3>
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
             {latestConcepts.map((concept, index) => {
               const href = conceptHref(concept);
               if (!href) return null;
@@ -993,6 +1014,38 @@ export function HomeClient() {
                 </NavigationLink>
               );
             })}
+          </div>
+        </section>
+          ) : <p className="text-sm text-zinc-500">{t('Home.noRecentKnowledge')}</p>}
+        </section>
+      ) : null}
+
+      {!searched && !isDemoSession && projects.length > 1 ? (
+        <section className="space-y-4" aria-labelledby="other-wikis-heading">
+          <div className="flex flex-wrap items-end justify-between gap-4">
+            <div>
+              <h2 id="other-wikis-heading" className="text-lg font-medium text-[#F0F3F1]">{t('Home.otherWikis')}</h2>
+              <p className="mt-1 text-sm text-zinc-500">{t('Home.otherWikisHint')}</p>
+            </div>
+            <div className="w-full max-w-sm">
+              <ProjectSelect
+                projects={projects.filter((project) => project.id !== currentProject?.id)}
+                value=""
+                onChange={(projectId) => selectProject(projectId)}
+                placeholder={t('Home.findWiki')}
+                searchPlaceholder={t('Shell.searchProjects')}
+                noMatches={t('Shell.noProjectMatches')}
+                maxResults={4}
+              />
+            </div>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            {projects.filter((project) => project.id !== currentProject?.id).slice(0, 4).map((project) => (
+              <button key={project.id} type="button" onClick={() => selectProject(project.id)} className="min-h-20 rounded border border-white/10 bg-white/[0.025] p-4 text-left transition hover:border-white/20 hover:bg-white/[0.05] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300">
+                <span className="block truncate text-sm font-medium text-zinc-100">{project.name}</span>
+                <span className="mt-1 block text-xs text-zinc-500">{t('Home.openWiki')}</span>
+              </button>
+            ))}
           </div>
         </section>
       ) : null}
@@ -1063,6 +1116,11 @@ export function HomeClient() {
             ) : null}
           </aside>
         ) : null}
+        {!loading && !error && !resultUnavailable && aiOperationFailures.some((failure) => failure.stage === 'answer_synthesis' && failure.fallback === 'retrieval_only') ? (
+          <div role="status" className="rounded-md border border-amber-300/30 bg-amber-500/10 p-4 text-sm text-amber-100">
+            {t('QueryResults.answerNotCompleted')}
+          </div>
+        ) : null}
         {!loading && !error && aiAnswer ? (
           <article className="relative overflow-hidden rounded-[var(--radius-lg)] border border-emerald-400/20 bg-emerald-400/[0.06] p-5">
             <div className="absolute inset-y-0 left-0 w-1 bg-emerald-300" />
@@ -1072,9 +1130,9 @@ export function HomeClient() {
                 {showModelPriorDisclosure ? (
                   <span className="text-sm text-amber-100">{t('QueryResults.modelPriorDisclosure')}</span>
                 ) : null}
-                {citations.length > 0 ? (
+                {usedAnswerCitations.length > 0 ? (
                   <Badge variant="accent">
-                    {t('Demo.sourcesCount', { count: citations.length })}
+                    {t('Demo.sourcesCount', { count: usedAnswerCitations.length })}
                   </Badge>
                 ) : null}
               </div>
@@ -1088,13 +1146,13 @@ export function HomeClient() {
                 [&_p]:mb-3
               ">
                 <AiAnswerMarkdown content={aiAnswer} citations={citations} onCitationClick={openCitation} />
-                {citations.length > 0 ? (
+                {usedAnswerCitations.length > 0 ? (
                   <section className="mt-5 border-t border-white/10 pt-4" aria-labelledby="answer-sources-heading">
                     <h4 id="answer-sources-heading" className="text-sm font-semibold text-emerald-200">
                       {t('Demo.sources')}
                     </h4>
                     <ul aria-labelledby="answer-sources-heading" className="mt-2 space-y-1">
-                      {citations.map((citation, index) => (
+                      {usedAnswerCitations.map((citation, index) => (
                         <li
                           key={[citation.type, citation.id ?? '', citation.slug ?? '', citation.path ?? '', index]
                             .map(String)
@@ -1122,6 +1180,7 @@ export function HomeClient() {
           <EmptyState message={t('QueryResults.noResults')} />
         ) : null}
         <div className="grid gap-4 md:grid-cols-2">
+          {aiAnswer && results.length > 0 ? <h3 className="md:col-span-2 text-sm font-semibold text-zinc-400">{t('QueryResults.moreMatches')}</h3> : null}
           {results.map((result, index) => {
             const type = resultType(result.type);
             const typeBorderClass = type === 'source'
@@ -1298,6 +1357,7 @@ function transformCitationText(
   node: CitationText,
   citationMap: Map<string, number>,
   content: string,
+  usedCitationIndices?: Set<number>,
 ): PhrasingContent[] {
   const result: PhrasingContent[] = [];
   const citationToken = /\[([^\]\n]+)\]/g;
@@ -1316,6 +1376,7 @@ function transformCitationText(
       children: [{ type: 'text', value: label }],
       data: { hProperties: { 'data-citation-index': index } },
     });
+    usedCitationIndices?.add(index);
     lastIndex = citationToken.lastIndex;
   }
 
@@ -1324,7 +1385,7 @@ function transformCitationText(
   return result;
 }
 
-function remarkCitations(citationMap: Map<string, number>, content: string) {
+function remarkCitations(citationMap: Map<string, number>, content: string, usedCitationIndices?: Set<number>) {
   const VOID_HTML_TAGS = new Set([
     'area',
     'base',
@@ -1399,7 +1460,7 @@ function remarkCitations(citationMap: Map<string, number>, content: string) {
         }
         if (child.type === 'text') {
           if (nextTags.length > 0) children.push(child);
-          else children.push(...transformCitationText(child, citationMap, content));
+          else children.push(...transformCitationText(child, citationMap, content, usedCitationIndices));
         }
         else {
           if ('children' in child) nextTags = visit(child, nextTags);
@@ -1413,15 +1474,7 @@ function remarkCitations(citationMap: Map<string, number>, content: string) {
   };
 }
 
-function AiAnswerMarkdown({
-  content,
-  citations,
-  onCitationClick,
-}: {
-  content: string;
-  citations: Citation[];
-  onCitationClick: (citation: Citation) => void;
-}) {
+function citationLabelMap(citations: Citation[]): Map<string, number> {
   const citationMap = new Map<string, number>();
   const ambiguousCitationLabels = new Set<string>();
   citations.forEach((citation, index) => {
@@ -1433,6 +1486,35 @@ function AiAnswerMarkdown({
     }
     citationMap.set(citation.text, index);
   });
+  return citationMap;
+}
+
+function answerCitationsUsed(content: string, citations: Citation[]): Citation[] {
+  const citationMap = citationLabelMap(citations);
+  const usedIndices = new Set<number>();
+  const processor = unified()
+    .use(remarkParse)
+    .use(remarkGfm)
+    .use(remarkCitations(citationMap, content, usedIndices));
+  try {
+    const tree = processor.parse(content);
+    processor.runSync(tree);
+  } catch {
+    return [];
+  }
+  return [...usedIndices].sort((left, right) => left - right).map((index) => citations[index]);
+}
+
+function AiAnswerMarkdown({
+  content,
+  citations,
+  onCitationClick,
+}: {
+  content: string;
+  citations: Citation[];
+  onCitationClick: (citation: Citation) => void;
+}) {
+  const citationMap = citationLabelMap(citations);
   const citationByIndex = citations;
 
   return (

@@ -92,7 +92,7 @@ func contentContextStateMap(generation, digest, stateStatus, errorClass, lastGoo
 		"error_class":            errorClass,
 		"last_good": map[string]interface{}{
 			"text": summary, "source_generation": generation, "concepts_sha256": lastGoodDigest,
-			"generated_at": generated, "prompt_revision": "prompt-v1", "profile_source": "personal", "profile_id": "profile",
+			"generated_at": generated, "prompt_revision": contentcontext.SummaryLegacyPromptRevision, "profile_source": "personal", "profile_id": "profile",
 			"profile_revision": int64(1), "role": "fast", "requested_model": "model-requested",
 			"returned_model": "model-returned", "input_digest": testContentContextDigest('c'), "selection_version": "selection-v1",
 		},

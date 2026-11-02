@@ -1,11 +1,13 @@
 package contentcontext
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -43,8 +45,8 @@ func TestBuildSummaryInputSortsAndSamplesPublishedConcepts(t *testing.T) {
 		t.Fatalf("input_digest=%q want %x", metadata.InputDigest, sum)
 	}
 	again, againMetadata, err := BuildSummaryInput(snapshot)
-	if err != nil || string(again) != string(data) || againMetadata != metadata {
-		t.Fatalf("selection was not deterministic: equal=%t metadataEqual=%t err=%v", string(again) == string(data), againMetadata == metadata, err)
+	if err != nil || string(again) != string(data) || !reflect.DeepEqual(againMetadata, metadata) {
+		t.Fatalf("selection was not deterministic: equal=%t metadataEqual=%t err=%v", string(again) == string(data), reflect.DeepEqual(againMetadata, metadata), err)
 	}
 }
 
@@ -85,6 +87,54 @@ func TestBuildSummaryInputRejectsEmptyOrInvalidSnapshot(t *testing.T) {
 	unprefixed.Identity.ConceptsDigest = strings.Repeat("a", 64)
 	if _, metadata, err := BuildSummaryInput(unprefixed); err != nil || metadata.ConceptsDigest != strings.Repeat("a", 64) {
 		t.Fatalf("unprefixed valid digest metadata=%+v err=%v", metadata, err)
+	}
+}
+
+func TestBuildSummaryInputUsesBoundedDeterministicSourceSpread(t *testing.T) {
+	for _, count := range []int{1, 14, 15, 16, 45} {
+		t.Run(fmt.Sprint(count), func(t *testing.T) {
+			snapshot := summarySnapshot(count, "title", "body")
+			for index := range snapshot.Entries {
+				snapshot.Entries[index].Entry.Sources = []string{"shared", fmt.Sprintf("source-%02d", index), " shared "}
+			}
+			data, metadata, err := BuildSummaryInput(snapshot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var payload summaryInputPayload
+			if err := json.Unmarshal(data, &payload); err != nil {
+				t.Fatal(err)
+			}
+			want := min(count, SummaryMaxConcepts)
+			if metadata.SelectedConcepts != want || payload.SelectedConcepts != want || len(metadata.SelectedSlugs) != want || len(payload.Concepts) != want ||
+				metadata.Sampled != (count > want) || payload.Sampled != metadata.Sampled {
+				t.Fatalf("count=%d metadata=%+v payload=%+v", count, metadata, payload)
+			}
+			for index, concept := range payload.Concepts {
+				if concept.Slug != metadata.SelectedSlugs[index] || index > 0 && payload.Concepts[index-1].Slug >= concept.Slug {
+					t.Fatalf("selected slugs are not sorted and traceable: %+v %+v", payload.Concepts, metadata.SelectedSlugs)
+				}
+			}
+			sum := sha256.Sum256(data)
+			if metadata.InputDigest != hex.EncodeToString(sum[:]) {
+				t.Fatalf("input digest=%s want=%x", metadata.InputDigest, sum)
+			}
+			again, againMetadata, err := BuildSummaryInput(snapshot)
+			if err != nil || !bytes.Equal(data, again) || !reflect.DeepEqual(metadata, againMetadata) {
+				t.Fatalf("selection changed across identical snapshots: err=%v", err)
+			}
+			if count == 16 || count == 45 {
+				selected := make(map[string]bool, want)
+				for _, slug := range metadata.SelectedSlugs {
+					selected[slug] = true
+				}
+				for _, slug := range []string{"concept-000", fmt.Sprintf("concept-%03d", (count-1)/2), fmt.Sprintf("concept-%03d", count-1)} {
+					if !selected[slug] {
+						t.Errorf("source-spread sample omitted boundary/center slug %q: %v", slug, metadata.SelectedSlugs)
+					}
+				}
+			}
+		})
 	}
 }
 

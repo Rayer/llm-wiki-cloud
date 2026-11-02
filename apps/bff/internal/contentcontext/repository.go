@@ -8,6 +8,7 @@ import (
 	"errors"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"cloud.google.com/go/firestore"
 	"github.com/google/uuid"
@@ -18,7 +19,8 @@ import (
 )
 
 const (
-	SummaryPromptRevision       = "project-summary-v1"
+	SummaryLegacyPromptRevision = "project-summary-v1"
+	SummaryPromptRevision       = "project-summary-v2-overview"
 	SummaryRole                 = "fast"
 	SummaryAttemptLease         = 120 * time.Second
 	SummaryMaxClaims            = 2
@@ -64,19 +66,30 @@ type SummaryClaim struct {
 	SourceManifestIdentity string
 	LeaseUntil             time.Time
 	RetryCount             int
+	PromptRevision         string
+	SelectionVersion       string
 }
 
 type SummaryCompletion struct {
-	Text             string
-	PromptRevision   string
-	ProfileSource    string
-	ProfileID        string
-	ProfileRevision  int64
-	Role             string
-	RequestedModel   string
-	ReturnedModel    string
-	InputDigest      string
-	SelectionVersion string
+	Text                   string
+	PromptRevision         string
+	ProfileSource          string
+	ProfileID              string
+	ProfileRevision        int64
+	Role                   string
+	RequestedModel         string
+	ReturnedModel          string
+	InputDigest            string
+	SelectionVersion       string
+	OverviewSchemaVersion  int
+	ShortTitle             string
+	TopicTags              []string
+	TotalConcepts          int
+	SelectedConcepts       int
+	SelectedSlugs          []string
+	Sampled                bool
+	TitleTruncatedConcepts int
+	BodyTruncatedConcepts  int
 }
 
 type FirestoreRepository struct {
@@ -258,6 +271,11 @@ func (r *FirestoreRepository) Complete(ctx context.Context, ownerID, projectID s
 				ProfileRevision: completion.ProfileRevision, Role: completion.Role,
 				RequestedModel: completion.RequestedModel, ReturnedModel: completion.ReturnedModel,
 				InputDigest: completion.InputDigest, SelectionVersion: completion.SelectionVersion,
+				OverviewSchemaVersion: completion.OverviewSchemaVersion, ShortTitle: completion.ShortTitle,
+				TopicTags: append([]string(nil), completion.TopicTags...), TotalConcepts: completion.TotalConcepts,
+				SelectedConcepts: completion.SelectedConcepts, SelectedSlugs: append([]string(nil), completion.SelectedSlugs...),
+				Sampled: completion.Sampled, TitleTruncatedConcepts: completion.TitleTruncatedConcepts,
+				BodyTruncatedConcepts: completion.BodyTruncatedConcepts,
 			}
 			next.Status = StatusReady
 			next.ErrorClass = ""
@@ -521,7 +539,9 @@ func observePublication(state StateDocument, publication Publication, ownerID, p
 	}
 	if state.SummaryWork != nil {
 		workDigest, ok := NormalizeSHA256(state.SummaryWork.ConceptsSHA256)
-		if previousDigest == publication.ConceptsDigest && ok && workDigest == publication.ConceptsDigest {
+		workPrompt, workSelection := summaryWorkRecipe(*state.SummaryWork)
+		if previousDigest == publication.ConceptsDigest && ok && workDigest == publication.ConceptsDigest &&
+			workPrompt == SummaryPromptRevision && workSelection == SummarySelectionVersion {
 			state.Status = state.SummaryWork.Status
 			return state, true, nil
 		}
@@ -529,7 +549,8 @@ func observePublication(state StateDocument, publication Publication, ownerID, p
 	workID := SummaryWorkID(ownerID, projectID, publication.ConceptsDigest, SummaryPromptRevision, SummarySelectionVersion)
 	if state.LastGood != nil {
 		lastDigest, ok := NormalizeSHA256(state.LastGood.ConceptsSHA256)
-		if ok && lastDigest == publication.ConceptsDigest {
+		lastPrompt, lastSelection := summaryLastGoodRecipe(*state.LastGood)
+		if ok && lastDigest == publication.ConceptsDigest && lastPrompt == SummaryPromptRevision && lastSelection == SummarySelectionVersion {
 			state.Status = StatusReady
 			state.ErrorClass = ""
 			state.AttemptID = ""
@@ -538,6 +559,7 @@ func observePublication(state StateDocument, publication Publication, ownerID, p
 			state.SummaryWork = &SummaryWorkRecord{
 				WorkID: workID, ConceptsSHA256: publication.ConceptsDigest,
 				SourceGeneration: state.LastGood.SourceGeneration, Status: StatusReady,
+				PromptRevision: SummaryPromptRevision, SelectionVersion: SummarySelectionVersion,
 			}
 			return state, true, nil
 		}
@@ -550,7 +572,7 @@ func observePublication(state StateDocument, publication Publication, ownerID, p
 	state.SummaryWork = &SummaryWorkRecord{
 		WorkID: workID, ConceptsSHA256: publication.ConceptsDigest,
 		SourceGeneration: publication.SummarySourceGeneration, SourceManifestIdentity: publication.SummarySourceManifestIdentity,
-		Status: StatusPending,
+		Status: StatusPending, PromptRevision: SummaryPromptRevision, SelectionVersion: SummarySelectionVersion,
 	}
 	return state, true, nil
 }
@@ -574,6 +596,9 @@ func claimState(state StateDocument, now time.Time) (StateDocument, SummaryClaim
 		return state, SummaryClaim{}, false
 	}
 	work := state.SummaryWork
+	if prompt, selection := summaryWorkRecipe(*work); prompt != SummaryPromptRevision || selection != SummarySelectionVersion {
+		return state, SummaryClaim{}, false
+	}
 	if work.AttemptID != "" && work.LeaseUntil != nil && now.Before(*work.LeaseUntil) {
 		return state, SummaryClaim{}, false
 	}
@@ -602,6 +627,7 @@ func claimState(state StateDocument, now time.Time) (StateDocument, SummaryClaim
 		WorkID: work.WorkID, AttemptID: attemptID, ConceptsSHA256: work.ConceptsSHA256,
 		SourceGeneration: work.SourceGeneration, SourceManifestIdentity: work.SourceManifestIdentity,
 		LeaseUntil: leaseUntil, RetryCount: work.RetryCount,
+		PromptRevision: SummaryPromptRevision, SelectionVersion: SummarySelectionVersion,
 	}
 	return state, claim, true
 }
@@ -618,19 +644,75 @@ func claimMatches(state StateDocument, claim SummaryClaim, publication Publicati
 	claimDigest, claimOK := NormalizeSHA256(claim.ConceptsSHA256)
 	return ok && publicationOK && claimOK && workDigest == publicationDigest && workDigest == claimDigest &&
 		state.SummaryWork.SourceGeneration == claim.SourceGeneration &&
-		state.SummaryWork.SourceManifestIdentity == claim.SourceManifestIdentity
+		state.SummaryWork.SourceManifestIdentity == claim.SourceManifestIdentity &&
+		claim.PromptRevision == SummaryPromptRevision && claim.SelectionVersion == SummarySelectionVersion &&
+		func() bool {
+			prompt, selection := summaryWorkRecipe(*state.SummaryWork)
+			return prompt == claim.PromptRevision && selection == claim.SelectionVersion
+		}()
 }
 
 func validateCompletion(completion SummaryCompletion) error {
 	profileIdentityValid := completion.ProfileSource == "bootstrap" && completion.ProfileID == "" && completion.ProfileRevision == 0 ||
 		(completion.ProfileSource == "personal" || completion.ProfileSource == "shared") && completion.ProfileID != "" && completion.ProfileRevision >= 1
-	if strings.TrimSpace(completion.Text) == "" || len([]rune(completion.Text)) > 1000 ||
+	if !utf8.ValidString(completion.Text) || strings.TrimSpace(completion.Text) == "" || len([]rune(completion.Text)) > 1000 ||
 		completion.PromptRevision != SummaryPromptRevision || !profileIdentityValid ||
 		completion.Role != SummaryRole || completion.RequestedModel == "" || completion.ReturnedModel == "" ||
-		!validSHA256(completion.InputDigest) || completion.SelectionVersion != SummarySelectionVersion {
+		!validSHA256(completion.InputDigest) || completion.SelectionVersion != SummarySelectionVersion ||
+		completion.OverviewSchemaVersion != 1 || !utf8.ValidString(completion.ShortTitle) || strings.TrimSpace(completion.ShortTitle) == "" || len([]rune(completion.ShortTitle)) > 24 ||
+		len(completion.TopicTags) < 1 || len(completion.TopicTags) > 5 || completion.TotalConcepts < 1 ||
+		completion.SelectedConcepts < 1 || completion.SelectedConcepts > SummaryMaxConcepts || completion.SelectedConcepts > completion.TotalConcepts || len(completion.SelectedSlugs) != completion.SelectedConcepts {
 		return errors.New("invalid content-context summary completion")
 	}
+	if len(completion.SelectedSlugs) > completion.TotalConcepts || completion.Sampled != (completion.TotalConcepts > completion.SelectedConcepts) {
+		return errors.New("invalid content-context overview coverage")
+	}
+	seen := make(map[string]struct{}, len(completion.TopicTags))
+	for _, tag := range completion.TopicTags {
+		if !utf8.ValidString(tag) || strings.TrimSpace(tag) == "" || tag != strings.TrimSpace(tag) || len([]rune(tag)) > 16 || strings.ContainsAny(tag, "<>") {
+			return errors.New("invalid content-context topic tags")
+		}
+		key := strings.ToLower(tag)
+		if _, ok := seen[key]; ok {
+			return errors.New("duplicate content-context topic tag")
+		}
+		seen[key] = struct{}{}
+	}
+	seenSlugs := make(map[string]struct{}, len(completion.SelectedSlugs))
+	previousSlug := ""
+	for _, slug := range completion.SelectedSlugs {
+		if strings.TrimSpace(slug) == "" || slug <= previousSlug {
+			return errors.New("invalid selected concept slug")
+		}
+		if _, ok := seenSlugs[slug]; ok {
+			return errors.New("duplicate selected concept slug")
+		}
+		seenSlugs[slug] = struct{}{}
+		previousSlug = slug
+	}
 	return nil
+}
+
+func summaryWorkRecipe(work SummaryWorkRecord) (string, string) {
+	prompt, selection := work.PromptRevision, work.SelectionVersion
+	if prompt == "" {
+		prompt = SummaryLegacyPromptRevision
+	}
+	if selection == "" {
+		selection = SummaryLegacySelectionVersion
+	}
+	return prompt, selection
+}
+
+func summaryLastGoodRecipe(last LastGood) (string, string) {
+	prompt, selection := last.PromptRevision, last.SelectionVersion
+	if prompt == "" {
+		prompt = SummaryLegacyPromptRevision
+	}
+	if selection == "" {
+		selection = SummaryLegacySelectionVersion
+	}
+	return prompt, selection
 }
 
 func samePublication(left, right Publication) bool {

@@ -325,6 +325,8 @@ func testSummaryCompletion(text string) SummaryCompletion {
 		Text: text, PromptRevision: SummaryPromptRevision, ProfileSource: "personal", ProfileID: "profile-1", ProfileRevision: 2,
 		Role: SummaryRole, RequestedModel: "model-requested", ReturnedModel: "model-returned",
 		InputDigest: strings.Repeat("e", 64), SelectionVersion: SummarySelectionVersion,
+		OverviewSchemaVersion: 1, ShortTitle: "Project overview", TopicTags: []string{"Project topic"},
+		TotalConcepts: 1, SelectedConcepts: 1, SelectedSlugs: []string{"concept-1"},
 	}
 }
 

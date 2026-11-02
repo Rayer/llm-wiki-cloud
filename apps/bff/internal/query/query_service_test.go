@@ -158,7 +158,7 @@ func TestServiceExecuteProductionPromptAndContextContract(t *testing.T) {
 	if result.Query != request.Query {
 		t.Fatalf("result.Query = %q, want exact request %q", result.Query, request.Query)
 	}
-	wantSystem, err := os.ReadFile(testdataFixturePath("former_v1_full_system_prompt.golden"))
+	wantSystem, err := os.ReadFile(testdataFixturePath("full_evidence_system_prompt.golden"))
 	if err != nil {
 		t.Fatal(err)
 	}

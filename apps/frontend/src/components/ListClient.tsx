@@ -45,7 +45,8 @@ function ListClientSession({
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState('all');
   const [dates, setDates] = useState('all');
-  const [order, setOrder] = useState('title');
+  const defaultOrder = entryType === 'concept' ? 'updated-desc' : 'title';
+  const [order, setOrder] = useState(defaultOrder);
   const { copyErrorId, errorIdCopied } = useErrorIdCopy(error, error?.requestId, error?.diagnosticId);
 
   useEffect(() => {
@@ -81,7 +82,7 @@ function ListClientSession({
   }, [load, basePath, cacheKey]);
 
   const filtered = useMemo(() => selectEntries(entries, search, status, dates, order), [entries, search, status, dates, order]);
-  const active = Boolean(search.trim() || status !== 'all' || dates !== 'all' || order !== 'title');
+  const active = Boolean(search.trim() || status !== 'all' || dates !== 'all' || order !== defaultOrder);
 
   const emptyMessage = search.trim()
     ? t('List.noSearchMatches', { title: title.toLowerCase(), query: search.trim() })
@@ -100,7 +101,7 @@ function ListClientSession({
 
       <ListToolbar search={search} onSearch={setSearch} searchLabel={t('List.searchPlaceholder', { title: title.toLowerCase() })}
         count={filtered.length} total={entries.length} active={active}
-        onClear={() => { setSearch(''); setStatus('all'); setDates('all'); setOrder('title'); }}
+        onClear={() => { setSearch(''); setStatus('all'); setDates('all'); setOrder(defaultOrder); }}
         filters={[
           { label: t('List.filterStatus'), value: status, onChange: setStatus, options: [
             { value: 'all', label: t('List.allStatuses') },
@@ -111,6 +112,7 @@ function ListClientSession({
           ] },
         ]}
         order={{ label: t('List.orderBy'), value: order, onChange: setOrder, options: [
+          ...(entryType === 'concept' ? [{ value: 'updated-desc', label: t('List.updatedDesc') }] : []),
           { value: 'title', label: t('List.titleAsc') }, { value: 'title-desc', label: t('List.titleDesc') }, { value: 'slug', label: t('List.slugOrder') },
           { value: 'date-desc', label: t('List.dateDesc') }, { value: 'date-asc', label: t('List.dateAsc') },
         ] }} />

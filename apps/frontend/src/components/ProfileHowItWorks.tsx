@@ -114,7 +114,7 @@ export function ProfileHowItWorks({
             <section className="mt-3 rounded border border-white/10 bg-black/10 p-4" aria-labelledby="profile-instructions-heading">
               <h4 id="profile-instructions-heading" className="text-sm font-semibold text-white">{t(`${prefix}.requirementsHeading`)}</h4>
               <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                {(['family', 'parking'] as const).map((exampleId) => (
+                {(['family', 'quiet'] as const).map((exampleId) => (
                   <article key={exampleId} className="min-w-0 rounded border border-white/10 p-3">
                     <h5 className="text-xs font-semibold text-sky-200">{t(`${prefix}.requirements.${exampleId}.heading`)}</h5>
                     <p className="mt-2 whitespace-pre-line text-sm leading-6 text-zinc-300">{t(`${prefix}.requirements.${exampleId}.text`)}</p>

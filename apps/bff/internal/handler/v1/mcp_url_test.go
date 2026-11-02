@@ -76,6 +76,10 @@ func (j *unavailableMCPURLJournal) ConfirmSourceCommit(context.Context, sourceau
 	return sourceautomation.CommitResult{State: "unknown", ProcessingStatus: "unknown"}, status.Error(codes.Unavailable, "injected Firestore outage")
 }
 
+func (*unavailableMCPURLJournal) RecordNoChangeProjectUse(context.Context, sourceautomation.Ref, string, string, string) (sourceautomation.NoChangeUseReceipt, error) {
+	return sourceautomation.NoChangeUseReceipt{}, status.Error(codes.Unavailable, "injected Firestore outage")
+}
+
 func (*unavailableMCPURLJournal) ReconcileSourceCommit(context.Context, sourceautomation.Ref) (sourceautomation.CommitResult, error) {
 	return sourceautomation.CommitResult{State: "unknown", ProcessingStatus: "unknown"}, status.Error(codes.Unavailable, "injected Firestore outage")
 }
@@ -151,7 +155,7 @@ func TestMCPImportURLUsesStrictScopedIntakeAndConfiguredRawLink(t *testing.T) {
 	for _, tool := range discovered.Tools {
 		toolNames[tool.Name] = true
 	}
-	if len(toolNames) != 6 || !toolNames["query_project"] || !toolNames["get_document_import"] || !toolNames["pipeline_status"] || !toolNames["add_raw"] || !toolNames["import_url"] || !toolNames["import_document"] {
+	if len(toolNames) != 7 || !toolNames["query_project"] || !toolNames["confirm_connection"] || !toolNames["get_document_import"] || !toolNames["pipeline_status"] || !toolNames["add_raw"] || !toolNames["import_url"] || !toolNames["import_document"] {
 		t.Fatalf("MCP SDK discovered tools = %v", toolNames)
 	}
 

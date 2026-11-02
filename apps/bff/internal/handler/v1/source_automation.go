@@ -22,6 +22,18 @@ func (h *Handler) prepareSourceCommit(ctx context.Context, ownerID, projectID, e
 	return h.prepareSourceCommitDigest(ctx, ownerID, projectID, entrypoint, path, hex.EncodeToString(digest[:]), "")
 }
 
+func (h *Handler) prepareMCPAddRawSourceCommit(ctx context.Context, ownerID, projectID, path string, data []byte, usePayloadSHA256 string) (sourceautomation.Journal, sourceautomation.Ref, error) {
+	digest := sha256.Sum256(data)
+	journal := h.sourceCommitJournal()
+	if journal == nil {
+		return nil, sourceautomation.Ref{}, nil
+	}
+	ref, err := journal.PrepareSourceCommit(ctx, sourceautomation.VerifiedProject{OwnerID: ownerID, ProjectID: projectID}, sourceautomation.PrepareRequest{
+		Entrypoint: "mcp_add_raw", RawPath: path, ExpectedSHA256: hex.EncodeToString(digest[:]), UsePayloadSHA256: usePayloadSHA256,
+	})
+	return journal, ref, err
+}
+
 func (h *Handler) prepareSourceCommitDigest(ctx context.Context, ownerID, projectID, entrypoint, path, digest, expectedStorageGeneration string) (sourceautomation.Journal, sourceautomation.Ref, error) {
 	journal := h.sourceCommitJournal()
 	if journal == nil {

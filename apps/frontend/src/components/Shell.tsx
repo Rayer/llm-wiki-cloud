@@ -19,6 +19,7 @@ import { AccountSettingsModal } from './AccountSettingsModal';
 import { RequestIDPanel } from './RequestIDPanel';
 import { LocaleControl } from './LocaleControl';
 import { dailyBriefSignedOutLandingURL } from '@/lib/mcp-oauth';
+import { getBuildInfo, type BuildInfo } from '@/lib/api';
 
 export function Shell({ children }: { children: React.ReactNode }) {
   return (
@@ -62,6 +63,77 @@ function ShellContent({ children }: { children: React.ReactNode }) {
   const accountSettingsTriggerRef = useRef<HTMLButtonElement>(null);
   const accountSettingsWasOpenRef = useRef(false);
   const [jitAccountId, setJitAccountId] = useState<string | null>(null);
+  const [buildInfo, setBuildInfo] = useState<BuildInfo | null>(null);
+  const [buildInfoError, setBuildInfoError] = useState('');
+  const [versionDialogOpen, setVersionDialogOpen] = useState(false);
+  const [versionCopied, setVersionCopied] = useState(false);
+  const [versionCopyFailed, setVersionCopyFailed] = useState(false);
+  const versionButtonRef = useRef<HTMLButtonElement>(null);
+  const dialogCloseRef = useRef<HTMLButtonElement>(null);
+  const versionWasOpenRef = useRef(false);
+
+  const reloadBuildInfo = async () => {
+    setBuildInfoError('');
+    try {
+      const info = await getBuildInfo();
+      setBuildInfo(info);
+      setBuildInfoError('');
+    } catch (error) {
+      setBuildInfoError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  useEffect(() => { void reloadBuildInfo(); }, []);
+
+  useEffect(() => {
+    if (!versionDialogOpen) {
+      if (versionWasOpenRef.current) versionButtonRef.current?.focus();
+      versionWasOpenRef.current = false;
+      return;
+    }
+    versionWasOpenRef.current = true;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setVersionDialogOpen(false);
+      if (event.key === 'Tab') {
+        const dialog = document.getElementById('build-info-dialog');
+        const focusable = Array.from(dialog?.querySelectorAll<HTMLElement>('button:not(:disabled), a[href], textarea, [tabindex]:not([tabindex="-1"])') ?? []);
+        const first = focusable[0];
+        const last = focusable.at(-1);
+        if (!first || !last) event.preventDefault();
+        else if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    dialogCloseRef.current?.focus();
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [versionDialogOpen]);
+
+  const versionSnapshot = buildInfo ? [
+    'LLM Wiki Cloud',
+    `Environment: ${buildInfo.environment}`,
+    `API product version: ${buildInfo.product_version}`,
+    `BFF commit: ${buildInfo.commit}`,
+    `BFF revision: ${buildInfo.revision}`,
+  ].join('\n') : '';
+
+  const copyVersionSnapshot = async () => {
+    if (!versionSnapshot) return;
+    try {
+      await navigator.clipboard.writeText(versionSnapshot);
+      setVersionCopied(true);
+      setVersionCopyFailed(false);
+    } catch {
+      setVersionCopied(false);
+      setVersionCopyFailed(true);
+    }
+  };
+
+  const environmentStamp = buildInfo?.environment === 'dev'
+    ? 'DEV'
+    : buildInfo?.environment === 'local'
+      ? 'LOCAL'
+      : '';
 
   useEffect(() => {
     if (accountSettingsWasOpenRef.current && !accountSettingsOpen) accountSettingsTriggerRef.current?.focus();
@@ -167,7 +239,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
       {token ? (
         <header className="sticky top-0 z-50 flex min-h-14 items-center justify-between border-b border-white/8 bg-zinc-950/85 px-4 lg:hidden">
           <NavigationLink href="/" className="min-w-0 text-sm font-semibold tracking-tight text-white">
-            <span className="flex items-center gap-3"><Image src="/brand/lwc/mark-sage.svg" width={40} height={34} style={{ height: 'auto' }} alt="" />{t('Shell.brand')}</span>
+            <span className="flex items-center gap-3"><Image src="/brand/lwc/mark-sage.svg" width={40} height={34} style={{ height: 'auto' }} alt="" />{t('Shell.brand')}{environmentStamp ? <span className={environmentStamp === 'DEV' ? 'rotate-[-8deg] border border-red-400/80 px-1.5 py-0.5 text-[10px] font-bold tracking-[0.16em] text-red-300' : 'border border-white/20 px-1.5 py-0.5 text-[10px] font-semibold tracking-[0.12em] text-zinc-300'}>{environmentStamp}</span> : null}</span>
           </NavigationLink>
           <button
             type="button"
@@ -208,6 +280,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
             <div className="flex items-center gap-3 text-base font-medium tracking-tight text-[#F0F3F1]">
               <Image src="/brand/lwc/mark-sage.svg" width={40} height={34} style={{ height: 'auto' }} alt="" priority />
               <span>{t('Shell.brand')}</span>
+              {environmentStamp ? <span className={environmentStamp === 'DEV' ? 'rotate-[-8deg] border border-red-400/80 px-1.5 py-0.5 text-[10px] font-bold tracking-[0.16em] text-red-300' : 'border border-white/20 px-1.5 py-0.5 text-[10px] font-semibold tracking-[0.12em] text-zinc-300'}>{environmentStamp}</span> : null}
             </div>
             <div className="mt-0.5 text-xs text-zinc-400">{t('Shell.subtitle')}</div>
           </NavigationLink>
@@ -265,6 +338,8 @@ function ShellContent({ children }: { children: React.ReactNode }) {
                   value={currentProject?.id ?? ''}
                   onChange={(projectId) => selectProject(projectId)}
                   placeholder={t('Shell.noProjects')}
+                  searchPlaceholder={t('Shell.searchProjects')}
+                  noMatches={t('Shell.noProjectMatches')}
                 />
               )}
               {!isDemoSession ? (
@@ -304,6 +379,10 @@ function ShellContent({ children }: { children: React.ReactNode }) {
               </button>
               <button type="button" onClick={() => void signOut()} className="flex min-h-11 items-center gap-3 rounded-md px-3 text-sm text-zinc-300 transition hover:bg-white/5 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400">
                 <LogOut className="size-4" aria-hidden="true" />{t('Shell.logout')}
+              </button>
+              <button ref={versionButtonRef} type="button" onClick={() => { setVersionDialogOpen(true); setVersionCopied(false); setVersionCopyFailed(false); }} className="flex min-h-11 items-center justify-between gap-3 rounded-md px-3 text-left text-xs text-zinc-500 transition hover:bg-white/5 hover:text-zinc-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400">
+                <span>{buildInfo ? `${t('Shell.versionInfo')}: ${buildInfo.product_version}` : buildInfoError ? t('Shell.versionUnavailable') : t('Shell.loadingVersion')}</span>
+                {environmentStamp ? <span className={environmentStamp === 'DEV' ? 'rotate-[-8deg] font-bold tracking-wider text-red-300' : 'font-semibold tracking-wider text-zinc-300'}>{environmentStamp}</span> : null}
               </button>
             </div>
           </div>
@@ -396,6 +475,38 @@ function ShellContent({ children }: { children: React.ReactNode }) {
             noMatches: t('Command.noMatches'),
           }}
         />
+      ) : null}
+
+      {versionDialogOpen ? (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/70 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) setVersionDialogOpen(false); }}>
+          <section id="build-info-dialog" role="dialog" aria-modal="true" aria-labelledby="build-info-title" className="relative max-h-[85dvh] w-full max-w-lg overflow-y-auto rounded border border-white/12 bg-[#191B1C] p-6 shadow-2xl">
+            <button ref={dialogCloseRef} type="button" onClick={() => setVersionDialogOpen(false)} className="absolute right-4 top-4 min-h-11 min-w-11 rounded text-zinc-400 hover:bg-white/8 hover:text-white" aria-label={t('Shell.closeVersionInfo')}>×</button>
+            <h2 id="build-info-title" className="pr-10 text-lg font-semibold text-[#F0F3F1]">{t('Shell.versionInfo')}</h2>
+            {buildInfoError ? (
+              <div role="alert" className="mt-4 rounded border border-amber-300/30 bg-amber-400/8 p-4 text-sm text-amber-100">
+                <p>{t('Shell.versionUnavailable')}</p>
+                <button type="button" onClick={() => void reloadBuildInfo()} className="mt-3 min-h-11 rounded border border-amber-200/40 px-3">{t('Shell.retryVersionInfo')}</button>
+              </div>
+            ) : buildInfo ? (
+              <>
+                <dl className="mt-5 grid gap-4 text-sm sm:grid-cols-2">
+                  <div><dt className="text-xs text-zinc-500">{t('Shell.environment')}</dt><dd className="mt-1 text-zinc-100">{buildInfo.environment === 'unknown' ? t('Shell.environmentNotProvided') : buildInfo.environment}</dd></div>
+                  <div><dt className="text-xs text-zinc-500">{t('Shell.productVersion')}</dt><dd className="mt-1 text-zinc-100">{buildInfo.product_version}</dd></div>
+                  <div className="sm:col-span-2"><dt className="text-xs text-zinc-500">{t('Shell.commit')}</dt><dd className="mt-1 break-all font-mono text-xs text-zinc-200">{buildInfo.commit}</dd></div>
+                  <div className="sm:col-span-2"><dt className="text-xs text-zinc-500">{t('Shell.revision')}</dt><dd className="mt-1 break-all font-mono text-xs text-zinc-200">{buildInfo.revision}</dd></div>
+                </dl>
+                <details className="mt-4 text-sm text-zinc-400">
+                  <summary className="min-h-11 cursor-pointer py-2">{t('Shell.additionalBuildDetails')}</summary>
+                  <dl className="grid gap-2 pb-3 sm:grid-cols-2"><div><dt>{t('Shell.branch')}</dt><dd className="break-all">{buildInfo.branch}</dd></div><div><dt>{t('Shell.tag')}</dt><dd className="break-all">{buildInfo.tag || t('Common.notProvided')}</dd></div><div><dt>{t('Shell.imageTag')}</dt><dd className="break-all">{buildInfo.image_tag}</dd></div><div><dt>{t('Shell.service')}</dt><dd className="break-all">{buildInfo.service}</dd></div></dl>
+                </details>
+                <p className="mt-3 text-xs leading-5 text-zinc-500">{t('Shell.buildSourceNote')}</p>
+                <button type="button" onClick={() => void copyVersionSnapshot()} className="mt-4 min-h-11 rounded bg-[#DCE9E1] px-4 text-sm font-semibold text-[#17231D]">{versionCopied ? t('Shell.versionCopied') : t('Shell.copyVersionInfo')}</button>
+                {versionCopyFailed ? <p role="status" className="mt-2 text-sm text-amber-100">{t('Shell.versionCopyFailed')}</p> : null}
+                {versionCopyFailed ? <textarea readOnly value={versionSnapshot} aria-label={t('Shell.versionInfo')} onFocus={(event) => event.currentTarget.select()} className="mt-2 min-h-24 w-full rounded border border-white/10 bg-black/20 p-2 font-mono text-xs text-zinc-200" /> : null}
+              </>
+            ) : <p className="mt-5 text-sm text-zinc-400">{t('Shell.loadingVersion')}</p>}
+          </section>
+        </div>
       ) : null}
 
     </div>

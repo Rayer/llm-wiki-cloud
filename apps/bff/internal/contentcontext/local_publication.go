@@ -84,13 +84,18 @@ func DecodeLocalPublicationDescriptor(data []byte, ownerID, projectID string) (L
 func ValidateLocalPublicationDescriptor(descriptor LocalPublicationDescriptor, ownerID, projectID string) error {
 	digest, digestOK := NormalizeSHA256(descriptor.ConceptsDigest)
 	metadataDigest, metadataDigestOK := NormalizeSHA256(descriptor.SummaryMetadata.ConceptsDigest)
+	promptRevision, recipeOK := summaryPromptForSelection(descriptor.SummaryMetadata.SelectionVersion)
+	if descriptor.SummaryMetadata.PromptRevision != "" && descriptor.SummaryMetadata.PromptRevision != promptRevision ||
+		descriptor.SummaryMetadata.SelectionVersion == SummarySelectionVersion && descriptor.SummaryMetadata.PromptRevision != SummaryPromptRevision {
+		recipeOK = false
+	}
 	if descriptor.Version != LocalPublicationVersion || ownerID == "" || projectID == "" ||
 		descriptor.OwnerID != ownerID || descriptor.ProjectID != projectID ||
 		descriptor.ExecutionID == "" || descriptor.TransactionID == "" || descriptor.Generation != "local-"+descriptor.TransactionID ||
 		!digestOK || !metadataDigestOK || digest != metadataDigest ||
 		descriptor.SummarySourceGeneration == "" || descriptor.SummarySourceIdentity == "" ||
 		descriptor.SummaryMetadata.SourceGeneration != descriptor.SummarySourceGeneration ||
-		descriptor.SummaryMetadata.SelectionVersion != SummarySelectionVersion ||
+		!recipeOK ||
 		!validLocalSummarySourceIdentity(descriptor.SummarySourceIdentity, descriptor.SummarySourceGeneration, digest) {
 		return errors.New("local content-context descriptor identity is invalid")
 	}
@@ -106,7 +111,12 @@ func ValidateLocalPublicationDescriptor(descriptor LocalPublicationDescriptor, o
 	}
 	inputDigest := sha256.Sum256(descriptor.SummaryInput)
 	metadataInputDigest, inputDigestOK := NormalizeSHA256(descriptor.SummaryMetadata.InputDigest)
-	if len(descriptor.SummaryInput) == 0 || len(descriptor.SummaryInput)+len(SummarySystemPrompt)+1 > SummaryMaxInputBytes ||
+	maxConcepts, _ := summaryMaxForSelection(descriptor.SummaryMetadata.SelectionVersion)
+	systemPrompt := SummarySystemPrompt
+	if promptRevision == SummaryLegacyPromptRevision {
+		systemPrompt = SummaryLegacySystemPrompt
+	}
+	if len(descriptor.SummaryInput) == 0 || len(descriptor.SummaryInput)+len(systemPrompt)+1 > SummaryMaxInputBytes ||
 		!inputDigestOK || hex.EncodeToString(inputDigest[:]) != metadataInputDigest ||
 		descriptor.SummaryMetadata.TotalConcepts < 1 || descriptor.SummaryMetadata.SelectedConcepts < 1 {
 		return errors.New("local content-context summary input is invalid")
@@ -121,7 +131,7 @@ func ValidateLocalPublicationDescriptor(descriptor LocalPublicationDescriptor, o
 		return errors.New("local content-context summary input has trailing data")
 	}
 	payloadDigest, payloadDigestOK := NormalizeSHA256(payload.ConceptsDigest)
-	if !payloadDigestOK || payloadDigest != digest || payload.SelectionVersion != SummarySelectionVersion ||
+	if !payloadDigestOK || payloadDigest != digest || payload.SelectionVersion != descriptor.SummaryMetadata.SelectionVersion ||
 		payload.TotalConcepts != descriptor.SummaryMetadata.TotalConcepts ||
 		payload.SelectedConcepts != descriptor.SummaryMetadata.SelectedConcepts ||
 		payload.Sampled != descriptor.SummaryMetadata.Sampled ||
@@ -129,8 +139,21 @@ func ValidateLocalPublicationDescriptor(descriptor LocalPublicationDescriptor, o
 		payload.BodyTruncatedConcepts != descriptor.SummaryMetadata.BodyTruncatedConcepts ||
 		payload.TitleCodepointsOmitted != descriptor.SummaryMetadata.TitleCodepointsOmitted ||
 		payload.BodyCodepointsOmitted != descriptor.SummaryMetadata.BodyCodepointsOmitted ||
-		len(payload.Concepts) != descriptor.SummaryMetadata.SelectedConcepts {
+		len(payload.Concepts) != descriptor.SummaryMetadata.SelectedConcepts || payload.SelectedConcepts > maxConcepts ||
+		payload.Sampled != (payload.TotalConcepts > payload.SelectedConcepts) {
 		return errors.New("local content-context summary metadata does not match its input")
+	}
+	if descriptor.SummaryMetadata.SelectionVersion == SummarySelectionVersion {
+		if len(descriptor.SummaryMetadata.SelectedSlugs) != len(payload.Concepts) {
+			return errors.New("local content-context selected slug metadata is incomplete")
+		}
+		for i, concept := range payload.Concepts {
+			if descriptor.SummaryMetadata.SelectedSlugs[i] != concept.Slug {
+				return errors.New("local content-context selected slug metadata differs from input")
+			}
+		}
+	} else if len(descriptor.SummaryMetadata.SelectedSlugs) != 0 {
+		return errors.New("legacy local content-context descriptor has overview-only metadata")
 	}
 	return nil
 }

@@ -33,7 +33,7 @@ export function ProjectKeysSection({
   t,
   locale = 'en',
 }: {
-  currentProject: Project | null;
+  currentProject: Pick<Project, 'id' | 'name'> | null;
   accessToken: string | null;
   t: Translate;
   locale?: ProjectKeysLocale;

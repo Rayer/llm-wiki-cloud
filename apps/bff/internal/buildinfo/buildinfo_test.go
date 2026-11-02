@@ -15,6 +15,7 @@ func TestCurrentUsesLocalBuildDefaults(t *testing.T) {
 	t.Setenv("K_REVISION", "")
 
 	if got, want := Current(), (Info{
+		Environment:    "unknown",
 		ProductVersion: "dev",
 		Commit:         "unknown",
 		Branch:         "unknown",
@@ -33,6 +34,7 @@ func TestCurrentUsesInjectedBuildMetadataAndCloudRunIdentity(t *testing.T) {
 	t.Setenv("K_REVISION", "llm-wiki-bff-dev-00042-abc")
 
 	if got, want := Current(), (Info{
+		Environment:    "unknown",
 		ProductVersion: "1.0.0",
 		Commit:         "0123456789abcdef0123456789abcdef01234567",
 		Branch:         "develop/1.0",
@@ -52,7 +54,7 @@ func TestVersionHandlerReturnsAllowlistedNoStoreJSON(t *testing.T) {
 
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	router.GET("/api/v1/public/version", Handler())
+	router.GET("/api/v1/public/version", HandlerWithEnvironment("dev"))
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/public/version", nil))
 
@@ -68,6 +70,7 @@ func TestVersionHandlerReturnsAllowlistedNoStoreJSON(t *testing.T) {
 		t.Fatalf("decode response: %v", err)
 	}
 	want := map[string]string{
+		"environment":     "dev",
 		"product_version": "1.0.0",
 		"commit":          "0123456789abcdef0123456789abcdef01234567",
 		"branch":          "develop/1.0",
@@ -83,6 +86,18 @@ func TestVersionHandlerReturnsAllowlistedNoStoreJSON(t *testing.T) {
 		if got := body[key]; got != value {
 			t.Errorf("response[%q] = %q, want %q", key, got, value)
 		}
+	}
+}
+
+func TestVersionHandlerUsesUnknownForUnrecognizedEnvironment(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.GET("/version", HandlerWithEnvironment("staging"))
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/version", nil))
+	var body map[string]string
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil || body["environment"] != "unknown" {
+		t.Fatalf("environment response=%#v err=%v", body, err)
 	}
 }
 

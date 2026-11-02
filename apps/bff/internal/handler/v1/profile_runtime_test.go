@@ -829,6 +829,42 @@ func TestPipelineRuntimeExhaustionFailsPreparationAndPreservesAmbiguousInvocatio
 	}
 }
 
+func TestFirstFullPipelinePreparesBootstrapWithoutSeparateConfirmation(t *testing.T) {
+	f := newRuntimeFixture(t)
+	state, _ := f.save(t, 0, "Use concise Traditional Chinese for this Wiki.")
+	provider := &deterministicFakeProfileProvider{}
+	f.dispatcher.Provider = profilederive.NewProvider(provider)
+	store := f.dispatcher.Handler.firestore
+	reservationID := "first-full-pipeline-bootstrap"
+	_, reserved, err := store.ReserveQuotaForPipelineIntent(f.ctx, reservationID, f.user, f.project,
+		pipelinequota.Limits{DailyLimit: 5, Cooldown: time.Hour, MinNewRaw: 1}, f.clock,
+		pipelinequota.ModeFull, false, false, 1, 0, 0)
+	if err != nil || !reserved {
+		t.Fatalf("reserve first full Pipeline: reserved=%t err=%v", reserved, err)
+	}
+	preparing, exists, err := store.GetPipelineIntent(f.ctx, f.user, f.project, reservationID)
+	if err != nil || !exists || preparing.IntentStatus != "preparing" || preparing.ProfileRevision != state.Revision {
+		t.Fatalf("initial Pipeline intent=%+v exists=%t err=%v", preparing, exists, err)
+	}
+	if err := f.dispatcher.preparePipelineIntent(f.ctx, f.repo, store, preparing); err != nil {
+		t.Fatalf("prepare first Pipeline guidance without a confirmation call: %v", err)
+	}
+	if provider.calls != 1 {
+		t.Fatalf("first Pipeline should prepare missing bootstrap guidance once; provider calls=%d", provider.calls)
+	}
+	ready, exists, err := store.GetPipelineIntent(f.ctx, f.user, f.project, reservationID)
+	if err != nil || !exists || ready.IntentStatus != "ready" || ready.ConsumedGuidanceKind != "bootstrap" || ready.ConsumedBootstrapGuidance == nil ||
+		ready.ProfileRevision != state.Revision || ready.RequirementsDigest != profileRequirementsDigest(state.Requirements) {
+		t.Fatalf("first Pipeline did not pin prepared bootstrap guidance: intent=%+v exists=%t err=%v", ready, exists, err)
+	}
+	if _, err := profileartifacts.ValidateBootstrapGuidance(f.objects.objects[profileartifacts.BootstrapObjectPath(ready.ConsumedBootstrapGuidance.Revision)], *ready.ConsumedBootstrapGuidance); err != nil {
+		t.Fatalf("first Pipeline bootstrap artifact is not the pinned current preview: %v", err)
+	}
+	if _, claimed, err := store.BeginPipelineIntentInvocation(f.ctx, reservationID, reservationID, f.user, f.project); err != nil || !claimed {
+		t.Fatalf("invoke first Pipeline without an additional bootstrap confirmation: claimed=%t err=%v", claimed, err)
+	}
+}
+
 func TestIncrementalPipelineIntentStillWaitsForPendingProfileDerivation(t *testing.T) {
 	f := newRuntimeFixture(t)
 	requirements := []ProfileRequirement{{ID: "r1", Text: "Preserve existing incremental behavior."}}

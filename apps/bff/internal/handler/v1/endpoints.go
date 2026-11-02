@@ -200,6 +200,7 @@ func (h *Handler) ListProjects(c *gin.Context) {
 			ID:          project.ID,
 			Name:        name,
 			CreatedAt:   project.CreatedAt,
+			LastUsedAt:  h.projectLastUsedAt(c.Request.Context(), userID, project.ID),
 			Description: "",
 		})
 	}
@@ -328,6 +329,7 @@ func projectResponseFromFirestoreDoc(docID string, data map[string]interface{}) 
 			ID:                  record.projectID,
 			Name:                record.name,
 			CreatedAt:           firestoreCreatedAt(data["created_at"]),
+			LastUsedAt:          firestoreTimestampString(data["last_used_at"]),
 			Description:         projectDescriptionValue(data),
 			DescriptionRevision: projectDescriptionRevision(data),
 		}, record.userID, true
@@ -364,6 +366,7 @@ func projectResponseFromFirestoreDoc(docID string, data map[string]interface{}) 
 		ID:                  projectID,
 		Name:                name,
 		CreatedAt:           firestoreCreatedAt(data["created_at"]),
+		LastUsedAt:          firestoreTimestampString(data["last_used_at"]),
 		Description:         projectDescriptionValue(data),
 		DescriptionRevision: projectDescriptionRevision(data),
 	}, userID, true
@@ -399,6 +402,14 @@ func firestoreCreatedAt(value interface{}) string {
 		}
 	}
 	return ""
+}
+
+func firestoreTimestampString(value interface{}) *string {
+	valueString := firestoreCreatedAt(value)
+	if valueString == "" {
+		return nil
+	}
+	return &valueString
 }
 
 func projectTitleFromIndex(data []byte) string {
@@ -872,6 +883,11 @@ func (h *Handler) ListConcepts(c *gin.Context) {
 		observability.WriteDataJSON(c, http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
 		return
 	}
+	if metadataReader, ok := gcsClient.(interface {
+		PopulateConceptObjectUpdatedAt(context.Context, []gcs.WikiPage) []gcs.WikiPage
+	}); ok {
+		concepts = metadataReader.PopulateConceptObjectUpdatedAt(ctx, concepts)
+	}
 	if err := addWikiPageIDsFromIDMap(ctx, gcsClient, concepts, "concept"); err != nil {
 		observability.WriteDataJSON(c, http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
 		return
@@ -941,15 +957,22 @@ func (h *Handler) GetConcept(c *gin.Context) {
 		observability.FinishDataSpan(responseSpan, "response_failure")
 		return
 	}
+	relatedConcepts, relatedSources, err := resolveWikiRelations(c.Request.Context(), gcsClient, "concept", *page, frontmatter)
+	if err != nil {
+		observability.WriteDataFailureJSONInSpan(c, responseSpan, http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
+		return
+	}
 	writeJSONInDataResponse(c, responseSpan, http.StatusOK, handler.ConceptDetailResponse{
-		Slug:        slug,
-		ID:          page.ID,
-		Title:       slug,
-		Type:        "concept",
-		Status:      page.Status,
-		Frontmatter: frontmatter,
-		Body:        body,
-		Raw:         string(data),
+		Slug:            slug,
+		ID:              page.ID,
+		Title:           slug,
+		Type:            "concept",
+		Status:          page.Status,
+		Frontmatter:     frontmatter,
+		Body:            body,
+		Raw:             string(data),
+		RelatedConcepts: relatedConcepts,
+		RelatedSources:  relatedSources,
 	})
 }
 

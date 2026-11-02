@@ -46,6 +46,11 @@ export function EntryCard({
           <StatusBadge status={entry.status} />
           {entry.date ? <Badge variant="muted">{entry.date}</Badge> : null}
         </div>
+        {entryType === 'concept' ? (
+          <p className="mt-3 text-xs text-zinc-500">
+            {t('List.objectUpdated')}: {entry.objectUpdatedAt ?? t('List.objectUpdatedMissing')}
+          </p>
+        ) : null}
         {entry.description ? (
           <p className="mt-3 line-clamp-3 text-sm leading-6 text-zinc-400">
             {entry.description}

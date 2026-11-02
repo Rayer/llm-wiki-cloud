@@ -24,6 +24,9 @@ func TestQueryPromptsRequireExactInternalReferencesInBothModes(t *testing.T) {
 		if strings.Contains(prompt, "[CITATION_REF_0]") || !strings.Contains(prompt, "Use that exact reference") {
 			t.Fatalf("%s prompt lost exact internal-reference rules: %q", mode, prompt)
 		}
+		if mode == "full" && (!strings.Contains(prompt, "explicitly label them as general knowledge") || strings.Contains(prompt, "make it seamless")) {
+			t.Fatalf("full prompt does not distinguish general knowledge from Wiki evidence: %q", prompt)
+		}
 	}
 }
 

@@ -6,6 +6,7 @@ import {
   normalizeProjectDescription,
   normalizeProject,
   normalizeProjects,
+  compareProjectsByLastUse,
   projectDescriptionCodePointCount,
   selectDefaultProject,
 } from '../src/lib/project-core.ts';
@@ -21,8 +22,8 @@ test('normalizeProjects accepts array and wrapped API responses', () => {
       ],
     }),
     [
-      { id: 'bravo', name: 'Bravo', description: '', descriptionRevision: 0 },
-      { id: 'alpha', name: 'Alpha', description: '', descriptionRevision: 0 },
+      { id: 'alpha', name: 'Alpha', createdAt: null, lastUsedAt: null, description: '', descriptionRevision: 0 },
+      { id: 'bravo', name: 'Bravo', createdAt: null, lastUsedAt: null, description: '', descriptionRevision: 0 },
     ],
   );
 });
@@ -30,7 +31,7 @@ test('normalizeProjects accepts array and wrapped API responses', () => {
 test('normalizeProject accepts a project returned from init-project', () => {
   assert.deepEqual(
     normalizeProject({ project: { id: 'new-project', name: 'New Project' } }),
-    { id: 'new-project', name: 'New Project', description: '', descriptionRevision: 0 },
+    { id: 'new-project', name: 'New Project', createdAt: null, lastUsedAt: null, description: '', descriptionRevision: 0 },
   );
 });
 
@@ -38,7 +39,7 @@ test('normalizeProject does not use the project name as the project id', () => {
   assert.equal(normalizeProject({ name: 'Human Project Name' }), null);
   assert.deepEqual(
     normalizeProject({ project_id: 'project-123', name: 'Human Project Name' }),
-    { id: 'project-123', name: 'Human Project Name', description: '', descriptionRevision: 0 },
+    { id: 'project-123', name: 'Human Project Name', createdAt: null, lastUsedAt: null, description: '', descriptionRevision: 0 },
   );
 });
 
@@ -51,7 +52,7 @@ test('selectDefaultProject restores the last used project when available', () =>
   assert.deepEqual(selectDefaultProject(projects, 'bravo'), projects[1]);
 });
 
-test('selectDefaultProject falls back to the first project alphabetically', () => {
+test('selectDefaultProject preserves the existing alphabetical fallback', () => {
   const projects = [
     { id: 'zulu', name: 'Zulu' },
     { id: 'alpha', name: 'alpha' },
@@ -65,8 +66,67 @@ test('selectDefaultProject falls back to the first project alphabetically', () =
 test('project normalization retains exact saved description and revision', () => {
   assert.deepEqual(
     normalizeProject({ id: 'project-1', name: 'Notes', description: '  line one\nline two  ', description_revision: 4 }),
-    { id: 'project-1', name: 'Notes', description: '  line one\nline two  ', descriptionRevision: 4 },
+    { id: 'project-1', name: 'Notes', createdAt: null, lastUsedAt: null, description: '  line one\nline two  ', descriptionRevision: 4 },
   );
+});
+
+test('project timestamps normalize only complete valid RFC3339 timestamps', () => {
+  const project = normalizeProject({
+    id: 'project-1', name: 'Notes', created_at: '2026-02-28T03:04:05+08:00',
+    last_used_at: '2026-03-01T00:00:00Z',
+  });
+  assert.equal(project?.createdAt, '2026-02-28T03:04:05+08:00');
+  assert.equal(project?.lastUsedAt, '2026-03-01T00:00:00Z');
+
+  for (const invalid of [
+    null, '', ' ', 123, '2026-02-30T00:00:00Z', '2026-13-01T00:00:00Z',
+    '2026-02-01T24:00:00Z', '2026-02-01T00:60:00Z', '2026-02-01T00:00:60Z',
+    '2026-02-01T00:00:00', '2026-02-01T00:00:00+24:00',
+    '2026-02-01T00:00:00+00:60',
+  ]) {
+    const normalized = normalizeProject({ id: 'project-1', name: 'Notes', created_at: invalid, last_used_at: invalid });
+    assert.equal(normalized?.createdAt, null, `created_at ${String(invalid)}`);
+    assert.equal(normalized?.lastUsedAt, null, `last_used_at ${String(invalid)}`);
+  }
+});
+
+test('project normalization keeps timestamps in direct, nested, fallback, and legacy-string envelopes', () => {
+  const timestamps = { created_at: '2026-01-01T00:00:00Z', last_used_at: '2026-01-02T00:00:00Z' };
+  assert.deepEqual(normalizeProject({ id: 'direct', name: 'Direct', ...timestamps }), {
+    id: 'direct', name: 'Direct', createdAt: timestamps.created_at, lastUsedAt: timestamps.last_used_at,
+    description: '', descriptionRevision: 0,
+  });
+  assert.deepEqual(normalizeProject({ project: { id: 'nested', name: 'Nested', ...timestamps } }), {
+    id: 'nested', name: 'Nested', createdAt: timestamps.created_at, lastUsedAt: timestamps.last_used_at,
+    description: '', descriptionRevision: 0,
+  });
+  assert.deepEqual(normalizeProject({ project: 'fallback', ...timestamps }), {
+    id: 'fallback', name: 'fallback', createdAt: timestamps.created_at, lastUsedAt: timestamps.last_used_at,
+    description: '', descriptionRevision: 0,
+  });
+  assert.deepEqual(normalizeProject('legacy'), {
+    id: 'legacy', name: 'legacy', createdAt: null, lastUsedAt: null, description: '', descriptionRevision: 0,
+  });
+});
+
+test('last-use comparator groups recent use before created fallback and uses id ordinal ties', () => {
+  const projects = normalizeProjects([
+    { id: 'last-b', name: 'B', last_used_at: '2026-01-02T00:00:00Z', created_at: '2024-01-01T00:00:00Z' },
+    { id: 'created-new', name: 'New', created_at: '2026-01-01T00:00:00Z' },
+    { id: 'last-a', name: 'A', last_used_at: '2026-01-02T00:00:00+00:00', created_at: '2020-01-01T00:00:00Z' },
+    { id: 'created-old', name: 'Old', created_at: '2020-01-01T00:00:00Z' },
+    { id: 'no-date', name: 'No date', created_at: '2026-02-30T00:00:00Z' },
+  ]);
+  assert.deepEqual(projects.map(({ id }) => id), ['last-a', 'last-b', 'created-new', 'created-old', 'no-date']);
+  assert.equal(compareProjectsByLastUse(projects[0], projects[1]) < 0, true);
+});
+
+test('last-used timestamp does not fall back to created_at', () => {
+  const normalized = normalizeProject({
+    id: 'project-1', name: 'Notes', created_at: '2026-01-01T00:00:00Z', last_used_at: '',
+  });
+  assert.equal(normalized?.createdAt, '2026-01-01T00:00:00Z');
+  assert.equal(normalized?.lastUsedAt, null);
 });
 
 test('description length uses normalized Unicode code points and rejects unsupported text', () => {

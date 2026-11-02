@@ -36,7 +36,7 @@ beforeEach(() => {
   window.history.replaceState(null, '', '/');
   mocks.currentProject = { id: 'missing-values', name: 'Missing values' };
   mocks.getConcepts.mockResolvedValue([]);
-  mocks.getBuildInfo.mockResolvedValue({ product_version: 'test', commit: 'test', branch: 'test', tag: '', image_tag: 'test', service: 'test', revision: 'test' });
+  mocks.getBuildInfo.mockResolvedValue({ environment: 'unknown', product_version: 'test', commit: 'test', branch: 'test', tag: '', image_tag: 'test', service: 'test', revision: 'test' });
 });
 afterEach(() => { cleanup(); vi.resetAllMocks(); });
 

@@ -274,7 +274,7 @@ func TestMCPProjectOAuthRejectsConflictingProjectHeaderBeforeSDK(t *testing.T) {
 	for _, item := range writerTools {
 		writerNames[item.(map[string]any)["name"].(string)] = true
 	}
-	if len(writerNames) != 6 || !writerNames["query_project"] || !writerNames["pipeline_status"] || !writerNames["add_raw"] ||
+	if len(writerNames) != 7 || !writerNames["query_project"] || !writerNames["confirm_connection"] || !writerNames["pipeline_status"] || !writerNames["add_raw"] ||
 		!writerNames["import_url"] || !writerNames["get_document_import"] || !writerNames["import_document"] {
 		t.Fatalf("OAuth raw-write discovery = %v, want query and Pipeline status, raw and URL import, and document import tools", writerNames)
 	}

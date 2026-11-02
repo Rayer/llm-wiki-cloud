@@ -30,6 +30,15 @@ export type ProjectContentSummary = {
   returned_model: string;
   input_digest: string;
   selection_version: string;
+  overview_schema_version?: 1;
+  short_title?: string;
+  topic_tags?: string[];
+  total_concepts?: number;
+  selected_concepts?: number;
+  selected_slugs?: string[];
+  sampled?: boolean;
+  title_truncated_concepts?: number;
+  body_truncated_concepts?: number;
 };
 
 export type ProjectContentContext = {
@@ -47,6 +56,32 @@ export type ProjectDescription = {
   description: string;
   revision: number;
 };
+
+function validProjectContentOverview(record: Record<string, unknown>): boolean {
+  const fields = ['overview_schema_version', 'short_title', 'topic_tags', 'total_concepts', 'selected_concepts', 'selected_slugs', 'sampled', 'title_truncated_concepts', 'body_truncated_concepts'];
+  if (!fields.some((key) => key in record)) return true;
+  const title = record.short_title;
+  const tags = record.topic_tags;
+  const total = record.total_concepts;
+  const selected = record.selected_concepts;
+  const slugs = record.selected_slugs;
+  const titleTruncated = record.title_truncated_concepts;
+  const bodyTruncated = record.body_truncated_concepts;
+  if (
+    record.overview_schema_version !== 1 || typeof title !== 'string' || !title.trim() || Array.from(title).length > 24 || /[<>]/.test(title)
+    || !Array.isArray(tags) || tags.length < 1 || tags.length > 5
+    || !tags.every((tag) => typeof tag === 'string' && tag.trim() === tag && tag.length > 0 && Array.from(tag).length <= 16 && !/[<>]/.test(tag))
+    || new Set((tags as string[]).map((tag) => tag.toLocaleLowerCase())).size !== tags.length
+    || typeof total !== 'number' || !Number.isInteger(total) || total < 1
+    || typeof selected !== 'number' || !Number.isInteger(selected) || selected < 1 || selected > 15 || selected > total
+    || !Array.isArray(slugs) || slugs.length !== selected
+    || !slugs.every((slug, index) => typeof slug === 'string' && slug.trim() !== '' && (index === 0 || (slugs[index - 1] as string) < slug))
+    || typeof record.sampled !== 'boolean' || record.sampled !== (total > selected)
+    || typeof titleTruncated !== 'number' || !Number.isInteger(titleTruncated) || titleTruncated < 0 || titleTruncated > selected
+    || typeof bodyTruncated !== 'number' || !Number.isInteger(bodyTruncated) || bodyTruncated < 0 || bodyTruncated > selected
+  ) return false;
+  return true;
+}
 
 function apiError(payload: unknown, fallback: string): string {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return fallback;
@@ -253,6 +288,9 @@ export async function getProjectContentContext(projectId: string): Promise<Proje
     && typeof profileID === 'string' && profileID.trim() !== ''
     && typeof profileRevision === 'number' && Number.isInteger(profileRevision) && profileRevision > 0
   ) || (profileSource === 'bootstrap' && profileID === undefined && profileRevision === undefined);
+  const validOverview = summaryRecord === null || validProjectContentOverview(summaryRecord);
+  const knownRecipe = summaryRecord?.selection_version === 'selection-v1' || summaryRecord?.selection_version === 'selection-v2-source-spread-15';
+  const knownPrompt = summaryRecord?.prompt_revision === 'project-summary-v1' || summaryRecord?.prompt_revision === 'project-summary-v2-overview';
   const validSummary = summary === null || (
     summaryRecord !== null
     && typeof summaryRecord.text === 'string'
@@ -267,6 +305,7 @@ export async function getProjectContentContext(projectId: string): Promise<Proje
     && typeof summaryRecord.returned_model === 'string'
     && typeof summaryRecord.input_digest === 'string'
     && typeof summaryRecord.selection_version === 'string'
+    && knownRecipe && knownPrompt && validOverview
   );
   if (
     record.project_id !== targetProjectId

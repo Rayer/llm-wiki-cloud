@@ -26,7 +26,7 @@ func TestLocalPublicationDescriptorRoundTripAndIdentity(t *testing.T) {
 		SummaryMetadata: SummaryInputMetadata{
 			ConceptsDigest: digest, SourceGeneration: "local-txn-7",
 			InputDigest: hex.EncodeToString(inputDigest[:]), SelectionVersion: SummarySelectionVersion,
-			TotalConcepts: 1, SelectedConcepts: 1,
+			PromptRevision: SummaryPromptRevision, TotalConcepts: 1, SelectedConcepts: 1, SelectedSlugs: []string{"alpha"},
 		},
 	}
 	encoded, err := EncodeLocalPublicationDescriptor(descriptor)
@@ -54,7 +54,7 @@ func TestLocalPublicationDescriptorRejectsUnboundInputAndCrossProject(t *testing
 		SummaryMetadata: SummaryInputMetadata{
 			ConceptsDigest: digest, SourceGeneration: "local-txn-7",
 			InputDigest: hex.EncodeToString(make([]byte, sha256.Size)), SelectionVersion: SummarySelectionVersion,
-			TotalConcepts: 1, SelectedConcepts: 1,
+			PromptRevision: SummaryPromptRevision, TotalConcepts: 1, SelectedConcepts: 1, SelectedSlugs: []string{"alpha"},
 		},
 	}
 	if _, err := EncodeLocalPublicationDescriptor(descriptor); err == nil {

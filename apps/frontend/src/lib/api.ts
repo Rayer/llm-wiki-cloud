@@ -128,11 +128,17 @@ export type WikiEntry = {
   status?: string;
   description?: string;
   date?: string;
+  objectUpdatedAt?: string | null;
+  rawPath?: string | null;
+  relatedConcepts?: WikiReference[];
+  relatedSources?: WikiReference[];
   frontmatter?: Record<string, unknown>;
   content?: string;
   annotationAllowed?: boolean;
   raw: unknown;
 };
+
+export type WikiReference = { id?: string; slug: string; title: string; type: 'concept' | 'source' };
 
 export type SourceLifecycle = 'new' | 'synced' | 'notes_pending' | 'content_pending' | 'error';
 
@@ -253,6 +259,7 @@ export type AdminManagementScope = {
 };
 
 export type BuildInfo = {
+  environment: 'local' | 'dev' | 'prod' | 'unknown';
   product_version: string;
   commit: string;
   branch: string;
@@ -440,6 +447,7 @@ type BuildRequestInitOptions = {
   body?: BodyInit;
   headers?: HeadersInit;
   signal?: AbortSignal;
+  cache?: RequestCache;
 };
 
 export function buildRequestInit({
@@ -450,6 +458,7 @@ export function buildRequestInit({
   body,
   headers: extraHeaders,
   signal,
+  cache,
 }: BuildRequestInitOptions): RequestInit {
   const headers: Record<string, string> = {
     ...(json ? { 'Content-Type': 'application/json' } : {}),
@@ -469,6 +478,7 @@ export function buildRequestInit({
     credentials: 'include',
     headers,
     ...(signal === undefined ? {} : { signal }),
+    ...(cache === undefined ? {} : { cache }),
     ...(body === undefined ? {} : { body }),
   };
 }
@@ -515,6 +525,7 @@ type ApiFetchOptions = {
   headers?: HeadersInit;
   requireProject?: boolean;
   signal?: AbortSignal;
+  cache?: RequestCache;
   onRequestDispatched?: () => void;
   onResponseReceived?: (response: Response) => void;
 };
@@ -1087,13 +1098,26 @@ export function normalizeEntry(item: unknown): WikiEntry {
       firstString(frontmatter ?? {}, ['status']),
     description: firstString(record, ['description', 'summary', 'excerpt']) ??
       firstString(frontmatter ?? {}, ['description', 'summary']),
-    date: firstString(record, ['date', 'createdAt', 'updatedAt']) ??
-      firstString(frontmatter ?? {}, ['date', 'createdAt', 'updatedAt']),
+    date: firstString(record, ['date', 'createdAt']) ??
+      firstString(frontmatter ?? {}, ['date', 'createdAt']),
+    objectUpdatedAt: typeof record.updated_at === 'string' && record.updated_at.trim() ? record.updated_at : null,
+    rawPath: typeof record.raw_path === 'string' && record.raw_path.trim() ? record.raw_path : null,
+    relatedConcepts: normalizeWikiReferences(record.related_concepts, 'concept'),
+    relatedSources: normalizeWikiReferences(record.related_sources, 'source'),
     frontmatter,
     content: firstString(record, ['content', 'markdown', 'body', 'text']),
     annotationAllowed: asBoolean(record.annotation_allowed) ?? asBoolean(record.annotationAllowed),
     raw: item,
   };
+}
+
+function normalizeWikiReferences(value: unknown, expectedType: WikiReference['type']): WikiReference[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const refs = value.flatMap((item): WikiReference[] => {
+    if (!isRecord(item) || item.type !== expectedType || typeof item.slug !== 'string' || !item.slug.trim() || typeof item.title !== 'string' || !item.title.trim()) return [];
+    return [{ ...(typeof item.id === 'string' && item.id.trim() ? { id: item.id } : {}), slug: item.slug, title: item.title, type: expectedType }];
+  });
+  return refs;
 }
 
 function normalizeSourceLifecycle(value: unknown): SourceLifecycle {
@@ -2296,7 +2320,11 @@ export async function getBuildInfo(): Promise<BuildInfo> {
     return value;
   };
 
+  const environment = payload.environment;
+  const safeEnvironment = environment === 'local' || environment === 'dev' || environment === 'prod' ? environment : 'unknown';
+
   return {
+    environment: safeEnvironment,
     product_version: field('product_version'),
     commit: field('commit'),
     branch: field('branch'),

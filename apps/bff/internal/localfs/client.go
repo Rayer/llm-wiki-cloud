@@ -356,9 +356,10 @@ func (c *Client) ListObjectMeta(ctx context.Context, prefix string) ([]store.Obj
 }
 
 type wikiPageFrontmatter struct {
-	ID         string `yaml:"id"`
-	Title      string `yaml:"title"`
-	SourceFile string `yaml:"source_file"`
+	ID         string   `yaml:"id"`
+	Title      string   `yaml:"title"`
+	SourceFile string   `yaml:"source_file"`
+	Sources    []string `yaml:"sources"`
 }
 
 func New(root string) *Client {
@@ -634,6 +635,31 @@ func (c *Client) ListConceptsFromCache(ctx context.Context) ([]store.WikiPage, e
 		return nil, err
 	}
 	return gcs.WikiPagesFromConceptsJSONL(data)
+}
+
+// PopulateConceptObjectUpdatedAt reports real local concept file mtimes only.
+func (c *Client) PopulateConceptObjectUpdatedAt(ctx context.Context, pages []store.WikiPage) []store.WikiPage {
+	for index := range pages {
+		if err := ctx.Err(); err != nil {
+			return pages
+		}
+		relPath := pages[index].Path
+		clean := filepath.ToSlash(filepath.Clean(filepath.FromSlash(relPath)))
+		if clean != relPath || !strings.HasPrefix(relPath, "wiki/") || !strings.HasSuffix(relPath, ".md") || strings.Contains(relPath, "\\") {
+			continue
+		}
+		fullPath, err := c.fullPath(relPath)
+		if err != nil {
+			continue
+		}
+		info, err := os.Lstat(fullPath)
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		updated := info.ModTime().UTC().Format(time.RFC3339Nano)
+		pages[index].UpdatedAt = &updated
+	}
+	return pages
 }
 
 func (c *Client) ListSourcesFromCache(ctx context.Context) ([]store.WikiPage, error) {
@@ -928,7 +954,25 @@ func applyWikiPageFrontmatter(page store.WikiPage, data []byte) (store.WikiPage,
 	if raw := strings.TrimSpace(matter.SourceFile); raw != "" {
 		page.RawPath = raw
 	}
+	page.Sources = normalizedWikiReferences(matter.Sources)
 	return page, nil
+}
+
+func normalizedWikiReferences(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
 }
 
 func (c *Client) fullPath(relPath string) (string, error) {

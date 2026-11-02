@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -120,7 +121,8 @@ func (h *Handler) callMCPAddRaw(ctx context.Context, _ *mcp.CallToolRequest, inp
 		return addRawToolResult(addRawResponse{Status: "rejected", ProcessingStatus: "not_started", Message: "Filename must be a safe Markdown basename."}, true), nil, nil
 	}
 
-	journal, sourceRef, prepareErr := h.prepareSourceCommit(ctx, identity.userID, identity.projectID, "mcp_add_raw", relativePath, content)
+	usePayloadSHA256 := mcpAddRawPayloadFingerprint(input)
+	journal, sourceRef, prepareErr := h.prepareMCPAddRawSourceCommit(ctx, identity.userID, identity.projectID, relativePath, content, usePayloadSHA256)
 	if prepareErr != nil {
 		return addRawToolResult(addRawResponse{Status: "unavailable", ProcessingStatus: "not_started", Message: mcpRawCreateUnavailable}, true), nil, nil
 	}
@@ -150,7 +152,7 @@ func (h *Handler) callMCPAddRaw(ctx context.Context, _ *mcp.CallToolRequest, inp
 }
 
 func (h *Handler) reconcileMCPAddRaw(ctx context.Context, writer store.ConditionalWriter, relativePath string, content []byte, input addRawInput, journal sourceautomation.Journal, sourceRef sourceautomation.Ref, commitErr error) (*mcp.CallToolResult, any, error) {
-	existing, _, readErr := writer.ReadFileWithGeneration(ctx, "raw/"+relativePath)
+	existing, generation, readErr := writer.ReadFileWithGeneration(ctx, "raw/"+relativePath)
 	if readErr != nil {
 		response := addRawResponse{Status: "unavailable", ProcessingStatus: "not_started", Message: mcpRawCreateUnavailable}
 		if errors.Is(commitErr, rawintake.ErrCommitUncertain) {
@@ -187,6 +189,17 @@ func (h *Handler) reconcileMCPAddRaw(ctx context.Context, writer store.Condition
 	}
 	if sameMCPAddRawPayload(existing, input) {
 		digest := sha256.Sum256(existing)
+		if journal != nil {
+			_, recordErr := journal.RecordNoChangeProjectUse(ctx, sourceRef, mcpAddRawPayloadFingerprint(input), hex.EncodeToString(digest[:]), strconv.FormatInt(generation, 10))
+			if recordErr != nil {
+				return addRawToolResult(addRawResponse{
+					Status: string(rawintake.StatusAlreadyExists), Path: "raw/" + relativePath,
+					SHA256: hex.EncodeToString(digest[:]), SourceURL: input.SourceURL,
+					ProcessingStatus: "unknown", CommitStatus: "saved",
+					Message: "Equivalent raw Markdown already exists; no source change or processing was started, but Project usage metadata could not be confirmed.",
+				}, true), nil, nil
+			}
+		}
 		return addRawToolResult(addRawResponse{
 			Status: string(rawintake.StatusAlreadyExists), Path: "raw/" + relativePath,
 			SHA256: hex.EncodeToString(digest[:]), SourceURL: input.SourceURL,
@@ -204,6 +217,25 @@ func (h *Handler) reconcileMCPAddRaw(ctx context.Context, writer store.Condition
 		Status: "unavailable", ProcessingStatus: "not_started", CommitStatus: "uncertain",
 		Message: "The save outcome is uncertain. Check the Project source before retrying.",
 	}, true), nil, nil
+}
+
+func mcpAddRawPayloadFingerprint(input addRawInput) string {
+	payload, _ := json.Marshal(struct {
+		Filename    string   `json:"filename"`
+		Markdown    string   `json:"markdown"`
+		SourceURL   string   `json:"source_url"`
+		Title       string   `json:"title"`
+		Author      string   `json:"author"`
+		Published   string   `json:"published"`
+		Description string   `json:"description"`
+		Tags        []string `json:"tags"`
+	}{
+		Filename: input.Filename, Markdown: input.Markdown, SourceURL: input.SourceURL,
+		Title: input.Metadata.Title, Author: input.Metadata.Author, Published: input.Metadata.Published,
+		Description: input.Metadata.Description, Tags: input.Metadata.Tags,
+	})
+	digest := sha256.Sum256(payload)
+	return hex.EncodeToString(digest[:])
 }
 
 func addRawProcessingMessage(status string) string {

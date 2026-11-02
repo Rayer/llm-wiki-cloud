@@ -135,7 +135,9 @@ type SourceDetailResponse struct {
 	Frontmatter       map[string]interface{} `json:"frontmatter"`
 	Body              string                 `json:"body"`
 	Raw               string                 `json:"raw"`
-	RawPath           string                 `json:"raw_path"`
+	RawPath           *string                `json:"raw_path"`
+	RelatedConcepts   []WikiReference        `json:"related_concepts,omitempty"`
+	RelatedSources    []WikiReference        `json:"related_sources,omitempty"`
 	AnnotationAllowed bool                   `json:"annotation_allowed"`
 	HasAnnotation     bool                   `json:"has_annotation"`
 	AnnotationDirty   bool                   `json:"annotation_dirty"`
@@ -175,23 +177,33 @@ type ConceptsListResponse struct {
 
 // ProjectResponse is a project entry returned by GET /api/v1/projects.
 type ProjectResponse struct {
-	ID                  string `json:"id"`
-	Name                string `json:"name"`
-	CreatedAt           string `json:"created_at"`
-	Description         string `json:"description"`
-	DescriptionRevision int64  `json:"description_revision"`
+	ID                  string  `json:"id"`
+	Name                string  `json:"name"`
+	CreatedAt           string  `json:"created_at"`
+	LastUsedAt          *string `json:"last_used_at"`
+	Description         string  `json:"description"`
+	DescriptionRevision int64   `json:"description_revision"`
 }
 
 // ConceptDetailResponse is the response for a concept detail endpoint.
 type ConceptDetailResponse struct {
-	Slug        string                 `json:"slug"`
-	ID          string                 `json:"id,omitempty"`
-	Title       string                 `json:"title"`
-	Type        string                 `json:"type"`
-	Status      string                 `json:"status"`
-	Frontmatter map[string]interface{} `json:"frontmatter"`
-	Body        string                 `json:"body"`
-	Raw         string                 `json:"raw"`
+	Slug            string                 `json:"slug"`
+	ID              string                 `json:"id,omitempty"`
+	Title           string                 `json:"title"`
+	Type            string                 `json:"type"`
+	Status          string                 `json:"status"`
+	Frontmatter     map[string]interface{} `json:"frontmatter"`
+	Body            string                 `json:"body"`
+	Raw             string                 `json:"raw"`
+	RelatedConcepts []WikiReference        `json:"related_concepts,omitempty"`
+	RelatedSources  []WikiReference        `json:"related_sources,omitempty"`
+}
+
+type WikiReference struct {
+	ID    string `json:"id,omitempty"`
+	Slug  string `json:"slug"`
+	Title string `json:"title"`
+	Type  string `json:"type"`
 }
 
 // ImportRequest is the body for an import endpoint.

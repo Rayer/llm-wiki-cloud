@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Locale } from '@/lib/i18n-core';
 import { buildMCPGuideSnippet, isUsableMCPResourceURL, type MCPGuideTarget } from '@/lib/mcp-client-guides';
+import { AgentConnectionCheck } from '@/components/AgentConnectionCheck';
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;
 type ToolId = 'hermes' | 'codex' | 'grok' | 'claude-code' | 'openclaw';
@@ -32,12 +33,14 @@ export function AgentMcpTabs({
   resourceURL,
   environmentLabel,
   identityKey,
+  projectId,
   locale = 'en',
   t,
 }: {
   resourceURL: string;
   environmentLabel: string;
   identityKey: string;
+  projectId?: string;
   locale?: Locale;
   t: Translate;
 }) {
@@ -280,6 +283,7 @@ export function AgentMcpTabs({
               : renderSingleGuide('openclaw', 'openclaw')}
         </div>
       ))}
+      {projectId ? <div className="border-t border-white/10 p-5 sm:p-6"><AgentConnectionCheck key={`${identityKey}:${projectId}`} projectId={projectId} identityKey={identityKey} locale={locale} t={t} /></div> : null}
     </section>
   );
 }

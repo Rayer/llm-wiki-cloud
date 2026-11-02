@@ -272,6 +272,14 @@
         "resourceURL"
       ]
     },
+    "MCPOAuth.connection.confirmPrompt": {
+      "kind": "literal",
+      "context": "Owner-copied one-time Agent connection confirmation prompt; setup ID and confirmation token are scoped to the current Project.",
+      "params": [
+        "confirmation_token",
+        "setup_id"
+      ]
+    },
     "NewProject.navigationFailed": {
       "kind": "literal",
       "params": [
@@ -323,6 +331,20 @@
       "kind": "literal",
       "params": [
         "status"
+      ]
+    },
+    "Profile.contentContext.coverage": {
+      "kind": "literal",
+      "params": [
+        "selected",
+        "total"
+      ]
+    },
+    "Profile.contentContext.truncated": {
+      "kind": "literal",
+      "params": [
+        "bodies",
+        "titles"
       ]
     },
     "Profile.errors.confirmation": {

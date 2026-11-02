@@ -138,7 +138,9 @@ func prepareLocalContentContextDescriptor(workspace, vault string, cfg workerCon
 			SelectionVersion: contentcontext.SummarySelectionVersion,
 		},
 	}
-	if previous, ok := committedLocalContentContextDescriptor(vault, cfg); ok && previous.ConceptsDigest == digest && committedLocalConceptsMatch(vault, cfg, digest) {
+	if previous, ok := committedLocalContentContextDescriptor(vault, cfg); ok && previous.ConceptsDigest == digest &&
+		previous.SummaryMetadata.SelectionVersion == contentcontext.SummarySelectionVersion &&
+		previous.SummaryMetadata.PromptRevision == contentcontext.SummaryPromptRevision && committedLocalConceptsMatch(vault, cfg, digest) {
 		descriptor.SummarySourceGeneration = previous.SummarySourceGeneration
 		descriptor.SummarySourceIdentity = previous.SummarySourceIdentity
 		descriptor.SummaryInput = append([]byte(nil), previous.SummaryInput...)

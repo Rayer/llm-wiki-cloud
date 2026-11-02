@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -59,7 +60,7 @@ func TestLocalPublicationJournalCarriesSameDigestSummarySource(t *testing.T) {
 		t.Fatalf("local publication identity did not advance: first=%+v second=%+v", first, second)
 	}
 	if first.SummarySourceGeneration != second.SummarySourceGeneration || first.SummarySourceIdentity != second.SummarySourceIdentity ||
-		string(first.SummaryInput) != string(second.SummaryInput) || first.SummaryMetadata != second.SummaryMetadata {
+		string(first.SummaryInput) != string(second.SummaryInput) || !reflect.DeepEqual(first.SummaryMetadata, second.SummaryMetadata) {
 		t.Fatalf("same-digest publication changed captured summary source: first=%+v second=%+v", first, second)
 	}
 
@@ -315,7 +316,7 @@ func TestLocalWorkerRecoversCommittedSummaryAndContinuesOrdinaryPipeline(t *test
 			hooks.runWorkerBatchAtVault = func(_ context.Context, _ workerConfig, _ [][]string, workspace string) error {
 				materialized, err := os.ReadFile(filepath.Join(workspace, snapshot.RawPath))
 				if err != nil || string(materialized) != string(raw) {
-						return fmt.Errorf("new source was not materialized: bytes=%q err=%v", materialized, err)
+					return fmt.Errorf("new source was not materialized: bytes=%q err=%v", materialized, err)
 				}
 				return os.WriteFile(filepath.Join(workspace, "cache", "concepts.jsonl"), newConcepts, 0o600)
 			}
