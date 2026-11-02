@@ -56,6 +56,15 @@ it('refreshes the project list when a project selector opens', () => {
   expect(screen.getByRole('listbox')).toBeTruthy();
 });
 
+it('keeps every Wiki reachable in the Home selector while recent cards remain separately capped', async () => {
+  render(<ProjectSelect projects={Array.from({ length: 6 }, (_, index) => ({ id: `project-${index + 1}`, name: `Project ${index + 1}` }))} value="" placeholder="Choose Wiki" onChange={vi.fn()} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Choose Wiki' }));
+  expect(screen.getByRole('option', { name: 'Project 6' })).toBeTruthy();
+  const source = await readFile(resolve(process.cwd(), 'src/components/HomeClient.tsx'), 'utf8');
+  expect(source).toMatch(/\.slice\(0, 4\)\.map\(/);
+  expect(source).not.toMatch(/maxResults=\{4\}/);
+});
+
 it('refreshes last-used metadata on Home return and when the Home tab regains focus', async () => {
   const source = await readFile(resolve(process.cwd(), 'src/components/HomeClient.tsx'), 'utf8');
   expect(source).toMatch(/pathname !== '\/' \|\| !token/);

@@ -10,11 +10,13 @@ import { translate, catalogStatus } from '@/lib/i18n';
 
 const mocks = vi.hoisted(() => ({
   currentProject: { id: 'missing-values', name: 'Missing values' } as { id: string; name: string } | null,
+  refreshProjects: vi.fn().mockResolvedValue(undefined), selectProject: vi.fn(),
   getConcepts: vi.fn(), getStatus: vi.fn(), getRawFiles: vi.fn(),
   getBuildInfo: vi.fn(), getExportState: vi.fn(),
 }));
 vi.mock('@/components/WorkspaceProvider', () => ({ useWorkspace: () => ({
   currentProject: mocks.currentProject, projects: [], token: 'synthetic-session',
+  refreshProjects: mocks.refreshProjects, selectProject: mocks.selectProject,
   user: { id: 'synthetic-owner' }, hydrated: true, projectsLoading: false, sessionEpoch: 1,
 }) }));
 vi.mock('@/lib/auth', () => ({ useAuth: () => ({ user: null }) }));

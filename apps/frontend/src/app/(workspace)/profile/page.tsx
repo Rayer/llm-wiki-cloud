@@ -10,7 +10,7 @@ import { useT } from '@/lib/i18n';
 
 export default function ProfilePage() {
   const { t } = useT();
-  const { user, sessionEpoch } = useAuth();
+  const { user, sessionIdentityEpoch } = useAuth();
   const { hydrated, currentProject, isDemoSession, projectsLoading } = useWorkspace();
 
   if (!hydrated || projectsLoading) {
@@ -30,7 +30,7 @@ export default function ProfilePage() {
     <div className="space-y-5">
       <ProjectHeading key={`heading:${user.id}:${currentProject.id}`} project={currentProject} />
       <ProjectProfilePanel
-        key={`${user.id}:${sessionEpoch}:${currentProject.id}`}
+        key={`${user.id}:${sessionIdentityEpoch}:${currentProject.id}`}
         projectId={currentProject.id}
       />
     </div>

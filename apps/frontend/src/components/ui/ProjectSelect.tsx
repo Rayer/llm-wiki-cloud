@@ -71,7 +71,7 @@ export function ProjectSelect({
           if (!open) { setSearch(''); onOpen?.(); }
           setOpen(!open);
         }}
-        className="flex w-full items-center justify-between gap-2 rounded border border-white/10 bg-zinc-900/60 px-3 py-2 text-left text-sm font-medium text-zinc-100 outline-none transition hover:bg-white/5 focus:border-emerald-400/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
+        className="flex min-h-11 w-full items-center justify-between gap-2 rounded border border-white/10 bg-zinc-900/60 px-3 py-2 text-left text-sm font-medium text-zinc-100 outline-none transition hover:bg-white/5 focus:border-emerald-400/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
         aria-haspopup="listbox"
         aria-expanded={open}
       >

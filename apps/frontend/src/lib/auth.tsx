@@ -54,6 +54,8 @@ type AuthContextValue = {
   register: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   refreshAccessToken: (options?: RefreshAccessTokenOptions) => Promise<string | null>;
+  /** Changes only when the authenticated session boundary changes, not on credential rotation. */
+  sessionIdentityEpoch: number;
   sessionEpoch: number;
   /** Await the initial cookie refresh, never the cached token; call after hydration. */
   getHydratedSession: () => Promise<HydratedSession | null>;
@@ -86,8 +88,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [isDemoSession, setIsDemoSession] = useState(false);
   const [hydrated, setHydrated] = useState(false);
+  const [sessionIdentityEpoch, setSessionIdentityEpoch] = useState(0);
   const [sessionEpoch, setSessionEpoch] = useState(0);
   const accessTokenRef = useRef<string | null>(null);
+  const userRef = useRef<AuthUser | null>(null);
+  const sessionIdentityEpochRef = useRef(0);
   const sessionEpochRef = useRef(0);
   const providerGenerationRef = useRef(0);
   const hydrationRefreshRef = useRef<Promise<{ accessToken: string; epoch: number } | null> | null>(null);
@@ -96,17 +101,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     accessTokenRef.current = accessToken;
   }, [accessToken]);
 
+  useEffect(() => {
+    userRef.current = user;
+  }, [user]);
+
+  const advanceSessionIdentity = useCallback(() => {
+    sessionIdentityEpochRef.current += 1;
+    setSessionIdentityEpoch(sessionIdentityEpochRef.current);
+  }, []);
+
   const clearSession = useCallback(() => {
+    advanceSessionIdentity();
     sessionEpochRef.current += 1;
     setSessionEpoch(sessionEpochRef.current);
     setAccessToken(null);
     accessTokenRef.current = null;
     setUser(null);
+    userRef.current = null;
     setIsDemoSession(false);
     clearStoredAccessToken(typeof window !== 'undefined' ? window.localStorage : null);
     clearStoredAuthUser(typeof window !== 'undefined' ? window.localStorage : null);
     clearStoredDemoSession(typeof window !== 'undefined' ? window.localStorage : null);
-  }, []);
+  }, [advanceSessionIdentity]);
 
   const clearSessionForUnauthorized = useCallback((failedToken: string, failedEpoch: number) => {
     if (accessTokenRef.current !== failedToken || sessionEpochRef.current !== failedEpoch) return;
@@ -116,18 +132,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const applyAuthResponse = useCallback((result: AuthResponse, options?: { demo?: boolean }) => {
     const demo = options?.demo === true;
+    advanceSessionIdentity();
     sessionEpochRef.current += 1;
     setSessionEpoch(sessionEpochRef.current);
     setAccessToken(result.access_token);
     accessTokenRef.current = result.access_token;
     setUser(result.user);
+    userRef.current = result.user;
     setIsDemoSession(demo);
     persistAuthSession(
       typeof window !== 'undefined' ? window.localStorage : null,
       result,
       demo,
     );
-  }, []);
+  }, [advanceSessionIdentity]);
 
   const refreshAccessToken = useCallback(async (options?: RefreshAccessTokenOptions) => {
     const clearOnAuthFailure = options?.clearOnAuthFailure !== false;
@@ -167,7 +185,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         result.access_token,
       );
       if (result.user) {
+        if (!userRef.current || userRef.current.id !== result.user.id) advanceSessionIdentity();
         setUser(result.user);
+        userRef.current = result.user;
         writeStoredAuthUser(
           typeof window !== 'undefined' ? window.localStorage : null,
           result.user,
@@ -178,7 +198,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // Network / parse failures: keep session
       return null;
     }
-  }, [clearSession]);
+  }, [advanceSessionIdentity, clearSession]);
 
   const refreshAccessTokenForContext = useCallback(async (options?: RefreshAccessTokenOptions) => (
     (await refreshAccessToken(options))?.accessToken ?? null
@@ -230,9 +250,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (!cancelled) {
           sessionEpochRef.current += 1;
           setSessionEpoch(sessionEpochRef.current);
+          advanceSessionIdentity();
           setAccessToken(stored);
           accessTokenRef.current = stored;
-          setUser(readStoredAuthUser(storage));
+          const storedUser = readStoredAuthUser(storage);
+          setUser(storedUser);
+          userRef.current = storedUser;
           setIsDemoSession(readStoredDemoSession(storage));
           setHydrated(true);
         }
@@ -256,7 +279,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [refreshAccessToken]);
+  }, [advanceSessionIdentity, refreshAccessToken]);
 
   const login = useCallback(async (email: string, password: string) => {
     const payload = await postAuth('/api/v1/auth/login', { email, password });
@@ -294,9 +317,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     register,
     logout,
     refreshAccessToken: refreshAccessTokenForContext,
+    sessionIdentityEpoch,
     sessionEpoch,
     getHydratedSession,
-  }), [accessToken, getHydratedSession, hydrated, isDemoSession, login, loginAsDemo, logout, refreshAccessTokenForContext, register, sessionEpoch, user]);
+  }), [accessToken, getHydratedSession, hydrated, isDemoSession, login, loginAsDemo, logout, refreshAccessTokenForContext, register, sessionEpoch, sessionIdentityEpoch, user]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

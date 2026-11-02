@@ -202,8 +202,10 @@ export function HomeClient() {
   const searchParams = useSearchParams();
   const routeSearch = searchParams?.toString() ?? '';
   const routeLocation = `${pathname ?? ''}?${routeSearch}`;
-  const { currentProject, projects, selectProject, refreshProjects, token, user, hydrated, projectsLoading, isDemoSession, sessionEpoch } = useWorkspace();
-  const homeScopeKey = JSON.stringify([user?.id ?? null, sessionEpoch, currentProject?.id ?? null]);
+  const { currentProject, projects, selectProject, refreshProjects, token, user, hydrated, projectsLoading, isDemoSession, sessionEpoch, sessionIdentityEpoch } = useWorkspace();
+  const homeScopeKey = JSON.stringify([user?.id ?? null, sessionIdentityEpoch, currentProject?.id ?? null]);
+  const tokenRef = useRef(token);
+  useLayoutEffect(() => { tokenRef.current = token; }, [token]);
   const [initialSearch] = useState(() => readSearchParams());
   const historyResult = initialSearch.historyEntry.entryId && initialSearch.historyEntry.isCurrentDocument
     ? getCompletedQueryResult(initialSearch.historyEntry.entryId)
@@ -271,7 +273,7 @@ export function HomeClient() {
     searchErrorRef.current = error;
   }, [error]);
   useEffect(() => {
-    if (pathname !== '/' || !token) return;
+    if (pathname !== '/' || !tokenRef.current) return;
     void refreshProjects();
     const refreshWhenActive = () => {
       if (document.visibilityState === 'visible') void refreshProjects();
@@ -282,7 +284,7 @@ export function HomeClient() {
       window.removeEventListener('focus', refreshWhenActive);
       document.removeEventListener('visibilitychange', refreshWhenActive);
     };
-  }, [pathname, refreshProjects, token]);
+  }, [pathname, refreshProjects]);
   const previousProjectIdRef = useRef<string | undefined>(currentProject?.id);
   const sampledProjectIdRef = useRef<string | undefined>(undefined);
   const hasSampledQueriesRef = useRef(false);
@@ -1050,7 +1052,6 @@ export function HomeClient() {
                 placeholder={t('Home.findWiki')}
                 searchPlaceholder={t('Shell.searchProjects')}
                 noMatches={t('Shell.noProjectMatches')}
-                maxResults={4}
                 onOpen={() => { void refreshProjects(); }}
                 open={otherWikiPickerOpen}
                 onOpenChange={setOtherWikiPickerOpen}

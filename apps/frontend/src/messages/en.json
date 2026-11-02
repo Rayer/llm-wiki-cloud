@@ -1031,6 +1031,10 @@
           "parking": {
             "heading": "Parking",
             "text": "When I drive to a meal, keep the parking location, whether it is paid, and the approximate walking time from the lot to the restaurant."
+          },
+          "quiet": {
+            "heading": "Quiet work and reading",
+            "text": "I often look for a quiet place to read or work. Keep stated noise, seating, Wi-Fi, and outlet details, and mark anything unmentioned as unknown."
           }
         },
         "conceptComparisonHeading": "Prewritten concept examples",

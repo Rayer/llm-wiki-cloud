@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { act } from 'react';
+import React from 'react';
 import type { ApiStatus } from '@/lib/api';
 
 if (!(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT) {
@@ -9,6 +10,9 @@ if (!(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRON
 
 const mocks = vi.hoisted(() => ({
   currentProject: { id: 'project-a', name: 'Project A' },
+  projects: [{ id: 'project-a', name: 'Project A' }],
+  selectProject: vi.fn(),
+  refreshProjects: vi.fn().mockResolvedValue(undefined),
   getConcepts: vi.fn(),
   getPublicConfig: vi.fn(),
   getStatus: vi.fn(),
@@ -39,10 +43,17 @@ vi.mock('@/lib/i18n', async () => {
 vi.mock('@/components/WorkspaceProvider', () => ({
   useWorkspace: () => ({
     currentProject: mocks.currentProject,
+    projects: mocks.projects,
+    selectProject: mocks.selectProject,
+    refreshProjects: mocks.refreshProjects,
     loginOpen: mocks.loginOpen,
     signIn: mocks.signIn,
     signInAsDemo: mocks.signInAsDemo,
   }),
+}));
+vi.mock('@/components/NavigationBlocker', () => ({
+  NavigationLink: ({ href, children, onClick, ...props }: { href: string; children: React.ReactNode; onClick?: React.MouseEventHandler; [key: string]: unknown }) => <a href={href} onClick={onClick} {...props}>{children}</a>,
+  useNavigationBlocker: () => ({ confirmNavigation: () => true, consumeCapturedConfirmation: () => false, setBlocked: vi.fn() }),
 }));
 
 import { HomeClient } from '@/components/HomeClient';

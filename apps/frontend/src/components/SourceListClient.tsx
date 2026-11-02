@@ -29,8 +29,8 @@ type SourceListError = { message: string; requestId?: string; diagnosticId?: str
 type PreviewError = SourceListError & { path: string };
 
 export function SourceListClient() {
-  const { currentProject, token, sessionEpoch } = useWorkspace();
-  const identityKey = JSON.stringify([currentProject?.id ?? 'no-project', token, sessionEpoch]);
+  const { currentProject, user, sessionIdentityEpoch } = useWorkspace();
+  const identityKey = JSON.stringify([user?.id ?? null, sessionIdentityEpoch, currentProject?.id ?? 'no-project']);
   return <SourceListSession key={identityKey} />;
 }
 

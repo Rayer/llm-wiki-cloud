@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { act } from 'react';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -14,6 +14,9 @@ const mocks = vi.hoisted(() => ({
   user: { id: 'account-a' },
   hydrated: true,
   projectsLoading: false,
+  projects: [{ id: 'project-a', name: 'Project A' }],
+  selectProject: vi.fn(),
+  refreshProjects: vi.fn().mockResolvedValue(undefined),
   isDemoSession: false,
   locale: 'en' as 'en' | 'zh-TW',
   useRealLocaleCopy: false,
@@ -54,6 +57,9 @@ vi.mock('next/navigation', () => ({
 vi.mock('@/components/WorkspaceProvider', () => ({
   useWorkspace: () => ({
     currentProject: mocks.currentProject,
+    projects: mocks.projects,
+    selectProject: mocks.selectProject,
+    refreshProjects: mocks.refreshProjects,
     token: mocks.token,
     user: mocks.user,
     hydrated: mocks.hydrated,
@@ -573,14 +579,14 @@ describe('LWC-342 completed query history restoration', () => {
   it.each(['wiki', 'full'] as const)('restores the exact %s result through browser Back and resubmits distinctly', async (searchMode) => {
     const firstResponse = {
       results: [{ id: 'first-result', slug: 'first-result', title: 'First result', type: 'concept', excerpt: 'first excerpt', content: '' }],
-      aiAnswer: 'First answer from this submission.',
+      aiAnswer: 'First answer from this submission. [First citation]',
       citations: [{ text: 'First citation', type: 'source', slug: 'source-one', id: 'source-one', path: 'source-one.md' }],
       expand: { keywords: ['first keyword'] },
       ai_operation_failures: [{ stage: 'query_expansion', class: 'authentication', fallback: 'deterministic_plan', source: 'personal' }],
     };
     const secondResponse = {
       results: [{ id: 'second-result', slug: 'second-result', title: 'Second result', type: 'concept', excerpt: 'second excerpt', content: '' }],
-      aiAnswer: 'Different answer from the resubmission.',
+      aiAnswer: 'Different answer from the resubmission. [Second citation]',
       citations: [{ text: 'Second citation', type: 'source', slug: 'source-two', id: 'source-two', path: 'source-two.md' }],
       expand: { keywords: ['second keyword'] },
     };
@@ -603,7 +609,7 @@ describe('LWC-342 completed query history restoration', () => {
     await act(async () => {
       fireEvent.submit(form);
     });
-    expect(await screen.findByText('First answer from this submission.')).toBeTruthy();
+    expect(await screen.findByText(/First answer from this submission\./)).toBeTruthy();
     expect(screen.getByText('QueryResults.aiFailure.heading')).toBeTruthy();
     expect(mocks.searchWiki).toHaveBeenCalledTimes(1);
 
@@ -613,10 +619,10 @@ describe('LWC-342 completed query history restoration', () => {
     await waitFor(() => expect(window.location.pathname).toBe('/'));
 
     const restoredPage = render(<HomeClient />);
-    expect(await screen.findByText('First answer from this submission.')).toBeTruthy();
+    expect(await screen.findByText(/First answer from this submission\./)).toBeTruthy();
     expect(screen.getByRole('textbox')).toHaveProperty('value', 'same question');
     expect(screen.getByText(searchMode === 'wiki' ? 'QueryResults.wikiMode' : 'QueryResults.fullMode')).toBeTruthy();
-    expect(screen.getByText('First citation')).toBeTruthy();
+    expect(within(screen.getByRole('list', { name: 'Demo.sources' })).getByRole('button').textContent).toContain('First citation');
     expect(screen.getByText('QueryResults.expansionKeywords')).toBeTruthy();
     expect(screen.getByText('QueryResults.aiFailure.heading')).toBeTruthy();
     expect(screen.getByText('QueryResults.aiFailure.sourceAdvice.personal')).toBeTruthy();
@@ -625,7 +631,7 @@ describe('LWC-342 completed query history restoration', () => {
     await act(async () => {
       fireEvent.submit((await getFormFromSearchButton()).form);
     });
-    expect(await screen.findByText('Different answer from the resubmission.')).toBeTruthy();
+    expect(await screen.findByText(/Different answer from the resubmission\./)).toBeTruthy();
     expect(mocks.searchWiki).toHaveBeenCalledTimes(2);
     expect(mocks.searchWiki).toHaveBeenNthCalledWith(2, 'same question', searchMode);
 
@@ -635,8 +641,8 @@ describe('LWC-342 completed query history restoration', () => {
     await waitFor(() => expect(window.location.pathname).toBe('/'));
     render(<HomeClient />);
 
-    expect(await screen.findByText('Different answer from the resubmission.')).toBeTruthy();
-    expect(screen.getByText('Second citation')).toBeTruthy();
+    expect(await screen.findByText(/Different answer from the resubmission\./)).toBeTruthy();
+    expect(within(screen.getByRole('list', { name: 'Demo.sources' })).getByRole('button').textContent).toContain('Second citation');
     expect(screen.getByText('QueryResults.expansionKeywords')).toBeTruthy();
     expect(mocks.searchWiki).toHaveBeenCalledTimes(2);
   });
