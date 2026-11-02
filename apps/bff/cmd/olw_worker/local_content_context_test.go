@@ -163,6 +163,8 @@ func TestLocalPublicationAuthorityCarriesSameDigestAndFencesLateAttempt(t *testi
 		ProfileSource: "personal", ProfileID: "fast-profile", ProfileRevision: 1, Role: contentcontext.SummaryRole,
 		RequestedModel: "fast-model", ReturnedModel: "fast-model-v2",
 		InputDigest: strings.Repeat("b", 64), SelectionVersion: contentcontext.SummarySelectionVersion,
+		OverviewSchemaVersion: 1, ShortTitle: "Project overview", TopicTags: []string{"Project"},
+		TotalConcepts: 1, SelectedConcepts: 1, SelectedSlugs: []string{"project-context"},
 	}
 	if saved, err := repository.Complete(ctx, cfg.UserID, cfg.ProjectID, authority, *firstClaim, completion); err != nil || !saved {
 		t.Fatalf("complete carried local work: saved=%t err=%v", saved, err)
@@ -225,6 +227,8 @@ func TestLocalFirstClaimAfterSameDigestCarryForwardUsesCapturedSource(t *testing
 		Text: "summary from the first committed local generation", PromptRevision: contentcontext.SummaryPromptRevision,
 		ProfileSource: "bootstrap", Role: contentcontext.SummaryRole, RequestedModel: "fast-model", ReturnedModel: "fast-model-v2",
 		InputDigest: metadata.InputDigest, SelectionVersion: contentcontext.SummarySelectionVersion,
+		OverviewSchemaVersion: 1, ShortTitle: "Project overview", TopicTags: []string{"Project"},
+		TotalConcepts: 1, SelectedConcepts: 1, SelectedSlugs: []string{"project-context"},
 	}
 	if saved, err := repository.Complete(ctx, cfg.UserID, cfg.ProjectID, authority, *claim, completion); err != nil || !saved {
 		t.Fatalf("complete G1 work against G2 publication: saved=%t err=%v", saved, err)
@@ -280,7 +284,7 @@ func TestLocalWorkerRecoversCommittedSummaryAndContinuesOrdinaryPipeline(t *test
 			oldBootstrapFactory := newBootstrapContentContextSummaryClient
 			t.Cleanup(func() { newBootstrapContentContextSummaryClient = oldBootstrapFactory })
 			summaryClient := &contentContextTestSummaryClient{result: llm.CompletionResult{
-				Text: `{"summary":"Recovered published project context."}`,
+				Text: testContentContextOverviewText("Recovered published project context."),
 				Metadata: llm.CompletionMetadata{
 					Provider: "test-provider", Protocol: string(llm.ProtocolOpenAIChatCompletions),
 					Role: string(llm.ProfileRoleFast), RequestedModel: "test-fast", ReturnedModel: "test-fast-v2",
@@ -369,6 +373,8 @@ func TestLocalWorkerRecoversCommittedSummaryAndContinuesOrdinaryPipeline(t *test
 					Text: "stale result", PromptRevision: contentcontext.SummaryPromptRevision,
 					ProfileSource: "bootstrap", Role: contentcontext.SummaryRole, RequestedModel: "test-fast", ReturnedModel: "test-fast-v2",
 					InputDigest: strings.Repeat("a", 64), SelectionVersion: contentcontext.SummarySelectionVersion,
+					OverviewSchemaVersion: 1, ShortTitle: "Project overview", TopicTags: []string{"Project"},
+					TotalConcepts: 1, SelectedConcepts: 1, SelectedSlugs: []string{"project-context"},
 				}
 				if saved, err := repository.Complete(ctx, cfg.UserID, cfg.ProjectID, authority, *interruptedClaim, completion); !errors.Is(err, contentcontext.ErrAttemptRejected) || saved {
 					t.Fatalf("interrupted claim committed after new publication: saved=%t err=%v", saved, err)

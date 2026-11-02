@@ -112,7 +112,7 @@ function ProfileGuidanceArtifactDetails({ projectId, revision, title }: { projec
   );
 }
 
-type RequestScope = { projectId: string; ownerId: string; sessionEpoch: number; identity: object };
+type RequestScope = { projectId: string; ownerId: string; sessionIdentityEpoch: number; identity: object };
 type ProfileSettingsCard = 'requirements' | 'interpretation' | 'active';
 type ProjectSettingsTab = 'project-info' | 'pipeline' | 'knowledge' | 'ai-service';
 const PROJECT_SETTINGS_TABS: ProjectSettingsTab[] = ['project-info', 'pipeline', 'knowledge', 'ai-service'];
@@ -124,9 +124,9 @@ const PROJECT_SETTINGS_HASH_TARGETS: Record<string, { tab: ProjectSettingsTab; t
 export function ProjectProfilePanel({ projectId }: { projectId: string }) {
   const router = useRouter();
   const { t } = useT();
-  const { user, sessionEpoch } = useAuth();
+  const { user, sessionEpoch, sessionIdentityEpoch } = useAuth();
   const { profileOnboarding, markProfileOnboardingPresented } = useWorkspace();
-  const contentContextScopeKey = JSON.stringify([user?.id ?? null, sessionEpoch, projectId]);
+  const contentContextScopeKey = JSON.stringify([user?.id ?? null, sessionIdentityEpoch, projectId]);
   const { confirmNavigation, setBlocked } = useNavigationBlocker();
   const [profile, setProfile] = useState<ProfileState | null>(null);
   const [bootstrapGuidance, setBootstrapGuidance] = useState<ProfileBootstrapGuidance | null>(null);
@@ -156,8 +156,8 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
   const bootstrapRequestRef = useRef(0);
   const loadedRef = useRef(false);
   const currentScope = useMemo<RequestScope>(
-    () => ({ projectId, ownerId: user?.id ?? '', sessionEpoch, identity: {} }),
-    [projectId, sessionEpoch, user?.id],
+    () => ({ projectId, ownerId: user?.id ?? '', sessionIdentityEpoch, identity: {} }),
+    [projectId, sessionIdentityEpoch, user?.id],
   );
   const currentScopeRef = useRef<RequestScope | null>(null);
   const mountedRef = useRef(false);
@@ -480,7 +480,7 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
   useEffect(() => {
     setBlocked(hasUnsavedChanges);
     return () => setBlocked(false);
-  }, [hasUnsavedChanges, projectId, sessionEpoch, setBlocked]);
+  }, [hasUnsavedChanges, projectId, sessionIdentityEpoch, setBlocked]);
   const introOwnerId = user?.id ?? '';
   const introKey = `${introOwnerId}:${projectId}:${sessionEpoch}`;
   const introIsPending = Boolean(

@@ -11,6 +11,9 @@ const mocks = vi.hoisted(() => ({
   getDocumentImportFailureSummary: vi.fn(),
   getConcepts: vi.fn(),
   getProjectContentContext: vi.fn(),
+  getProfile: vi.fn(),
+  getProfileBootstrapGuidance: vi.fn(),
+  saveProfile: vi.fn(),
   uploadRawFile: vi.fn(),
   pathname: '/',
   authResponses: [] as Array<{ access_token: string; user: { id: string; email: string } }>,
@@ -45,6 +48,9 @@ vi.mock('@/lib/api', async () => {
     getDocumentImportFailureSummary: mocks.getDocumentImportFailureSummary,
     getConcepts: mocks.getConcepts,
     uploadRawFile: mocks.uploadRawFile,
+    getProfile: mocks.getProfile,
+    getProfileBootstrapGuidance: mocks.getProfileBootstrapGuidance,
+    saveProfile: mocks.saveProfile,
   };
 });
 
@@ -52,9 +58,10 @@ import { Shell } from '@/components/Shell';
 import { HomeClient } from '@/components/HomeClient';
 import { useWorkspace } from '@/components/WorkspaceProvider';
 import { AuthProvider, useAuth } from '@/lib/auth';
+import ProfilePage from '@/app/(workspace)/profile/page';
 import { translate } from '@/lib/i18n';
 import type { Project } from '@/lib/project-core';
-import type { RawUploadResult } from '@/lib/api';
+import type { ProfileState, RawUploadResult } from '@/lib/api';
 
 const projectA: Project = {
   id: 'project-a', name: 'Project Alpha', createdAt: null, lastUsedAt: null,
@@ -68,7 +75,10 @@ const userA = { id: 'user-a', email: 'a@example.test' };
 const userB = { id: 'user-b', email: 'b@example.test' };
 
 function AuthWorkspaceHome() {
-  mocks.workspace = useWorkspace();
+  const workspace = useWorkspace();
+  useEffect(() => {
+    mocks.workspace = workspace;
+  }, [workspace]);
   useEffect(() => {
     mocks.homeMounts += 1;
     return () => { mocks.homeUnmounts += 1; };
@@ -77,12 +87,24 @@ function AuthWorkspaceHome() {
 }
 
 function AuthStateProbe() {
-  mocks.auth = useAuth();
+  const auth = useAuth();
+  useEffect(() => { mocks.auth = auth; }, [auth]);
   return null;
+}
+
+function AuthWorkspaceProfilePage() {
+  const workspace = useWorkspace();
+  useEffect(() => { mocks.workspace = workspace; }, [workspace]);
+  return <ProfilePage />;
 }
 
 function renderPage() {
   return render(<AuthProvider><AuthStateProbe /><Shell><AuthWorkspaceHome /></Shell></AuthProvider>);
+}
+
+function renderProfilePage() {
+  mocks.pathname = '/profile';
+  return render(<AuthProvider><AuthStateProbe /><Shell><AuthWorkspaceProfilePage /></Shell></AuthProvider>);
 }
 
 function authResponse(accessToken: string, user = userA) {
@@ -105,6 +127,21 @@ const savedReceipt: RawUploadResult = {
   filename: 'note.md', path: 'raw/note.md', bytes: 11, sha256: 'a'.repeat(64), status: 'created',
 };
 
+function profileState(projectId: string, requirement: string, pending = false): ProfileState {
+  return {
+    project_id: projectId,
+    revision: 1,
+    requirements: [{ id: 'requirement-1', text: requirement }],
+    derivation_status: pending ? 'pending' : null,
+    scheduled_for: pending ? '2026-11-03T00:00:00Z' : null,
+    derivation_error_code: null,
+    candidate: null,
+    confirmed_candidate_id: null,
+    active: null,
+    job: null,
+  };
+}
+
 beforeEach(() => {
   installShellIntersectionObserver();
   mocks.pathname = '/';
@@ -123,6 +160,9 @@ beforeEach(() => {
     current_concepts_sha256: null, summary: null, stale: false,
   });
   mocks.uploadRawFile.mockReset();
+  mocks.getProfile.mockReset().mockImplementation(async (projectId: string) => profileState(projectId, `Saved requirement for ${projectId}`));
+  mocks.getProfileBootstrapGuidance.mockReset().mockResolvedValue({ bootstrap_guidance: null });
+  mocks.saveProfile.mockReset();
   mocks.getProjects.mockReset().mockResolvedValue([projectA]);
   localStorage.clear();
   localStorage.setItem('locale', 'en');
@@ -192,7 +232,7 @@ it('keeps Shell and Home mounted, query drafts, and an in-flight material receip
   const failedRefresh = deferred<Project[]>();
   mocks.getProjects.mockReturnValueOnce(failedRefresh.promise);
   let refresh!: Promise<void>;
-  await act(async () => { refresh = mocks.workspace!.refreshProjects(); });
+  await act(async () => { refresh = mocks.workspace!.refreshProjects(true); });
   await waitFor(() => expect(mocks.getProjects).toHaveBeenCalledTimes(4));
   await act(async () => { failedRefresh.reject(new Error('temporary project list outage')); await refresh; });
 
@@ -238,4 +278,121 @@ it('clears private Home state on logout', async () => {
   expect(mocks.auth?.user).toBeNull();
   expect(mocks.auth?.sessionIdentityEpoch).toBe(2);
   expect(screen.queryByDisplayValue('private query')).toBeNull();
+});
+
+it('preserves Profile draft and pending save through same-user token rotation while a polling GET finishes first', async () => {
+  const pollingRead = deferred<ProfileState>();
+  const pendingSave = deferred<ProfileState>();
+  let profileReads = 0;
+  const intervalHandlers: TimerHandler[] = [];
+  vi.spyOn(window, 'setInterval').mockImplementation(((handler: TimerHandler) => {
+    intervalHandlers.push(handler);
+    return 1;
+  }) as typeof window.setInterval);
+  vi.spyOn(window, 'clearInterval').mockImplementation(() => undefined);
+  mocks.getProfile.mockImplementation((projectId: string) => {
+    profileReads += 1;
+    return profileReads === 1
+      ? Promise.resolve(profileState(projectId, 'Server saved requirement', true))
+      : pollingRead.promise;
+  });
+  mocks.saveProfile.mockReturnValue(pendingSave.promise);
+
+  renderProfilePage();
+  fireEvent.click(await screen.findByRole('tab', { name: 'Knowledge generation settings' }));
+  const requirementsCard = await screen.findByRole('button', { name: 'My organization requirements' });
+  fireEvent.click(requirementsCard);
+  const input = await screen.findByRole('textbox', { name: 'Requirement 1' }) as HTMLTextAreaElement;
+  await waitFor(() => expect(input.value).toBe('Server saved requirement'));
+  fireEvent.change(input, { target: { value: 'Unsaved Profile draft' } });
+  const saveButton = screen.getByRole('button', { name: 'Save requirements' }) as HTMLButtonElement;
+  fireEvent.click(saveButton);
+  await waitFor(() => expect(mocks.saveProfile).toHaveBeenCalledTimes(1));
+  expect(input.disabled).toBe(true);
+
+  mocks.authResponses.push({ access_token: 'token-a-2', user: userA });
+  await act(async () => { await mocks.auth!.refreshAccessToken(); });
+  expect(mocks.auth?.sessionIdentityEpoch).toBe(1);
+  expect(mocks.getProfile).toHaveBeenCalledTimes(1);
+  expect(input.value).toBe('Unsaved Profile draft');
+  expect(input.disabled).toBe(true);
+
+  const profilePoll = intervalHandlers.find((handler) => (
+    typeof handler === 'function' && handler.toString().includes('getProfile')
+  ));
+  expect(profilePoll).toBeTypeOf('function');
+  await act(async () => { (profilePoll as () => void)(); await Promise.resolve(); });
+  await waitFor(() => expect(mocks.getProfile).toHaveBeenCalledTimes(2));
+  await act(async () => {
+    pollingRead.resolve(profileState('project-a', 'Server saved requirement', true));
+    await pollingRead.promise;
+  });
+  expect(input.value).toBe('Unsaved Profile draft');
+  expect(input.disabled).toBe(true);
+
+  await act(async () => {
+    pendingSave.resolve(profileState('project-a', 'Unsaved Profile draft'));
+    await pendingSave.promise;
+  });
+  expect(input.value).toBe('Unsaved Profile draft');
+  expect(input.disabled).toBe(false);
+  expect(saveButton.disabled).toBe(true);
+});
+
+it('fences late Profile saves across A→B→A and logout session boundaries', async () => {
+  const staleAccountSave = deferred<ProfileState>();
+  const logoutSave = deferred<ProfileState>();
+  let activeAccount = 'user-a';
+  let projectAReads = 0;
+  mocks.getProjects.mockImplementation(async () => (activeAccount === 'user-b' ? [projectB] : [projectA]));
+  mocks.getProfile.mockImplementation(async (projectId: string) => {
+    if (projectId === 'project-b') return profileState(projectId, 'B private requirement');
+    projectAReads += 1;
+    return profileState(projectId, projectAReads === 1 ? 'A initial requirement' : 'A returned requirement');
+  });
+  mocks.saveProfile.mockReturnValueOnce(staleAccountSave.promise).mockReturnValueOnce(logoutSave.promise);
+
+  renderProfilePage();
+  fireEvent.click(await screen.findByRole('tab', { name: 'Knowledge generation settings' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'My organization requirements' }));
+  const firstInput = await screen.findByRole('textbox', { name: 'Requirement 1' }) as HTMLTextAreaElement;
+  await waitFor(() => expect(firstInput.value).toBe('A initial requirement'));
+  fireEvent.change(firstInput, { target: { value: 'A stale in-flight draft' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Save requirements' }));
+  await waitFor(() => expect(mocks.saveProfile).toHaveBeenCalledTimes(1));
+
+  activeAccount = 'user-b';
+  mocks.authResponses.push({ access_token: 'token-b-1', user: userB });
+  await act(async () => { await mocks.auth!.refreshAccessToken(); });
+  fireEvent.click(await screen.findByRole('tab', { name: 'Knowledge generation settings' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'My organization requirements' }));
+  const bInput = await screen.findByRole('textbox', { name: 'Requirement 1' }) as HTMLTextAreaElement;
+  await waitFor(() => expect(bInput.value).toBe('B private requirement'));
+
+  activeAccount = 'user-a';
+  mocks.authResponses.push({ access_token: 'token-a-3', user: userA });
+  await act(async () => { await mocks.auth!.refreshAccessToken(); });
+  fireEvent.click(await screen.findByRole('tab', { name: 'Knowledge generation settings' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'My organization requirements' }));
+  const returnedAInput = await screen.findByRole('textbox', { name: 'Requirement 1' }) as HTMLTextAreaElement;
+  await waitFor(() => expect(returnedAInput.value).toBe('A returned requirement'));
+  await act(async () => {
+    staleAccountSave.resolve(profileState('project-a', 'A stale in-flight draft'));
+    await staleAccountSave.promise;
+  });
+  expect(returnedAInput.value).toBe('A returned requirement');
+  expect(mocks.auth?.sessionIdentityEpoch).toBe(3);
+
+  fireEvent.change(returnedAInput, { target: { value: 'A logout pending draft' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Save requirements' }));
+  await waitFor(() => expect(mocks.saveProfile).toHaveBeenCalledTimes(2));
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
+  await act(async () => { await mocks.workspace!.signOut(); });
+  await waitFor(() => expect(mocks.auth?.user).toBeNull());
+  await act(async () => {
+    logoutSave.resolve(profileState('project-a', 'A logout pending draft'));
+    await logoutSave.promise;
+  });
+  expect(mocks.auth?.sessionIdentityEpoch).toBe(4);
+  expect(screen.queryByRole('textbox', { name: 'Requirement 1' })).toBeNull();
 });

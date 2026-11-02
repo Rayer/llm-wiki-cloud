@@ -274,9 +274,9 @@ export function HomeClient() {
   }, [error]);
   useEffect(() => {
     if (pathname !== '/' || !tokenRef.current) return;
-    void refreshProjects();
+    void refreshProjects(true);
     const refreshWhenActive = () => {
-      if (document.visibilityState === 'visible') void refreshProjects();
+      if (document.visibilityState === 'visible') void refreshProjects(true);
     };
     window.addEventListener('focus', refreshWhenActive);
     document.addEventListener('visibilitychange', refreshWhenActive);
@@ -933,7 +933,7 @@ export function HomeClient() {
                   type="button"
                   onClick={() => setMode(item)}
                   aria-pressed={mode === item}
-                  className={`min-h-10 rounded px-3 font-medium transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400 ${
+                  className={`min-h-11 rounded px-3 font-medium transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400 ${
                     mode === item ? 'bg-emerald-400/15 text-emerald-200 underline decoration-emerald-400/80 decoration-1 underline-offset-4' : 'text-zinc-500 hover:text-zinc-200'
                   }`}
                 >
@@ -1052,12 +1052,12 @@ export function HomeClient() {
                 placeholder={t('Home.findWiki')}
                 searchPlaceholder={t('Shell.searchProjects')}
                 noMatches={t('Shell.noProjectMatches')}
-                onOpen={() => { void refreshProjects(); }}
+                onOpen={() => { void refreshProjects(true); }}
                 open={otherWikiPickerOpen}
                 onOpenChange={setOtherWikiPickerOpen}
               />
               {projects.filter((project) => project.id !== currentProject?.id).length > 4 ? (
-                <button type="button" onClick={() => { void refreshProjects(); setOtherWikiPickerOpen(true); }} className="mt-2 min-h-10 text-xs font-medium text-emerald-200 underline underline-offset-4 hover:text-emerald-100">
+                <button type="button" onClick={() => { void refreshProjects(true); setOtherWikiPickerOpen(true); }} className="mt-2 min-h-11 text-xs font-medium text-emerald-200 underline underline-offset-4 hover:text-emerald-100">
                   {t('Home.viewAllWikis')}
                 </button>
               ) : null}

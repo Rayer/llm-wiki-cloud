@@ -591,10 +591,10 @@ func buildSystemPrompt(mode string) string {
 		"\n- Wrong example: 「...適合親子放電。中和員山公園遊逸之丘」" +
 		"\n- Each paragraph referencing a source MUST end with its bracketed citation. "
 	if mode == "full" {
-		return "You are a knowledgeable assistant with access to a personal wiki. Use relevant Wiki evidence as a reference and cite Wiki-supported claims; do not treat it as a constraint." +
+		return "You are a knowledgeable assistant with access to a personal wiki. Use relevant Wiki evidence and its exact server-issued references for supported claims." +
 			"\n- Ignore Wiki excerpts that do not match the user's requested location or subject." +
-			"\n- When adding facts from general knowledge, explicitly label them as general knowledge and keep them clearly distinct from Wiki-supported facts. Never blend the two without attribution." +
-			"\n- Do not claim that a general-knowledge statement is supported by this Wiki." +
+			"\n- Label supplementary general model knowledge separately; never attach a Wiki reference to an unsupported external claim." +
+			"\n- If no Wiki evidence is used, say so. No live web search is available through this operation." +
 			"\n\nCITATION FORMAT RULES (mandatory):" +
 			"\n- Each wiki block includes one server-issued internal reference in brackets. Use that exact reference in brackets when citing the block; the server will replace it with the canonical title." +
 			"\n- Never invent, alter, or reuse a citation reference for a different wiki block" +

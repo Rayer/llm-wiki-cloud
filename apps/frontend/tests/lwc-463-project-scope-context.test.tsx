@@ -69,6 +69,6 @@ it('refreshes last-used metadata on Home return and when the Home tab regains fo
   const source = await readFile(resolve(process.cwd(), 'src/components/HomeClient.tsx'), 'utf8');
   expect(source).toMatch(/pathname !== '\/' \|\| !token/);
   expect(source).toMatch(/window\.addEventListener\('focus', refreshWhenActive\)/);
-  expect(source).toMatch(/ProjectSelect[\s\S]*?onOpen=\{\(\) => \{ void refreshProjects\(\); \}\}/);
+  expect(source).toMatch(/ProjectSelect[\s\S]*?onOpen=\{\(\) => \{ void refreshProjects\(true\); \}\}/);
   expect(source).toContain("t('Home.viewAllWikis')");
 });

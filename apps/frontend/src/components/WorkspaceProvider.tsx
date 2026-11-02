@@ -159,7 +159,7 @@ type WorkspaceContextValue = {
   addProject: (name: string, description?: string, idempotencyKey?: string) => Promise<Project>;
   renameProject: (projectId: string, name: string) => Promise<string>;
   updateProjectDescription: (projectId: string, description: string, revision: number) => void;
-  refreshProjects: () => Promise<void>;
+  refreshProjects: (background?: boolean) => Promise<void>;
   openNewProject: () => void;
   closeNewProject: () => void;
 };
@@ -536,8 +536,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     loadProjectsRef.current = loadProjects;
     tokenRef.current = token;
   }, [loadProjects, token]);
-  const refreshProjects = useCallback(async () => {
-    if (tokenRef.current) await loadProjectsRef.current(projectsReadyRef.current);
+  const refreshProjects = useCallback(async (background = false) => {
+    if (!tokenRef.current || (background && !projectsReadyRef.current)) return;
+    await loadProjectsRef.current(background);
   }, []);
 
   useEffect(() => {
@@ -568,7 +569,6 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
     restartProjectLoadRef.current = false;
     projectListGenerationRef.current += 1;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- clear project state immediately after auth loss invalidates pending loads
     setProjectsLoading(false);
     setProjects([]);
     setCurrentProject(null);

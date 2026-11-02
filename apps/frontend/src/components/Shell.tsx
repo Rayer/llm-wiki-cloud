@@ -351,7 +351,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
                   placeholder={t('Shell.noProjects')}
                   searchPlaceholder={t('Shell.searchProjects')}
                   noMatches={t('Shell.noProjectMatches')}
-                  onOpen={() => { void refreshProjects(); }}
+                  onOpen={() => { void refreshProjects(true); }}
                 />
               )}
               {!isDemoSession ? (
