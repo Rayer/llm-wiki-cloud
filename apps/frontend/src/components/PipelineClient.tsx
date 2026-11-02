@@ -128,6 +128,7 @@ export function PipelineClient() {
   const [scrapeResult, setScrapeResult] = useState<ScrapeResult | null>(null);
   const [scrapeModalOpen, setScrapeModalOpen] = useState(false);
   const [pipelineStatusReadFailedProjectId, setPipelineStatusReadFailedProjectId] = useState<string | null>(null);
+  const [pipelineStatusRetrying, setPipelineStatusRetrying] = useState(false);
   const [pipelineAutomation, setPipelineAutomation] = useState<ProjectPipelineAutomation | null>(null);
   const [pipelineAutomationError, setPipelineAutomationError] = useState<string | null>(null);
   const pipelineExecutionOwnerRef = useRef<PipelineExecutionOwner | null>(null);
@@ -165,7 +166,6 @@ export function PipelineClient() {
   const [scrapeUrlText, setScrapeUrlText] = useState('');
   const [pipelineResult, setPipelineResult] = useState<PipelineResult | null>(null);
   const [pipelineStatus, setPipelineStatus] = useState<PipelineStatus | null>(null);
-  const [pipelineStatusRetrying, setPipelineStatusRetrying] = useState(false);
   const [compileMode, setCompileMode] = useState<'incremental' | 'full'>('incremental');
   const [fullCapability, setFullCapability] = useState<RecompileAllCapability | null>(null);
   const [loading, setLoading] = useState<string | null>(null); // 'pipeline'

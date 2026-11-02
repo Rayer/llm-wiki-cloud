@@ -24,7 +24,10 @@ vi.mock('@/lib/i18n', () => ({ useT: () => ({ t: (key: string) => key }) }));
 
 function DetailRouteHarness() {
   const [path, setPath] = React.useState('/sources/seed-source');
-  router.navigate = setPath;
+  React.useEffect(() => {
+    router.navigate = setPath;
+    return () => { router.navigate = undefined; };
+  }, [setPath]);
   const [, collection, encodedSegment] = path.split('/');
   const slug = decodeURIComponent(encodedSegment ?? '');
   const isConcept = collection === 'concepts';

@@ -585,7 +585,7 @@ it('refreshes after uncertain URL acceptance resolves to stored without acceptin
 });
 
 it.each(['uncertain', 'rejected', 'conflict'] as const)('does not refresh or claim persistence after URL status resolves to %s', async (status) => {
-  let rawCount = 0;
+  const rawCount = 0;
   const uncertain = { ...urlPreview, status: 'uncertain', message: 'Check whether this save completed.' };
   mocks.getStatus.mockImplementation(async () => ({ sourcesCount: 0, conceptsCount: 0, rawCount, suggestedQueries: [], lastExecution: null, raw: {} }));
   mocks.getPipelineStatus.mockImplementation(async (projectId: string) => pipelineStatus(projectId, rawCount));
