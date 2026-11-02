@@ -175,10 +175,37 @@ export function PipelineClient() {
   const refreshPipelineStatus = useCallback(async (scope: PipelineRequestScope): Promise<PipelineStatusRead> => {
     if (!isPipelineRequestCurrent(scope)) return { current: false, status: null };
     const sequence = ++pipelineStatusReadSequenceRef.current;
-    const isCurrentRead = () => sequence === pipelineStatusReadSequenceRef.current && isPipelineRequestCurrent(scope);
+    const isCurrentProjectScope = () => {
+      const latest = pipelineProjectContextRef.current;
+      return pipelineMountedRef.current
+        && latest.projectId === scope.projectId
+        && latest.generation === scope.contextGeneration;
+    };
+    const isCurrentRead = () => sequence === pipelineStatusReadSequenceRef.current
+      && isCurrentProjectScope()
+      && pipelineRequestGenerationRef.current === scope.requestGeneration;
     try {
       const status = await getPipelineStatus(scope.projectId);
-      if (!isCurrentRead()) return { current: false, status: null };
+      if (!isCurrentRead()) {
+        const executionOwner = pipelineExecutionOwnerRef.current;
+        if (
+          sequence === pipelineStatusReadSequenceRef.current
+          && isCurrentProjectScope()
+          && status.project_id === scope.projectId
+          && executionOwner?.projectId === scope.projectId
+          && executionOwner.contextGeneration === scope.contextGeneration
+        ) {
+          // A request started before an accepted run may refresh quota, but not lifecycle evidence.
+          setPipelineStatus((current) => current?.project_id === scope.projectId
+            ? {
+                ...current,
+                ...(status.quota !== undefined ? { quota: status.quota } : {}),
+                ...(status.full_quota !== undefined ? { full_quota: status.full_quota } : {}),
+              }
+            : current);
+        }
+        return { current: false, status: null };
+      }
       if (status.project_id !== scope.projectId) {
         setPipelineStatusReadFailedProjectId(scope.projectId);
         return { current: true, status: null };

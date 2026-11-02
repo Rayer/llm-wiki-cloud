@@ -164,7 +164,8 @@ it('shows an initial read failure, resumes the same intent and tracks its termin
 
   renderPipeline();
   const readFailure = await screen.findByTestId('pipeline-status-read-failed');
-  expect(readFailure.textContent).toContain('Retrying automatically');
+  expect(readFailure.textContent).toContain('Retry to verify current eligibility');
+  expect(screen.getByRole('button', { name: 'Retry status refresh' })).toBeDefined();
   expect(screen.getByRole('button', { name: 'Run Pipeline' }).hasAttribute('disabled')).toBe(true);
   await waitFor(() => expect(intervals.size).toBe(1));
 
