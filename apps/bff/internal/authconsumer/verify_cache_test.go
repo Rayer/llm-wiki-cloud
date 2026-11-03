@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,6 +20,46 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
+
+func TestVerifyCacheHitAcrossExpiryBoundaryRechecksSafely(t *testing.T) {
+	const helperEnv = "GAT21_VERIFY_CACHE_EXPIRY_HELPER"
+	if os.Getenv(helperEnv) == "1" {
+		cache, err := newVerificationCache()
+		if err != nil {
+			t.Fatal(err)
+		}
+		base := time.Date(2026, 11, 3, 0, 0, 0, 0, time.UTC)
+		validUntil := base.Add(verificationReuseTTL)
+		var clockCalls atomic.Int64
+		cache.now = func() time.Time {
+			if clockCalls.Add(1) == 1 {
+				return validUntil.Add(-time.Nanosecond)
+			}
+			return validUntil
+		}
+		cache.entries["boundary"] = verificationEntry{
+			identity:   webIdentity("user-a", validUntil.Add(time.Minute)),
+			validUntil: validUntil,
+			lastUsed:   1,
+		}
+		var outboundCalls atomic.Int64
+		_, err = cache.verify(context.Background(), "boundary", func() (Identity, error) {
+			outboundCalls.Add(1)
+			return Identity{}, ErrInvalidCredential
+		})
+		if !errors.Is(err, ErrInvalidCredential) || outboundCalls.Load() != 1 {
+			t.Fatalf("expiry-boundary verification err=%v outbound=%d, want one fresh rejection", err, outboundCalls.Load())
+		}
+		return
+	}
+
+	command := exec.Command(os.Args[0], "-test.run=^TestVerifyCacheHitAcrossExpiryBoundaryRechecksSafely$")
+	command.Env = append(os.Environ(), helperEnv+"=1")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("expiry-boundary revalidation subprocess failed: %v\n%s", err, output)
+	}
+}
 
 func TestVerifyResourceCacheUsesSixtySecondAndOriginalExpiryCeilingsAndClones(t *testing.T) {
 	now := time.Date(2026, 11, 3, 0, 0, 0, 0, time.UTC)

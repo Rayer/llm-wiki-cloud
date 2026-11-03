@@ -82,14 +82,12 @@ func (cache *verificationCache) verify(ctx context.Context, key string, verify f
 	if entry, ok := cache.entries[key]; ok {
 		now := cache.now()
 		if entry.identity.CredentialKind == "web-access" && now.Before(entry.validUntil) {
-			cache.sequence++
-			entry.lastUsed = cache.sequence
-			cache.entries[key] = entry
-			identity := cloneIdentity(entry.identity)
-			cache.mu.Unlock()
-			if !cache.now().Before(entry.validUntil) {
-				reason = "expired"
-			} else {
+			if cache.now().Before(entry.validUntil) {
+				cache.sequence++
+				entry.lastUsed = cache.sequence
+				cache.entries[key] = entry
+				identity := cloneIdentity(entry.identity)
+				cache.mu.Unlock()
 				recordVerificationEvent(ctx, "cache_hit", "success", "fresh")
 				return identity, nil
 			}
