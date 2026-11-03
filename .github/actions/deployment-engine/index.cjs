@@ -6,7 +6,7 @@ const path = require('node:path');
 const temp = process.env.RUNNER_TEMP;
 const executorSha = process.env.EXECUTOR_SHA;
 if (!/^[0-9a-f]{40}$/.test(executorSha || '')) process.exit(1);
-const authSchemaVersion=process.env.INPUT_AUTH_SCHEMA_VERSION || '';
+const authSchemaVersion=process.env['INPUT_AUTH-SCHEMA-VERSION'] || '';
 if (authSchemaVersion && !['3','4'].includes(authSchemaVersion)) process.exit(1);
 function run(command, args) {
   const result = spawnSync(command,args,{stdio:'inherit',env:process.env,timeout:6900000});
