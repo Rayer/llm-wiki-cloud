@@ -46,6 +46,12 @@ on:
         type: choice
         options: [independent, legacy_monorepo]
         default: independent
+      auth_schema_version:
+        description: Auth runtime input schema for DEV; schema 3 is limited to independent BFF-only staging with a retained schema-3 Auth receipt
+        required: true
+        type: choice
+        options: ['4', '3']
+        default: '4'
       auth_repository_id:
         description: Immutable GateAuth GitHub repository ID, required when an independent Auth build is selected
         type: number
@@ -86,6 +92,7 @@ jobs:
       components: ${{ inputs.components }}
       release_tag: ${{ inputs.release_tag }}
       release_source_mode: ${{ inputs.release_source_mode }}
+      auth_schema_version: ${{ inputs.auth_schema_version }}
       auth_repository_id: ${{ fromJSON(inputs.auth_repository_id) }}
       auth_revision: ${{ inputs.auth_revision }}
       auth_tree_sha256: ${{ inputs.auth_tree_sha256 }}

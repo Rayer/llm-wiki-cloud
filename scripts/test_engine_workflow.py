@@ -22,6 +22,13 @@ class EngineWorkflowContract(unittest.TestCase):
                 self.assertEqual(dispatch_inputs[name]['default'], 0)
                 self.assertEqual(called_inputs[name]['type'], 'number')
                 self.assertEqual(forwarded[name], f'${{{{ fromJSON(inputs.{name}) }}}}')
+        self.assertEqual(dispatch_inputs['auth_schema_version']['options'], ['4', '3'])
+        self.assertEqual(dispatch_inputs['auth_schema_version']['default'], '4')
+        self.assertEqual(called_inputs['auth_schema_version'], {
+            'required': False, 'type': 'string', 'default': '4',
+            'description': "Auth runtime input schema for initial DEV admission; schema 3 remains guarded by the engine's independent BFF-only retained-receipt checks",
+        })
+        self.assertEqual(forwarded['auth_schema_version'], '${{ inputs.auth_schema_version }}')
 
     def test_independent_auth_source_tuple_is_typed_verified_and_forwarded(self):
         workflow = yaml.safe_load((ROOT / '.github/workflows/cd.yml').read_text())
@@ -47,6 +54,8 @@ class EngineWorkflowContract(unittest.TestCase):
         prepare = next(step for step in release['steps']
                        if step.get('name') == 'Resolve explicit receipt references and prepare selected artifacts')
         self.assertEqual(preflight['with']['operation'], 'auth-preflight')
+        self.assertEqual(preflight['with']['auth-schema-version'], '${{ inputs.auth_schema_version }}')
+        self.assertEqual(prepare['with']['auth-schema-version'], '${{ inputs.auth_schema_version }}')
         self.assertNotIn('GATEAUTH_SOURCE_READ_TOKEN', preflight.get('env', {}))
         self.assertIn("steps.gat4-preflight.outputs.needs_auth_ci_package == 'true'", package['if'])
         action_metadata = yaml.safe_load((ROOT / '.github/actions/deployment-engine/action.yml').read_text())
@@ -268,6 +277,7 @@ class EngineWorkflowContract(unittest.TestCase):
             'executor_sha':'${{ github.sha }}',
             'components':'${{ inputs.components }}','release_tag':'${{ inputs.release_tag }}',
             'release_source_mode':'${{ inputs.release_source_mode }}',
+            'auth_schema_version':'${{ inputs.auth_schema_version }}',
             'auth_repository_id':'${{ fromJSON(inputs.auth_repository_id) }}',
             'auth_revision':'${{ inputs.auth_revision }}',
             'auth_tree_sha256':'${{ inputs.auth_tree_sha256 }}',

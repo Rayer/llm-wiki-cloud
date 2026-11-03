@@ -114,6 +114,7 @@ type Config struct {
 	ManagementScopes             []AuthManagementScope
 	AuthConsumerVerifiers        []AuthConsumerVerifier
 	AuthConsumerPublicProjection AuthConsumerPublicProjection
+	PortalLWCBFFOrigin           string
 	// SyncServiceURL is the explicitly configured BFF origin returned by Auth's
 	// trusted CLI sync locator; it is never inferred from the Auth hostname.
 	SyncServiceURL                  string

@@ -48,6 +48,87 @@ func validAuthInputSnapshotV2ForTest() AuthInputSnapshot {
 	return inputs
 }
 
+func authManagementScopesForTest(resource string) []AuthManagementScope {
+	return []AuthManagementScope{
+		{ID: "auth:admin", Product: "auth", Resource: resource, GrantMode: "operator-only",
+			Name:          AuthLocalizedText{En: "Platform administrator", ZhTW: "平台管理員"},
+			Description:   AuthLocalizedText{En: "Manage accounts and registered scopes.", ZhTW: "管理帳號與已登錄權限。"},
+			GrantorScopes: []string{"auth:admin"}},
+		{ID: "lwc:admin", Product: "lwc", Resource: resource, GrantMode: "operator-only",
+			Name:          AuthLocalizedText{En: "LWC administrator", ZhTW: "LWC 管理員"},
+			Description:   AuthLocalizedText{En: "Operate LWC projects.", ZhTW: "管理 LWC 專案。"},
+			GrantorScopes: []string{"auth:admin"}},
+	}
+}
+
+func validAuthInputSnapshotV4ForTest(origin string) AuthInputSnapshot {
+	inputs := validAuthInputSnapshotV2ForTest()
+	inputs.SchemaVersion = 4
+	inputs.SyncServiceURL = origin
+	inputs.OAuthResources = authOAuthResourcesForTest(origin, inputs.Environment)
+	inputs.ManagementScopes = authManagementScopesForTest(origin)
+	verifiers := []AuthConsumerVerifier{{ID: "lwc-bff", Environment: inputs.Environment,
+		CallerServiceAccount: "lwc-bff-dev@llm-wiki-cloud.iam.gserviceaccount.com", Audience: "https://llm-wiki-auth-dev-a5nkmux6pq-de.a.run.app",
+		Resource: origin, AllowedCredentialKinds: []string{"web-access", "cli-access", "mcp-oauth"},
+		AuthorityModes: []string{"legacy-shadow", "central"}}}
+	inputs.ConsumerVerifiers = &verifiers
+	projection := AuthConsumerPublicProjection{Issuer: inputs.AuthServiceURL, Resource: origin, ManagementScopes: inputs.ManagementScopes}
+	inputs.ConsumerPublicProjection = &projection
+	inputs.Portal = &AuthInputPortal{LWCBFFOrigin: origin}
+	inputs.ConfigID, _ = AuthInputConfigID(inputs)
+	return inputs
+}
+
+func TestSchema4PortalOriginIsIncludedInImmutableInputAndFile(t *testing.T) {
+	const devOrigin = "https://llm-wiki-bff-dev-580854833715.asia-east1.run.app"
+	inputs := validAuthInputSnapshotV4ForTest(devOrigin)
+	data, err := json.Marshal(inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := DecodeAuthInputSnapshot(data)
+	if err != nil || decoded.Portal == nil || decoded.Portal.LWCBFFOrigin != devOrigin {
+		t.Fatalf("schema-4 input portal=%+v err=%v", decoded.Portal, err)
+	}
+	file := AuthFile{
+		SchemaVersion: decoded.SchemaVersion, Target: decoded.Target, Environment: decoded.Environment, ConfigID: decoded.ConfigID,
+		GCPProject: decoded.GCPProject, FirestoreDatabaseID: decoded.FirestoreDatabaseID,
+		LocalCloudScope: decoded.LocalCloudScope, AuthServiceURL: decoded.AuthServiceURL, SyncServiceURL: decoded.SyncServiceURL,
+		AllowedHosts: decoded.AllowedHosts, AllowedOrigins: decoded.AllowedOrigins,
+		AuthSessionEnvironment: decoded.AuthSessionEnvironment, AuthSessionMigration: decoded.AuthSessionMigration,
+		AuthDemoUserID: decoded.AuthDemoUserID, AuthDemoUserEmail: decoded.AuthDemoUserEmail, AuthDemoUserRole: decoded.AuthDemoUserRole,
+		JWTSecret: "synthetic-validation-secret", OAuthResources: decoded.OAuthResources,
+		ManagementScopes: decoded.ManagementScopes, ConsumerVerifiers: decoded.ConsumerVerifiers,
+		ConsumerPublicProjection: decoded.ConsumerPublicProjection,
+		Portal:                   &AuthFilePortal{LWCBFFOrigin: decoded.Portal.LWCBFFOrigin},
+	}
+	fileBytes, err := json.Marshal(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := DecodeAuthFile(fileBytes)
+	if err != nil || loaded.Portal == nil || loaded.Portal.LWCBFFOrigin != devOrigin {
+		t.Fatalf("schema-4 file portal=%+v err=%v", loaded.Portal, err)
+	}
+	withoutPortal := inputs
+	withoutPortal.Portal = nil
+	withoutPortal.ConfigID, _ = AuthInputConfigID(withoutPortal)
+	if err := ValidateAuthInputSnapshot(withoutPortal); err == nil {
+		t.Fatal("schema-4 input without portal origin was accepted")
+	}
+
+	bad := validAuthInputSnapshotV4ForTest("https://llm-wiki-bff-580854833715.asia-east1.run.app")
+	if err := ValidateAuthInputSnapshot(bad); err == nil {
+		t.Fatal("DEV schema-4 input accepted the production BFF origin")
+	}
+	changed := inputs
+	changed.Portal = &AuthInputPortal{LWCBFFOrigin: devOrigin + "/other"}
+	changed.ConfigID, _ = AuthInputConfigID(changed)
+	if err := ValidateAuthInputSnapshot(changed); err == nil {
+		t.Fatal("schema-4 input accepted a portal path")
+	}
+}
+
 func TestDecodeAuthInputSnapshotRequiresCompleteImmutableContract(t *testing.T) {
 	inputs := validAuthInputSnapshotForTest()
 	data, err := json.Marshal(inputs)

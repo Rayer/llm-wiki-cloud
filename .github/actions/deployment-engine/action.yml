@@ -8,6 +8,10 @@ inputs:
     required: false
     default: 'false'
     description: DEV-only bypass for another attempt's unresolved target status on a new ready deploy
+  auth-schema-version:
+    required: false
+    default: ''
+    description: Optional Auth runtime input schema pinned during initial admission
 outputs:
   needs_auth_ci_package:
     description: Whether auth-preflight requires a new immutable Auth CI package

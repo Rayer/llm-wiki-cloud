@@ -127,7 +127,7 @@ def auth_source_from_receipt(path):
     except (OSError, Breakpoint, ValueError, TypeError):
         return None
     source = receipt.get('auth_source') if isinstance(receipt, dict) else None
-    if (receipt.get('component') != 'auth' or receipt.get('schema') != 3 or
+    if (receipt.get('component') != 'auth' or receipt.get('schema') not in (3, 4) or
             not isinstance(source, dict)):
         return None
     return {
@@ -143,8 +143,23 @@ def auth_source_from_receipt(path):
 def admit(args):
     selected = selection(args.components)
     release_source_mode = getattr(args, 'release_source_mode', None)
+    requested_auth_schema_version = getattr(args, 'auth_schema_version', None)
+    auth_schema_version = 4 if requested_auth_schema_version is None else requested_auth_schema_version
     require(release_source_mode in ('independent', 'legacy_monorepo'),
             'release-source-mode-required')
+    require(type(auth_schema_version) is int and auth_schema_version in (3, 4),
+            'invalid-auth-schema-version')
+    if auth_schema_version == 3:
+        require(release_source_mode == 'independent' and selected == ['bff'] and
+                args.environment == 'development' and args.reuse,
+                'auth-schema3-staging-requires-independent-bff-reuse')
+        try:
+            retained_auth = read(Path(args.reuse) / 'receipts/auth.json')
+        except (OSError, Breakpoint, ValueError, TypeError):
+            retained_auth = None
+        require(isinstance(retained_auth, dict) and retained_auth.get('component') == 'auth' and
+                retained_auth.get('schema') == 3 and isinstance(retained_auth.get('auth_source'), dict),
+                'auth-schema3-staging-requires-v3-receipt')
     require(re.fullmatch(r'[0-9a-f]{40}', args.source), 'invalid-source')
     executor_sha = getattr(args, 'executor_sha', None) or run(['git', 'rev-parse', 'HEAD'])
     require(re.fullmatch(r'[0-9a-f]{40}', executor_sha), 'invalid-executor-sha')
@@ -172,7 +187,8 @@ def admit(args):
                 auth_dir = projection_root / 'auth'
                 auth_dir.mkdir()
                 run(['go', 'run', './cmd/pipeline_config', 'prepare', '--target', 'auth', '--descriptor',
-                     '--environment', target, '--source-sha', args.source, '--output', str(auth_dir)],
+                     '--environment', target, '--source-sha', args.source, '--auth-schema-version',
+                     str(auth_schema_version), '--output', str(auth_dir)],
                     cwd=ROOT / 'apps/bff', env=normalize_env, timeout=180)
                 if 'auth' in selected:
                     normalize_args.extend(['--auth-inputs', str(auth_dir / 'auth-inputs.json')])
@@ -419,6 +435,8 @@ class Engine:
         if (candidate.get('identity') != self.plan['identities']['auth'] or
                 candidate.get('auth_source') != expected_source):
             return True
+        if not self.auth_receipt_supports_schema(candidate, self.auth_input_snapshot()['schema_version']):
+            return True
         try:
             self.provider.usable('auth', candidate['artifact'])
         except Breakpoint as exc:
@@ -433,7 +451,9 @@ class Engine:
             receipt = self.receipt(c)
             if c == 'auth' and self.auth_input_snapshot() is not None:
                 require(receipt.get('auth_config_inputs') == self.auth_input_snapshot() and
-                        receipt.get('auth_materialization_schema') == 1,
+                        receipt.get('auth_materialization_schema') == 1 and
+                        self.auth_receipt_supports_schema(
+                            receipt, self.auth_input_snapshot()['schema_version']),
                         'artifact-auth-input-snapshot-mismatch')
             artifacts[c] = receipt['artifact']
         self.validate_dev_receipt_pair()
@@ -456,7 +476,10 @@ class Engine:
         elif schema_version == 3:
             expected_keys.update(('oauth_resources', 'management_scopes', 'consumer_verifiers',
                                   'consumer_public_projection'))
-        require(isinstance(inputs, dict) and type(schema_version) is int and schema_version in (1, 2, 3) and
+        elif schema_version == 4:
+            expected_keys.update(('oauth_resources', 'management_scopes', 'consumer_verifiers',
+                                  'consumer_public_projection', 'portal'))
+        require(isinstance(inputs, dict) and type(schema_version) is int and schema_version in (1, 2, 3, 4) and
                 set(inputs) == expected_keys and
                 inputs.get('target') == 'auth' and
                 inputs.get('environment') == {'development': 'dev', 'production': 'prod'}.get(
@@ -465,14 +488,30 @@ class Engine:
                 re.fullmatch(r'[0-9a-f]{40}', inputs.get('source_sha', '')) is not None and
                 re.fullmatch(r'sha256:[0-9a-f]{64}', inputs.get('config_id', '')) is not None,
                 'auth-input-snapshot-invalid')
-        if schema_version == 3:
+        if schema_version in (3, 4):
             require(isinstance(inputs['management_scopes'], list) and
                     all(isinstance(value, dict) for value in inputs['management_scopes']) and
                     isinstance(inputs['consumer_verifiers'], list) and
                     all(isinstance(value, dict) for value in inputs['consumer_verifiers']) and
                     isinstance(inputs['consumer_public_projection'], dict),
                     'auth-input-snapshot-invalid')
+        if schema_version == 4:
+            portal = inputs['portal']
+            origin = portal.get('lwc_bff_origin') if isinstance(portal, dict) else None
+            require(isinstance(portal, dict) and set(portal) == {'lwc_bff_origin'} and
+                    isinstance(origin, str) and origin == inputs.get('sync_service_url') and
+                    origin == inputs['consumer_public_projection'].get('resource'),
+                    'auth-input-snapshot-invalid')
         return copy.deepcopy(inputs)
+
+    @staticmethod
+    def auth_receipt_supports_schema(receipt, schema_version):
+        receipt_schema = receipt.get('schema') if isinstance(receipt, dict) else None
+        if receipt_schema == 4:
+            versions = receipt.get('auth_supported_schema_versions')
+            return (isinstance(versions, list) and all(type(value) is int for value in versions) and
+                    versions == [1, 2, 3, 4] and schema_version in versions)
+        return type(receipt_schema) is int and receipt_schema in (2, 3) and schema_version in (1, 2, 3)
 
     def attach_auth_input_snapshot(self, receipt, *, require_match=False):
         inputs = self.auth_input_snapshot()
@@ -768,9 +807,13 @@ class Engine:
                         except (ReceiptError, KeyError, TypeError) as exc:
                             raise Breakpoint('artifact-auth-receipt-incompatible', 'failed', False,
                                              'inspect-retained-artifact', cause=str(exc)) from None
-                    receipt = candidate
-                    if c == 'frontend':
-                        shutil.copy2(source / 'frontend.tgz', self.directory / 'frontend.tgz')
+                        if not self.auth_receipt_supports_schema(
+                                candidate, self.auth_input_snapshot()['schema_version']):
+                            applicable = False
+                    if applicable:
+                        receipt = candidate
+                        if c == 'frontend':
+                            shutil.copy2(source / 'frontend.tgz', self.directory / 'frontend.tgz')
             if receipt is None:
                 require(not (self.plan['normalized']['environment'] == 'production' and c != 'frontend'), 'dev-source-config-incompatible')
                 if (c == 'auth' and
@@ -778,7 +821,7 @@ class Engine:
                     require(isinstance(self.plan.get('auth_source'), dict),
                             'independent-auth-source-required')
                 if c == 'auth' and source_mode == 'independent':
-                    artifact, build = self.provider.prepare_independent_auth()
+                    artifact, build, auth_supported_schema_versions = self.provider.prepare_independent_auth()
                     self.state['builds'][c] = build
                     self.save()
                 else:
@@ -789,10 +832,13 @@ class Engine:
                            'target_config': digest(self.plan['normalized']['frontend']) if c == 'frontend' else None}
                 if c in ('auth', 'bff', 'documentimport'):
                     receipt['build'] = self.safe_build_record(self.state['builds'][c])
+                if c == 'auth' and source_mode == 'independent':
+                    receipt['schema'] = 4 if 4 in auth_supported_schema_versions else 3
+                    if receipt['schema'] == 4:
+                        receipt['auth_supported_schema_versions'] = auth_supported_schema_versions
                 if (c == 'auth' and source_mode == 'independent' and
                         isinstance(self.plan.get('auth_source'), dict)):
                     source = self.plan['auth_source']
-                    receipt['schema'] = 3
                     receipt['auth_source'] = {
                         'repository_id': source['repository_id'],
                         'revision': source['revision'],
@@ -824,7 +870,7 @@ class Engine:
                     'auth-source-artifact-unavailable')
             auth_receipt = read(auth_receipt_path)
             expected_identity = source_identity('auth', self.plan['source'], self.plan['auth_source'])
-            require(auth_receipt.get('component') == 'auth' and auth_receipt.get('schema') == 3 and
+            require(auth_receipt.get('component') == 'auth' and auth_receipt.get('schema') in (3, 4) and
                     auth_receipt.get('identity') == expected_identity and
                     auth_receipt.get('auth_source') == {
                         'repository_id': self.plan['auth_source']['repository_id'],
@@ -833,7 +879,9 @@ class Engine:
                         'artifact_id': self.plan['auth_source']['artifact_id'],
                         'build_run_id': self.plan['auth_source']['run_id'],
                         'build_run_attempt': self.plan['auth_source']['run_attempt'],
-                    }, 'auth-source-artifact-incompatible')
+                    } and self.auth_receipt_supports_schema(
+                        auth_receipt, self.auth_input_snapshot()['schema_version']),
+                    'auth-source-artifact-incompatible')
             auth_receipt = copy.deepcopy(auth_receipt)
             auth_receipt['build_sha'] = self.plan['source']
             auth_receipt['auth_config_inputs'] = self.auth_input_snapshot()
@@ -1327,6 +1375,7 @@ def main():
     parser.add_argument('--dev-reference')
     parser.add_argument('--executor-sha')
     parser.add_argument('--release-source-mode', choices=('independent', 'legacy_monorepo'))
+    parser.add_argument('--auth-schema-version', type=int, choices=(3, 4))
     parser.add_argument('--auth-repository-id')
     parser.add_argument('--auth-revision')
     parser.add_argument('--auth-tree-sha256')
@@ -1361,6 +1410,10 @@ def main():
                 engine.quota_rejection_evidence_dir = Path(args.rejection_evidence).resolve()
                 engine.quota_rejection_artifact_id = args.rejection_artifact_id
             if args.operation in ('prepare', 'auth-preflight'):
+                pinned_auth = engine.auth_input_snapshot()
+                require(args.auth_schema_version is None or pinned_auth is None or
+                        pinned_auth['schema_version'] == args.auth_schema_version,
+                        'auth-schema-version-change-requires-new-plan')
                 require(not args.components or selection(args.components) == engine.plan['selected'], 'selection-change-requires-new-plan')
                 require(not args.source or args.source == engine.plan['source'], 'source-change-requires-new-plan')
                 require(not args.tag or args.tag == engine.plan['tag'], 'tag-change-requires-new-plan')

@@ -27,7 +27,8 @@ func (h *Handler) MCPProjectConsentDetails(c *gin.Context) {
 		}
 		return
 	}
-	lookup, err := consumer.LookupMCPConsent(c.Request.Context(), requestUserCredential(c), transactionID, identity.Subject, identity.AuthVersion)
+	lookup, err := consumer.LookupMCPConsent(c.Request.Context(), requestUserCredential(c), transactionID, identity.Subject, identity.AuthVersion,
+		authconsumer.MCPConsentPortalContext(c.GetHeader("X-GateAuth-Portal-Context")))
 	if err != nil {
 		writeMCPConsentConsumerError(c, err)
 		return
@@ -89,7 +90,8 @@ func (h *Handler) MCPProjectConsentDecision(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request"})
 		return
 	}
-	lookup, err := consumer.LookupMCPConsent(c.Request.Context(), requestUserCredential(c), transactionID, identity.Subject, identity.AuthVersion)
+	lookup, err := consumer.LookupMCPConsent(c.Request.Context(), requestUserCredential(c), transactionID, identity.Subject, identity.AuthVersion,
+		authconsumer.MCPConsentPortalContext(c.GetHeader("X-GateAuth-Portal-Context")))
 	if err != nil {
 		writeMCPConsentConsumerError(c, err)
 		return
@@ -120,6 +122,7 @@ func (h *Handler) MCPProjectConsentDecision(c *gin.Context) {
 	result, err := consumer.DecideMCPConsent(c.Request.Context(), requestUserCredential(c), authconsumer.MCPConsentDecisionRequest{
 		TransactionID: transactionID, Subject: identity.Subject, AuthVersion: identity.AuthVersion,
 		Decision: request.Decision, ApprovedScopes: approvedScopes,
+		PortalContext: authconsumer.MCPConsentPortalContext(c.GetHeader("X-GateAuth-Portal-Context")),
 	})
 	if err != nil {
 		writeMCPConsentConsumerError(c, err)

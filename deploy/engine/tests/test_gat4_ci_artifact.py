@@ -95,7 +95,7 @@ class GateAuthCiArtifactTests(unittest.TestCase):
             },
             "artifact": {"image": f"{image_prefix}@{image_digest}",
                          "image_digest": image_digest},
-            "contracts": {"auth_config_schema_versions": [1, 2, 3],
+            "contracts": {"auth_config_schema_versions": [1, 2, 3, 4],
                           "lwc_consumer_schema_version": 1},
         }
         envelope = {
@@ -236,6 +236,20 @@ class GateAuthCiArtifactTests(unittest.TestCase):
         self.assertNotIn("artifact_id", manifest)
         self.assertNotIn("artifact_sha256", manifest)
 
+    def test_retained_v3_and_new_v4_auth_schema_manifests_are_valid(self):
+        package_zip, envelope, source, manifest, _, image_prefix, make_zip = self.fixture()
+        self.assertEqual(manifest["contracts"]["auth_config_schema_versions"], [1, 2, 3, 4])
+        checked = artifact.verify_package(package_zip, envelope, source,
+                                          "llm-wiki-cloud", image_prefix)
+        self.assertEqual(checked["contracts"]["auth_config_schema_versions"], [1, 2, 3, 4])
+
+        retained_v3 = copy.deepcopy(manifest)
+        retained_v3["contracts"]["auth_config_schema_versions"] = [1, 2, 3]
+        package_zip, envelope = make_zip(manifest_value=retained_v3)
+        checked = artifact.verify_package(package_zip, envelope, source,
+                                          "llm-wiki-cloud", image_prefix)
+        self.assertEqual(checked["contracts"]["auth_config_schema_versions"], [1, 2, 3])
+
     def test_outer_locator_digest_and_size_mismatches_fail_closed(self):
         package_zip, envelope, source, _, _, image_prefix, _ = self.fixture()
         for changed in (
@@ -296,6 +310,17 @@ class GateAuthCiArtifactTests(unittest.TestCase):
             changed["contracts"][key] = value
             package_zip, package_envelope = make_zip(manifest_value=changed)
             with self.subTest(key=key):
+                with self.assertRaisesRegex(artifact.ArtifactError, "contract versions"):
+                    artifact.verify_package(package_zip, package_envelope, source,
+                                            "llm-wiki-cloud", image_prefix)
+
+    def test_unsupported_auth_schema_versions_fail_closed(self):
+        _, _, source, manifest, _, image_prefix, make_zip = self.fixture()
+        for versions in ([1, 2, 3, 5], [1, 2, 3, 4, 5], [1, 2, 4]):
+            changed = copy.deepcopy(manifest)
+            changed["contracts"]["auth_config_schema_versions"] = versions
+            package_zip, package_envelope = make_zip(manifest_value=changed)
+            with self.subTest(versions=versions):
                 with self.assertRaisesRegex(artifact.ArtifactError, "contract versions"):
                     artifact.verify_package(package_zip, package_envelope, source,
                                             "llm-wiki-cloud", image_prefix)

@@ -241,7 +241,7 @@ class IndependentProducerTests(unittest.TestCase):
             },
             "artifact": {"image": f"{image_prefix}@{image_digest}",
                          "image_digest": image_digest},
-            "contracts": {"auth_config_schema_versions": [1, 2, 3],
+            "contracts": {"auth_config_schema_versions": [1, 2, 3, 4],
                           "lwc_consumer_schema_version": 1},
         }
         zip_path = root / "gateauth-ci-package.zip"
@@ -447,7 +447,9 @@ else:
             run.provider.usable = lambda _component, _artifact: None
             self.assertTrue(auth_receipt["artifact"]["image"].startswith(
                 gat4_ci_artifact.IMAGE_PREFIX + "@"))
-            self.assertEqual(auth_receipt["schema"], 3)
+            self.assertEqual(auth_receipt["schema"], 4)
+            self.assertEqual(auth_receipt["auth_supported_schema_versions"], [1, 2, 3, 4])
+            self.assertEqual(auth_receipt["auth_config_inputs"]["schema_version"], 4)
             self.assertEqual(auth_receipt["build_sha"], lwc_sha)
             self.assertEqual(auth_receipt["auth_source"], {
                 "repository_id": auth_source["repository_id"],

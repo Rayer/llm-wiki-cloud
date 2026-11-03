@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -147,17 +148,7 @@ func TestProfileCompileReceiptRecordsActualGuidanceKind(t *testing.T) {
 }
 
 func TestProfileReceiptFirestoreAtomicOutboxAndDuplicate(t *testing.T) {
-	if os.Getenv("FIRESTORE_EMULATOR_HOST") == "" {
-		t.Skip("local Firestore emulator required")
-	}
-	if os.Getenv("FIRESTORE_EMULATOR_HOST") != "127.0.0.1:8585" {
-		t.Fatal("only loopback emulator allowed")
-	}
-	conn, err := net.DialTimeout("tcp", "127.0.0.1:8585", time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	conn.Close()
+	requireOwnedLoopbackFirestoreEmulator(t)
 	t.Setenv("GOOGLE_CLOUD_PROJECT", fmt.Sprintf("receipt-%d", time.Now().UnixNano()))
 	t.Setenv("FIRESTORE_DATABASE_ID", "profile-receipt-test")
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -219,18 +210,7 @@ func TestProfileReceiptFirestoreAtomicOutboxAndDuplicate(t *testing.T) {
 }
 
 func TestProfileReceiptActualPublisherPersistsOriginRequestID(t *testing.T) {
-	endpoint := os.Getenv("FIRESTORE_EMULATOR_HOST")
-	if endpoint == "" {
-		t.Skip("local Firestore emulator required")
-	}
-	if endpoint != "127.0.0.1:8585" {
-		t.Fatalf("only the owned loopback Firestore emulator is allowed, got %q", endpoint)
-	}
-	conn, err := net.DialTimeout("tcp", endpoint, time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	conn.Close()
+	requireOwnedLoopbackFirestoreEmulator(t)
 
 	projectID := fmt.Sprintf("receipt-origin-%d", time.Now().UnixNano())
 	t.Setenv("GOOGLE_CLOUD_PROJECT", projectID)
@@ -293,4 +273,27 @@ func TestProfileReceiptActualPublisherPersistsOriginRequestID(t *testing.T) {
 	if queued.RequestID != originRequestID || !queued.Pending || queued.Status != "pending" {
 		t.Fatalf("actual publisher outbox lost origin or changed queue status: %+v", queued)
 	}
+}
+
+func requireOwnedLoopbackFirestoreEmulator(t *testing.T) {
+	t.Helper()
+	endpoint := strings.TrimSpace(os.Getenv("FIRESTORE_EMULATOR_HOST"))
+	if endpoint == "" {
+		t.Skip("local Firestore emulator required")
+	}
+	ownedEndpoint := strings.TrimSpace(os.Getenv("LWC_TEST_OWNED_FIRESTORE_EMULATOR_HOST"))
+	if endpoint != "127.0.0.1:8585" && (ownedEndpoint == "" || endpoint != ownedEndpoint) {
+		t.Fatalf("alternate loopback emulator must be explicitly pinned by the test runner, got %q", endpoint)
+	}
+	host, portText, err := net.SplitHostPort(endpoint)
+	ip := net.ParseIP(host)
+	port, portErr := strconv.Atoi(portText)
+	if err != nil || ip == nil || !ip.IsLoopback() || portErr != nil || port < 1 || port > 65535 {
+		t.Fatalf("only an owned numeric-loopback Firestore emulator is allowed, got %q", endpoint)
+	}
+	conn, err := net.DialTimeout("tcp", endpoint, time.Second)
+	if err != nil {
+		t.Fatalf("owned loopback Firestore emulator is unavailable: %v", err)
+	}
+	_ = conn.Close()
 }
