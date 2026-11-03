@@ -997,9 +997,11 @@ class Acceptance(unittest.TestCase):
                              'schema-1 readback cannot satisfy a schema-2 snapshot')
         response.read.return_value=json.dumps({'config_schema_version':4,
                                               'config_id':inputs['config_id']}).encode()
+        schema4_inputs=copy.deepcopy(inputs)
+        schema4_inputs['schema_version']=4
         with patch('providers.urllib.request.build_opener',return_value=opener):
-            self.assertFalse(provider.auth_runtime_config_matches(inputs),
-                             'unknown runtime schema cannot satisfy a selected schema')
+            self.assertTrue(provider.auth_runtime_config_matches(schema4_inputs),
+                            'a schema-4 runtime can satisfy the selected schema')
         legacy_inputs=copy.deepcopy(inputs)
         legacy_inputs['schema_version']=1
         legacy_inputs.pop('oauth_resources')
@@ -1016,17 +1018,21 @@ class Acceptance(unittest.TestCase):
             with self.assertRaisesRegex(Breakpoint,'auth-runtime-config-identity-invalid'):
                 provider.auth_runtime_config_matches(bad)
             build_opener.assert_not_called()
-        bad_schema=dict(inputs,schema_version=4)
+        bad_schema=dict(inputs,schema_version=5)
         with patch('providers.urllib.request.build_opener') as build_opener:
             with self.assertRaisesRegex(Breakpoint,'auth-runtime-config-identity-invalid'):
                 provider.auth_runtime_config_matches(bad_schema)
+            build_opener.assert_not_called()
+        with patch('providers.urllib.request.build_opener') as build_opener:
+            with self.assertRaisesRegex(Breakpoint,'auth-runtime-config-identity-invalid'):
+                provider.auth_runtime_config_matches(dict(inputs,schema_version=True))
             build_opener.assert_not_called()
         with patch('providers.urllib.request.build_opener') as build_opener:
             build_opener.return_value.open.side_effect=OSError('offline')
             with self.assertRaisesRegex(Breakpoint,'auth-runtime-config-identity-unreadable'):
                 provider.auth_runtime_config_matches(inputs)
 
-    def test_auth_input_snapshot_supports_exact_schema_one_two_and_three_receipts(self):
+    def test_auth_input_snapshot_supports_exact_schema_one_two_three_and_four_receipts(self):
         e=self.make(('auth',),name='auth-input-snapshot-schema')
         inputs=e.auth_input_snapshot()
         self.assertEqual(inputs['schema_version'],2)
@@ -1057,6 +1063,22 @@ class Acceptance(unittest.TestCase):
         self.assertEqual(current_receipt['auth_config_inputs'],current)
         self.assertEqual(current_receipt['auth_materialization_schema'],1)
 
+        schema4=copy.deepcopy(current)
+        schema4['schema_version']=4
+        schema4['portal']={'lwc_bff_origin':schema4['sync_service_url']}
+        schema4['consumer_public_projection']['resource']=schema4['sync_service_url']
+        e.plan['normalized']['auth']['runtime_inputs']=schema4
+        self.assertEqual(e.auth_input_snapshot(),schema4)
+        schema4_receipt={'schema':4,'auth_supported_schema_versions':[1,2,3,4]}
+        self.assertTrue(e.auth_receipt_supports_schema(schema4_receipt,4))
+        self.assertFalse(e.auth_receipt_supports_schema(
+            {'schema':3},4), 'a v3-only artifact cannot receive a schema-4 snapshot')
+        with self.assertRaisesRegex(Breakpoint,'auth-input-snapshot-invalid'):
+            invalid=copy.deepcopy(schema4)
+            invalid['portal']['lwc_bff_origin']='https://different.example'
+            e.plan['normalized']['auth']['runtime_inputs']=invalid
+            e.auth_input_snapshot()
+
         # Keep the schema-1 compatibility check against an exact legacy key set.
         e.plan['normalized']['auth']['runtime_inputs']=inputs
         mismatch=copy.deepcopy(old_receipt)
@@ -1075,6 +1097,26 @@ class Acceptance(unittest.TestCase):
                 e.plan['normalized']['auth']['runtime_inputs']=bad
                 with self.assertRaisesRegex(Breakpoint,'auth-input-snapshot-invalid'):
                     e.auth_input_snapshot()
+
+    def test_selected_schema_four_cannot_use_v3_only_gateauth_artifact(self):
+        selected = copy.deepcopy(self.normalized)
+        selected['auth']['runtime_inputs']['schema_version'] = 4
+        plan = {
+            'normalized': selected,
+            'auth_source': {
+                'repository_id': 'github:1439745097', 'revision': 'd' * 40,
+                'tree_sha256': 'sha256:' + 'e' * 64, 'artifact_id': '7',
+                'run_id': 8, 'run_attempt': 1,
+            },
+        }
+        provider = providers.Providers(plan, self.root)
+        with patch.object(providers.gat4_ci_artifact, 'load_package', return_value={
+                'contracts': {'auth_config_schema_versions': [1, 2, 3]}}), \
+                patch('providers.run') as provider_run:
+            with self.assertRaisesRegex(
+                    Breakpoint, 'independent-auth-artifact-config-schema-unsupported'):
+                provider.prepare_independent_auth()
+            provider_run.assert_not_called()
 
     def test_auth_stage1_snapshot_refreshes_for_cross_plan_and_production_image_reuse(self):
         old=self.ready(self.make(('auth',),name='auth-stage1-old'))

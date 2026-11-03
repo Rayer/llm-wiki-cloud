@@ -856,6 +856,11 @@ class Providers:
         except (gat4_ci_artifact.ArtifactError, AttributeError, OSError, TypeError, ValueError):
             raise Breakpoint('independent-auth-artifact-incompatible', stage='auth-artifact-verify') from None
 
+        supported_schemas = manifest['contracts']['auth_config_schema_versions']
+        selected_schema = self.p['auth']['runtime_inputs']['schema_version']
+        require(type(selected_schema) is int and selected_schema in supported_schemas,
+                'independent-auth-artifact-config-schema-unsupported')
+
         build = manifest['build']
         require(build['project_id'] == self.p['gcp']['project_id'] and
                 build['location'] == CLOUD_BUILD_LOCATION and
@@ -882,7 +887,7 @@ class Providers:
         except gat4_ci_artifact.ArtifactError:
             raise Breakpoint('independent-auth-build-input-mismatch', stage='auth-build-readback') from None
         record.update(status='SUCCESS', last_observed_status='SUCCESS', poll_outcome='succeeded')
-        return {'image': manifest['artifact']['image']}, record
+        return {'image': manifest['artifact']['image']}, record, supported_schemas
 
     def _build_source_environment(self, c):
         if c != 'auth':
@@ -1600,7 +1605,7 @@ class Providers:
     def auth_runtime_config_matches(self, inputs):
         expected_schema = inputs.get('schema_version') if isinstance(inputs, dict) else None
         expected_config_id = inputs.get('config_id') if isinstance(inputs, dict) else None
-        if (type(expected_schema) is not int or expected_schema not in (1, 2, 3) or
+        if (type(expected_schema) is not int or expected_schema not in (1, 2, 3, 4) or
                 not isinstance(expected_config_id, str) or
                 re.fullmatch(r'sha256:[0-9a-f]{64}', expected_config_id) is None):
             raise Breakpoint('auth-runtime-config-identity-invalid', 'failed', False,

@@ -237,6 +237,10 @@ class AuthConsumerPublicProjection {
   management_scopes: Listing<AuthManagementScope>
 }
 
+class AuthPortalConfig {
+  lwc_bff_origin: String
+}
+
 class AuthConfig {
   schema_version: Int
   environment: String
@@ -260,6 +264,7 @@ class AuthConfig {
   management_scopes: Listing<AuthManagementScope>
   consumer_verifiers: Listing<AuthConsumerVerifier>
   consumer_public_projection: AuthConsumerPublicProjection
+  portal: AuthPortalConfig
   config_secret_resource: String
 }
 
@@ -757,7 +762,7 @@ local bff = if (environment == "local") localBff
   else prodBff
 
 local localAuth = new AuthConfig {
-  schema_version = 3
+  schema_version = 4
   environment = "local"
   target = "auth"
   gcp_project = "llm-wiki-cloud"
@@ -826,11 +831,12 @@ local localAuth = new AuthConfig {
     resource = localBffResourceOrigin
     management_scopes = authManagementScopes
   }
+  portal = new AuthPortalConfig { lwc_bff_origin = localBffResourceOrigin }
   config_secret_resource = ""
 }
 
 local devAuth = new AuthConfig {
-  schema_version = 3
+  schema_version = 4
   environment = "dev"
   target = "auth"
   gcp_project = "llm-wiki-cloud"
@@ -904,11 +910,12 @@ local devAuth = new AuthConfig {
     resource = devBffResourceOrigin
     management_scopes = authManagementScopes
   }
+  portal = new AuthPortalConfig { lwc_bff_origin = devBffResourceOrigin }
   config_secret_resource = "projects/llm-wiki-cloud/secrets/lwc-auth-app-config-dev"
 }
 
 local prodAuth = new AuthConfig {
-  schema_version = 3
+  schema_version = 4
   environment = "prod"
   target = "auth"
   gcp_project = "llm-wiki-cloud"
@@ -980,6 +987,7 @@ local prodAuth = new AuthConfig {
     resource = prodBffResourceOrigin
     management_scopes = authManagementScopes
   }
+  portal = new AuthPortalConfig { lwc_bff_origin = prodBffResourceOrigin }
   config_secret_resource = "projects/llm-wiki-cloud/secrets/lwc-auth-app-config-prod"
 }
 

@@ -84,6 +84,91 @@ func authProjectionForTest(environment string) authSourceProjection {
 	return projection
 }
 
+func authSchema4ProjectionForTest() authSourceProjection {
+	const origin = "https://llm-wiki-bff-dev-580854833715.asia-east1.run.app"
+	projection := authProjectionForTest("dev")
+	projection.SchemaVersion = 4
+	projection.SyncServiceURL = origin
+	projection.OAuthResources[0].URI = origin + "/mcp/projects/{project_id}"
+	projection.ManagementScopes = []config.AuthManagementScope{
+		{ID: "auth:admin", Product: "auth", Resource: origin, GrantMode: "operator-only",
+			Name:        config.AuthLocalizedText{En: "Platform administrator", ZhTW: "平台管理員"},
+			Description: config.AuthLocalizedText{En: "Manage accounts and registered scopes.", ZhTW: "管理帳號與已登錄權限。"}, GrantorScopes: []string{"auth:admin"}},
+		{ID: "lwc:admin", Product: "lwc", Resource: origin, GrantMode: "operator-only",
+			Name:        config.AuthLocalizedText{En: "LWC administrator", ZhTW: "LWC 管理員"},
+			Description: config.AuthLocalizedText{En: "Operate LWC projects.", ZhTW: "管理 LWC 專案。"}, GrantorScopes: []string{"auth:admin"}},
+	}
+	projection.ConsumerVerifiers = []config.AuthConsumerVerifier{{ID: "lwc-bff", Environment: "dev",
+		CallerServiceAccount: "lwc-bff-dev@llm-wiki-cloud.iam.gserviceaccount.com",
+		Audience:             "https://llm-wiki-auth-dev-a5nkmux6pq-de.a.run.app", Resource: origin,
+		AllowedCredentialKinds: []string{"web-access", "cli-access", "mcp-oauth"},
+		AuthorityModes:         []string{"legacy-shadow", "central"}}}
+	projection.ConsumerPublicProjection = &config.AuthConsumerPublicProjection{
+		Issuer: projection.AuthServiceURL, Resource: origin, ManagementScopes: projection.ManagementScopes,
+	}
+	projection.Portal = &config.AuthFilePortal{LWCBFFOrigin: origin}
+	return projection
+}
+
+func TestSchema4AuthSSOTProducerCarriesPortalOriginThroughPrepareAndMaterialize(t *testing.T) {
+	projection := authSchema4ProjectionForTest()
+	for name, portal := range map[string]*config.AuthFilePortal{
+		"missing":           nil,
+		"production on dev":  {LWCBFFOrigin: "https://llm-wiki-bff-580854833715.asia-east1.run.app"},
+		"path suffix":        {LWCBFFOrigin: projection.Portal.LWCBFFOrigin + "/extra"},
+		"empty origin":       {LWCBFFOrigin: ""},
+	} {
+		t.Run("reject portal "+name, func(t *testing.T) {
+			invalid := projection
+			invalid.Portal = portal
+			data, err := json.Marshal(invalid)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := decodeAuthSourceProjection(data, "dev"); err == nil {
+				t.Fatalf("schema-4 Auth SSOT accepted %s portal origin", name)
+			}
+		})
+	}
+	sourceBytes, err := json.Marshal(projection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := decodeAuthSourceProjection(sourceBytes, "dev")
+	if err != nil || decoded.Portal == nil || decoded.Portal.LWCBFFOrigin != projection.Portal.LWCBFFOrigin {
+		t.Fatalf("decoded schema-4 portal=%+v err=%v", decoded.Portal, err)
+	}
+	reader := &fakeAuthReader{}
+	inputs, err := prepareAuthInputs(context.Background(), decoded, strings.Repeat("f", 40), func(context.Context) (secretReader, error) {
+		return reader, nil
+	})
+	if err != nil || inputs.Portal == nil || inputs.Portal.LWCBFFOrigin != projection.Portal.LWCBFFOrigin || inputs.SchemaVersion != 4 {
+		t.Fatalf("prepared schema-4 inputs=%+v err=%v", inputs.Portal, err)
+	}
+	inputBytes, err := json.Marshal(inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decodedInputs, err := config.DecodeAuthInputSnapshot(inputBytes)
+	if err != nil || decodedInputs.Portal == nil || decodedInputs.Portal.LWCBFFOrigin != projection.Portal.LWCBFFOrigin {
+		t.Fatalf("decoded schema-4 input portal=%+v err=%v", decodedInputs.Portal, err)
+	}
+	output := filepath.Join(t.TempDir(), "private", "auth.json")
+	materializer := &fakeAuthReader{data: []byte("SYNTHETIC_AUTH_SECRET_PAYLOAD")}
+	if err := materializeAuthSnapshot(context.Background(), decodedInputs, output, func(context.Context) (secretReader, error) {
+		return materializer, nil
+	}); err != nil {
+		t.Fatalf("materialize schema-4 Auth file: %v", err)
+	}
+	loaded, err := config.LoadAuthFile(output)
+	if err != nil || loaded.ConfigSchemaVersion != 4 || loaded.PortalLWCBFFOrigin != projection.Portal.LWCBFFOrigin {
+		t.Fatalf("materialized Auth config schema=%d portal=%q err=%v", loaded.ConfigSchemaVersion, loaded.PortalLWCBFFOrigin, err)
+	}
+	if len(reader.accesses) != 0 || len(reader.versions) != 2 || len(materializer.accesses) != 2 {
+		t.Fatalf("credential resolution crossed stage boundary: stage1 versions=%v accesses=%v stage2 accesses=%v", reader.versions, reader.accesses, materializer.accesses)
+	}
+}
+
 func TestRealPklAuthPrepareProducesLocalFileAndCloudInputStages(t *testing.T) {
 	realPKL := strings.TrimSpace(os.Getenv("PKL_BIN"))
 	if realPKL == "" {
@@ -134,7 +219,8 @@ func TestRealPklAuthPrepareProducesLocalFileAndCloudInputStages(t *testing.T) {
 	}
 	if localConfig.JWTSecret != strings.Repeat("a", 64) || localConfig.LocalCloudScope != "worktree-0123456789abcdef01234567" ||
 		localConfig.Port != "8080" || localConfig.AuthDemoUserID != "demo-local-test" ||
-		localConfig.AuthDemoUserEmail != "demo-local@example.test" || localConfig.AuthDemoUserRole != "member" {
+		localConfig.AuthDemoUserEmail != "demo-local@example.test" || localConfig.AuthDemoUserRole != "member" ||
+		localConfig.ConfigSchemaVersion != 4 || localConfig.PortalLWCBFFOrigin != "http://localhost:18080" {
 		t.Fatal("local Auth output did not preserve the fixture key, explicit scope, or default PORT")
 	}
 	if localConfig.SyncServiceURL != "http://localhost:18080" {
@@ -176,18 +262,23 @@ func TestRealPklAuthPrepareProducesLocalFileAndCloudInputStages(t *testing.T) {
 			if projection.Environment != environment || projection.Target != "auth" || !projection.Google.Enabled {
 				t.Fatalf("unexpected Pkl Auth projection identity for %s", environment)
 			}
-			wantAudience, wantCaller, wantResourceURI := "", "", ""
+			wantAudience, wantCaller, wantResourceURI, wantPortalOrigin := "", "", "", ""
 			wantEnabled := false
 			if environment == "dev" {
 				wantAudience = "https://llm-wiki-auth-dev-a5nkmux6pq-de.a.run.app"
 				wantCaller = "daily-brief-dev-runtime@daily-brief-service.iam.gserviceaccount.com"
 				wantResourceURI = "https://brief.dev.rayer.idv.tw/mcp"
+				wantPortalOrigin = "https://llm-wiki-bff-dev-580854833715.asia-east1.run.app"
 				wantEnabled = true
 			} else if environment == "prod" {
 				wantAudience = "https://llm-wiki-auth-a5nkmux6pq-de.a.run.app"
 				wantCaller = "daily-brief-runtime@daily-brief-service.iam.gserviceaccount.com"
 				wantResourceURI = "https://brief.rayer.idv.tw/mcp"
+				wantPortalOrigin = "https://llm-wiki-bff-580854833715.asia-east1.run.app"
 				wantEnabled = true
+			}
+			if projection.SchemaVersion != 4 || projection.Portal == nil || projection.Portal.LWCBFFOrigin != wantPortalOrigin {
+				t.Fatalf("canonical %s Auth schema=%d portal=%+v; want schema 4 origin %q", environment, projection.SchemaVersion, projection.Portal, wantPortalOrigin)
 			}
 			wantSelectionClientIDs := []string(nil)
 			if environment == "dev" {
@@ -231,9 +322,10 @@ func TestRealPklAuthPrepareProducesLocalFileAndCloudInputStages(t *testing.T) {
 			if err != nil {
 				t.Fatalf("decode Auth Stage 1 snapshot: %v", err)
 			}
-			if inputs.SourceSHA != strings.Repeat("c", 40) || !strings.HasSuffix(inputs.JWTSecretVersion, "/versions/7") ||
+			if inputs.SourceSHA != strings.Repeat("c", 40) || inputs.SchemaVersion != 4 || inputs.Portal == nil ||
+				inputs.Portal.LWCBFFOrigin != wantPortalOrigin || !strings.HasSuffix(inputs.JWTSecretVersion, "/versions/7") ||
 				!strings.HasSuffix(inputs.Google.ClientSecretVersion, "/versions/1") {
-				t.Fatal("Stage 1 did not pin selected credential versions and source SHA")
+				t.Fatal("Stage 1 did not pin schema-4 portal origin, credential versions, and source SHA")
 			}
 			if len(inputs.OAuthResources) != 2 {
 				t.Fatalf("%s Auth Stage 1 has %d OAuth resources, want 2", environment, len(inputs.OAuthResources))
@@ -258,6 +350,7 @@ func TestRealPklAuthPrepareProducesLocalFileAndCloudInputStages(t *testing.T) {
 				t.Fatalf("load canonical %s runtime config: %v", environment, err)
 			}
 			if canonicalRuntime.AuthEnvironment != environment || canonicalRuntime.ConfigID != inputs.ConfigID ||
+				canonicalRuntime.ConfigSchemaVersion != 4 || canonicalRuntime.PortalLWCBFFOrigin != wantPortalOrigin ||
 				len(canonicalRuntime.AuthOAuthResources) != 2 ||
 				canonicalRuntime.AuthOAuthResources[1].URI != wantResourceURI ||
 				canonicalRuntime.AuthOAuthResources[1].VerifierAudience != wantAudience ||

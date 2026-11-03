@@ -176,18 +176,21 @@ def validate_auth_component_receipt(auth, mode, expected_lwc_sha=None,
                                     expected_auth_source=None):
     auth = _object(auth, "Auth component receipt")
     if mode in ("legacy", "legacy_monorepo"):
-        schema = 2
+        allowed_schemas = (2,)
     elif mode == "independent":
-        schema = 3
+        allowed_schemas = (3, 4)
     else:
         raise ReceiptError(f"unknown receipt mode {mode!r}")
+    receipt_schema = auth.get("schema")
     expected_keys = {
         "schema", "component", "identity", "build_sha", "artifact", "target_config",
         "build", "auth_config_inputs", "auth_materialization_schema",
     }
-    if schema == 3:
+    if receipt_schema in (3, 4):
         expected_keys.add("auth_source")
-    if type(auth.get("schema")) is not int or auth["schema"] != schema or set(auth) != expected_keys:
+    if receipt_schema == 4:
+        expected_keys.add("auth_supported_schema_versions")
+    if type(receipt_schema) is not int or receipt_schema not in allowed_schemas or set(auth) != expected_keys:
         raise ReceiptError("Auth component receipt has an unsupported schema or unknown/missing fields")
     if (auth.get("component") != "auth" or not SHA_RE.fullmatch(str(auth.get("identity", ""))) or
             not COMMIT_RE.fullmatch(str(auth.get("build_sha", ""))) or auth.get("target_config") is not None):
@@ -199,15 +202,34 @@ def validate_auth_component_receipt(auth, mode, expected_lwc_sha=None,
     image = _object(auth.get("artifact"), "Auth artifact").get("image")
     image_hash = image_digest(image)
     inputs = _object(auth.get("auth_config_inputs"), "Auth config input snapshot")
+    input_schema = inputs.get("schema_version")
     if (type(auth.get("auth_materialization_schema")) is not int or
             auth.get("auth_materialization_schema") != 1 or
-            type(inputs.get("schema_version")) is not int or inputs.get("schema_version") not in (1, 2, 3) or
+            type(input_schema) is not int or input_schema not in (1, 2, 3, 4) or
             inputs.get("target") != "auth"):
         raise ReceiptError("Auth materialization schema is missing")
+    supported_schemas = [1, 2, 3]
+    if receipt_schema == 4:
+        supported_schemas = auth.get("auth_supported_schema_versions")
+        if (not isinstance(supported_schemas, list) or
+                any(type(value) is not int for value in supported_schemas) or
+                supported_schemas != [1, 2, 3, 4]):
+            raise ReceiptError("Auth artifact schema support does not match its verified manifest")
+    if input_schema not in supported_schemas:
+        raise ReceiptError("Auth artifact does not support the selected config input schema")
+    if input_schema == 4:
+        portal = inputs.get("portal")
+        projection = inputs.get("consumer_public_projection")
+        origin = portal.get("lwc_bff_origin") if isinstance(portal, dict) else None
+        if (not isinstance(portal, dict) or set(portal) != {"lwc_bff_origin"} or
+                not isinstance(origin, str) or not origin or
+                not isinstance(projection, dict) or origin != inputs.get("sync_service_url") or
+                origin != projection.get("resource")):
+            raise ReceiptError("Auth config input portal origin is invalid")
     if expected_auth_config_inputs is not None and inputs != expected_auth_config_inputs:
         raise ReceiptError("Auth config input snapshot differs from the expected snapshot")
 
-    if schema == 2:
+    if receipt_schema == 2:
         if inputs.get("source_sha") != auth["build_sha"]:
             raise ReceiptError("legacy Auth config inputs do not match the LWC source")
         return image, image_hash, inputs

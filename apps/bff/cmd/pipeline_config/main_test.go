@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -43,6 +44,17 @@ type fakeSecretReader struct {
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
+func newOwnedLoopbackTestServer(t *testing.T, handler http.Handler) *httptest.Server {
+	t.Helper()
+	listener, err := net.Listen("tcp4", "127.0.0.1:18631")
+	if err != nil {
+		t.Fatalf("listen on owned loopback port 18631: %v", err)
+	}
+	server := &httptest.Server{Listener: listener, Config: &http.Server{Handler: handler}}
+	server.Start()
+	return server
+}
+
 func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return f(request)
 }
@@ -71,7 +83,7 @@ func assertGeneratedConfigUsesQualityConsumers(t *testing.T, cfg runtimeconfig.C
 
 	var mu sync.Mutex
 	var observedAuthorization string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newOwnedLoopbackTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		observedAuthorization = r.Header.Get("Authorization")
 		mu.Unlock()
@@ -795,7 +807,7 @@ func TestRealPklDevBFFMaterializeUsesInjectedLoopbackSDKWithoutADC(t *testing.T)
 	accesses := []string{}
 	projectLookups := 0
 	deniedResource := ""
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newOwnedLoopbackTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/v1/") && strings.HasSuffix(r.URL.Path, ":access") {
 			resource := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/"), ":access")
 			mu.Lock()
@@ -1306,7 +1318,7 @@ func TestGoogleSecretManagerSDKAccessPath(t *testing.T) {
 
 func TestGAT4SyntheticAuthDescriptorProducer(t *testing.T) {
 	var requests []string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newOwnedLoopbackTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests = append(requests, r.Method+" "+r.URL.Path)
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {

@@ -28,7 +28,7 @@ def write_auth_input_fixture(directory, environment, source_sha='c' * 40, schema
 def write_auth_input_snapshot_fixture(directory, environment, source_sha='c' * 40, source=None,
                                      schema_version=2):
     """Build payload-free numeric Auth refs for tests without Secret Manager access."""
-    if type(schema_version) is not int or schema_version not in (1, 2):
+    if type(schema_version) is not int or schema_version not in (1, 2, 3, 4):
         raise ValueError('unsupported synthetic Auth input schema')
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
@@ -72,8 +72,14 @@ def write_auth_input_snapshot_fixture(directory, environment, source_sha='c' * 4
         'google': google,
         'config_secret_resource': source['config_secret_resource'],
     }
-    if schema_version == 2:
+    if schema_version >= 2:
         inputs['oauth_resources'] = source['oauth_resources']
+    if schema_version >= 3:
+        inputs['management_scopes'] = source['management_scopes']
+        inputs['consumer_verifiers'] = source['consumer_verifiers']
+        inputs['consumer_public_projection'] = source['consumer_public_projection']
+    if schema_version == 4:
+        inputs['portal'] = source['portal']
     canonical = json.dumps(inputs, ensure_ascii=False, separators=(',', ':')).encode()
     inputs['config_id'] = 'sha256:' + hashlib.sha256(canonical).hexdigest()
     path = directory / 'auth-inputs.json'

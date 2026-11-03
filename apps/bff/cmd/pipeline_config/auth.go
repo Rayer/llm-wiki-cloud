@@ -49,6 +49,7 @@ type authSourceProjection struct {
 	ManagementScopes         []config.AuthManagementScope         `json:"management_scopes"`
 	ConsumerVerifiers        []config.AuthConsumerVerifier        `json:"consumer_verifiers"`
 	ConsumerPublicProjection *config.AuthConsumerPublicProjection `json:"consumer_public_projection"`
+	Portal                   *config.AuthFilePortal               `json:"portal,omitempty"`
 	ConfigSecretResource     string                               `json:"config_secret_resource"`
 }
 
@@ -179,6 +180,8 @@ func decodeAuthSourceProjection(data []byte, environment string) (authSourceProj
 	}
 	if version == 3 {
 		required = append(required, "management_scopes", "consumer_verifiers", "consumer_public_projection")
+	} else if version == 4 {
+		required = append(required, "management_scopes", "consumer_verifiers", "consumer_public_projection", "portal")
 	}
 	if len(fields) != len(required) {
 		return authSourceProjection{}, errors.New("selected Auth SSOT has an invalid shape")
@@ -207,6 +210,16 @@ func decodeAuthSourceProjection(data []byte, environment string) (authSourceProj
 			return authSourceProjection{}, errors.New("selected Auth SSOT Google object is incomplete")
 		}
 	}
+	if version == 4 {
+		var portal map[string]json.RawMessage
+		if json.Unmarshal(fields["portal"], &portal) != nil || portal == nil || len(portal) != 1 {
+			return authSourceProjection{}, errors.New("selected Auth SSOT portal object has an invalid shape")
+		}
+		var origin string
+		if raw, ok := portal["lwc_bff_origin"]; !ok || json.Unmarshal(raw, &origin) != nil {
+			return authSourceProjection{}, errors.New("selected Auth SSOT portal object has an invalid shape")
+		}
+	}
 	if err := validateAuthSourceProjection(projection, environment); err != nil {
 		return authSourceProjection{}, err
 	}
@@ -214,7 +227,7 @@ func decodeAuthSourceProjection(data []byte, environment string) (authSourceProj
 }
 
 func validateAuthSourceProjection(p authSourceProjection, environment string) error {
-	if (p.SchemaVersion != 1 && p.SchemaVersion != 2 && p.SchemaVersion != 3) || p.Target != "auth" || p.Environment != environment ||
+	if (p.SchemaVersion != 1 && p.SchemaVersion != 2 && p.SchemaVersion != 3 && p.SchemaVersion != 4) || p.Target != "auth" || p.Environment != environment ||
 		(p.Environment != "local" && p.Environment != "dev" && p.Environment != "prod") ||
 		strings.TrimSpace(p.GCPProject) == "" || p.AllowedHosts == nil || p.AllowedOrigins == nil {
 		return errors.New("selected Auth SSOT identity or required value is invalid")
@@ -227,9 +240,9 @@ func validateAuthSourceProjection(p authSourceProjection, environment string) er
 		AuthSessionEnvironment: p.AuthSessionEnvironment, AuthSessionMigration: p.AuthSessionMigration,
 		RegistrationEnabled: p.RegistrationEnabled, AuthDemoUserID: p.AuthDemoUserID,
 		AuthDemoUserEmail: p.AuthDemoUserEmail, AuthDemoUserRole: p.AuthDemoUserRole,
-		JWTSecret: "synthetic-validation-value", OAuthResources: p.OAuthResources,
+		JWTSecret: "synthetic-validation-value", OAuthResources: p.OAuthResources, Portal: p.Portal,
 	}
-	if p.SchemaVersion == 3 {
+	if p.SchemaVersion >= 3 {
 		if p.ConsumerPublicProjection == nil {
 			return errors.New("selected Auth consumer policy is invalid")
 		}
@@ -332,10 +345,13 @@ func prepareAuthInputs(ctx context.Context, projection authSourceProjection, sou
 		JWTSecretVersion: jwtVersion, Google: google, ConfigSecretResource: projection.ConfigSecretResource,
 		OAuthResources: projection.OAuthResources,
 	}
-	if projection.SchemaVersion == 3 {
+	if projection.SchemaVersion >= 3 {
 		inputs.ManagementScopes = projection.ManagementScopes
 		inputs.ConsumerVerifiers = &projection.ConsumerVerifiers
 		inputs.ConsumerPublicProjection = projection.ConsumerPublicProjection
+	}
+	if projection.SchemaVersion == 4 {
+		inputs.Portal = &config.AuthInputPortal{LWCBFFOrigin: projection.Portal.LWCBFFOrigin}
 	}
 	inputs.ConfigID, err = config.AuthInputConfigID(inputs)
 	if err != nil {
@@ -461,9 +477,9 @@ func authFileFromSource(p authSourceProjection, jwt string) config.AuthFile {
 		AuthSessionEnvironment: p.AuthSessionEnvironment, AuthSessionMigration: p.AuthSessionMigration,
 		RegistrationEnabled: p.RegistrationEnabled, AuthDemoUserID: p.AuthDemoUserID,
 		AuthDemoUserEmail: p.AuthDemoUserEmail, AuthDemoUserRole: p.AuthDemoUserRole, JWTSecret: jwt,
-		OAuthResources: p.OAuthResources,
+		OAuthResources: p.OAuthResources, Portal: p.Portal,
 	}
-	if p.SchemaVersion == 3 {
+	if p.SchemaVersion >= 3 {
 		file.ManagementScopes = p.ManagementScopes
 		file.ConsumerVerifiers = &p.ConsumerVerifiers
 		file.ConsumerPublicProjection = p.ConsumerPublicProjection
@@ -491,6 +507,10 @@ func materializeAuthSnapshot(ctx context.Context, inputs config.AuthInputSnapsho
 		return fmt.Errorf("materialize Auth JWT credential failed: %s", err)
 	}
 	defer clear(jwt)
+	var portal *config.AuthFilePortal
+	if inputs.Portal != nil {
+		portal = &config.AuthFilePortal{LWCBFFOrigin: inputs.Portal.LWCBFFOrigin}
+	}
 	file := config.AuthFile{
 		SchemaVersion: inputs.SchemaVersion, Target: "auth", Environment: inputs.Environment, ConfigID: inputs.ConfigID,
 		GCPProject: inputs.GCPProject, FirestoreDatabaseID: inputs.FirestoreDatabaseID,
@@ -503,6 +523,7 @@ func materializeAuthSnapshot(ctx context.Context, inputs config.AuthInputSnapsho
 		JWTSecret: string(jwt), OAuthResources: inputs.OAuthResources,
 		ManagementScopes: inputs.ManagementScopes, ConsumerVerifiers: inputs.ConsumerVerifiers,
 		ConsumerPublicProjection: inputs.ConsumerPublicProjection,
+		Portal:                   portal,
 		Google: config.AuthFileGoogle{
 			Enabled: inputs.Google.Enabled, ClientID: inputs.Google.ClientID, Issuer: inputs.Google.Issuer,
 			JWKSURL: inputs.Google.JWKSURL, TokenURL: inputs.Google.TokenURL,
