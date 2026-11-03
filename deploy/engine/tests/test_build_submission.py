@@ -149,6 +149,9 @@ class AsyncBuildSubmission(unittest.TestCase):
                 source_sha=source_args[source_index+1]
                 del source_args[source_index:source_index+2]
                 schema_index=source_args.index('--auth-schema-version')
+                fixture_schema=2
+                if os.environ.get('LWC_TEST_AUTH_SCHEMA_FROM_ARG') == '1':
+                    fixture_schema=int(source_args[schema_index+1])
                 del source_args[schema_index:schema_index+2]
                 output=source_args[source_args.index('--output')+1]
                 target=source_args[source_args.index('--environment')+1]
@@ -157,7 +160,6 @@ class AsyncBuildSubmission(unittest.TestCase):
                 if result.returncode: raise SystemExit(result.returncode)
                 sys.path.insert(0,str(Path(os.environ['LWC_REPOSITORY_ROOT'])/'scripts'))
                 from lwc_auth_test_fixture import write_auth_input_snapshot_fixture
-                fixture_schema=int(os.environ.get('INPUT_AUTH-SCHEMA-VERSION') or '2')
                 write_auth_input_snapshot_fixture(output,{{'dev':'development','prod':'production'}}[target],source_sha,
                                                   schema_version=fixture_schema)
                 raise SystemExit(0)
@@ -169,7 +171,9 @@ class AsyncBuildSubmission(unittest.TestCase):
             if [ -n "${LWC_TEST_PYTHON_ARGS_LOG:-}" ]; then
               "$LWC_TEST_REAL_PYTHON" -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "$@" >> "$LWC_TEST_PYTHON_ARGS_LOG"
             fi
-            exec "$LWC_TEST_REAL_PYTHON" "$@"
+            # Model shells that drop the hyphenated Actions input key; the
+            # Node Action must carry this selection to the engine as argv.
+            exec env -u INPUT_AUTH-SCHEMA-VERSION "$LWC_TEST_REAL_PYTHON" "$@"
         '''))
         (self.bin / 'python3').chmod(0o755)
         (self.bin / 'timeout').write_text(textwrap.dedent('''\
@@ -487,6 +491,7 @@ class AsyncBuildSubmission(unittest.TestCase):
                     operation=operation,
                     extra={
                         'INPUT_AUTH-SCHEMA-VERSION':'3',
+                        'LWC_TEST_AUTH_SCHEMA_FROM_ARG':'1',
                         'GAT4_RELEASE_SOURCE_MODE':'independent',
                         'GAT4_DEV_RECEIPT_MODE':'independent',
                         'GITHUB_REPOSITORY_ID':'101',
@@ -523,7 +528,8 @@ class AsyncBuildSubmission(unittest.TestCase):
             artifact_source=self.root/'unused-artifact',
             operation='auth-preflight',
             reuse_id='0',
-            extra={'INPUT_AUTH-SCHEMA-VERSION':'4'})
+            extra={'INPUT_AUTH-SCHEMA-VERSION':'4',
+                   'LWC_TEST_AUTH_SCHEMA_FROM_ARG':'1'})
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)
         runner=self.root/f'runner-temp-{self.action_runs}'
         action_calls=[json.loads(line) for line in (runner/'python-argv.jsonl').read_text().splitlines()]
