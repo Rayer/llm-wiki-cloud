@@ -136,6 +136,50 @@ class Acceptance(unittest.TestCase):
             with self.assertRaisesRegex(Breakpoint, 'auth-schema3-staging-requires-v3-receipt'):
                 engine.admit(SimpleNamespace(**base))
 
+    def test_prepare_cli_uses_persisted_auth_schema_when_flag_is_omitted(self):
+        class ExistingSchemaThreePlan:
+            def __init__(self):
+                self.plan = {'selected': ['bff'], 'source': 'a' * 40, 'tag': 'schema-three-cli',
+                             'normalized': {'environment': 'development'}}
+                self.prepare_calls = 0
+                self.result_calls = []
+
+            def auth_input_snapshot(self):
+                return {'schema_version': 3}
+
+            def prepare(self, reuse=None, dev=None):
+                self.prepare_calls += 1
+                self.asserted_reuse = reuse
+                self.asserted_dev = dev
+
+            def result(self, exc=None):
+                self.result_calls.append(exc)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            (directory / 'plan.json').write_text('{}', encoding='utf-8')
+            existing = ExistingSchemaThreePlan()
+            stdout = io.StringIO()
+            with patch.object(engine, 'Engine', return_value=existing), \
+                 patch('sys.argv', ['engine.py', 'prepare', '--directory', str(directory)]), \
+                 patch('sys.stdout', stdout):
+                exit_code = engine.main()
+            self.assertEqual(exit_code, 0, stdout.getvalue())
+            self.assertEqual(existing.prepare_calls, 1)
+            self.assertEqual(existing.result_calls, [None])
+
+            stdout = io.StringIO()
+            with patch.object(engine, 'Engine', return_value=existing), \
+                 patch('sys.argv', ['engine.py', 'prepare', '--directory', str(directory),
+                                    '--auth-schema-version', '4']), \
+                 patch('sys.stdout', stdout):
+                exit_code = engine.main()
+            self.assertEqual(exit_code, 1)
+            self.assertEqual(existing.prepare_calls, 1,
+                             'an explicit schema change must fail before prepare can mutate the release')
+            self.assertEqual(existing.result_calls[-1].reason,
+                             'auth-schema-version-change-requires-new-plan')
+
     def setUp(self):
         self.real_node = shutil.which('node')
         self.vercel_chunk = os.environ.get('LWC_TEST_VERCEL_CHUNK')

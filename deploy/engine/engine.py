@@ -143,7 +143,8 @@ def auth_source_from_receipt(path):
 def admit(args):
     selected = selection(args.components)
     release_source_mode = getattr(args, 'release_source_mode', None)
-    auth_schema_version = getattr(args, 'auth_schema_version', 4)
+    requested_auth_schema_version = getattr(args, 'auth_schema_version', None)
+    auth_schema_version = 4 if requested_auth_schema_version is None else requested_auth_schema_version
     require(release_source_mode in ('independent', 'legacy_monorepo'),
             'release-source-mode-required')
     require(type(auth_schema_version) is int and auth_schema_version in (3, 4),
@@ -1374,7 +1375,7 @@ def main():
     parser.add_argument('--dev-reference')
     parser.add_argument('--executor-sha')
     parser.add_argument('--release-source-mode', choices=('independent', 'legacy_monorepo'))
-    parser.add_argument('--auth-schema-version', type=int, choices=(3, 4), default=4)
+    parser.add_argument('--auth-schema-version', type=int, choices=(3, 4))
     parser.add_argument('--auth-repository-id')
     parser.add_argument('--auth-revision')
     parser.add_argument('--auth-tree-sha256')
@@ -1410,7 +1411,8 @@ def main():
                 engine.quota_rejection_artifact_id = args.rejection_artifact_id
             if args.operation in ('prepare', 'auth-preflight'):
                 pinned_auth = engine.auth_input_snapshot()
-                require(pinned_auth is None or pinned_auth['schema_version'] == args.auth_schema_version,
+                require(args.auth_schema_version is None or pinned_auth is None or
+                        pinned_auth['schema_version'] == args.auth_schema_version,
                         'auth-schema-version-change-requires-new-plan')
                 require(not args.components or selection(args.components) == engine.plan['selected'], 'selection-change-requires-new-plan')
                 require(not args.source or args.source == engine.plan['source'], 'source-change-requires-new-plan')
