@@ -180,10 +180,14 @@ func decodeAuthSourceProjection(data []byte, environment string) (authSourceProj
 	}
 	if version == 3 {
 		required = append(required, "management_scopes", "consumer_verifiers", "consumer_public_projection")
+		if raw, ok := fields["portal"]; ok && !bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			return authSourceProjection{}, errors.New("schema-3 Auth SSOT portal must be null")
+		}
 	} else if version == 4 {
 		required = append(required, "management_scopes", "consumer_verifiers", "consumer_public_projection", "portal")
 	}
-	if len(fields) != len(required) {
+	if len(fields) != len(required) && !(version == 3 && len(fields) == len(required)+1 &&
+		bytes.Equal(bytes.TrimSpace(fields["portal"]), []byte("null"))) {
 		return authSourceProjection{}, errors.New("selected Auth SSOT has an invalid shape")
 	}
 	for _, key := range required {

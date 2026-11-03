@@ -12,6 +12,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 HERE = Path(__file__).resolve().parents[1]
@@ -118,6 +119,22 @@ class Acceptance(unittest.TestCase):
                 self.assertEqual(providers.release_source_mode(restored.plan), 'legacy_monorepo')
                 self.assertEqual(restored.provider._build_source_environment('auth')[:2],
                                  (restored.plan['source'], restored.plan['branch']))
+
+    def test_schema_three_staging_pin_requires_dev_bff_only_and_v3_reuse_receipt(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            reuse = Path(temporary)
+            base = dict(environment='development', source='a' * 40, components='auth',
+                        tag='schema-three-staging', release_source_mode='independent',
+                        auth_schema_version=3, reuse=str(reuse))
+            with self.assertRaisesRegex(Breakpoint, 'auth-schema3-staging-requires-independent-bff-reuse'):
+                engine.admit(SimpleNamespace(**base))
+            base['components'] = 'bff'
+            with self.assertRaisesRegex(Breakpoint, 'auth-schema3-staging-requires-v3-receipt'):
+                engine.admit(SimpleNamespace(**base))
+            (reuse / 'receipts').mkdir()
+            write(reuse / 'receipts/auth.json', {'component': 'auth', 'schema': 4, 'auth_source': {}})
+            with self.assertRaisesRegex(Breakpoint, 'auth-schema3-staging-requires-v3-receipt'):
+                engine.admit(SimpleNamespace(**base))
 
     def setUp(self):
         self.real_node = shutil.which('node')

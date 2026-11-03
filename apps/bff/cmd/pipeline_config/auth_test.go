@@ -114,9 +114,9 @@ func TestSchema4AuthSSOTProducerCarriesPortalOriginThroughPrepareAndMaterialize(
 	projection := authSchema4ProjectionForTest()
 	for name, portal := range map[string]*config.AuthFilePortal{
 		"missing":           nil,
-		"production on dev":  {LWCBFFOrigin: "https://llm-wiki-bff-580854833715.asia-east1.run.app"},
-		"path suffix":        {LWCBFFOrigin: projection.Portal.LWCBFFOrigin + "/extra"},
-		"empty origin":       {LWCBFFOrigin: ""},
+		"production on dev": {LWCBFFOrigin: "https://llm-wiki-bff-580854833715.asia-east1.run.app"},
+		"path suffix":       {LWCBFFOrigin: projection.Portal.LWCBFFOrigin + "/extra"},
+		"empty origin":      {LWCBFFOrigin: ""},
 	} {
 		t.Run("reject portal "+name, func(t *testing.T) {
 			invalid := projection
@@ -166,6 +166,62 @@ func TestSchema4AuthSSOTProducerCarriesPortalOriginThroughPrepareAndMaterialize(
 	}
 	if len(reader.accesses) != 0 || len(reader.versions) != 2 || len(materializer.accesses) != 2 {
 		t.Fatalf("credential resolution crossed stage boundary: stage1 versions=%v accesses=%v stage2 accesses=%v", reader.versions, reader.accesses, materializer.accesses)
+	}
+}
+
+func TestRealPklAuthDescriptorPinsSchemaThreeForBFFStaging(t *testing.T) {
+	realPKL := strings.TrimSpace(os.Getenv("PKL_BIN"))
+	if realPKL == "" {
+		var err error
+		realPKL, err = exec.LookPath("pkl")
+		if err != nil {
+			t.Fatalf("Pkl is required for schema-3 staging: %v", err)
+		}
+	}
+	if _, err := os.Stat(realPKL); err != nil {
+		t.Fatalf("configured Pkl binary is unavailable: %v", err)
+	}
+	repoRoot, err := filepath.Abs(filepath.Join("..", "..", "..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LWC_REPOSITORY_ROOT", repoRoot)
+	t.Setenv("PKL_BIN", realPKL)
+	t.Setenv("PKL_CACHE_DIR", "")
+	reader := &fakeAuthReader{}
+	output := t.TempDir()
+	err = runPrepareTargetModeAtSourceWithAuthSchema(context.Background(), "auth", "dev", output, true,
+		strings.Repeat("c", 40), 3, func(context.Context) (secretReader, error) { return reader, nil })
+	if err != nil {
+		t.Fatalf("prepare pinned schema-3 Auth descriptor: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(output, "auth-inputs.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputs, err := config.DecodeAuthInputSnapshot(data)
+	if err != nil {
+		t.Fatalf("decode pinned schema-3 Auth snapshot: %v", err)
+	}
+	if inputs.SchemaVersion != 3 || inputs.Portal != nil || inputs.ConsumerPublicProjection == nil ||
+		len(inputs.ManagementScopes) == 0 || inputs.ConsumerVerifiers == nil || len(*inputs.ConsumerVerifiers) == 0 ||
+		inputs.SourceSHA != strings.Repeat("c", 40) {
+		t.Fatalf("pinned Auth snapshot lost schema-3 identity or consumer policy: %+v", inputs)
+	}
+	for _, invalid := range []struct {
+		target, environment string
+		descriptor          bool
+		schemaVersion       int
+	}{
+		{target: "bff", environment: "dev", descriptor: true, schemaVersion: 3},
+		{target: "auth", environment: "prod", descriptor: true, schemaVersion: 3},
+		{target: "auth", environment: "dev", descriptor: false, schemaVersion: 3},
+		{target: "auth", environment: "dev", descriptor: true, schemaVersion: 5},
+	} {
+		if err := runPrepareTargetModeAtSourceWithAuthSchema(context.Background(), invalid.target, invalid.environment,
+			t.TempDir(), invalid.descriptor, strings.Repeat("c", 40), invalid.schemaVersion, nil); err == nil {
+			t.Fatalf("accepted schema-3 pin outside dev Auth descriptor: %+v", invalid)
+		}
 	}
 }
 

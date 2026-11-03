@@ -148,6 +148,8 @@ class AsyncBuildSubmission(unittest.TestCase):
                 source_index=source_args.index('--source-sha')
                 source_sha=source_args[source_index+1]
                 del source_args[source_index:source_index+2]
+                schema_index=source_args.index('--auth-schema-version')
+                del source_args[schema_index:schema_index+2]
                 output=source_args[source_args.index('--output')+1]
                 target=source_args[source_args.index('--environment')+1]
                 result=subprocess.run([{real_go!r},*source_args],text=True,capture_output=True)
@@ -266,6 +268,8 @@ class AsyncBuildSubmission(unittest.TestCase):
                 source_index = source_args.index('--source-sha')
                 source_sha = str(source_args[source_index + 1])
                 del source_args[source_index:source_index + 2]
+                schema_index = source_args.index('--auth-schema-version')
+                del source_args[schema_index:schema_index + 2]
                 output = Path(str(source_args[source_args.index('--output') + 1]))
                 target = str(source_args[source_args.index('--environment') + 1])
                 support.run(source_args, **kwargs)

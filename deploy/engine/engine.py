@@ -143,8 +143,22 @@ def auth_source_from_receipt(path):
 def admit(args):
     selected = selection(args.components)
     release_source_mode = getattr(args, 'release_source_mode', None)
+    auth_schema_version = getattr(args, 'auth_schema_version', 4)
     require(release_source_mode in ('independent', 'legacy_monorepo'),
             'release-source-mode-required')
+    require(type(auth_schema_version) is int and auth_schema_version in (3, 4),
+            'invalid-auth-schema-version')
+    if auth_schema_version == 3:
+        require(release_source_mode == 'independent' and selected == ['bff'] and
+                args.environment == 'development' and args.reuse,
+                'auth-schema3-staging-requires-independent-bff-reuse')
+        try:
+            retained_auth = read(Path(args.reuse) / 'receipts/auth.json')
+        except (OSError, Breakpoint, ValueError, TypeError):
+            retained_auth = None
+        require(isinstance(retained_auth, dict) and retained_auth.get('component') == 'auth' and
+                retained_auth.get('schema') == 3 and isinstance(retained_auth.get('auth_source'), dict),
+                'auth-schema3-staging-requires-v3-receipt')
     require(re.fullmatch(r'[0-9a-f]{40}', args.source), 'invalid-source')
     executor_sha = getattr(args, 'executor_sha', None) or run(['git', 'rev-parse', 'HEAD'])
     require(re.fullmatch(r'[0-9a-f]{40}', executor_sha), 'invalid-executor-sha')
@@ -172,7 +186,8 @@ def admit(args):
                 auth_dir = projection_root / 'auth'
                 auth_dir.mkdir()
                 run(['go', 'run', './cmd/pipeline_config', 'prepare', '--target', 'auth', '--descriptor',
-                     '--environment', target, '--source-sha', args.source, '--output', str(auth_dir)],
+                     '--environment', target, '--source-sha', args.source, '--auth-schema-version',
+                     str(auth_schema_version), '--output', str(auth_dir)],
                     cwd=ROOT / 'apps/bff', env=normalize_env, timeout=180)
                 if 'auth' in selected:
                     normalize_args.extend(['--auth-inputs', str(auth_dir / 'auth-inputs.json')])
@@ -1359,6 +1374,7 @@ def main():
     parser.add_argument('--dev-reference')
     parser.add_argument('--executor-sha')
     parser.add_argument('--release-source-mode', choices=('independent', 'legacy_monorepo'))
+    parser.add_argument('--auth-schema-version', type=int, choices=(3, 4), default=4)
     parser.add_argument('--auth-repository-id')
     parser.add_argument('--auth-revision')
     parser.add_argument('--auth-tree-sha256')
@@ -1393,6 +1409,9 @@ def main():
                 engine.quota_rejection_evidence_dir = Path(args.rejection_evidence).resolve()
                 engine.quota_rejection_artifact_id = args.rejection_artifact_id
             if args.operation in ('prepare', 'auth-preflight'):
+                pinned_auth = engine.auth_input_snapshot()
+                require(pinned_auth is None or pinned_auth['schema_version'] == args.auth_schema_version,
+                        'auth-schema-version-change-requires-new-plan')
                 require(not args.components or selection(args.components) == engine.plan['selected'], 'selection-change-requires-new-plan')
                 require(not args.source or args.source == engine.plan['source'], 'source-change-requires-new-plan')
                 require(not args.tag or args.tag == engine.plan['tag'], 'tag-change-requires-new-plan')
