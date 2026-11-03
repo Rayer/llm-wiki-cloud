@@ -240,6 +240,62 @@ export type AdminProject = {
   sourceCount: number;
 };
 
+export type AdminSyncBinding = {
+  binding_id: string;
+  host: string;
+  wiki_id: string;
+  project_id: string;
+  environment: string;
+  authorized_by: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+  revoked_at: string | null;
+  revoked_by: string | null;
+  revocation_reason: string | null;
+  revision: string;
+};
+
+export type AdminSyncBindingDetails = {
+  schema_version: 1;
+  environment: string;
+  wire_environment: string;
+  owner_id: string;
+  project_id: string;
+  project_record_id: string;
+  binding: AdminSyncBinding | null;
+};
+
+export type AdminSyncBindingRevocation = {
+  schema_version: 1;
+  operation_id: string;
+  authority: 'lwc';
+  environment: string;
+  actor_id: string;
+  subject: string;
+  target_kind: 'sync_binding';
+  target_id: string;
+  client_id: null;
+  project_id: string;
+  reason: string;
+  result: 'revoked' | 'already_revoked';
+  committed_at: string;
+  management_authorized_at: string;
+  previous_cli_epoch: null;
+  current_cli_epoch: null;
+  affected_count: number;
+  count_complete: true;
+};
+
+export type AdminSyncBindingRevocationBody = {
+  schema_version: 1;
+  operation_id: string;
+  environment: string;
+  subject: string;
+  reason: string;
+  expected_revision: string;
+};
+
 export type AdminUser = {
   status: string;
   id: string;
@@ -2121,6 +2177,53 @@ export async function getAdminProjects(): Promise<AdminProject[]> {
   return extractNamedArray(payload, ['projects', 'items', 'results', 'data'])
     .map(normalizeAdminProject)
     .filter((project): project is AdminProject => project !== null);
+}
+
+export async function getAdminProjectSyncBinding(projectRecordId: string): Promise<AdminSyncBindingDetails> {
+  return adminJson(`/api/v1/admin/projects/${encodeURIComponent(projectRecordId)}/sync-binding`, { cache: 'no-store' }) as Promise<AdminSyncBindingDetails>;
+}
+
+function decodeAdminSyncBindingRevocation(payload: unknown): AdminSyncBindingRevocation {
+  const invalid = () => new ApiError('Invalid admin revocation receipt', 503);
+  if (!isRecord(payload)) throw invalid();
+  const validTime = (value: unknown) => typeof value === 'string' &&
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/.test(value) && Number.isFinite(Date.parse(value));
+  if (payload.schema_version !== 1 || typeof payload.operation_id !== 'string' ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(payload.operation_id) ||
+      payload.authority !== 'lwc' || typeof payload.environment !== 'string' || !payload.environment ||
+      typeof payload.actor_id !== 'string' || !payload.actor_id || typeof payload.subject !== 'string' || !payload.subject ||
+      payload.target_kind !== 'sync_binding' || typeof payload.target_id !== 'string' || !payload.target_id ||
+      payload.client_id !== null || typeof payload.project_id !== 'string' || !payload.project_id ||
+      typeof payload.reason !== 'string' || !payload.reason.trim() || Array.from(payload.reason).length > 256 ||
+      /[\u0000-\u001f\u007f-\u009f]/u.test(payload.reason) ||
+      (payload.result !== 'revoked' && payload.result !== 'already_revoked') ||
+      !validTime(payload.committed_at) || !validTime(payload.management_authorized_at) ||
+      payload.previous_cli_epoch !== null || payload.current_cli_epoch !== null ||
+      typeof payload.affected_count !== 'number' || !Number.isInteger(payload.affected_count) ||
+      payload.affected_count !== (payload.result === 'revoked' ? 1 : 0) || payload.count_complete !== true) {
+    throw invalid();
+  }
+  return payload as unknown as AdminSyncBindingRevocation;
+}
+
+export async function revokeAdminProjectSyncBinding(
+  projectRecordId: string,
+  bindingId: string,
+  body: AdminSyncBindingRevocationBody,
+): Promise<AdminSyncBindingRevocation> {
+  const payload = await adminJson(`/api/v1/admin/projects/${encodeURIComponent(projectRecordId)}/sync-binding/${encodeURIComponent(bindingId)}/revoke`, {
+    method: 'POST',
+    json: true,
+    cache: 'no-store',
+    headers: { 'X-GateAuth-Admin-Browser': '1' },
+    body: JSON.stringify(body),
+  });
+  return decodeAdminSyncBindingRevocation(payload);
+}
+
+export async function getAdminSyncBindingRevocation(operationId: string): Promise<AdminSyncBindingRevocation> {
+  const payload = await adminJson(`/api/v1/admin/sync-binding-revocations/${encodeURIComponent(operationId)}`, { cache: 'no-store' });
+  return decodeAdminSyncBindingRevocation(payload);
 }
 
 export async function renameAdminProject(id: string, name: string): Promise<void> {

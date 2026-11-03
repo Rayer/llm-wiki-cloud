@@ -516,13 +516,16 @@ func newProductionRouter(
 
 	// CORS — must be BEFORE routes
 	allowOrigins := cfg.AllowedOriginsFor(localMode)
-	if hV1 != nil && len(allowOrigins) > 0 {
-		hV1.SetMCPFrontendOrigin(allowOrigins[0])
+	if hV1 != nil {
+		hV1.SetAdminMutationOrigins(allowOrigins)
+		if len(allowOrigins) > 0 {
+			hV1.SetMCPFrontendOrigin(allowOrigins[0])
+		}
 	}
 	r.Use(observability.AuthCORSObserver(cors.New(cors.Config{
 		AllowOrigins:     allowOrigins,
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowHeaders:     []string{"Content-Type", "Authorization", "X-Project-ID", "X-Wiki-ID", "X-Sync-Binding-ID", "X-Content-SHA256", "X-Expected-Generation", "Idempotency-Key", "If-Match"},
+		AllowHeaders:     []string{"Content-Type", "Authorization", "X-Project-ID", "X-Wiki-ID", "X-Sync-Binding-ID", "X-GateAuth-Admin-Browser", "X-Content-SHA256", "X-Expected-Generation", "Idempotency-Key", "If-Match"},
 		ExposeHeaders:    []string{"X-Request-ID"},
 		AllowCredentials: true,
 	})))
@@ -549,6 +552,7 @@ func newProductionRouter(
 	if rawFirestore != nil {
 		hV1.SetCLIProjectAuthorizer(auth.FirestoreProjectOwnerAuthorizer(rawFirestore))
 		hV1.SetSyncBindingAuthority(auth.NewSyncBindingAuthority(rawFirestore, authSessionEnvironment(cfg), cfg.AuthServiceURL))
+		hV1.SetSyncBindingWireEnvironment(cfg.AuthEnvironment)
 		hV1.SetSyncBindingHost(cfg.AuthServiceURL)
 		registerCLIProductRoutes(r, cfg, hV1, rawFirestore)
 	}
@@ -780,6 +784,13 @@ func registerAdminRoutes(r *gin.Engine, cfg config.Config, hV1 *handlerv1.Handle
 	productAdmin.GET("/settings/auto-pipeline", hV1.AdminGetPipelineAutomation)
 	productAdmin.PUT("/settings/auto-pipeline", hV1.AdminPutPipelineAutomation)
 	productAdmin.GET("/projects", hV1.AdminProjects)
+	bindingAdmin := productAdmin.Group("")
+	bindingAdmin.Use(hV1.AdminWebAccessOnly(), hV1.FreshLWCAdminScope())
+	bindingAdmin.GET("/projects/:id/sync-binding", hV1.AdminSyncBinding)
+	bindingAdmin.GET("/sync-binding-revocations/:operationID", hV1.AdminReadSyncBindingRevocation)
+	bindingMutation := productAdmin.Group("")
+	bindingMutation.Use(hV1.AdminWebAccessOnly(), hV1.AdminBindingMutationGuard())
+	bindingMutation.POST("/projects/:id/sync-binding/:bindingID/revoke", hV1.AdminRevokeSyncBinding)
 	productAdmin.PATCH("/projects/:id", hV1.AdminRenameProject)
 	productAdmin.DELETE("/projects/:id", hV1.AdminDeleteProject)
 	productAdmin.POST("/projects/:id/pipeline", hV1.AdminPipelineTrigger)
