@@ -26,10 +26,10 @@ test('home entry and result cards preserve type distinctions without stagger del
     'utf8',
   );
 
-  assert.match(homeClient, /latestConcepts\.map\(\(concept, index\) =>/);
+  assert.match(homeClient, /recentConcepts\.entries\.map\(\(concept\) =>/);
   assert.match(homeClient, /results\.map\(\(result, index\) =>/);
   assert.doesNotMatch(homeClient, /animationDelay/);
-  const latestEntries = homeClient.slice(homeClient.indexOf('latestConcepts.map'), homeClient.indexOf('{results.map'));
+  const latestEntries = homeClient.slice(homeClient.indexOf('recentConcepts.entries.map'), homeClient.indexOf('{results.map'));
   assert.doesNotMatch(latestEntries, /animate-fade-in/);
   assert.match(homeClient, /<Badge variant="concept">\{t\('Entry\.singular'\)\}/);
   assert.match(homeClient, /border-l-\[3px\]/);

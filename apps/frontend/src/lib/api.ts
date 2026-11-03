@@ -1442,8 +1442,8 @@ export async function updateSourceAnnotation(
   return normalizeAnnotation(await response.json());
 }
 
-export async function getConcepts() {
-  return extractArray(await requestJson<unknown>('/api/v1/concepts')).map(normalizeEntry);
+export async function getConcepts(projectId?: string) {
+  return extractArray(await requestJson<unknown>('/api/v1/concepts', projectId ? { projectId } : {})).map(normalizeEntry);
 }
 
 export async function getConcept(slug: string) {

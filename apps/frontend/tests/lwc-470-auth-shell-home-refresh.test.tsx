@@ -157,6 +157,10 @@ function pipelineIntent(id: string, executionId: string, status = 'preparing') {
   return { id, execution_id: executionId, status, compile_mode: 'incremental' };
 }
 
+function conceptEntry(title: string, slug: string) {
+  return { id: `${slug}-id`, title, slug, description: `${title} description`, objectUpdatedAt: '2026-11-02T12:00:00Z' };
+}
+
 const urlPreview = {
   status: 'preview', message: 'Review the rendered candidate before saving.',
   candidate_id: 'candidate-a', candidate_revision: 'candidate-revision-a', expires_at: '2026-11-03T12:00:00Z',
@@ -797,8 +801,12 @@ it('clears Home state when a refresh changes the authenticated account', async (
     projectReads += 1;
     return [projectReads < 3 ? projectA : projectB];
   });
+  mocks.getConcepts.mockImplementation(async () => mocks.auth?.user?.id === userB.id
+    ? []
+    : [conceptEntry('Private user A concept', 'private-user-a')]);
   renderPage();
   await waitFor(() => expect(mocks.getProjects).toHaveBeenCalledTimes(2));
+  expect(await screen.findByText('Private user A concept')).toBeTruthy();
   fireEvent.change(screen.getByRole('textbox', { name: translate('en', 'Demo.search') }), { target: { value: 'account A private draft' } });
   fireEvent.click(screen.getByRole('button', { name: translate('en', 'AddMaterial.open') }));
   fireEvent.change(screen.getByLabelText(translate('en', 'AddMaterial.textTitle')), { target: { value: 'Private A title' } });
@@ -809,13 +817,16 @@ it('clears Home state when a refresh changes the authenticated account', async (
   await waitFor(() => expect(mocks.homeMounts).toBe(2));
   expect(mocks.auth?.user?.id).toBe('user-b');
   expect(mocks.homeUnmounts).toBe(1);
+  expect(screen.queryByText('Private user A concept')).toBeNull();
   expect(screen.queryByDisplayValue('account A private draft')).toBeNull();
   expect(screen.queryByDisplayValue('Private A title')).toBeNull();
 });
 
 it('clears private Home state on logout', async () => {
+  mocks.getConcepts.mockResolvedValue([conceptEntry('Private logout concept', 'private-logout')]);
   renderPage();
   await waitFor(() => expect(mocks.getProjects).toHaveBeenCalledTimes(2));
+  expect(await screen.findByText('Private logout concept')).toBeTruthy();
   fireEvent.change(screen.getByRole('textbox', { name: translate('en', 'Demo.search') }), { target: { value: 'private query' } });
   vi.spyOn(window, 'confirm').mockReturnValue(true);
   await act(async () => { await mocks.workspace!.signOut(); });
@@ -823,7 +834,79 @@ it('clears private Home state on logout', async () => {
   await waitFor(() => expect(mocks.homeUnmounts).toBe(1));
   expect(mocks.auth?.user).toBeNull();
   expect(mocks.auth?.sessionIdentityEpoch).toBe(2);
+  expect(screen.queryByText('Private logout concept')).toBeNull();
   expect(screen.queryByDisplayValue('private query')).toBeNull();
+});
+
+it('binds recent concepts to the intended Project and fences delayed A→B→A responses in mounted Home', async () => {
+  const delayedB = deferred<ReturnType<typeof conceptEntry>[]>();
+  let aReads = 0;
+  let bReads = 0;
+  mocks.getProjects.mockResolvedValue([projectA, projectB]);
+  mocks.getConcepts.mockImplementation((projectId: string) => {
+    if (projectId === 'project-b') {
+      bReads += 1;
+      return bReads === 1 ? Promise.resolve([conceptEntry('Project B concept', 'project-b')]) : delayedB.promise;
+    }
+    aReads += 1;
+    return Promise.resolve([conceptEntry(aReads === 1 ? 'Project A concept' : `Returned Project A concept ${aReads}`, `project-a-${aReads}`)]);
+  });
+
+  renderPage();
+  await waitFor(() => expect(mocks.workspace?.currentProject?.id).toBe('project-a'));
+  expect(await screen.findByText('Project A concept')).toBeTruthy();
+  expect(mocks.getConcepts).toHaveBeenCalledWith('project-a');
+
+  await act(async () => { mocks.workspace!.selectProject('project-b'); });
+  await waitFor(() => expect(mocks.workspace?.currentProject?.id).toBe('project-b'));
+  expect(mocks.getConcepts).toHaveBeenCalledWith('project-b');
+  expect(screen.queryByText('Project A concept')).toBeNull();
+  expect(await screen.findByText('Project B concept')).toBeTruthy();
+
+  await act(async () => { mocks.workspace!.selectProject('project-a'); });
+  await waitFor(() => expect(mocks.workspace?.currentProject?.id).toBe('project-a'));
+  expect(await screen.findByText('Returned Project A concept 2')).toBeTruthy();
+
+  await act(async () => { mocks.workspace!.selectProject('project-b'); });
+  await waitFor(() => expect(mocks.workspace?.currentProject?.id).toBe('project-b'));
+  expect(screen.queryByText('Returned Project A concept 2')).toBeNull();
+  await act(async () => { mocks.workspace!.selectProject('project-a'); });
+  await waitFor(() => expect(mocks.workspace?.currentProject?.id).toBe('project-a'));
+  expect(await screen.findByText('Returned Project A concept 3')).toBeTruthy();
+  await act(async () => { delayedB.resolve([conceptEntry('Late Project B concept', 'project-b-late')]); await delayedB.promise; });
+
+  expect(screen.getByText('Returned Project A concept 3')).toBeTruthy();
+  expect(screen.queryByText('Late Project B concept')).toBeNull();
+});
+
+it('shows empty state for an empty Project and a retryable honest error after a failed concepts read', async () => {
+  let projectBReads = 0;
+  mocks.getProjects.mockResolvedValue([projectA, projectB]);
+  mocks.getConcepts.mockImplementation(async (projectId: string) => {
+    if (projectId === 'project-a') return [conceptEntry('Project A concept', 'project-a')];
+    projectBReads += 1;
+    if (projectBReads === 1) return [];
+    if (projectBReads === 2) throw new Error('private backend detail');
+    return [conceptEntry('Recovered concept', 'recovered')];
+  });
+
+  renderPage();
+  await waitFor(() => expect(mocks.workspace?.currentProject?.id).toBe('project-a'));
+  expect(await screen.findByText('Project A concept')).toBeTruthy();
+
+  await act(async () => { mocks.workspace!.selectProject('project-b'); });
+  await waitFor(() => expect(mocks.workspace?.currentProject?.id).toBe('project-b'));
+  expect(await screen.findByText(translate('en', 'Home.noRecentKnowledge'))).toBeTruthy();
+
+  await act(async () => { mocks.workspace!.selectProject('project-a'); });
+  await waitFor(() => expect(mocks.workspace?.currentProject?.id).toBe('project-a'));
+  expect(await screen.findByText('Project A concept')).toBeTruthy();
+  await act(async () => { mocks.workspace!.selectProject('project-b'); });
+  await waitFor(() => expect(mocks.workspace?.currentProject?.id).toBe('project-b'));
+  expect(await screen.findByText(translate('en', 'QueryErrors.storageUnavailable'))).toBeTruthy();
+  expect(screen.queryByText('private backend detail')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: translate('en', 'Shell.retry') }));
+  expect(await screen.findByText('Recovered concept')).toBeTruthy();
 });
 
 it('preserves Profile draft and pending save through same-user token rotation while a polling GET finishes first', async () => {
