@@ -1,7 +1,7 @@
 'use client';
 
-import { type ComponentType, type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
-import { MessageSquareText, Pencil, Play, RefreshCw, RotateCcw, ShieldAlert, Trash2 } from 'lucide-react';
+import { type ComponentType, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
+import { Link2, MessageSquareText, Pencil, Play, RefreshCw, RotateCcw, ShieldAlert, Trash2 } from 'lucide-react';
 import {
   ApiError,
   clearPublicConfigCache,
@@ -10,6 +10,8 @@ import {
   getAdminAnnouncement,
   getAdminManagementCatalog,
   getAdminProjects,
+  getAdminProjectSyncBinding,
+  getAdminSyncBindingRevocation,
   getAdminPipelineStatus,
   getAdminPipelineAutomation,
   getAdminSettings,
@@ -17,12 +19,17 @@ import {
   publishAnnouncement,
   rebuildAdminProjectIndex,
   renameAdminProject,
+  revokeAdminProjectSyncBinding,
   triggerAdminProjectPipeline,
   updateAdminSettings,
   updateAdminPipelineAutomation,
   updateAdminUserManagementScope,
   updateAdminUserStatus,
   type AdminProject,
+  type AdminSyncBinding,
+  type AdminSyncBindingDetails,
+  type AdminSyncBindingRevocation,
+  type AdminSyncBindingRevocationBody,
   type AdminUser,
   type AdminManagementScope,
   type AdminPipelineAutomation,
@@ -48,6 +55,7 @@ type Action =
   | { kind: 'rebuild-project'; project: AdminProject }
   | { kind: 'trigger-project'; project: AdminProject }
   | { kind: 'suggest-queries-project'; project: AdminProject }
+  | { kind: 'sync-binding'; project: AdminProject }
   | { kind: 'change-scope'; user: AdminUser }
   | { kind: 'delete-user'; user: AdminUser }
   | { kind: 'set-user-status'; user: AdminUser; status: 'active' | 'suspended' };
@@ -493,6 +501,17 @@ export function AdminClient() {
           onClose={closeAction}
         />
       ) : null}
+      {action?.kind === 'sync-binding' ? (
+        <AdminSyncBindingModal
+          key={`${user?.id || ''}:${action.project.id}`}
+          project={action.project}
+          actorId={user?.id || ''}
+          actorLabel={user?.email || user?.id || ''}
+          locale={locale}
+          t={t}
+          onClose={() => setAction(null)}
+        />
+      ) : null}
       {action?.kind === 'change-scope' ? (
         <ScopeActionModal
           user={action.user}
@@ -768,6 +787,294 @@ function IdentityCell({ primary, secondary }: { primary: string; secondary?: str
   );
 }
 
+type AdminTranslate = (key: string, params?: Record<string, string | number>) => string;
+type BindingPhase = 'loading' | 'details' | 'confirm' | 'submitting' | 'unknown' | 'complete';
+
+function AdminSyncBindingModal({
+  project,
+  actorId,
+  actorLabel,
+  locale,
+  t,
+  onClose,
+}: {
+  project: AdminProject;
+  actorId: string;
+  actorLabel: string;
+  locale: string;
+  t: AdminTranslate;
+  onClose: () => void;
+}) {
+  const [phase, setPhase] = useState<BindingPhase>('loading');
+  const [details, setDetails] = useState<AdminSyncBindingDetails | null>(null);
+  const [reason, setReason] = useState('');
+  const [operationId, setOperationId] = useState('');
+  const [error, setError] = useState('');
+  const [receipt, setReceipt] = useState<AdminSyncBindingRevocation | null>(null);
+  const sequence = useRef(0);
+  const alive = useRef(true);
+  const requestBody = useRef<AdminSyncBindingRevocationBody | null>(null);
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+  const returnFocus = useRef<HTMLElement | null>(null);
+  const current = (id: number) => alive.current && sequence.current === id;
+
+  useEffect(() => {
+    returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    dialogRef.current?.focus();
+    return () => {
+      if (returnFocus.current?.isConnected) returnFocus.current.focus();
+    };
+  }, []);
+
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+      sequence.current += 1;
+    };
+  }, []);
+
+  const readDetails = useCallback(async (id: number) => {
+    try {
+      const value = await getAdminProjectSyncBinding(project.id);
+      if (!alive.current || sequence.current !== id) return null;
+      setDetails(value);
+      setPhase('details');
+      return value;
+    } catch {
+      if (alive.current && sequence.current === id) {
+        setPhase('details');
+        setError(t('Admin.syncBindingLoadError'));
+      }
+      return null;
+    }
+  }, [project.id, t]);
+
+  const loadDetails = useCallback((nextPhase: BindingPhase = 'details') => {
+    const id = ++sequence.current;
+    setPhase(nextPhase);
+    setError('');
+    return readDetails(id);
+  }, [readDetails]);
+
+  useEffect(() => {
+    const id = ++sequence.current;
+    void readDetails(id);
+  }, [readDetails]);
+
+  const startConfirmation = async () => {
+    if (!details?.binding || details.binding.status !== 'active') return;
+    const before = details.binding;
+    const fresh = await loadDetails('loading');
+    if (!fresh) return;
+    if (fresh.binding?.binding_id !== before.binding_id || fresh.binding.revision !== before.revision || fresh.binding.status !== 'active') {
+      setError(t('Admin.syncBindingChanged'));
+      return;
+    }
+    setReason('');
+    setOperationId(window.crypto.randomUUID());
+    requestBody.current = null;
+    setPhase('confirm');
+  };
+
+  const confirmReadback = async () => {
+    const body = requestBody.current;
+    if (!body) return false;
+    const id = ++sequence.current;
+    try {
+      const confirmed = await getAdminSyncBindingRevocation(body.operation_id);
+      if (!current(id)) return false;
+      if (confirmed.operation_id !== body.operation_id || confirmed.actor_id !== actorId ||
+        confirmed.project_id !== project.projectId || confirmed.target_id !== details?.binding?.binding_id) return false;
+      const target = await getAdminProjectSyncBinding(project.id);
+      if (!current(id)) return false;
+      if (target.binding?.binding_id !== confirmed.target_id || target.binding.status !== 'revoked') return false;
+      setReceipt(confirmed);
+      setDetails(target);
+      setError('');
+      setPhase('complete');
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const submit = async () => {
+    if (!details?.binding || !operationId) return;
+    const cleanedReason = reason.trim();
+    if (!cleanedReason || Array.from(cleanedReason).length > 256) {
+      setError(t('Admin.syncBindingReasonRequired'));
+      return;
+    }
+    const body = requestBody.current ?? {
+      schema_version: 1,
+      operation_id: operationId,
+      environment: details.environment,
+      subject: details.owner_id,
+      reason: cleanedReason,
+      expected_revision: details.binding.revision,
+    };
+    requestBody.current = body;
+    const id = ++sequence.current;
+    setPhase('submitting');
+    setError('');
+    try {
+      const posted = await revokeAdminProjectSyncBinding(project.id, details.binding.binding_id, body);
+      if (!current(id)) return;
+      if (posted.operation_id !== body.operation_id || posted.actor_id !== actorId) throw new Error('receipt mismatch');
+      if (await confirmReadback()) return;
+      if (alive.current) {
+        setPhase('unknown');
+        setError(t('Admin.syncBindingReadbackPending'));
+      }
+    } catch (cause) {
+      if (!current(id)) return;
+      const status = cause instanceof ApiError ? cause.status : 0;
+      if (status > 0 && status < 500) {
+        requestBody.current = null;
+        setOperationId('');
+        setPhase('details');
+        setError(status === 409 ? t('Admin.syncBindingChanged') : t('Admin.syncBindingRevokeError'));
+        void loadDetails('loading');
+        return;
+      }
+      if (await confirmReadback()) return;
+      if (alive.current) {
+        setPhase('unknown');
+        setError(t('Admin.syncBindingOutcomeUnknown'));
+      }
+    }
+  };
+
+  const checkOutcome = async () => {
+    setPhase('submitting');
+    setError('');
+    if (!(await confirmReadback()) && alive.current) {
+      setPhase('unknown');
+      setError(t('Admin.syncBindingOutcomeUnknown'));
+    }
+  };
+
+  const dateLabel = (value: string | null | undefined) => {
+    if (!value) return t('Admin.syncBindingNotAvailable');
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? t('Admin.syncBindingNotAvailable') : date.toLocaleString(locale);
+  };
+  const binding: AdminSyncBinding | null = details?.binding ?? null;
+  const reasonLength = Array.from(reason.trim()).length;
+  const submitted = phase === 'submitting' || phase === 'unknown';
+  const handleDialogKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      if (!submitted) onClose();
+      return;
+    }
+    if (event.key !== 'Tab') return;
+    const focusable = Array.from(event.currentTarget.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), textarea:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    ));
+    if (focusable.length === 0) {
+      event.preventDefault();
+      return;
+    }
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
+
+  return (
+    <ModalFrame title={t('Admin.syncBindingTitle')} onClose={submitted ? () => {} : onClose} dialogRef={dialogRef} onKeyDown={handleDialogKeyDown}>
+      <div className="mt-4 space-y-4 text-sm text-zinc-300">
+        <p>{t('Admin.syncBindingHint')}</p>
+        {phase === 'loading' ? <p role="status">{t('Admin.syncBindingLoading')}</p> : null}
+        {details ? (
+          <dl className="grid grid-cols-1 gap-2 rounded border border-white/10 bg-white/[0.03] p-3 text-xs sm:grid-cols-2">
+            <BindingField label={t('Admin.ownerId')} value={details.owner_id} />
+            <BindingField label={t('Admin.projectId')} value={details.project_id} />
+            <BindingField label={t('Admin.projectRecordId')} value={details.project_record_id} />
+            <BindingField label={t('Admin.environment')} value={details.environment} />
+            {binding ? <>
+              <BindingField label={t('Admin.bindingId')} value={binding.binding_id} />
+              <BindingField label={t('Admin.bindingHost')} value={binding.host} />
+              <BindingField label={t('Admin.bindingWikiId')} value={binding.wiki_id} />
+              <BindingField label={t('Admin.bindingProjectId')} value={binding.project_id} />
+              <BindingField label={t('Admin.bindingEnvironment')} value={binding.environment} />
+              <BindingField label={t('Admin.bindingStatus')} value={binding.status === 'active' ? t('Admin.active') : binding.status === 'revoked' ? t('Admin.bindingRevoked') : binding.status} />
+              <BindingField label={t('Admin.bindingAuthorizedBy')} value={binding.authorized_by} />
+              <BindingField label={t('Admin.bindingCreatedAt')} value={dateLabel(binding.created_at)} />
+              <BindingField label={t('Admin.bindingUpdatedAt')} value={dateLabel(binding.updated_at)} />
+              <BindingField label={t('Admin.bindingRevokedAt')} value={dateLabel(binding.revoked_at)} />
+              {binding.revoked_by ? <BindingField label={t('Admin.bindingRevokedBy')} value={binding.revoked_by} /> : null}
+              {binding.revocation_reason ? <BindingField label={t('Admin.syncBindingReason')} value={binding.revocation_reason} /> : null}
+            </> : <p className="sm:col-span-2">{t('Admin.syncBindingNone')}</p>}
+          </dl>
+        ) : null}
+        {error ? <p role="alert" className="text-amber-200">{error}</p> : null}
+        {phase === 'confirm' && binding ? (
+          <div className="space-y-3 rounded border border-amber-300/20 bg-amber-300/5 p-3">
+            <p>{t('Admin.syncBindingConfirmSummary', { actor: actorLabel, environment: details?.environment || '', binding: binding.binding_id })}</p>
+            <label className="block text-sm">
+              <span>{t('Admin.syncBindingReason')} ({reasonLength}/256)</span>
+              <textarea
+                autoFocus
+                value={reason}
+                onChange={(event) => setReason(event.target.value)}
+                rows={3}
+                aria-required="true"
+                className="mt-1 min-h-20 w-full rounded border border-white/15 bg-black/30 p-2 text-white"
+              />
+            </label>
+            <p className="text-amber-200">{t('Admin.syncBindingIrreversible')}</p>
+            <p className="break-all text-xs text-zinc-500">{t('Admin.syncBindingOperationId')}: {operationId}</p>
+          </div>
+        ) : null}
+        {phase === 'unknown' ? <p role="status" aria-live="polite">{t('Admin.syncBindingOutcomeUnknown')}</p> : null}
+        {phase === 'complete' && receipt ? (
+          <div role="status" aria-live="polite" className="rounded border border-emerald-400/20 bg-emerald-400/5 p-3 text-emerald-100">
+            <p>{t('Admin.syncBindingComplete')}</p>
+            <p>{t('Admin.syncBindingResult')}: {receipt.result}</p>
+            <p className="break-all">{t('Admin.syncBindingOperationId')}: {receipt.operation_id}</p>
+            <p>{t('Admin.bindingRevokedAt')}: {dateLabel(receipt.committed_at)}</p>
+          </div>
+        ) : null}
+        <div className="flex flex-wrap justify-end gap-2">
+          {phase === 'details' && binding?.status === 'active' ? (
+            <button type="button" onClick={() => void startConfirmation()} className="min-h-10 rounded bg-red-500/15 px-3 text-sm text-red-200 hover:bg-red-500/25">
+              {t('Admin.syncBindingRevoke')}
+            </button>
+          ) : null}
+          {phase === 'confirm' ? (
+            <>
+              <button type="button" onClick={onClose} className="min-h-10 rounded border border-white/10 px-3">{t('Common.cancel')}</button>
+              <button type="button" disabled={reasonLength < 1 || reasonLength > 256} onClick={() => void submit()} className="min-h-10 rounded bg-red-500/20 px-3 text-red-100 disabled:opacity-40">
+                {t('Admin.syncBindingRevoke')}
+              </button>
+            </>
+          ) : null}
+          {phase === 'unknown' ? (
+            <>
+              <button type="button" onClick={() => void checkOutcome()} className="min-h-10 rounded border border-white/10 px-3">{t('Admin.syncBindingCheckOutcome')}</button>
+              <button type="button" onClick={() => void submit()} className="min-h-10 rounded bg-red-500/20 px-3 text-red-100">{t('Admin.syncBindingRetrySame')}</button>
+            </>
+          ) : null}
+          {!submitted && phase !== 'complete' ? <button type="button" onClick={onClose} className="min-h-10 rounded border border-white/10 px-3">{t('Common.close')}</button> : null}
+          {phase === 'complete' ? <button type="button" onClick={onClose} className="min-h-10 rounded border border-white/10 px-3">{t('Common.close')}</button> : null}
+        </div>
+      </div>
+    </ModalFrame>
+  );
+}
+
+function BindingField({ label, value }: { label: string; value: string }) {
+  return <div className="min-w-0"><dt className="text-zinc-500">{label}</dt><dd className="break-all text-zinc-200">{value || '—'}</dd></div>;
+}
+
 function ProjectsTable({
   projects,
   loading,
@@ -826,6 +1133,12 @@ function ProjectsTable({
                   <td className="px-4 py-3 tabular-nums text-zinc-300">{project.sourceCount}</td>
                   <td className="px-4 py-3">
                     <div className="flex justify-end gap-1">
+                      <IconAction
+                        label={t('Admin.syncBindingOpen')}
+                        icon={Link2}
+                        disabled={pending}
+                        onClick={() => onAction({ kind: 'sync-binding', project })}
+                      />
                       <IconAction
                         label={t('Admin.rename')}
                         icon={Pencil}
@@ -1050,10 +1363,14 @@ function ModalFrame({
   title,
   children,
   onClose,
+  dialogRef,
+  onKeyDown,
 }: {
   title: string;
   children: ReactNode;
   onClose: () => void;
+  dialogRef?: { current: HTMLDivElement | null };
+  onKeyDown?: (event: ReactKeyboardEvent<HTMLDivElement>) => void;
 }) {
   const { t } = useLocale();
   return (
@@ -1062,6 +1379,9 @@ function ModalFrame({
         role="dialog"
         aria-modal="true"
         aria-label={title}
+        ref={dialogRef}
+        tabIndex={-1}
+        onKeyDown={onKeyDown}
         className="w-full max-w-md rounded border border-white/10 bg-zinc-950 p-5"
       >
         <h2 className="text-lg font-semibold text-white">{title}</h2>

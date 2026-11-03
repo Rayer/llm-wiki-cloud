@@ -145,11 +145,11 @@ func TestLWC438ProductionRouterUsesLoadedEnvironmentForProjectMCP(t *testing.T) 
 				wantProjectCheck  bool
 			}{
 				{name: "authenticated tools list", credential: "fixture-valid", wantStatus: http.StatusOK, wantVerifierCalls: 1, wantProjectCheck: true},
-				{name: "authenticated tools list warm cache hit", credential: "fixture-valid", wantStatus: http.StatusOK, wantVerifierCalls: 0, wantProjectCheck: true},
+				{name: "authenticated tools list rechecks MCP verifier freshness", credential: "fixture-valid", wantStatus: http.StatusOK, wantVerifierCalls: 1, wantProjectCheck: true},
 				{name: "wrong environment", credential: "fixture-wrong-environment", wantStatus: http.StatusServiceUnavailable, wantVerifierCalls: 1},
 				{name: "wrong project", credential: "fixture-wrong-project", wantStatus: http.StatusServiceUnavailable, wantVerifierCalls: 1},
 				{name: "wrong resource", credential: "fixture-wrong-resource", wantStatus: http.StatusServiceUnavailable, wantVerifierCalls: 1},
-				{name: "conflicting project header", credential: "fixture-valid", project: "other-project", wantStatus: http.StatusForbidden, wantVerifierCalls: 0, wantProjectCheck: true},
+				{name: "conflicting project header", credential: "fixture-valid", project: "other-project", wantStatus: http.StatusForbidden, wantVerifierCalls: 1, wantProjectCheck: true},
 				{name: "invalid credential", credential: "fixture-invalid", wantStatus: http.StatusUnauthorized, wantVerifierCalls: 1},
 				{name: "expired credential", credential: "fixture-expired", wantStatus: http.StatusUnauthorized, wantVerifierCalls: 1},
 				{name: "expired identity response", credential: "fixture-expired-identity", wantStatus: http.StatusServiceUnavailable, wantVerifierCalls: 1},

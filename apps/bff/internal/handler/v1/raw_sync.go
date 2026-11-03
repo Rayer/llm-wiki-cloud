@@ -33,6 +33,7 @@ type rawSyncListPage struct {
 
 func (h *Handler) SetSyncBindingAuthority(authority *auth.SyncBindingAuthority) {
 	h.syncBindingAuthority = authority
+	h.adminSyncBindingAuthority = authority
 }
 
 // RawSyncBindingAuth rechecks the current binding for every raw sync request.

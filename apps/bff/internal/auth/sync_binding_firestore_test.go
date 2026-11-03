@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestSyncBindingAuthorityCreatesChecksReauthorizesAndRevokes(t *testing.T) {
@@ -127,5 +129,111 @@ func TestSyncBindingCreateIsAtomicForConcurrentDifferentWikis(t *testing.T) {
 	}
 	if successes != 1 || conflicts != 1 {
 		t.Fatalf("concurrent binding successes=%d conflicts=%d", successes, conflicts)
+	}
+}
+
+func TestAdminSyncBindingQueryRevokeReceiptAndReplacementFence(t *testing.T) {
+	fs := accountEmulator(t)
+	ctx := context.Background()
+	const ownerID, projectID, actorID, environment, host = "gat21-binding-owner", "gat21-project", "gat21-binding-admin", "gat21-binding-env", "https://auth.example.test"
+	if _, err := fs.Collection("projects").Doc(ownerID+"_"+projectID).Set(ctx, map[string]interface{}{
+		"user_id": ownerID, "project_id": projectID, "name": "Project",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	authority := NewSyncBindingAuthority(fs, environment, host)
+	missing, revision, err := authority.AdminBinding(ctx, ownerID+"_"+projectID, ownerID, projectID)
+	if err != nil || missing != nil || revision == "" {
+		t.Fatalf("missing binding query=(%+v, %q) error=%v", missing, revision, err)
+	}
+	created, err := authority.CreateBinding(ctx, ownerID, projectID, "gat21-wiki", host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	view, revision, err := authority.AdminBinding(ctx, ownerID+"_"+projectID, ownerID, projectID)
+	if err != nil || view == nil || view.BindingID != created.ID || view.Revision != revision || view.Status != syncBindingStatusActive {
+		t.Fatalf("binding query=(%+v, %q) error=%v", view, revision, err)
+	}
+	request := AdminSyncBindingRevocationRequest{ActorID: actorID, SubjectID: ownerID, ProjectRecordID: ownerID + "_" + projectID,
+		ProjectID: projectID, BindingID: created.ID, OperationID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		Environment: environment, Reason: "administrator confirmed", ExpectedRevision: revision}
+	authorizeCalls := 0
+	authorize := func(context.Context) (time.Time, error) { authorizeCalls++; return time.Now().UTC(), nil }
+	receipt, err := authority.AdminRevokeBinding(ctx, request, authorize)
+	if err != nil || receipt.Result != "revoked" || receipt.ActorID != actorID || receipt.SubjectID != ownerID ||
+		receipt.AffectedCount == nil || *receipt.AffectedCount != 1 {
+		t.Fatalf("binding revoke receipt=%+v error=%v", receipt, err)
+	}
+	if err := authority.CheckSyncBinding(ctx, ownerID, projectID, created.ID, "gat21-wiki", host); !errors.Is(err, ErrSyncBindingUnauthorized) {
+		t.Fatalf("revoked binding check=%v, want unauthorized", err)
+	}
+	readback, _, err := authority.AdminBinding(ctx, ownerID+"_"+projectID, ownerID, projectID)
+	if err != nil || readback == nil || readback.Status != syncBindingStatusRevoked || readback.RevokedBy != actorID || readback.RevocationReason != request.Reason {
+		t.Fatalf("binding readback=%+v error=%v", readback, err)
+	}
+	if again, err := authority.AdminRevokeBinding(ctx, request, authorize); err != nil || !reflect.DeepEqual(again, receipt) {
+		t.Fatalf("idempotent receipt=%+v error=%v; want %+v", again, err, receipt)
+	}
+	if authorizeCalls != 2 {
+		t.Fatalf("authorize calls=%d, want fresh check on transaction retry", authorizeCalls)
+	}
+	if fetched, err := authority.AdminReadBindingRevocationReceipt(ctx, actorID, request.OperationID); err != nil || !reflect.DeepEqual(fetched, receipt) {
+		t.Fatalf("receipt readback=%+v error=%v", fetched, err)
+	}
+	if _, err := authority.AdminReadBindingRevocationReceipt(ctx, "other-admin", request.OperationID); !errors.Is(err, ErrSyncBindingNotFound) {
+		t.Fatalf("other actor receipt lookup error=%v, want not found", err)
+	}
+
+	request.OperationID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	request.ExpectedRevision = readback.Revision
+	alreadyRevoked, err := authority.AdminRevokeBinding(ctx, request, authorize)
+	if err != nil || alreadyRevoked.Result != "already_revoked" || alreadyRevoked.AffectedCount == nil || *alreadyRevoked.AffectedCount != 0 {
+		t.Fatalf("already-revoked receipt=%+v error=%v", alreadyRevoked, err)
+	}
+	_, err = authority.ReauthorizeBinding(ctx, ownerID, projectID, created.ID, "gat21-wiki-new", host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, replacementRevision, err := authority.AdminBinding(ctx, ownerID+"_"+projectID, ownerID, projectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.OperationID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+	request.ExpectedRevision = replacementRevision
+	if _, err := authority.AdminRevokeBinding(ctx, request, authorize); !errors.Is(err, ErrSyncBindingConflict) {
+		t.Fatalf("old binding revoke after replacement error=%v, want target changed", err)
+	}
+}
+
+func TestAdminSyncBindingRejectsOperationReuseAndInvalidAuthority(t *testing.T) {
+	fs := accountEmulator(t)
+	ctx := context.Background()
+	const ownerID, projectID, environment, host = "gat21-binding-conflict-owner", "gat21-binding-conflict-project", "gat21-binding-conflict-env", "https://auth.example.test"
+	if _, err := fs.Collection("projects").Doc(ownerID+"_"+projectID).Set(ctx, map[string]interface{}{"user_id": ownerID, "project_id": projectID}); err != nil {
+		t.Fatal(err)
+	}
+	authority := NewSyncBindingAuthority(fs, environment, host)
+	created, err := authority.CreateBinding(ctx, ownerID, projectID, "gat21-wiki", host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, revision, err := authority.AdminBinding(ctx, ownerID+"_"+projectID, ownerID, projectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := AdminSyncBindingRevocationRequest{ActorID: "gat21-admin", SubjectID: ownerID, ProjectRecordID: ownerID + "_" + projectID,
+		ProjectID: projectID, BindingID: created.ID, OperationID: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", Environment: environment,
+		Reason: "confirmed", ExpectedRevision: revision}
+	authorize := func(context.Context) (time.Time, error) { return time.Now().UTC(), nil }
+	if _, err := authority.AdminRevokeBinding(ctx, request, authorize); err != nil {
+		t.Fatal(err)
+	}
+	request.Reason = "changed reason"
+	if _, err := authority.AdminRevokeBinding(ctx, request, authorize); !errors.Is(err, ErrSyncBindingOperationConflict) {
+		t.Fatalf("operation reuse error=%v, want operation conflict", err)
+	}
+	request.OperationID = "invalid"
+	if _, err := authority.AdminRevokeBinding(ctx, request, authorize); !errors.Is(err, ErrSyncBindingInvalid) {
+		t.Fatalf("invalid operation ID error=%v, want invalid", err)
 	}
 }

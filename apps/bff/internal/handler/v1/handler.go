@@ -32,7 +32,12 @@ type Handler struct {
 	cliSessionVerifier             auth.CLIAccessSessionVerifier
 	cliProjectAuthorizer           auth.ProjectOwnerAuthorizer
 	syncBindingAuthority           syncBindingChecker
+	adminSyncBindingAuthority      *auth.SyncBindingAuthority
 	syncBindingHost                string
+	syncBindingWireEnvironment     string
+	adminMutationOrigins           map[string]struct{}
+	adminMutationRateMu            sync.Mutex
+	adminMutationRates             map[string][]time.Time
 	projectKeyService              *auth.ProjectKeyService
 	urlIntake                      *urlintake.Service
 	documentImports                *documentimport.Service

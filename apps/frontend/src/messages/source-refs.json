@@ -40,6 +40,14 @@
         "identity"
       ]
     },
+    "Admin.syncBindingConfirmSummary": {
+      "kind": "literal",
+      "params": [
+        "actor",
+        "binding",
+        "environment"
+      ]
+    },
     "Admin.confirmRebuildIndex": {
       "kind": "literal",
       "params": [
