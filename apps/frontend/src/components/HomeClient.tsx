@@ -307,27 +307,37 @@ export function HomeClient() {
     status: 'loading',
     entries: [],
   });
-  const recentConceptsScopeRef = useRef(homeScopeKey);
+  const recentConceptsScopeRef = useRef({ scopeKey: homeScopeKey, project: currentProject });
   const recentConceptsRequestRef = useRef(0);
   useLayoutEffect(() => {
-    recentConceptsScopeRef.current = homeScopeKey;
+    recentConceptsScopeRef.current = { scopeKey: homeScopeKey, project: currentProject };
     recentConceptsRequestRef.current += 1;
-  }, [homeScopeKey]);
+  }, [currentProject, homeScopeKey]);
   const recentConcepts = recentConceptsState.scopeKey === homeScopeKey
     ? recentConceptsState
     : { scopeKey: homeScopeKey, status: 'loading' as const, entries: [] };
   const reloadRecentConcepts = useCallback(async () => {
     const scopeKey = homeScopeKey;
-    const projectId = currentProject?.id;
+    const project = currentProject;
+    const projectId = project?.id;
     const requestId = ++recentConceptsRequestRef.current;
     if (!projectId) {
       setRecentConceptsState({ scopeKey, status: 'ready', entries: [] });
       return;
     }
-    setRecentConceptsState({ scopeKey, status: 'loading', entries: [] });
+    setRecentConceptsState((current) => (
+      current.scopeKey === scopeKey && current.status === 'ready'
+        ? current
+        : { scopeKey, status: 'loading', entries: [] }
+    ));
     try {
       const data = await getConcepts(projectId);
-      if (requestId !== recentConceptsRequestRef.current || scopeKey !== recentConceptsScopeRef.current) return;
+      const currentScope = recentConceptsScopeRef.current;
+      if (
+        requestId !== recentConceptsRequestRef.current
+        || scopeKey !== currentScope.scopeKey
+        || project !== currentScope.project
+      ) return;
       const recent = [...data].sort((left, right) => {
         const leftUpdated = left.objectUpdatedAt ? Date.parse(left.objectUpdatedAt) : NaN;
         const rightUpdated = right.objectUpdatedAt ? Date.parse(right.objectUpdatedAt) : NaN;
@@ -339,11 +349,16 @@ export function HomeClient() {
       });
       setRecentConceptsState({ scopeKey, status: 'ready', entries: recent.slice(0, 6) });
     } catch {
-      if (requestId === recentConceptsRequestRef.current && scopeKey === recentConceptsScopeRef.current) {
+      const currentScope = recentConceptsScopeRef.current;
+      if (
+        requestId === recentConceptsRequestRef.current
+        && scopeKey === currentScope.scopeKey
+        && project === currentScope.project
+      ) {
         setRecentConceptsState({ scopeKey, status: 'error', entries: [] });
       }
     }
-  }, [currentProject?.id, homeScopeKey]);
+  }, [currentProject, homeScopeKey]);
   const [otherWikiPickerOpen, setOtherWikiPickerOpen] = useState(false);
   const [searchButtonCue, setSearchButtonCue] = useState<0 | 1 | 2>(0);
 

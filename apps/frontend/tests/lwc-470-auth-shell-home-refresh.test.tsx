@@ -254,17 +254,27 @@ afterEach(() => {
 it('keeps Shell and Home mounted, query drafts, and an in-flight material receipt across same-user credential rotation', async () => {
   const backgroundProjects = deferred<Project[]>();
   const upload = deferred<RawUploadResult>();
+  const rotatedConcepts = deferred<ReturnType<typeof conceptEntry>[]>();
+  const refreshedProject = { ...projectA };
+  let conceptReads = 0;
   let projectReads = 0;
   mocks.getProjects.mockImplementation(() => {
     projectReads += 1;
     if (projectReads === 1) return Promise.resolve([projectA]);
     if (projectReads === 2) return backgroundProjects.promise;
-    return Promise.resolve([projectA]);
+    return Promise.resolve([refreshedProject]);
+  });
+  mocks.getConcepts.mockImplementation(() => {
+    conceptReads += 1;
+    return conceptReads === 1
+      ? Promise.resolve([conceptEntry('Credential rotation concept', 'credential-rotation')])
+      : rotatedConcepts.promise;
   });
   mocks.uploadRawFile.mockReturnValue(upload.promise);
 
   renderPage();
   await waitFor(() => expect(mocks.getProjects).toHaveBeenCalledTimes(2));
+  expect(await screen.findByText('Credential rotation concept')).toBeTruthy();
   expect(mocks.homeMounts).toBe(1);
   expect(mocks.homeUnmounts).toBe(0);
   expect(mocks.workspace?.projectsLoading).toBe(false);
@@ -281,6 +291,13 @@ it('keeps Shell and Home mounted, query drafts, and an in-flight material receip
   await act(async () => { await mocks.auth!.refreshAccessToken(); });
   await waitFor(() => expect(mocks.getProjects).toHaveBeenCalledTimes(3));
   await waitFor(() => expect(mocks.workspace?.currentProject?.id).toBe('project-a'));
+  await waitFor(() => expect(conceptReads).toBe(2));
+  expect(screen.getByText('Credential rotation concept')).toBeTruthy();
+  await act(async () => {
+    rotatedConcepts.resolve([conceptEntry('Rotated credential concept', 'rotated-credential')]);
+    await rotatedConcepts.promise;
+  });
+  expect(await screen.findByText('Rotated credential concept')).toBeTruthy();
 
   expect(mocks.auth?.sessionIdentityEpoch).toBe(1);
   expect(mocks.homeMounts).toBe(1);
@@ -877,6 +894,128 @@ it('binds recent concepts to the intended Project and fences delayed A→B→A r
 
   expect(screen.getByText('Returned Project A concept 3')).toBeTruthy();
   expect(screen.queryByText('Late Project B concept')).toBeNull();
+});
+
+it('reloads mounted concepts after a same-Wiki background Project refresh', async () => {
+  const refreshedConcepts = deferred<ReturnType<typeof conceptEntry>[]>();
+  const refreshedProject = { ...projectA };
+  let projectReads = 0;
+  let conceptReads = 0;
+  mocks.getProjects.mockImplementation(async () => {
+    projectReads += 1;
+    return projectReads <= 2 ? [projectA] : [refreshedProject];
+  });
+  mocks.getConcepts.mockImplementation((projectId: string) => {
+    expect(projectId).toBe('project-a');
+    conceptReads += 1;
+    return conceptReads === 1
+      ? Promise.resolve([conceptEntry('Existing same-Wiki concept', 'existing-same-wiki')])
+      : refreshedConcepts.promise;
+  });
+
+  renderPage();
+  await waitFor(() => expect(projectReads).toBe(2));
+  expect(await screen.findByText('Existing same-Wiki concept')).toBeTruthy();
+  await waitFor(() => expect(mocks.workspace?.currentProject).toBe(projectA));
+
+  await act(async () => { await mocks.workspace!.refreshProjects(true); });
+  await waitFor(() => expect(mocks.workspace?.currentProject).toBe(refreshedProject));
+  expect(mocks.workspace?.currentProject?.id).toBe(projectA.id);
+  await waitFor(() => expect(conceptReads).toBe(2));
+  expect(screen.getByText('Existing same-Wiki concept')).toBeTruthy();
+
+  await act(async () => {
+    refreshedConcepts.resolve([conceptEntry('Updated same-Wiki concept', 'updated-same-wiki')]);
+    await refreshedConcepts.promise;
+  });
+  expect(await screen.findByText('Updated same-Wiki concept')).toBeTruthy();
+  expect(screen.queryByText('Existing same-Wiki concept')).toBeNull();
+  expect(conceptReads).toBe(2);
+  expect(mocks.homeMounts).toBe(1);
+  expect(mocks.homeUnmounts).toBe(0);
+});
+
+it('keeps same-Wiki concepts through a failed Project refresh and reloads them after recovery', async () => {
+  const recoveryConcepts = deferred<ReturnType<typeof conceptEntry>[]>();
+  const refreshedProject = { ...projectA };
+  let projectReads = 0;
+  let conceptReads = 0;
+  mocks.getProjects.mockImplementation(async () => {
+    projectReads += 1;
+    if (projectReads <= 2) return [projectA];
+    if (projectReads === 3) throw new Error('temporary project list outage');
+    return [refreshedProject];
+  });
+  mocks.getConcepts.mockImplementation(() => {
+    conceptReads += 1;
+    return conceptReads === 1
+      ? Promise.resolve([conceptEntry('Stable same-Wiki concept', 'stable-same-wiki')])
+      : recoveryConcepts.promise;
+  });
+
+  renderPage();
+  expect(await screen.findByText('Stable same-Wiki concept')).toBeTruthy();
+  await waitFor(() => expect(projectReads).toBe(2));
+
+  await act(async () => { await mocks.workspace!.refreshProjects(true); });
+  expect(mocks.workspace?.currentProject).toBe(projectA);
+  expect(conceptReads).toBe(1);
+  expect(screen.getByText('Stable same-Wiki concept')).toBeTruthy();
+
+  await act(async () => { await mocks.workspace!.refreshProjects(true); });
+  await waitFor(() => expect(mocks.workspace?.currentProject).toBe(refreshedProject));
+  await waitFor(() => expect(conceptReads).toBe(2));
+  expect(screen.getByText('Stable same-Wiki concept')).toBeTruthy();
+  await act(async () => {
+    recoveryConcepts.resolve([conceptEntry('Recovered same-Wiki concept', 'recovered-same-wiki')]);
+    await recoveryConcepts.promise;
+  });
+  expect(await screen.findByText('Recovered same-Wiki concept')).toBeTruthy();
+  expect(screen.queryByText('Stable same-Wiki concept')).toBeNull();
+  expect(conceptReads).toBe(2);
+});
+
+it('keeps the latest same-Wiki concepts when Project refresh responses finish in reverse order', async () => {
+  const olderConcepts = deferred<ReturnType<typeof conceptEntry>[]>();
+  const newerConcepts = deferred<ReturnType<typeof conceptEntry>[]>();
+  const olderProject = { ...projectA, name: 'Project Alpha older refresh' };
+  const newerProject = { ...projectA, name: 'Project Alpha newer refresh' };
+  let projectReads = 0;
+  let conceptReads = 0;
+  mocks.getProjects.mockImplementation(async () => {
+    projectReads += 1;
+    if (projectReads <= 2) return [projectA];
+    return [projectReads === 3 ? olderProject : newerProject];
+  });
+  mocks.getConcepts.mockImplementation(() => {
+    conceptReads += 1;
+    if (conceptReads === 1) return Promise.resolve([conceptEntry('Initial same-Wiki concept', 'initial-same-wiki')]);
+    return conceptReads === 2 ? olderConcepts.promise : newerConcepts.promise;
+  });
+
+  renderPage();
+  expect(await screen.findByText('Initial same-Wiki concept')).toBeTruthy();
+  await waitFor(() => expect(projectReads).toBe(2));
+
+  await act(async () => { await mocks.workspace!.refreshProjects(true); });
+  await waitFor(() => expect(mocks.workspace?.currentProject).toBe(olderProject));
+  await waitFor(() => expect(conceptReads).toBe(2));
+  await act(async () => { await mocks.workspace!.refreshProjects(true); });
+  await waitFor(() => expect(mocks.workspace?.currentProject).toBe(newerProject));
+  await waitFor(() => expect(conceptReads).toBe(3));
+
+  await act(async () => {
+    newerConcepts.resolve([conceptEntry('Latest same-Wiki concept', 'latest-same-wiki')]);
+    await newerConcepts.promise;
+  });
+  expect(await screen.findByText('Latest same-Wiki concept')).toBeTruthy();
+  await act(async () => {
+    olderConcepts.resolve([conceptEntry('Stale same-Wiki concept', 'stale-same-wiki')]);
+    await olderConcepts.promise;
+  });
+  expect(screen.getByText('Latest same-Wiki concept')).toBeTruthy();
+  expect(screen.queryByText('Stale same-Wiki concept')).toBeNull();
+  expect(conceptReads).toBe(3);
 });
 
 it('shows empty state for an empty Project and a retryable honest error after a failed concepts read', async () => {

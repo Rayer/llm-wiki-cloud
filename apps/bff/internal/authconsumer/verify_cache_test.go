@@ -130,6 +130,99 @@ func TestVerifyResourceSingleflightJoinsOneInFlightUpstreamRequest(t *testing.T)
 	}
 }
 
+func TestVerifyResourceSingleflightWaiterRejectsExpiredIdentity(t *testing.T) {
+	base := time.Date(2026, 11, 3, 0, 0, 0, 0, time.UTC)
+	var expired atomic.Bool
+	cache, err := newVerificationCache()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache.now = func() time.Time {
+		if expired.Load() {
+			return base.Add(verificationReuseTTL)
+		}
+		return base
+	}
+	key := cache.cacheKey("same-token", "dev", "https://auth.example.test", "https://bff.example.test", "project-a")
+	flight := &verificationFlight{done: make(chan struct{})}
+	cache.mu.Lock()
+	cache.flights[key] = flight
+	cache.mu.Unlock()
+
+	var outbound atomic.Int64
+	type result struct {
+		identity Identity
+		err      error
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		identity, verifyErr := cache.verify(context.Background(), key, func() (Identity, error) {
+			outbound.Add(1)
+			return Identity{}, ErrInvalidCredential
+		})
+		resultCh <- result{identity: identity, err: verifyErr}
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		cache.mu.Lock()
+		joined := flight.joined
+		cache.mu.Unlock()
+		if joined == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("waiter did not join the gated verification flight")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if got := outbound.Load(); got != 0 {
+		t.Fatalf("outbound verification before flight release=%d, want 0", got)
+	}
+
+	cache.mu.Lock()
+	flight.identity = webIdentity("user-a", base.Add(verificationReuseTTL))
+	flight.validUntil = base.Add(verificationReuseTTL)
+	delete(cache.flights, key)
+	expired.Store(true)
+	close(flight.done)
+	cache.mu.Unlock()
+
+	got := <-resultCh
+	if !errors.Is(got.err, ErrInvalidCredential) || got.identity.Subject != "" {
+		t.Fatalf("expired joined identity=%+v err=%v, want fresh invalid-credential rejection", got.identity, got.err)
+	}
+	if got := outbound.Load(); got != 1 {
+		t.Fatalf("post-expiry outbound verifications=%d, want 1", got)
+	}
+}
+
+func TestVerifyResourceRejectsFixedOriginalExpiryAfterCacheRevalidation(t *testing.T) {
+	base := time.Date(2026, 11, 3, 0, 0, 0, 0, time.UTC)
+	now := base
+	fixedExpiry := base.Add(15 * time.Second)
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		writeTestIdentity(w, webIdentity("user-a", fixedExpiry))
+	}))
+	defer server.Close()
+	client := testClient(t, server.URL, func(context.Context, string) (string, error) { return "runtime", nil })
+	client.verifyCache.now = func() time.Time { return now }
+
+	if _, err := client.Verify(context.Background(), "fixed-expiry-token", "project-a"); err != nil {
+		t.Fatalf("initial verification: %v", err)
+	}
+	now = fixedExpiry.Add(-time.Second)
+	if _, err := client.Verify(context.Background(), "fixed-expiry-token", "project-a"); err != nil || calls.Load() != 1 {
+		t.Fatalf("pre-expiry cache hit calls=%d err=%v", calls.Load(), err)
+	}
+	now = fixedExpiry
+	if _, err := client.Verify(context.Background(), "fixed-expiry-token", "project-a"); !errors.Is(err, ErrUnavailable) || calls.Load() != 2 {
+		t.Fatalf("fixed original expiry calls=%d err=%v, want rejected revalidation", calls.Load(), err)
+	}
+}
+
 func TestVerifyResourceCacheSeparatesCredentialEnvironmentIssuerResourceAndProject(t *testing.T) {
 	var calls atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -269,6 +362,8 @@ func TestVerifyResourceFailuresAreNotCachedAndRecover(t *testing.T) {
 		}
 		if statuses[index] != http.StatusOK {
 			w.WriteHeader(statuses[index])
+		} else {
+			w.Header().Set("Cache-Control", "no-store")
 		}
 		if bodies[index] != "" {
 			_, _ = w.Write([]byte(bodies[index]))
