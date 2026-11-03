@@ -137,20 +137,22 @@ func TestLWC438ProductionRouterUsesLoadedEnvironmentForProjectMCP(t *testing.T) 
 				&syssettings.FakeStore{Enabled: true}, nil)
 
 			for _, test := range []struct {
-				name             string
-				credential       string
-				project          string
-				wantStatus       int
-				wantProjectCheck bool
+				name              string
+				credential        string
+				project           string
+				wantStatus        int
+				wantVerifierCalls int
+				wantProjectCheck  bool
 			}{
-				{name: "authenticated tools list", credential: "fixture-valid", wantStatus: http.StatusOK, wantProjectCheck: true},
-				{name: "wrong environment", credential: "fixture-wrong-environment", wantStatus: http.StatusServiceUnavailable},
-				{name: "wrong project", credential: "fixture-wrong-project", wantStatus: http.StatusServiceUnavailable},
-				{name: "wrong resource", credential: "fixture-wrong-resource", wantStatus: http.StatusServiceUnavailable},
-				{name: "conflicting project header", credential: "fixture-valid", project: "other-project", wantStatus: http.StatusForbidden, wantProjectCheck: true},
-				{name: "invalid credential", credential: "fixture-invalid", wantStatus: http.StatusUnauthorized},
-				{name: "expired credential", credential: "fixture-expired", wantStatus: http.StatusUnauthorized},
-				{name: "expired identity response", credential: "fixture-expired-identity", wantStatus: http.StatusServiceUnavailable},
+				{name: "authenticated tools list", credential: "fixture-valid", wantStatus: http.StatusOK, wantVerifierCalls: 1, wantProjectCheck: true},
+				{name: "authenticated tools list warm cache hit", credential: "fixture-valid", wantStatus: http.StatusOK, wantVerifierCalls: 0, wantProjectCheck: true},
+				{name: "wrong environment", credential: "fixture-wrong-environment", wantStatus: http.StatusServiceUnavailable, wantVerifierCalls: 1},
+				{name: "wrong project", credential: "fixture-wrong-project", wantStatus: http.StatusServiceUnavailable, wantVerifierCalls: 1},
+				{name: "wrong resource", credential: "fixture-wrong-resource", wantStatus: http.StatusServiceUnavailable, wantVerifierCalls: 1},
+				{name: "conflicting project header", credential: "fixture-valid", project: "other-project", wantStatus: http.StatusForbidden, wantVerifierCalls: 0, wantProjectCheck: true},
+				{name: "invalid credential", credential: "fixture-invalid", wantStatus: http.StatusUnauthorized, wantVerifierCalls: 1},
+				{name: "expired credential", credential: "fixture-expired", wantStatus: http.StatusUnauthorized, wantVerifierCalls: 1},
+				{name: "expired identity response", credential: "fixture-expired-identity", wantStatus: http.StatusServiceUnavailable, wantVerifierCalls: 1},
 			} {
 				t.Run(test.name, func(t *testing.T) {
 					checksBefore := projectChecks
@@ -166,8 +168,8 @@ func TestLWC438ProductionRouterUsesLoadedEnvironmentForProjectMCP(t *testing.T) 
 					}
 					response := httptest.NewRecorder()
 					router.ServeHTTP(response, request)
-					if authVerifierRequests != verifierRequestsBefore+1 {
-						t.Fatalf("production route made %d synthetic Auth verifier requests, want 1", authVerifierRequests-verifierRequestsBefore)
+					if authVerifierRequests != verifierRequestsBefore+test.wantVerifierCalls {
+						t.Fatalf("production route made %d synthetic Auth verifier requests, want %d", authVerifierRequests-verifierRequestsBefore, test.wantVerifierCalls)
 					}
 					if response.Code != test.wantStatus {
 						t.Fatalf("loaded BFF environment %q returned status %d, want %d: %s",
@@ -180,7 +182,7 @@ func TestLWC438ProductionRouterUsesLoadedEnvironmentForProjectMCP(t *testing.T) 
 					if projectChecks != wantChecks {
 						t.Fatalf("production project authority calls=%d, want %d", projectChecks-checksBefore, wantChecks-checksBefore)
 					}
-					if test.name == "authenticated tools list" {
+					if strings.HasPrefix(test.name, "authenticated tools list") {
 						var wire struct {
 							Result struct {
 								Tools []struct {

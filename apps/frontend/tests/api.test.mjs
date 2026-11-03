@@ -1223,6 +1223,28 @@ test('getRawFilePreview reads project scoped raw text with encoded filename', as
   }
 });
 
+test('getConcepts sends the explicit Home Project instead of relying on selected-project storage', async () => {
+  configureApiAuth({
+    getAccessToken: () => 'jwt-token',
+    refreshAccessToken: async () => null,
+    onUnauthorized: () => undefined,
+  });
+  globalThis.window = { localStorage: { getItem: () => 'stale-local-project' } };
+  const originalFetch = globalThis.fetch;
+  let requestedInit;
+  globalThis.fetch = async (_url, init) => {
+    requestedInit = init;
+    return Response.json([]);
+  };
+
+  try {
+    await getConcepts('current-home-project');
+    assert.equal(requestedInit.headers['X-Project-ID'], 'current-home-project');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('owned API error helpers preserve valid server diagnostic IDs without changing messages or calls', async () => {
   configureApiAuth({
     getAccessToken: () => 'jwt-token',
@@ -1234,7 +1256,7 @@ test('owned API error helpers preserve valid server diagnostic IDs without chang
   const operations = [
     { name: 'source.list', run: () => getSources(), message: 'API request failed (502)', path: '/api/v1/sources' },
     { name: 'source.read', run: () => getSource('source-1'), message: 'API request failed (502)', path: '/api/v1/sources/source-1' },
-    { name: 'concept.list', run: () => getConcepts(), message: 'API request failed (502)', path: '/api/v1/concepts' },
+    { name: 'concept.list', run: () => getConcepts('project-1'), message: 'API request failed (502)', path: '/api/v1/concepts' },
     { name: 'concept.read', run: () => getConcept('concept-1'), message: 'API request failed (502)', path: '/api/v1/concepts/concept-1' },
     { name: 'raw.list', run: () => getRawFiles(), message: 'API request failed (502)', path: '/api/v1/raw' },
     { name: 'raw.preview', run: () => getRawFilePreview('note.md'), message: 'Raw preview request failed (502)', path: '/api/v1/raw/note.md?preview=true' },

@@ -193,9 +193,10 @@ type AccountMutationResult struct {
 type RuntimeTokenSource func(context.Context, string) (string, error)
 
 type Client struct {
-	cfg        Config
-	httpClient *http.Client
-	token      RuntimeTokenSource
+	cfg         Config
+	httpClient  *http.Client
+	token       RuntimeTokenSource
+	verifyCache *verificationCache
 }
 
 func New(cfg Config, httpClient *http.Client, tokenSource RuntimeTokenSource) (*Client, error) {
@@ -232,7 +233,11 @@ func New(cfg Config, httpClient *http.Client, tokenSource RuntimeTokenSource) (*
 	if tokenSource == nil {
 		return nil, errors.New("Auth runtime token source is required")
 	}
-	return &Client{cfg: cfg, httpClient: httpClient, token: tokenSource}, nil
+	verifyCache, err := newVerificationCache()
+	if err != nil {
+		return nil, err
+	}
+	return &Client{cfg: cfg, httpClient: httpClient, token: tokenSource, verifyCache: verifyCache}, nil
 }
 
 // NewGoogleRuntime uses the BFF's ambient runtime identity to mint the exact
@@ -262,8 +267,18 @@ func (c *Client) Verify(ctx context.Context, credential, projectID string) (Iden
 // protected-resource URL selected by the BFF route. Ordinary Web and CLI
 // credentials continue to use the configured BFF resource.
 func (c *Client) VerifyResource(ctx context.Context, credential, resource, projectID string) (Identity, error) {
-	var identity Identity
 	if c == nil || strings.TrimSpace(credential) == "" || strings.TrimSpace(resource) == "" {
+		return Identity{}, ErrUnavailable
+	}
+	key := c.verifyCache.cacheKey(credential, c.cfg.Environment, c.cfg.Issuer, resource, projectID)
+	return c.verifyCache.verify(ctx, key, func() (Identity, error) {
+		return c.verifyResourceUncached(ctx, credential, resource, projectID)
+	})
+}
+
+func (c *Client) verifyResourceUncached(ctx context.Context, credential, resource, projectID string) (Identity, error) {
+	var identity Identity
+	if strings.TrimSpace(credential) == "" || strings.TrimSpace(resource) == "" {
 		return identity, ErrUnavailable
 	}
 	body := struct {
@@ -277,7 +292,7 @@ func (c *Client) VerifyResource(ctx context.Context, credential, resource, proje
 	if identity.SchemaVersion != 1 || strings.TrimSpace(identity.Subject) == "" ||
 		identity.Environment != c.cfg.Environment || identity.Resource != resource ||
 		(c.cfg.Issuer != "" && identity.Issuer != c.cfg.Issuer) ||
-		identity.ExpiresAt <= time.Now().Unix() || !validKind(identity.CredentialKind) ||
+		identity.ExpiresAt <= c.verifyCache.now().Unix() || !validKind(identity.CredentialKind) ||
 		identity.Scopes == nil || identity.ManagementScopes == nil {
 		return Identity{}, ErrUnavailable
 	}

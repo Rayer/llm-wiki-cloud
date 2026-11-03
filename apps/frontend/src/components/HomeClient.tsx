@@ -105,6 +105,11 @@ type ModalEntry = {
 };
 type SearchMode = 'wiki' | 'full';
 type SearchError = { messageKey: string; requestId?: string; diagnosticId?: string };
+type RecentConceptsState = {
+  scopeKey: string;
+  status: 'loading' | 'ready' | 'error';
+  entries: WikiEntry[];
+};
 
 function searchError(error: unknown): SearchError {
   const apiError = error instanceof QueryApiError ? error : null;
@@ -297,7 +302,63 @@ export function HomeClient() {
     getSuggestedQueriesOpen,
     () => true,
   );
-  const [latestConcepts, setLatestConcepts] = useState<WikiEntry[]>([]);
+  const [recentConceptsState, setRecentConceptsState] = useState<RecentConceptsState>({
+    scopeKey: homeScopeKey,
+    status: 'loading',
+    entries: [],
+  });
+  const recentConceptsScopeRef = useRef({ scopeKey: homeScopeKey, project: currentProject });
+  const recentConceptsRequestRef = useRef(0);
+  useLayoutEffect(() => {
+    recentConceptsScopeRef.current = { scopeKey: homeScopeKey, project: currentProject };
+    recentConceptsRequestRef.current += 1;
+  }, [currentProject, homeScopeKey]);
+  const recentConcepts = recentConceptsState.scopeKey === homeScopeKey
+    ? recentConceptsState
+    : { scopeKey: homeScopeKey, status: 'loading' as const, entries: [] };
+  const reloadRecentConcepts = useCallback(async () => {
+    const scopeKey = homeScopeKey;
+    const project = currentProject;
+    const projectId = project?.id;
+    const requestId = ++recentConceptsRequestRef.current;
+    if (!projectId) {
+      setRecentConceptsState({ scopeKey, status: 'ready', entries: [] });
+      return;
+    }
+    setRecentConceptsState((current) => (
+      current.scopeKey === scopeKey && current.status === 'ready'
+        ? current
+        : { scopeKey, status: 'loading', entries: [] }
+    ));
+    try {
+      const data = await getConcepts(projectId);
+      const currentScope = recentConceptsScopeRef.current;
+      if (
+        requestId !== recentConceptsRequestRef.current
+        || scopeKey !== currentScope.scopeKey
+        || project !== currentScope.project
+      ) return;
+      const recent = [...data].sort((left, right) => {
+        const leftUpdated = left.objectUpdatedAt ? Date.parse(left.objectUpdatedAt) : NaN;
+        const rightUpdated = right.objectUpdatedAt ? Date.parse(right.objectUpdatedAt) : NaN;
+        const leftValid = Number.isFinite(leftUpdated);
+        const rightValid = Number.isFinite(rightUpdated);
+        if (leftValid !== rightValid) return leftValid ? -1 : 1;
+        if (leftValid && rightValid && leftUpdated !== rightUpdated) return rightUpdated - leftUpdated;
+        return left.title.localeCompare(right.title) || left.slug.localeCompare(right.slug);
+      });
+      setRecentConceptsState({ scopeKey, status: 'ready', entries: recent.slice(0, 6) });
+    } catch {
+      const currentScope = recentConceptsScopeRef.current;
+      if (
+        requestId === recentConceptsRequestRef.current
+        && scopeKey === currentScope.scopeKey
+        && project === currentScope.project
+      ) {
+        setRecentConceptsState({ scopeKey, status: 'error', entries: [] });
+      }
+    }
+  }, [currentProject, homeScopeKey]);
   const [otherWikiPickerOpen, setOtherWikiPickerOpen] = useState(false);
   const [searchButtonCue, setSearchButtonCue] = useState<0 | 1 | 2>(0);
 
@@ -642,30 +703,11 @@ export function HomeClient() {
   }, [currentProject?.id, materialStatusRevision]);
 
   useEffect(() => {
-    let ignore = false;
-    getConcepts()
-      .then((data) => {
-        if (!ignore) {
-          const recent = [...data].sort((left, right) => {
-            const leftUpdated = left.objectUpdatedAt ? Date.parse(left.objectUpdatedAt) : NaN;
-            const rightUpdated = right.objectUpdatedAt ? Date.parse(right.objectUpdatedAt) : NaN;
-            const leftValid = Number.isFinite(leftUpdated);
-            const rightValid = Number.isFinite(rightUpdated);
-            if (leftValid !== rightValid) return leftValid ? -1 : 1;
-            if (leftValid && rightValid && leftUpdated !== rightUpdated) return rightUpdated - leftUpdated;
-            return left.title.localeCompare(right.title) || left.slug.localeCompare(right.slug);
-          });
-          setLatestConcepts(recent.slice(0, 6));
-        }
-      })
-      .catch(() => {
-        if (!ignore) setLatestConcepts([]);
-      });
-
+    void reloadRecentConcepts();
     return () => {
-      ignore = true;
+      recentConceptsRequestRef.current += 1;
     };
-  }, [currentProject]);
+  }, [reloadRecentConcepts]);
 
   const handleSearch = useCallback(async (searchMode: SearchMode, rawQuery = query) => {
     const trimmed = rawQuery.trim();
@@ -1019,11 +1061,20 @@ export function HomeClient() {
             <NavigationLink href="/concepts" className="inline-flex min-h-11 items-center text-sm text-zinc-300 transition hover:text-white">{t('Demo.allConcepts')}</NavigationLink>
           </div>
           {token && !isDemoSession ? <ProjectContentContextPanel key={`content-context:${homeScopeKey}`} projectId={currentProject.id} /> : null}
-          {latestConcepts.length > 0 ? (
+          {recentConcepts.status === 'loading' ? (
+            <p className="text-sm text-zinc-500" role="status">{t('Shell.loading')}</p>
+          ) : recentConcepts.status === 'error' ? (
+            <div className="flex flex-wrap items-center gap-3 text-sm text-amber-200" role="status">
+              <p>{t('QueryErrors.storageUnavailable')}</p>
+              <button type="button" className="min-h-11 rounded border border-white/15 px-3 hover:bg-white/10" onClick={() => { void reloadRecentConcepts(); }}>
+                {t('Shell.retry')}
+              </button>
+            </div>
+          ) : recentConcepts.entries.length > 0 ? (
         <section className="space-y-4" aria-labelledby="latest-concepts-heading">
           <h3 id="latest-concepts-heading" className="font-sans text-lg font-medium text-[#F0F3F1]">{t('Home.recentKnowledge')}</h3>
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-            {latestConcepts.map((concept, index) => {
+            {recentConcepts.entries.map((concept) => {
               const href = conceptHref(concept);
               if (!href) return null;
               return (

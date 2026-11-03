@@ -13,12 +13,13 @@ test('home first-run UX avoids generic examples and exposes latest concept previ
   assert.doesNotMatch(homeClient, /'機器學習'|親子景點|知識整理|概念關聯/);
   assert.doesNotMatch(homeClient, /'RAG'/);
   assert.doesNotMatch(homeClient, /'向量資料庫'/);
-  assert.match(homeClient, /const \[latestConcepts, setLatestConcepts\] = useState<WikiEntry\[\]>\(\[\]\);/);
-  assert.match(homeClient, /getConcepts\(\)[\s\S]*const recent = \[\.\.\.data\]\.sort\(/);
+  assert.match(homeClient, /getConcepts\(projectId\)/);
+  assert.match(homeClient, /const recent = \[\.\.\.data\]\.sort\(/);
   assert.match(homeClient, /objectUpdatedAt/);
   assert.match(homeClient, /left\.title\.localeCompare\(right\.title\) \|\| left\.slug\.localeCompare\(right\.slug\)/);
-  assert.match(homeClient, /setLatestConcepts\(recent\.slice\(0, 6\)\)/);
-  assert.match(homeClient, /!searched && currentProject \? \([\s\S]*?latestConcepts\.length > 0/);
+  assert.match(homeClient, /entries: recent\.slice\(0, 6\)/);
+  assert.match(homeClient, /!searched && currentProject \? \([\s\S]*?recentConcepts\.entries\.length > 0/);
+  assert.match(homeClient, /recentConceptsState\.scopeKey === homeScopeKey/);
   assert.match(homeClient, /Home\.noRecentKnowledge/);
   assert.match(homeClient, /t\('Home\.recentKnowledge'\)/);
   assert.match(homeClient, /const href = conceptHref\(concept\);/);
