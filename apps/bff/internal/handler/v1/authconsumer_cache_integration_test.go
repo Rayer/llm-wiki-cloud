@@ -13,7 +13,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/authconsumer"
 )
 
-func TestSharedVerifierCacheAcrossAuthenticatedAPIHandlersKeepsProjectAuthorization(t *testing.T) {
+func TestFreshCLIVerifierAcrossAuthenticatedAPIHandlersKeepsProjectAuthorization(t *testing.T) {
 	previousMode := gin.Mode()
 	gin.SetMode(gin.TestMode)
 	t.Cleanup(func() { gin.SetMode(previousMode) })
@@ -80,8 +80,8 @@ func TestSharedVerifierCacheAcrossAuthenticatedAPIHandlersKeepsProjectAuthorizat
 			t.Fatalf("%s Project=%s returned status=%d body=%s", request.path, request.project, response.Code, response.Body.String())
 		}
 	}
-	if upstreamCalls.Load() != 2 {
-		t.Fatalf("actual Auth verifier calls=%d, want one shared hit for project-a and one isolated project-b verification", upstreamCalls.Load())
+	if upstreamCalls.Load() != 3 {
+		t.Fatalf("actual Auth CLI verifier calls=%d, want one fresh verification per authenticated API request", upstreamCalls.Load())
 	}
 	if projectChecks.Load() != 3 {
 		t.Fatalf("per-request CLI Project authorization calls=%d, want 3", projectChecks.Load())
