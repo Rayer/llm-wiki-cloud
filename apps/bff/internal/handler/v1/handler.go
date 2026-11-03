@@ -69,6 +69,7 @@ type Handler struct {
 	rebuildIndex                 func(context.Context, string, string) (wikiindex.IDMap, error)
 	adminProjectRecordsLoader    func(context.Context) ([]adminProjectRecord, error)
 	adminProjectStatisticsLoader func(context.Context, store.RootStore, []adminProjectRecord) (map[string]adminProjectStatistics, error)
+	relationMetadata             relationMetadataCache
 	idRoutingMu                  sync.Mutex
 	idRoutingMaps                map[string]dualIDMap
 

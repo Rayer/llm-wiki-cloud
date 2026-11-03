@@ -289,11 +289,12 @@ func (h *Handler) handleIDRoutedPage(c *gin.Context, gcsClient store.Store, curr
 		observability.FinishDataSpan(responseSpan, "response_failure")
 		return true
 	}
-	relatedConcepts, relatedSources, err := resolveWikiRelations(c.Request.Context(), gcsClient, "concept", *page, frontmatter)
+	relations, err := h.resolveWikiRelations(c.Request.Context(), gcsClient, "concept", *page, frontmatter)
 	if err != nil {
 		observability.WriteDataFailureJSONInSpan(c, responseSpan, http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
 		return true
 	}
+	relatedConcepts, relatedSources := relations.responseFields()
 	writeJSONInDataResponse(c, responseSpan, http.StatusOK, handler.ConceptDetailResponse{
 		ID:              entry.ID,
 		Slug:            entry.Slug,

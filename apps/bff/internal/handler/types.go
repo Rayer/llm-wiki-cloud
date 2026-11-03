@@ -136,8 +136,8 @@ type SourceDetailResponse struct {
 	Body              string                 `json:"body"`
 	Raw               string                 `json:"raw"`
 	RawPath           *string                `json:"raw_path"`
-	RelatedConcepts   []WikiReference        `json:"related_concepts,omitempty"`
-	RelatedSources    []WikiReference        `json:"related_sources,omitempty"`
+	RelatedConcepts   *[]WikiReference       `json:"related_concepts,omitempty"`
+	RelatedSources    *[]WikiReference       `json:"related_sources,omitempty"`
 	AnnotationAllowed bool                   `json:"annotation_allowed"`
 	HasAnnotation     bool                   `json:"has_annotation"`
 	AnnotationDirty   bool                   `json:"annotation_dirty"`
@@ -195,8 +195,8 @@ type ConceptDetailResponse struct {
 	Frontmatter     map[string]interface{} `json:"frontmatter"`
 	Body            string                 `json:"body"`
 	Raw             string                 `json:"raw"`
-	RelatedConcepts []WikiReference        `json:"related_concepts,omitempty"`
-	RelatedSources  []WikiReference        `json:"related_sources,omitempty"`
+	RelatedConcepts *[]WikiReference       `json:"related_concepts,omitempty"`
+	RelatedSources  *[]WikiReference       `json:"related_sources,omitempty"`
 }
 
 type WikiReference struct {

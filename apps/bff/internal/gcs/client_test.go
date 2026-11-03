@@ -705,6 +705,25 @@ func TestWikiPagesFromSourceIDMapReturnsSourcePages(t *testing.T) {
 	}
 }
 
+func TestWikiPagesFromSourceIDMapForDetailRelationsRequiresMatchingMetadata(t *testing.T) {
+	valid := []byte(`{"source":{"source-id":"source-one"},"source_meta":{"source-id":{"slug":"source-one","title":"Source One","source_file":"raw/source.md"}}}`)
+	pages, err := WikiPagesFromSourceIDMapForDetailRelations(valid)
+	if err != nil || len(pages) != 1 || pages[0].Title != "Source One" || pages[0].RawPath != "raw/source.md" {
+		t.Fatalf("relation source pages=%#v err=%v", pages, err)
+	}
+	for name, data := range map[string][]byte{
+		"missing source map": []byte(`{}`),
+		"missing metadata":   []byte(`{"source":{"source-id":"source-one"}}`),
+		"mismatched slug":    []byte(`{"source":{"source-id":"source-one"},"source_meta":{"source-id":{"slug":"other"}}}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := WikiPagesFromSourceIDMapForDetailRelations(data); err == nil {
+				t.Fatal("incomplete source metadata accepted")
+			}
+		})
+	}
+}
+
 func TestGeneratedCacheLogicalEntryBounds(t *testing.T) {
 	concepts := strings.Repeat(`{"slug":"concept"}`+"\n", generation.MaxFiles)
 	if pages, err := WikiPagesFromConceptsJSONL([]byte(concepts)); err != nil || len(pages) != generation.MaxFiles {

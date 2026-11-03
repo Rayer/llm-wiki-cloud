@@ -957,11 +957,12 @@ func (h *Handler) GetConcept(c *gin.Context) {
 		observability.FinishDataSpan(responseSpan, "response_failure")
 		return
 	}
-	relatedConcepts, relatedSources, err := resolveWikiRelations(c.Request.Context(), gcsClient, "concept", *page, frontmatter)
+	relations, err := h.resolveWikiRelations(c.Request.Context(), gcsClient, "concept", *page, frontmatter)
 	if err != nil {
 		observability.WriteDataFailureJSONInSpan(c, responseSpan, http.StatusInternalServerError, handler.ErrorResponse{Error: "generated data unavailable"})
 		return
 	}
+	relatedConcepts, relatedSources := relations.responseFields()
 	writeJSONInDataResponse(c, responseSpan, http.StatusOK, handler.ConceptDetailResponse{
 		Slug:            slug,
 		ID:              page.ID,

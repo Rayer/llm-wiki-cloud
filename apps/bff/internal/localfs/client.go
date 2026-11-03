@@ -477,6 +477,53 @@ func (c *Client) ReadFileLimited(ctx context.Context, relPath string, limit int6
 	return data, nil
 }
 
+// ReadFileBounded rejects oversized regular files before allocating the body,
+// then reads one extra byte to enforce the same bound if the file changes.
+func (c *Client) ReadFileBounded(ctx context.Context, relPath string, maxBytes int64) ([]byte, error) {
+	if maxBytes < 0 || maxBytes == int64(^uint64(0)>>1) {
+		return nil, errors.New("invalid bounded read limit")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if !safeSegment(c.userID) || !safeSegment(c.projectID) {
+		return nil, fmt.Errorf("localfs scope is incomplete")
+	}
+	cleanRel, err := cleanRelativePath(relPath)
+	if err != nil {
+		return nil, err
+	}
+	file, err := openScopedRegularFile(c.root, c.userID, c.projectID, cleanRel)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, store.ErrObjectNotExist
+		}
+		return nil, fmt.Errorf("read %s: %w", relPath, err)
+	}
+	info, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("stat %s: %w", relPath, err)
+	}
+	if !info.Mode().IsRegular() {
+		_ = file.Close()
+		return nil, fmt.Errorf("read %s: not a regular file", relPath)
+	}
+	if info.Size() > maxBytes {
+		_ = file.Close()
+		return nil, store.ErrReadLimitExceeded
+	}
+	data, readErr := store.ReadBoundedBody(file, maxBytes)
+	closeErr := file.Close()
+	if readErr != nil {
+		return nil, readErr
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+	return data, nil
+}
+
 // StatFile returns file metadata without reading its contents.
 func (c *Client) StatFile(ctx context.Context, relPath string) (int64, error) {
 	if err := ctx.Err(); err != nil {

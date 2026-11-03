@@ -103,10 +103,11 @@ func (h *Handler) sourceDetailResponse(c *gin.Context, s store.Store, page store
 			value := page.RawPath
 			rawPath = &value
 		}
-		relatedConcepts, relatedSources, err := resolveWikiRelations(c.Request.Context(), s, "source", page, frontmatter)
+		relations, err := h.resolveWikiRelations(c.Request.Context(), s, "source", page, frontmatter)
 		if err != nil {
 			return handler.SourceDetailResponse{}, err
 		}
+		relatedConcepts, relatedSources := relations.responseFields()
 		return handler.SourceDetailResponse{ID: page.ID, Slug: page.Slug, Title: page.Title, Type: "source", Frontmatter: frontmatter, Body: body, Raw: string(data), RawPath: rawPath, RelatedConcepts: relatedConcepts, RelatedSources: relatedSources, AnnotationAllowed: page.AnnotationAllowed, HasAnnotation: page.HasAnnotation, AnnotationDirty: page.AnnotationDirty, RawDirty: page.RawDirty, Dirty: page.Dirty, LifecycleStatus: page.LifecycleStatus, AnnUpdatedAt: page.AnnUpdatedAt}, nil
 	}
 	return handler.SourceDetailResponse{}, errors.New("source missing from lifecycle response")

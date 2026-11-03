@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"io"
 	"time"
 )
 
@@ -14,6 +15,31 @@ var ErrDeclaredObjectUnavailable = errors.New("declared generation object unavai
 var ErrLeaseCleanup = errors.New("lease cleanup failed")
 var ErrQueryGenerationUnpinned = errors.New("query generation is not pinned")
 var ErrQueryGenerationIdentityUnavailable = errors.New("query generation identity unavailable")
+var ErrReadLimitExceeded = errors.New("file exceeds bounded read limit")
+
+// ReadBoundedBody reads at most maxBytes+1 bytes from the actual stream so an
+// unknown-size body cannot be accepted after a truncated maxBytes read.
+func ReadBoundedBody(reader io.Reader, maxBytes int64) ([]byte, error) {
+	if maxBytes < 0 || maxBytes == int64(^uint64(0)>>1) {
+		return nil, errors.New("invalid bounded read limit")
+	}
+	data, err := io.ReadAll(io.LimitReader(reader, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, ErrReadLimitExceeded
+	}
+	return data, nil
+}
+
+// BoundedFileReader reads at most maxBytes+1 bytes and reports
+// ErrReadLimitExceeded when the object is larger. It is an optional Store
+// capability so callers can enforce tighter limits without changing the
+// general ReadFile contract.
+type BoundedFileReader interface {
+	ReadFileBounded(context.Context, string, int64) ([]byte, error)
+}
 
 // QueryGenerationIdentity is the privacy-safe identity of a pinned concept
 // corpus. An empty ConceptsDigest is reserved for explicit local legacy mode.
