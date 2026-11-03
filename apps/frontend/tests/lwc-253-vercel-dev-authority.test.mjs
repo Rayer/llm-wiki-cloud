@@ -406,7 +406,7 @@ test('DEV workflow invokes the shared engine and isolates the fixed diagnostic r
   const workflow = (await import('js-yaml')).load(await readFile(join(monorepoRoot, '.github/workflows/deploy-dev.yml'), 'utf8'));
   const job = workflow.jobs.release;
   assert.equal(workflow.on.push, undefined);
-  assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), ['components', 'release_tag', 'artifact_id', 'dev_artifact_id', 'frontend_config_artifact_id', 'source_sha', 'force', 'operation', 'pipeline_run_timeout_seconds', 'release_source_mode', 'auth_repository_id', 'auth_revision', 'auth_tree_sha256', 'auth_artifact_id', 'auth_run_id', 'auth_run_attempt']);
+  assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), ['components', 'release_tag', 'artifact_id', 'dev_artifact_id', 'frontend_config_artifact_id', 'source_sha', 'force', 'operation', 'pipeline_run_timeout_seconds', 'release_source_mode', 'auth_schema_version', 'auth_repository_id', 'auth_revision', 'auth_tree_sha256', 'auth_artifact_id', 'auth_run_id', 'auth_run_attempt']);
   assert.equal(workflow.on.workflow_dispatch.inputs.operation.type, 'choice');
   assert.deepEqual(workflow.on.workflow_dispatch.inputs.operation.options, ['release', 'config-only', 'frontend-config-only', 'frontend-config-generate', 'deploy', 'rollback', 'reactivate', 'tag', 'readback', 'diagnose-auth-image']);
   assert.equal(workflow.on.workflow_dispatch.inputs.operation.default, 'release');
@@ -424,6 +424,7 @@ test('DEV workflow invokes the shared engine and isolates the fixed diagnostic r
     force: '${{ inputs.force }}',
     pipeline_run_timeout_seconds: '${{ inputs.pipeline_run_timeout_seconds }}',
     release_source_mode: '${{ inputs.release_source_mode }}',
+    auth_schema_version: '${{ inputs.auth_schema_version }}',
     auth_repository_id: '${{ fromJSON(inputs.auth_repository_id) }}',
     auth_revision: '${{ inputs.auth_revision }}',
     auth_tree_sha256: '${{ inputs.auth_tree_sha256 }}',
