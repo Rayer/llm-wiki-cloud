@@ -595,6 +595,58 @@ func (c *Client) ReadFileLimited(ctx context.Context, relPath string, limit int6
 	return object.Data, nil
 }
 
+// ReadFileBounded applies a caller-selected limit to the actual body read and
+// preserves the generation check for pinned generated objects.
+func (c *Client) ReadFileBounded(ctx context.Context, relPath string, maxBytes int64) ([]byte, error) {
+	if maxBytes < 0 || maxBytes == int64(^uint64(0)>>1) {
+		return nil, errors.New("invalid bounded read limit")
+	}
+	view := generationView{}
+	var err error
+	if generation.GenerationOwned(relPath) {
+		view, err = c.operationView(ctx)
+		if err != nil {
+			return nil, err
+		}
+	}
+	objectPath, expected, err := c.resolveReadPath(relPath, view)
+	if err != nil {
+		return nil, err
+	}
+	if view.manifest != nil {
+		file, ok := view.manifest.File(relPath)
+		if !ok {
+			return nil, store.ErrDeclaredObjectUnavailable
+		}
+		if file.Size > maxBytes {
+			return nil, store.ErrReadLimitExceeded
+		}
+	}
+	object, err := c.readObject(ctx, objectPath, expected, maxBytes)
+	if err != nil {
+		if errors.Is(err, store.ErrReadLimitExceeded) {
+			if view.manifest != nil {
+				return nil, store.ErrDeclaredObjectUnavailable
+			}
+			return nil, err
+		}
+		if objectNotFound(err) {
+			if view.manifest != nil {
+				return nil, store.ErrDeclaredObjectUnavailable
+			}
+			return nil, store.ErrObjectNotExist
+		}
+		if view.manifest != nil {
+			return nil, store.ErrDeclaredObjectUnavailable
+		}
+		return nil, fmt.Errorf("read %s: %w", objectPath, err)
+	}
+	if err := c.verifyGenerationRead(relPath, view, object); err != nil {
+		return nil, err
+	}
+	return object.Data, nil
+}
+
 // StatFile returns object metadata without reading its contents.
 func (c *Client) StatFile(ctx context.Context, relPath string) (int64, error) {
 	view := generationView{}
@@ -1172,7 +1224,36 @@ func WikiPagesFromSourceIDMap(data []byte) ([]WikiPage, error) {
 	if err != nil {
 		return nil, fmt.Errorf("decode source id map: %w", err)
 	}
+	return wikiPagesFromSourceIDMap(source), nil
+}
 
+// WikiPagesFromSourceIDMapForDetailRelations requires the metadata rows that
+// the detail relation path needs to preserve source titles and raw mappings.
+// Older maps remain usable by existing list routes but cannot provide an exact
+// relation response without scanning source Markdown.
+func WikiPagesFromSourceIDMapForDetailRelations(data []byte) ([]WikiPage, error) {
+	source, err := decodeWikiIDMap(data)
+	if err != nil {
+		return nil, fmt.Errorf("decode source id map: %w", err)
+	}
+	if source.Source == nil {
+		return nil, errors.New("source id map is missing")
+	}
+	for id, slug := range source.Source {
+		id = strings.TrimSpace(id)
+		slug = strings.TrimSpace(slug)
+		if id == "" || slug == "" {
+			continue
+		}
+		meta, ok := source.SourceMeta[id]
+		if !ok || strings.TrimSpace(meta.Slug) != slug {
+			return nil, errors.New("source metadata is incomplete")
+		}
+	}
+	return wikiPagesFromSourceIDMap(source), nil
+}
+
+func wikiPagesFromSourceIDMap(source wikiIDMap) []WikiPage {
 	pages := make([]WikiPage, 0, len(source.Source))
 	for id, slug := range source.Source {
 		id = strings.TrimSpace(id)
@@ -1196,7 +1277,7 @@ func WikiPagesFromSourceIDMap(data []byte) ([]WikiPage, error) {
 	sort.Slice(pages, func(i, j int) bool {
 		return pages[i].Slug < pages[j].Slug
 	})
-	return pages, nil
+	return pages
 }
 
 func decodeWikiIDMap(data []byte) (wikiIDMap, error) {

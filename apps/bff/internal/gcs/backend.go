@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"time"
 
 	"cloud.google.com/go/storage"
@@ -87,14 +86,17 @@ type backendObject struct {
 
 func (c *Client) readObject(ctx context.Context, name string, generation, limit int64) (backendObject, error) {
 	if limit < 0 {
-		return backendObject{}, errors.New("object exceeds input limit")
+		return backendObject{}, errors.New("invalid object input limit")
 	}
 	if c.backend != nil {
 		object, err := c.backend.Read(ctx, name, generation, limit)
-		if err != nil || object.Size < 0 || object.Size > limit || int64(len(object.Data)) != object.Size || int64(len(object.Data)) > limit {
-			if err != nil {
-				return backendObject{}, err
-			}
+		if err != nil {
+			return backendObject{}, err
+		}
+		if object.Size > limit || int64(len(object.Data)) > limit {
+			return backendObject{}, store.ErrReadLimitExceeded
+		}
+		if object.Size < 0 || int64(len(object.Data)) != object.Size {
 			return backendObject{}, errors.New("object size does not match attributes")
 		}
 		return object, nil
@@ -119,18 +121,27 @@ func (c *Client) readObject(ctx context.Context, name string, generation, limit 
 		return backendObject{}, err
 	}
 	defer r.Close()
-	if r.Attrs.Size < 0 || r.Attrs.Size > limit {
+	if r.Attrs.Size > limit {
+		finishOnce(nil)
+		return backendObject{}, store.ErrReadLimitExceeded
+	}
+	if r.Attrs.Size < 0 {
 		finishOnce(nil)
 		return backendObject{}, errors.New("object size does not match attributes")
 	}
-	data, err := io.ReadAll(io.LimitReader(r, limit+1))
-	finishOnce(err)
+	data, err := store.ReadBoundedBody(r, limit)
 	if err != nil {
+		if errors.Is(err, store.ErrReadLimitExceeded) {
+			finishOnce(nil)
+		} else {
+			finishOnce(err)
+		}
 		return backendObject{}, err
 	}
-	if int64(len(data)) != r.Attrs.Size || int64(len(data)) > limit {
+	finishOnce(nil)
+	if int64(len(data)) != r.Attrs.Size {
 		finishOnce(nil)
-		return backendObject{}, errors.New("object exceeds input limit")
+		return backendObject{}, errors.New("object size does not match attributes")
 	}
 	return backendObject{Name: name, Data: data, Generation: r.Attrs.Generation, Size: r.Attrs.Size}, nil
 }

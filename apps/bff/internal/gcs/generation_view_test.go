@@ -95,7 +95,7 @@ func (m *memoryBackend) Read(_ context.Context, name string, generation, limit i
 		return backendObject{}, storage.ErrObjectNotExist
 	}
 	if object.Size > limit {
-		return backendObject{}, errors.New("object exceeds input limit")
+		return backendObject{}, store.ErrReadLimitExceeded
 	}
 	object.Data = append([]byte(nil), object.Data...)
 	object.Metadata = cloneMetadata(object.Metadata)
@@ -330,6 +330,80 @@ func TestGenerationViewLegacyOperationsRemainDirect(t *testing.T) {
 	}
 	if data, err := client.ReadRaw(ctx, "input.md"); err != nil || string(data) != "raw input" {
 		t.Fatalf("ReadRaw legacy = %q, %v", data, err)
+	}
+}
+
+func TestReadFileBoundedChecksPinnedSizeAndAcceptsExactLimit(t *testing.T) {
+	client, backend := newMemoryClient()
+	data := []byte("12345")
+	seedManifest(t, backend, "bounded-read", map[string]backendObject{
+		"cache/concepts.jsonl": {Data: data, Generation: 71},
+	})
+	pinned, _, err := client.PinCurrentGeneration(context.Background())
+	if err != nil {
+		t.Fatalf("PinCurrentGeneration: %v", err)
+	}
+	backend.mu.Lock()
+	readsBefore := len(backend.requests)
+	backend.mu.Unlock()
+	if _, err := pinned.ReadFileBounded(context.Background(), "cache/concepts.jsonl", int64(len(data)-1)); !errors.Is(err, store.ErrReadLimitExceeded) {
+		t.Fatalf("oversized pinned read err=%v, want ErrReadLimitExceeded", err)
+	}
+	backend.mu.Lock()
+	readsAfterReject := len(backend.requests)
+	backend.mu.Unlock()
+	if readsAfterReject != readsBefore {
+		t.Fatalf("known oversized object was fetched: reads before=%d after=%d", readsBefore, readsAfterReject)
+	}
+	got, err := pinned.ReadFileBounded(context.Background(), "cache/concepts.jsonl", int64(len(data)))
+	if err != nil || !bytes.Equal(got, data) {
+		t.Fatalf("exact-limit pinned read=%q err=%v", got, err)
+	}
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	last := backend.requests[len(backend.requests)-1]
+	if last.Name != projectObject(path.Join(generation.Prefix, "bounded-read", "cache/concepts.jsonl")) {
+		t.Fatalf("read target=%q", last.Name)
+	}
+	if backend.requestedLimits[len(backend.requestedLimits)-1] != int64(len(data)) {
+		t.Fatalf("actual read limit=%d want=%d", backend.requestedLimits[len(backend.requestedLimits)-1], len(data))
+	}
+}
+
+func TestReadFileBoundedTreatsPinnedObjectOversizeAsIntegrityFailure(t *testing.T) {
+	client, backend := newMemoryClient()
+	data := []byte("within")
+	rel := "cache/concepts.jsonl"
+	seedManifest(t, backend, "bounded-object-mismatch", map[string]backendObject{
+		rel: {Data: data, Generation: 81},
+	})
+	pinned, _, err := client.PinCurrentGeneration(context.Background())
+	if err != nil {
+		t.Fatalf("PinCurrentGeneration: %v", err)
+	}
+	name := projectObject(path.Join(generation.Prefix, "bounded-object-mismatch", rel))
+	backend.mu.Lock()
+	actual := backend.objects[name]
+	actual.Data = append(actual.Data, '!')
+	actual.Size++
+	backend.objects[name] = actual // keep the pinned generation; the manifest still declares the original size and digest.
+	readsBefore := len(backend.requests)
+	backend.mu.Unlock()
+
+	if got, err := pinned.ReadFileBounded(context.Background(), rel, int64(len(data))); !errors.Is(err, store.ErrDeclaredObjectUnavailable) || got != nil {
+		t.Fatalf("pinned declared-size mismatch data=%q err=%v; want fatal ErrDeclaredObjectUnavailable", got, err)
+	}
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	if len(backend.requests) != readsBefore+1 {
+		t.Fatalf("over-limit object read count=%d want=%d", len(backend.requests)-readsBefore, 1)
+	}
+	request := backend.requests[len(backend.requests)-1]
+	if request.Name != name || request.Generation != 81 {
+		t.Fatalf("read did not remain pinned to exact object generation: %#v", request)
+	}
+	if got := backend.requestedLimits[len(backend.requestedLimits)-1]; got != int64(len(data)) {
+		t.Fatalf("over-limit body budget=%d want=%d", got, len(data))
 	}
 }
 
