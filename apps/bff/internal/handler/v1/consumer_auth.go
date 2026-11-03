@@ -25,7 +25,7 @@ type onboardingConsumer interface {
 }
 
 type mcpConsentConsumer interface {
-	LookupMCPConsent(context.Context, string, string, string, int64) (authconsumer.MCPConsentTransaction, error)
+	LookupMCPConsent(context.Context, string, string, string, int64, authconsumer.MCPConsentPortalContext) (authconsumer.MCPConsentTransaction, error)
 	DecideMCPConsent(context.Context, string, authconsumer.MCPConsentDecisionRequest) (authconsumer.MCPConsentDecisionResult, error)
 	ListProjectMCPGrants(context.Context, string, string, int64, string) ([]authconsumer.MCPGrant, error)
 }

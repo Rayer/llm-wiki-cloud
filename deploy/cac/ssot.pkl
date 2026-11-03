@@ -3,6 +3,7 @@ module lwc.pipeline.ssot
 
 environment: "local" | "dev" | "prod" = read("prop:environment")
 target: "pipeline" | "bff" | "auth" | "i18n" = read?("prop:target") ?? "pipeline"
+local authSchemaVersion: Int = read?("prop:authSchemaVersion")?.toInt() ?? 4
 
 /// Required only when the Pipeline target is selected.
 runTimeoutSeconds: Int? = read?("prop:runTimeoutSeconds")?.toInt()
@@ -237,6 +238,10 @@ class AuthConsumerPublicProjection {
   management_scopes: Listing<AuthManagementScope>
 }
 
+class AuthPortalConfig {
+  lwc_bff_origin: String
+}
+
 class AuthConfig {
   schema_version: Int
   environment: String
@@ -260,6 +265,7 @@ class AuthConfig {
   management_scopes: Listing<AuthManagementScope>
   consumer_verifiers: Listing<AuthConsumerVerifier>
   consumer_public_projection: AuthConsumerPublicProjection
+  portal: AuthPortalConfig?
   config_secret_resource: String
 }
 
@@ -757,7 +763,7 @@ local bff = if (environment == "local") localBff
   else prodBff
 
 local localAuth = new AuthConfig {
-  schema_version = 3
+  schema_version = authSchemaVersion
   environment = "local"
   target = "auth"
   gcp_project = "llm-wiki-cloud"
@@ -826,11 +832,12 @@ local localAuth = new AuthConfig {
     resource = localBffResourceOrigin
     management_scopes = authManagementScopes
   }
+  portal = if (authSchemaVersion == 4) new AuthPortalConfig { lwc_bff_origin = localBffResourceOrigin } else null
   config_secret_resource = ""
 }
 
 local devAuth = new AuthConfig {
-  schema_version = 3
+  schema_version = authSchemaVersion
   environment = "dev"
   target = "auth"
   gcp_project = "llm-wiki-cloud"
@@ -904,11 +911,12 @@ local devAuth = new AuthConfig {
     resource = devBffResourceOrigin
     management_scopes = authManagementScopes
   }
+  portal = if (authSchemaVersion == 4) new AuthPortalConfig { lwc_bff_origin = devBffResourceOrigin } else null
   config_secret_resource = "projects/llm-wiki-cloud/secrets/lwc-auth-app-config-dev"
 }
 
 local prodAuth = new AuthConfig {
-  schema_version = 3
+  schema_version = authSchemaVersion
   environment = "prod"
   target = "auth"
   gcp_project = "llm-wiki-cloud"
@@ -980,6 +988,7 @@ local prodAuth = new AuthConfig {
     resource = prodBffResourceOrigin
     management_scopes = authManagementScopes
   }
+  portal = if (authSchemaVersion == 4) new AuthPortalConfig { lwc_bff_origin = prodBffResourceOrigin } else null
   config_secret_resource = "projects/llm-wiki-cloud/secrets/lwc-auth-app-config-prod"
 }
 

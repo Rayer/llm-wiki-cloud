@@ -1,6 +1,11 @@
 package config
 
-import "errors"
+import (
+	"errors"
+	"net/url"
+	"strconv"
+	"strings"
+)
 
 const (
 	legacyDevAuthURL       = "https://auth.dev.rayer.idv.tw"
@@ -12,6 +17,37 @@ const (
 	legacyDevBFFCaller     = "lwc-bff-dev@llm-wiki-cloud.iam.gserviceaccount.com"
 	legacyProdBFFCaller    = "lwc-bff-prod@llm-wiki-cloud.iam.gserviceaccount.com"
 )
+
+func ValidatePortalLWCBFFOrigin(environment, origin string) error {
+	if origin == "" || strings.TrimSpace(origin) != origin {
+		return errors.New("portal LWC BFF origin is invalid")
+	}
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" ||
+		(u.Path != "" && u.Path != "/") || strings.TrimRight(origin, "/") != u.Scheme+"://"+u.Host {
+		return errors.New("portal LWC BFF origin is invalid")
+	}
+	if environment == "local" {
+		port, portErr := strconv.Atoi(u.Port())
+		if u.Scheme != "http" || (u.Hostname() != "localhost" && u.Hostname() != "127.0.0.1" && u.Hostname() != "::1") || portErr != nil || port < 1 || port > 65535 {
+			return errors.New("local portal LWC BFF origin must be loopback HTTP with an explicit port")
+		}
+		return nil
+	}
+	expected := ""
+	switch environment {
+	case "dev":
+		expected = legacyDevBFFResource
+	case "prod":
+		expected = legacyProdBFFResource
+	default:
+		return errors.New("portal LWC BFF environment is unsupported")
+	}
+	if u.Scheme != "https" || origin != expected {
+		return errors.New("portal LWC BFF origin does not match its Auth environment")
+	}
+	return nil
+}
 
 // LegacyLWCBridgeConsumer describes only the bounded schema-2 bridge. Schema-3
 // callers must use the typed Auth/BFF consumer projections instead.

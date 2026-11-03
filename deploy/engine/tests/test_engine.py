@@ -12,6 +12,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 HERE = Path(__file__).resolve().parents[1]
@@ -118,6 +119,66 @@ class Acceptance(unittest.TestCase):
                 self.assertEqual(providers.release_source_mode(restored.plan), 'legacy_monorepo')
                 self.assertEqual(restored.provider._build_source_environment('auth')[:2],
                                  (restored.plan['source'], restored.plan['branch']))
+
+    def test_schema_three_staging_pin_requires_dev_bff_only_and_v3_reuse_receipt(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            reuse = Path(temporary)
+            base = dict(environment='development', source='a' * 40, components='auth',
+                        tag='schema-three-staging', release_source_mode='independent',
+                        auth_schema_version=3, reuse=str(reuse))
+            with self.assertRaisesRegex(Breakpoint, 'auth-schema3-staging-requires-independent-bff-reuse'):
+                engine.admit(SimpleNamespace(**base))
+            base['components'] = 'bff'
+            with self.assertRaisesRegex(Breakpoint, 'auth-schema3-staging-requires-v3-receipt'):
+                engine.admit(SimpleNamespace(**base))
+            (reuse / 'receipts').mkdir()
+            write(reuse / 'receipts/auth.json', {'component': 'auth', 'schema': 4, 'auth_source': {}})
+            with self.assertRaisesRegex(Breakpoint, 'auth-schema3-staging-requires-v3-receipt'):
+                engine.admit(SimpleNamespace(**base))
+
+    def test_prepare_cli_uses_persisted_auth_schema_when_flag_is_omitted(self):
+        class ExistingSchemaThreePlan:
+            def __init__(self):
+                self.plan = {'selected': ['bff'], 'source': 'a' * 40, 'tag': 'schema-three-cli',
+                             'normalized': {'environment': 'development'}}
+                self.prepare_calls = 0
+                self.result_calls = []
+
+            def auth_input_snapshot(self):
+                return {'schema_version': 3}
+
+            def prepare(self, reuse=None, dev=None):
+                self.prepare_calls += 1
+                self.asserted_reuse = reuse
+                self.asserted_dev = dev
+
+            def result(self, exc=None):
+                self.result_calls.append(exc)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            (directory / 'plan.json').write_text('{}', encoding='utf-8')
+            existing = ExistingSchemaThreePlan()
+            stdout = io.StringIO()
+            with patch.object(engine, 'Engine', return_value=existing), \
+                 patch('sys.argv', ['engine.py', 'prepare', '--directory', str(directory)]), \
+                 patch('sys.stdout', stdout):
+                exit_code = engine.main()
+            self.assertEqual(exit_code, 0, stdout.getvalue())
+            self.assertEqual(existing.prepare_calls, 1)
+            self.assertEqual(existing.result_calls, [None])
+
+            stdout = io.StringIO()
+            with patch.object(engine, 'Engine', return_value=existing), \
+                 patch('sys.argv', ['engine.py', 'prepare', '--directory', str(directory),
+                                    '--auth-schema-version', '4']), \
+                 patch('sys.stdout', stdout):
+                exit_code = engine.main()
+            self.assertEqual(exit_code, 1)
+            self.assertEqual(existing.prepare_calls, 1,
+                             'an explicit schema change must fail before prepare can mutate the release')
+            self.assertEqual(existing.result_calls[-1].reason,
+                             'auth-schema-version-change-requires-new-plan')
 
     def setUp(self):
         self.real_node = shutil.which('node')
@@ -997,9 +1058,11 @@ class Acceptance(unittest.TestCase):
                              'schema-1 readback cannot satisfy a schema-2 snapshot')
         response.read.return_value=json.dumps({'config_schema_version':4,
                                               'config_id':inputs['config_id']}).encode()
+        schema4_inputs=copy.deepcopy(inputs)
+        schema4_inputs['schema_version']=4
         with patch('providers.urllib.request.build_opener',return_value=opener):
-            self.assertFalse(provider.auth_runtime_config_matches(inputs),
-                             'unknown runtime schema cannot satisfy a selected schema')
+            self.assertTrue(provider.auth_runtime_config_matches(schema4_inputs),
+                            'a schema-4 runtime can satisfy the selected schema')
         legacy_inputs=copy.deepcopy(inputs)
         legacy_inputs['schema_version']=1
         legacy_inputs.pop('oauth_resources')
@@ -1016,17 +1079,21 @@ class Acceptance(unittest.TestCase):
             with self.assertRaisesRegex(Breakpoint,'auth-runtime-config-identity-invalid'):
                 provider.auth_runtime_config_matches(bad)
             build_opener.assert_not_called()
-        bad_schema=dict(inputs,schema_version=4)
+        bad_schema=dict(inputs,schema_version=5)
         with patch('providers.urllib.request.build_opener') as build_opener:
             with self.assertRaisesRegex(Breakpoint,'auth-runtime-config-identity-invalid'):
                 provider.auth_runtime_config_matches(bad_schema)
+            build_opener.assert_not_called()
+        with patch('providers.urllib.request.build_opener') as build_opener:
+            with self.assertRaisesRegex(Breakpoint,'auth-runtime-config-identity-invalid'):
+                provider.auth_runtime_config_matches(dict(inputs,schema_version=True))
             build_opener.assert_not_called()
         with patch('providers.urllib.request.build_opener') as build_opener:
             build_opener.return_value.open.side_effect=OSError('offline')
             with self.assertRaisesRegex(Breakpoint,'auth-runtime-config-identity-unreadable'):
                 provider.auth_runtime_config_matches(inputs)
 
-    def test_auth_input_snapshot_supports_exact_schema_one_two_and_three_receipts(self):
+    def test_auth_input_snapshot_supports_exact_schema_one_two_three_and_four_receipts(self):
         e=self.make(('auth',),name='auth-input-snapshot-schema')
         inputs=e.auth_input_snapshot()
         self.assertEqual(inputs['schema_version'],2)
@@ -1057,6 +1124,22 @@ class Acceptance(unittest.TestCase):
         self.assertEqual(current_receipt['auth_config_inputs'],current)
         self.assertEqual(current_receipt['auth_materialization_schema'],1)
 
+        schema4=copy.deepcopy(current)
+        schema4['schema_version']=4
+        schema4['portal']={'lwc_bff_origin':schema4['sync_service_url']}
+        schema4['consumer_public_projection']['resource']=schema4['sync_service_url']
+        e.plan['normalized']['auth']['runtime_inputs']=schema4
+        self.assertEqual(e.auth_input_snapshot(),schema4)
+        schema4_receipt={'schema':4,'auth_supported_schema_versions':[1,2,3,4]}
+        self.assertTrue(e.auth_receipt_supports_schema(schema4_receipt,4))
+        self.assertFalse(e.auth_receipt_supports_schema(
+            {'schema':3},4), 'a v3-only artifact cannot receive a schema-4 snapshot')
+        with self.assertRaisesRegex(Breakpoint,'auth-input-snapshot-invalid'):
+            invalid=copy.deepcopy(schema4)
+            invalid['portal']['lwc_bff_origin']='https://different.example'
+            e.plan['normalized']['auth']['runtime_inputs']=invalid
+            e.auth_input_snapshot()
+
         # Keep the schema-1 compatibility check against an exact legacy key set.
         e.plan['normalized']['auth']['runtime_inputs']=inputs
         mismatch=copy.deepcopy(old_receipt)
@@ -1075,6 +1158,26 @@ class Acceptance(unittest.TestCase):
                 e.plan['normalized']['auth']['runtime_inputs']=bad
                 with self.assertRaisesRegex(Breakpoint,'auth-input-snapshot-invalid'):
                     e.auth_input_snapshot()
+
+    def test_selected_schema_four_cannot_use_v3_only_gateauth_artifact(self):
+        selected = copy.deepcopy(self.normalized)
+        selected['auth']['runtime_inputs']['schema_version'] = 4
+        plan = {
+            'normalized': selected,
+            'auth_source': {
+                'repository_id': 'github:1439745097', 'revision': 'd' * 40,
+                'tree_sha256': 'sha256:' + 'e' * 64, 'artifact_id': '7',
+                'run_id': 8, 'run_attempt': 1,
+            },
+        }
+        provider = providers.Providers(plan, self.root)
+        with patch.object(providers.gat4_ci_artifact, 'load_package', return_value={
+                'contracts': {'auth_config_schema_versions': [1, 2, 3]}}), \
+                patch('providers.run') as provider_run:
+            with self.assertRaisesRegex(
+                    Breakpoint, 'independent-auth-artifact-config-schema-unsupported'):
+                provider.prepare_independent_auth()
+            provider_run.assert_not_called()
 
     def test_auth_stage1_snapshot_refreshes_for_cross_plan_and_production_image_reuse(self):
         old=self.ready(self.make(('auth',),name='auth-stage1-old'))

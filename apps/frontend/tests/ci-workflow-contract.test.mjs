@@ -35,6 +35,7 @@ test('r2 registered release and recovery workflows use explicit artifact inputs'
     expectedInputs.push('pipeline_run_timeout_seconds');
     expectedInputs.push('release_source_mode');
     if (file === 'deploy-dev.yml') {
+      expectedInputs.push('auth_schema_version');
       expectedInputs.push('auth_repository_id', 'auth_revision', 'auth_tree_sha256',
         'auth_artifact_id', 'auth_run_id', 'auth_run_attempt');
     }
@@ -54,6 +55,14 @@ test('r2 registered release and recovery workflows use explicit artifact inputs'
     assert.deepEqual(parsed.on.workflow_dispatch.inputs.release_source_mode.options,
       ['independent', 'legacy_monorepo']);
     if (file === 'deploy-dev.yml') {
+      assert.deepEqual(parsed.on.workflow_dispatch.inputs.auth_schema_version, {
+        description: 'Auth runtime input schema for DEV; schema 3 is limited to independent BFF-only staging with a retained schema-3 Auth receipt',
+        required: true,
+        type: 'choice',
+        options: ['4', '3'],
+        default: '4',
+      });
+      assert.equal(parsed.jobs.release.with.auth_schema_version, '${{ inputs.auth_schema_version }}');
       for (const [name, type] of Object.entries({
         auth_repository_id: 'number', auth_revision: 'string', auth_tree_sha256: 'string',
         auth_artifact_id: 'number', auth_run_id: 'number', auth_run_attempt: 'number',
@@ -191,6 +200,12 @@ test('shared engine has one approval and one serialized runtime authority', asyn
   const job = parsed.jobs.release;
   assert.deepEqual(parsed.on.workflow_call.inputs.executor_sha, { required: true, type: 'string' });
   assert.deepEqual(parsed.on.workflow_call.inputs.force, { type: 'boolean', default: false });
+  assert.deepEqual(parsed.on.workflow_call.inputs.auth_schema_version, {
+    required: false,
+    type: 'string',
+    default: '4',
+    description: "Auth runtime input schema for initial DEV admission; schema 3 remains guarded by the engine's independent BFF-only retained-receipt checks",
+  });
   assert.equal(parsed.jobs.release.env.EXECUTOR_SHA, '${{ inputs.executor_sha }}');
   assert.equal(parsed.jobs.release.env.FORCE, '${{ inputs.force }}');
   assert.equal(job.if, "inputs.operation != 'diagnose-auth-image' && inputs.operation != 'config-only' && inputs.operation != 'frontend-config-only'");
@@ -226,6 +241,15 @@ test('shared engine has one approval and one serialized runtime authority', asyn
   assert.equal(job.env.SOURCE, '${{ inputs.source_sha }}');
   assert.equal(job.env.EXECUTOR_SHA, '${{ inputs.executor_sha }}');
   assert.equal(steps[prepare].if, "inputs.operation == 'release'");
+  assert.equal(steps[prepare].with['auth-schema-version'], '${{ inputs.auth_schema_version }}');
+  const preflight = steps.find(step => step.with?.operation === 'auth-preflight');
+  assert.equal(preflight.with['auth-schema-version'], '${{ inputs.auth_schema_version }}');
+  const action = parseYaml(await readFile(join(repoRoot, '.github/actions/deployment-engine/action.yml'), 'utf8'));
+  assert.deepEqual(action.inputs['auth-schema-version'], {
+    required: false,
+    default: '',
+    description: 'Optional Auth runtime input schema pinned during initial admission',
+  });
   assert.equal(steps.find(step => step.uses?.startsWith('actions/checkout@')).with.ref, '${{ inputs.executor_sha }}');
   assert.equal(steps[runtime].uses, './.github/actions/deployment-engine');
   assert.equal(job.permissions.contents, 'write');

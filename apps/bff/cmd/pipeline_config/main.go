@@ -267,8 +267,9 @@ func main() {
 	output := flags.String("output", "", "generated output directory")
 	descriptor := flags.Bool("descriptor", false, "emit a nonsecret component input snapshot for deployment admission")
 	sourceSHA := flags.String("source-sha", "", "immutable source commit for Auth runtime configuration")
+	authSchemaVersion := flags.Int("auth-schema-version", 0, "pin Auth schema 3 or 4 for deployment admission")
 	_ = flags.Parse(os.Args[2:])
-	if err := runPrepareTargetModeAtSource(context.Background(), *target, *environment, *output, *descriptor, *sourceSHA, googleReader); err != nil {
+	if err := runPrepareTargetModeAtSourceWithAuthSchema(context.Background(), *target, *environment, *output, *descriptor, *sourceSHA, *authSchemaVersion, googleReader); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -296,8 +297,16 @@ func runPrepareTargetMode(ctx context.Context, target, environment, output strin
 }
 
 func runPrepareTargetModeAtSource(ctx context.Context, target, environment, output string, descriptorOnly bool, sourceSHA string, newReader readerFactory) error {
+	return runPrepareTargetModeAtSourceWithAuthSchema(ctx, target, environment, output, descriptorOnly, sourceSHA, 0, newReader)
+}
+
+func runPrepareTargetModeAtSourceWithAuthSchema(ctx context.Context, target, environment, output string, descriptorOnly bool, sourceSHA string, authSchemaVersion int, newReader readerFactory) error {
 	if target != "pipeline" && target != "bff" && target != "auth" && target != "i18n" {
 		return errors.New("target must be pipeline, bff, auth, or i18n")
+	}
+	if authSchemaVersion != 0 && (target != "auth" || !descriptorOnly || (authSchemaVersion != 3 && authSchemaVersion != 4) ||
+		(authSchemaVersion == 3 && environment != "dev")) {
+		return errors.New("Auth schema pin requires a dev Auth descriptor and version 3 or 4")
 	}
 	if descriptorOnly && target != "bff" && target != "auth" {
 		return errors.New("--descriptor requires --target bff or auth")
@@ -356,6 +365,9 @@ func runPrepareTargetModeAtSource(ctx context.Context, target, environment, outp
 			properties = append(properties, "--property", property.name+"="+value)
 		}
 	} else if target == "auth" {
+		if authSchemaVersion != 0 {
+			properties = append(properties, "--property", "authSchemaVersion="+strconv.Itoa(authSchemaVersion))
+		}
 		for _, property := range []struct{ name, env, fallback string }{
 			{"authLocalScope", "LOCAL_CLOUD_SCOPE", ""},
 			{"authLocalJWTSecretFile", "LOCAL_CLOUD_JWT_SECRET_FILE", ""},

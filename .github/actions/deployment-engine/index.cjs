@@ -6,6 +6,8 @@ const path = require('node:path');
 const temp = process.env.RUNNER_TEMP;
 const executorSha = process.env.EXECUTOR_SHA;
 if (!/^[0-9a-f]{40}$/.test(executorSha || '')) process.exit(1);
+const authSchemaVersion=process.env['INPUT_AUTH-SCHEMA-VERSION'] || '';
+if (authSchemaVersion && !['3','4'].includes(authSchemaVersion)) process.exit(1);
 function run(command, args) {
   const result = spawnSync(command,args,{stdio:'inherit',env:process.env,timeout:6900000});
   if (result.error || result.status !== 0) process.exit(result.status || 1);
@@ -34,6 +36,7 @@ function admissionArgs(operation, directory, reuse, dev) {
   if(dev) args.push('--dev-reference',process.env.DEV_ID);
   if (process.env.GAT4_RELEASE_SOURCE_MODE)
     args.push('--release-source-mode',process.env.GAT4_RELEASE_SOURCE_MODE);
+  if (authSchemaVersion) args.push('--auth-schema-version',authSchemaVersion);
   const authSource=[
     ['--auth-repository-id',process.env.AUTH_REPOSITORY_ID],
     ['--auth-revision',process.env.AUTH_REVISION],

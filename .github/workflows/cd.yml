@@ -13,6 +13,11 @@ on:
         required: true
         type: string
         description: Explicit receipt mode; legacy_monorepo supports retained receipts and the current same-repository GAT-4 DEV stage; this does not change Production policy
+      auth_schema_version:
+        required: false
+        type: string
+        default: '4'
+        description: Auth runtime input schema for initial DEV admission; schema 3 remains guarded by the engine's independent BFF-only retained-receipt checks
       auth_repository_id:
         required: false
         type: number
@@ -174,6 +179,7 @@ jobs:
           AUTH_RUN_ATTEMPT: ${{ inputs.auth_run_attempt }}
         with:
           operation: auth-preflight
+          auth-schema-version: ${{ inputs.auth_schema_version }}
       - name: Download and verify immutable GateAuth CI package
         id: gateauth-source
         if: inputs.operation == 'release' && inputs.environment == 'development' && inputs.release_source_mode == 'independent' && contains(format(',{0},', inputs.components), ',auth,') && steps.gat4-preflight.outputs.needs_auth_ci_package == 'true'
@@ -219,6 +225,7 @@ jobs:
           AUTH_RUN_ATTEMPT: ${{ inputs.auth_run_attempt }}
         with:
           operation: prepare
+          auth-schema-version: ${{ inputs.auth_schema_version }}
       - name: Publish ready stage barrier
         if: inputs.operation == 'release'
         id: ready

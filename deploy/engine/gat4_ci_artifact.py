@@ -295,7 +295,8 @@ def _check_manifest(manifest, envelope, expected_source, expected_project_id,
     if (not isinstance(contracts, dict) or
             set(contracts) != {"auth_config_schema_versions", "lwc_consumer_schema_version"} or
             not isinstance(versions, list) or any(type(value) is not int for value in versions) or
-            versions != [1, 2, 3] or type(consumer_version) is not int or consumer_version != 1):
+            versions not in ([1, 2, 3], [1, 2, 3, 4]) or
+            type(consumer_version) is not int or consumer_version != 1):
         raise ArtifactError("manifest consumer contract versions are unsupported")
 
     return manifest

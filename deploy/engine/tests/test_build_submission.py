@@ -148,6 +148,11 @@ class AsyncBuildSubmission(unittest.TestCase):
                 source_index=source_args.index('--source-sha')
                 source_sha=source_args[source_index+1]
                 del source_args[source_index:source_index+2]
+                schema_index=source_args.index('--auth-schema-version')
+                fixture_schema=2
+                if os.environ.get('LWC_TEST_AUTH_SCHEMA_FROM_ARG') == '1':
+                    fixture_schema=int(source_args[schema_index+1])
+                del source_args[schema_index:schema_index+2]
                 output=source_args[source_args.index('--output')+1]
                 target=source_args[source_args.index('--environment')+1]
                 result=subprocess.run([{real_go!r},*source_args],text=True,capture_output=True)
@@ -155,13 +160,21 @@ class AsyncBuildSubmission(unittest.TestCase):
                 if result.returncode: raise SystemExit(result.returncode)
                 sys.path.insert(0,str(Path(os.environ['LWC_REPOSITORY_ROOT'])/'scripts'))
                 from lwc_auth_test_fixture import write_auth_input_snapshot_fixture
-                write_auth_input_snapshot_fixture(output,{{'dev':'development','prod':'production'}}[target],source_sha)
+                write_auth_input_snapshot_fixture(output,{{'dev':'development','prod':'production'}}[target],source_sha,
+                                                  schema_version=fixture_schema)
                 raise SystemExit(0)
             os.execv({real_go!r}, [{real_go!r}, *args])
         '''))
         (self.bin / 'go').chmod(0o755)
-        (self.bin / 'python3').write_text(
-            '#!/bin/sh\nexec ' + repr(sys.executable) + ' "$@"\n')
+        (self.bin / 'python3').write_text(textwrap.dedent('''\
+            #!/bin/sh
+            if [ -n "${LWC_TEST_PYTHON_ARGS_LOG:-}" ]; then
+              "$LWC_TEST_REAL_PYTHON" -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "$@" >> "$LWC_TEST_PYTHON_ARGS_LOG"
+            fi
+            # Model shells that drop the hyphenated Actions input key; the
+            # Node Action must carry this selection to the engine as argv.
+            exec env -u INPUT_AUTH-SCHEMA-VERSION "$LWC_TEST_REAL_PYTHON" "$@"
+        '''))
         (self.bin / 'python3').chmod(0o755)
         (self.bin / 'timeout').write_text(textwrap.dedent('''\
             #!/usr/bin/env python3
@@ -204,6 +217,7 @@ class AsyncBuildSubmission(unittest.TestCase):
             'GOCACHE': go_cache, 'GOMODCACHE': go_module_cache,
             'LWC_TEST_FAKE_STATE': str(self.fake_state),
             'LWC_TEST_FAKE_UPLOADS': str(self.fake_uploads),
+            'LWC_TEST_REAL_PYTHON': sys.executable,
             'FAKE_STATUSES': json.dumps(['SUCCESS']),
             'FAKE_BUILD_IDS': json.dumps(list(BUILD_IDS)),
             'GAT4_RELEASE_SOURCE_MODE': 'legacy_monorepo',
@@ -266,6 +280,8 @@ class AsyncBuildSubmission(unittest.TestCase):
                 source_index = source_args.index('--source-sha')
                 source_sha = str(source_args[source_index + 1])
                 del source_args[source_index:source_index + 2]
+                schema_index = source_args.index('--auth-schema-version')
+                del source_args[schema_index:schema_index + 2]
                 output = Path(str(source_args[source_args.index('--output') + 1]))
                 target = str(source_args[source_args.index('--environment') + 1])
                 support.run(source_args, **kwargs)
@@ -402,7 +418,7 @@ class AsyncBuildSubmission(unittest.TestCase):
         return directory, plan, self.result_from(directory)
 
     def run_action_prepare(self, *, source, tag, components, artifact_source, executor_sha=None,
-                           target='development', extra=None):
+                           target='development', extra=None, operation='prepare', reuse_id='9001'):
         node = shutil.which('node')
         self.assertIsNotNone(node, 'Node is required to execute the real JavaScript Action')
         self.action_runs += 1
@@ -410,9 +426,14 @@ class AsyncBuildSubmission(unittest.TestCase):
         runner_temp.mkdir(exist_ok=True)
         env={**self.environment,**(extra or {}),'RUNNER_TEMP':str(runner_temp),
              'EXECUTOR_SHA':executor_sha or source,
-             'INPUT_OPERATION':'prepare','TARGET':target,'SOURCE':source,
-             'COMPONENTS':components,'RELEASE_TAG':tag,'REUSE_ID':'9001','DEV_ID':'',
-             'LWC_TEST_ARTIFACT_ID':'9001','LWC_TEST_ARTIFACT_SOURCE':str(artifact_source)}
+             'INPUT_OPERATION':operation,'TARGET':target,'SOURCE':source,
+             'COMPONENTS':components,'RELEASE_TAG':tag,'REUSE_ID':reuse_id,'DEV_ID':'',
+             'LWC_TEST_ARTIFACT_ID':reuse_id,'LWC_TEST_ARTIFACT_SOURCE':str(artifact_source)}
+        env.setdefault('INPUT_AUTH-SCHEMA-VERSION','')
+        env['LWC_TEST_PYTHON_ARGS_LOG']=str(runner_temp/'python-argv.jsonl')
+        if env.get('GAT4_RELEASE_SOURCE_MODE') == 'independent':
+            env['GAT4_DEV_RECEIPT_SOURCE_METADATA_FILE']=str(
+                runner_temp/'release'/'dev-source-metadata.json')
         return subprocess.run([node,str(ROOT/'.github/actions/deployment-engine/index.cjs')],
                               cwd=ROOT,env=env,text=True,capture_output=True,timeout=300)
 
@@ -424,6 +445,99 @@ class AsyncBuildSubmission(unittest.TestCase):
             with contextlib.redirect_stdout(io.StringIO()):
                 instance.result()
         return directory, plan
+
+    def test_real_action_initial_admission_forwards_schema3_for_independent_bff_reuse(self):
+        source=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip()
+        auth_source={
+            'repository_id':'github:202',
+            'revision':'c'*40,
+            'tree_sha256':'sha256:'+'e'*64,
+            'artifact_id':'9002',
+            'build_run_id':1002,
+            'build_run_attempt':1,
+        }
+        retained=self.root/'schema3-retained-auth'
+        receipt_path=ROOT/'deploy/engine/tests/fixtures/auth-receipt-v3-independent.json'
+        receipt=json.loads(receipt_path.read_text())['receipt']
+        plan_auth_source={
+            'repository_id':auth_source['repository_id'],
+            'revision':auth_source['revision'],
+            'tree_sha256':auth_source['tree_sha256'],
+            'artifact_id':auth_source['artifact_id'],
+            'run_id':auth_source['build_run_id'],
+            'run_attempt':auth_source['build_run_attempt'],
+        }
+        receipt['identity']=engine.source_identity('auth',source,plan_auth_source)
+        receipt['build_sha']=source
+        receipt['auth_config_inputs']['source_sha']=source
+        receipt['auth_source']={
+            'repository_id':auth_source['repository_id'],
+            'revision':auth_source['revision'],
+            'tree_sha256':auth_source['tree_sha256'],
+            'artifact_id':auth_source['artifact_id'],
+            'build_run_id':auth_source['build_run_id'],
+            'build_run_attempt':auth_source['build_run_attempt'],
+        }
+        write(retained/'receipts/auth.json',receipt)
+
+        for operation in ('auth-preflight', 'prepare'):
+            with self.subTest(operation=operation):
+                self.reset_fake()
+                result=self.run_action_prepare(
+                    source=source,
+                    tag='test-gat42-action-initial-schema3-'+operation,
+                    components='bff',
+                    artifact_source=retained,
+                    operation=operation,
+                    extra={
+                        'INPUT_AUTH-SCHEMA-VERSION':'3',
+                        'LWC_TEST_AUTH_SCHEMA_FROM_ARG':'1',
+                        'GAT4_RELEASE_SOURCE_MODE':'independent',
+                        'GAT4_DEV_RECEIPT_MODE':'independent',
+                        'GITHUB_REPOSITORY_ID':'101',
+                        'GITHUB_RUN_ID':'3001',
+                        'GITHUB_RUN_ATTEMPT':'1',
+                        'AUTH_REPOSITORY_ID':'202',
+                        'AUTH_REVISION':auth_source['revision'],
+                        'AUTH_TREE_SHA256':auth_source['tree_sha256'],
+                        'AUTH_ARTIFACT_ID':auth_source['artifact_id'],
+                        'AUTH_RUN_ID':str(auth_source['build_run_id']),
+                        'AUTH_RUN_ATTEMPT':str(auth_source['build_run_attempt']),
+                    })
+                self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+                runner=self.root/f'runner-temp-{self.action_runs}'
+                action_calls=[json.loads(line) for line in (runner/'python-argv.jsonl').read_text().splitlines()]
+                admission=next(args for args in action_calls
+                               if args[:2]==['deploy/engine/engine.py',operation])
+                self.assertEqual(admission[admission.index('--auth-schema-version')+1],'3')
+                if operation == 'prepare':
+                    plan=read(runner/'release'/'plan.json')
+                    self.assertEqual(plan['selected'],['bff'])
+                    self.assertEqual(plan['release_source_mode'],'independent')
+                    self.assertEqual(plan['normalized']['auth']['runtime_inputs']['schema_version'],3)
+                    self.assertEqual(json.loads(result.stdout)['stage'],'ready')
+                    self.assertEqual(self.fake_data()['submit_count'],1)
+
+    def test_real_action_default_four_schema_pin_reaches_preflight(self):
+        source=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip()
+        self.reset_fake()
+        result=self.run_action_prepare(
+            source=source,
+            tag='test-gat42-action-default-schema4',
+            components='auth',
+            artifact_source=self.root/'unused-artifact',
+            operation='auth-preflight',
+            reuse_id='0',
+            extra={'INPUT_AUTH-SCHEMA-VERSION':'4',
+                   'LWC_TEST_AUTH_SCHEMA_FROM_ARG':'1'})
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        runner=self.root/f'runner-temp-{self.action_runs}'
+        action_calls=[json.loads(line) for line in (runner/'python-argv.jsonl').read_text().splitlines()]
+        admission=next(args for args in action_calls
+                       if args[:2]==['deploy/engine/engine.py','auth-preflight'])
+        self.assertEqual(admission[admission.index('--auth-schema-version')+1],'4')
+        plan=read(runner/'gat4-auth-preflight'/'plan.json')
+        self.assertEqual(plan['normalized']['auth']['runtime_inputs']['schema_version'],4)
 
     def test_real_action_download_fresh_release_resumes_same_build_id(self):
         for first_status in ('WORKING','STATUS_UNKNOWN'):

@@ -23,6 +23,23 @@ def fixture(name):
 
 
 class ReceiptContractTests(unittest.TestCase):
+    @staticmethod
+    def schema4_receipt(auth=None):
+        auth = copy.deepcopy(auth or fixture("auth-receipt-v3-independent.json"))
+        inputs = auth["auth_config_inputs"]
+        inputs.update(
+            schema_version=4,
+            oauth_resources=[],
+            management_scopes=[{"id": "auth:admin"}, {"id": "lwc:admin"}],
+            consumer_verifiers=[{"id": "lwc"}],
+            consumer_public_projection={"issuer": inputs["auth_service_url"],
+                                        "resource": inputs["sync_service_url"]},
+            portal={"lwc_bff_origin": inputs["sync_service_url"]},
+        )
+        auth["schema"] = 4
+        auth["auth_supported_schema_versions"] = [1, 2, 3, 4]
+        return auth
+
     def test_lwc_keeps_versioned_auth_artifact_protocol_schema(self):
         schema_path = ROOT / "apps/bff/deploy/contracts/gateauth-artifact-v1.schema.json"
         schema = json.loads(schema_path.read_text(encoding="utf-8"))
@@ -121,6 +138,29 @@ class ReceiptContractTests(unittest.TestCase):
             with self.subTest(changed=changed.get("auth_source", changed.get("build"))):
                 with self.assertRaises(receipt_contract.ReceiptError):
                     receipt_contract.validate_receipt_pair(changed, dev, "independent")
+
+    def test_schema4_receipt_requires_matching_artifact_support_and_portal_identity(self):
+        auth = self.schema4_receipt()
+        dev = fixture("dev-receipt-v2-independent.json")
+        self.assertTrue(receipt_contract.validate_receipt_pair(auth, dev, "independent"))
+
+        old_v3 = copy.deepcopy(auth)
+        old_v3["schema"] = 3
+        del old_v3["auth_supported_schema_versions"]
+        with self.assertRaisesRegex(receipt_contract.ReceiptError, "does not support"):
+            receipt_contract.validate_receipt_pair(old_v3, dev, "independent")
+
+        for mutation, label in (
+                (lambda value: value["auth_supported_schema_versions"].__setitem__(3, True),
+                 "manifest support boolean"),
+                (lambda value: value["auth_supported_schema_versions"].__setitem__(3, 5),
+                 "unsupported manifest schema"),
+                (lambda value: value["auth_config_inputs"]["portal"].update(
+                    lwc_bff_origin="https://wrong.example"), "portal source mismatch")):
+            changed = copy.deepcopy(auth)
+            mutation(changed)
+            with self.subTest(label=label), self.assertRaises(receipt_contract.ReceiptError):
+                receipt_contract.validate_receipt_pair(changed, dev, "independent")
 
     def test_explicit_run_tuple_and_component_selection_are_checked(self):
         auth = fixture("auth-receipt-v3-independent.json")
