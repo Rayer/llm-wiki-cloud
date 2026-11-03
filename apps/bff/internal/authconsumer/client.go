@@ -83,6 +83,10 @@ type MCPConsentResult struct {
 	RequiresConsent bool   `json:"requires_consent"`
 }
 
+// MCPConsentPortalContext carries Auth's server minted, transaction-bound
+// consent context through the BFF without placing it in JSON or browser APIs.
+type MCPConsentPortalContext string
+
 type MCPConsentTransaction struct {
 	SchemaVersion   int               `json:"schema_version"`
 	Status          string            `json:"status"`
@@ -353,7 +357,7 @@ func (c *Client) OnboardingIdentity(ctx context.Context, credential string) (Onb
 	return identity, nil
 }
 
-func (c *Client) LookupMCPConsent(ctx context.Context, credential, transactionID, subject string, authVersion int64) (MCPConsentTransaction, error) {
+func (c *Client) LookupMCPConsent(ctx context.Context, credential, transactionID, subject string, authVersion int64, portalContext MCPConsentPortalContext) (MCPConsentTransaction, error) {
 	var result MCPConsentTransaction
 	if !validPathSegment(transactionID) || !validPathSegment(subject) || authVersion < 0 {
 		return result, ErrInvalidRequest
@@ -364,7 +368,7 @@ func (c *Client) LookupMCPConsent(ctx context.Context, credential, transactionID
 		Subject       string `json:"subject"`
 		AuthVersion   int64  `json:"auth_version"`
 	}{1, transactionID, subject, authVersion}
-	if err := c.request(ctx, http.MethodPost, "/api/v1/auth/consumers/lwc/mcp-consent/transactions/lookup", credential, body, &result); err != nil {
+	if err := c.requestWithPortalContext(ctx, http.MethodPost, "/api/v1/auth/consumers/lwc/mcp-consent/transactions/lookup", credential, body, &result, portalContext); err != nil {
 		return MCPConsentTransaction{}, err
 	}
 	if result.SchemaVersion != 1 || result.TransactionID != transactionID || result.Resource == "" ||
@@ -395,7 +399,7 @@ func (c *Client) DecideMCPConsent(ctx context.Context, credential string, reques
 		ApprovedScopes []string `json:"approved_scopes"`
 	}{1, request.Subject, request.AuthVersion, request.Decision, request.ApprovedScopes}
 	path := "/api/v1/auth/consumers/lwc/mcp-consent/transactions/" + url.PathEscape(request.TransactionID) + "/decision"
-	if err := c.request(ctx, http.MethodPost, path, credential, body, &result); err != nil {
+	if err := c.requestWithPortalContext(ctx, http.MethodPost, path, credential, body, &result, request.PortalContext); err != nil {
 		return MCPConsentDecisionResult{}, err
 	}
 	if result.SchemaVersion != 1 || (result.Status != "completed" && result.Status != "pending") ||
@@ -412,6 +416,7 @@ type MCPConsentDecisionRequest struct {
 	AuthVersion    int64
 	Decision       string
 	ApprovedScopes []string
+	PortalContext  MCPConsentPortalContext `json:"-"`
 }
 
 func (c *Client) ListProjectMCPGrants(ctx context.Context, credential, subject string, authVersion int64, projectID string) ([]MCPGrant, error) {
@@ -606,8 +611,15 @@ func (c *Client) DeleteAccount(ctx context.Context, credential, userID string) e
 }
 
 func (c *Client) request(ctx context.Context, method, path, userCredential string, requestBody, target any) error {
+	return c.requestWithPortalContext(ctx, method, path, userCredential, requestBody, target, "")
+}
+
+func (c *Client) requestWithPortalContext(ctx context.Context, method, path, userCredential string, requestBody, target any, portalContext MCPConsentPortalContext) error {
 	if c == nil {
 		return ErrUnavailable
+	}
+	if portalContext != "" && !validPortalContext(string(portalContext)) {
+		return ErrInvalidRequest
 	}
 	ctx, cancel := context.WithTimeout(ctx, c.cfg.Timeout)
 	defer cancel()
@@ -634,6 +646,9 @@ func (c *Client) request(ctx context.Context, method, path, userCredential strin
 	}
 	if userCredential != "" {
 		req.Header.Set("X-LWC-User-Credential", userCredential)
+	}
+	if portalContext != "" {
+		req.Header.Set("X-GateAuth-Portal-Context", string(portalContext))
 	}
 	response, err := c.httpClient.Do(req)
 	if err != nil {
@@ -674,6 +689,20 @@ func (c *Client) request(ctx context.Context, method, path, userCredential strin
 		return ErrUnavailable
 	}
 	return nil
+}
+
+func validPortalContext(value string) bool {
+	const prefix = "gateauth_ctx_"
+	if !strings.HasPrefix(value, prefix) || len(value) != len(prefix)+43 {
+		return false
+	}
+	for _, char := range value[len(prefix):] {
+		if !('A' <= char && char <= 'Z') && !('a' <= char && char <= 'z') &&
+			!('0' <= char && char <= '9') && char != '-' && char != '_' {
+			return false
+		}
+	}
+	return true
 }
 
 func validKind(kind string) bool {

@@ -167,9 +167,46 @@ func TestClientPreservesExpiredConsentStatus(t *testing.T) {
 	defer server.Close()
 	client := testClient(t, server.URL, func(context.Context, string) (string, error) { return "runtime", nil })
 	transactionID := "lwc_mcp_tx_" + strings.Repeat("A", 43)
-	_, err := client.LookupMCPConsent(context.Background(), "credential", transactionID, "user-a", 2)
+	_, err := client.LookupMCPConsent(context.Background(), "credential", transactionID, "user-a", 2, "")
 	if !errors.Is(err, ErrExpired) {
 		t.Fatalf("expired consent error=%v, want %v", err, ErrExpired)
+	}
+}
+
+func TestMCPConsentContextStaysInTrustedTransportHeader(t *testing.T) {
+	const portalContext = "gateauth_ctx_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.Header.Get("X-GateAuth-Portal-Context") != portalContext || r.Header.Get("X-LWC-User-Credential") != "user-credential" {
+			t.Errorf("trusted consent headers were not forwarded: portal=%q user=%q",
+				r.Header.Get("X-GateAuth-Portal-Context"), r.Header.Get("X-LWC-User-Credential"))
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body["portal_context"] != nil || body["portalContext"] != nil {
+			t.Errorf("portal context leaked into browser-shaped JSON: body=%#v err=%v", body, err)
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		if strings.HasSuffix(r.URL.Path, "/lookup") {
+			_, _ = w.Write([]byte(`{"schema_version":1,"status":"pending","resource_kind":"project-template","transaction_id":"lwc_mcp_tx_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","resource":"https://bff.example.test/mcp/projects/project-a","project_id":"project-a","requested_scopes":["mcp:query"],"expires_at":"2026-10-30T00:00:00Z","can_continue":false,"client_name":"Agent","account_email":"a@example.test"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"schema_version":1,"status":"completed","redirect_url":"http://127.0.0.1:8765/callback?code=fixture","requires_consent":false}`))
+	}))
+	defer server.Close()
+	client := testClient(t, server.URL, func(context.Context, string) (string, error) { return "runtime", nil })
+	transactionID := "lwc_mcp_tx_" + strings.Repeat("A", 43)
+	if _, err := client.LookupMCPConsent(context.Background(), "user-credential", transactionID, "user-a", 2, MCPConsentPortalContext(portalContext)); err != nil {
+		t.Fatalf("lookup error=%v", err)
+	}
+	if _, err := client.DecideMCPConsent(context.Background(), "user-credential", MCPConsentDecisionRequest{
+		TransactionID: transactionID, Subject: "user-a", AuthVersion: 2, Decision: "allow",
+		ApprovedScopes: []string{"mcp:query"}, PortalContext: MCPConsentPortalContext(portalContext),
+	}); err != nil {
+		t.Fatalf("decision error=%v", err)
+	}
+	if requests != 2 {
+		t.Fatalf("requests=%d, want 2", requests)
 	}
 }
 
