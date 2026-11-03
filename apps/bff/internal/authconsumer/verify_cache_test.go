@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,6 +20,46 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
+
+func TestVerifyCacheHitAcrossExpiryBoundaryRechecksSafely(t *testing.T) {
+	const helperEnv = "GAT21_VERIFY_CACHE_EXPIRY_HELPER"
+	if os.Getenv(helperEnv) == "1" {
+		cache, err := newVerificationCache()
+		if err != nil {
+			t.Fatal(err)
+		}
+		base := time.Date(2026, 11, 3, 0, 0, 0, 0, time.UTC)
+		validUntil := base.Add(verificationReuseTTL)
+		var clockCalls atomic.Int64
+		cache.now = func() time.Time {
+			if clockCalls.Add(1) == 1 {
+				return validUntil.Add(-time.Nanosecond)
+			}
+			return validUntil
+		}
+		cache.entries["boundary"] = verificationEntry{
+			identity:   webIdentity("user-a", validUntil.Add(time.Minute)),
+			validUntil: validUntil,
+			lastUsed:   1,
+		}
+		var outboundCalls atomic.Int64
+		_, err = cache.verify(context.Background(), "boundary", func() (Identity, error) {
+			outboundCalls.Add(1)
+			return Identity{}, ErrInvalidCredential
+		})
+		if !errors.Is(err, ErrInvalidCredential) || outboundCalls.Load() != 1 {
+			t.Fatalf("expiry-boundary verification err=%v outbound=%d, want one fresh rejection", err, outboundCalls.Load())
+		}
+		return
+	}
+
+	command := exec.Command(os.Args[0], "-test.run=^TestVerifyCacheHitAcrossExpiryBoundaryRechecksSafely$")
+	command.Env = append(os.Environ(), helperEnv+"=1")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("expiry-boundary revalidation subprocess failed: %v\n%s", err, output)
+	}
+}
 
 func TestVerifyResourceCacheUsesSixtySecondAndOriginalExpiryCeilingsAndClones(t *testing.T) {
 	now := time.Date(2026, 11, 3, 0, 0, 0, 0, time.UTC)
@@ -70,13 +112,14 @@ func TestVerifyResourceCacheUsesSixtySecondAndOriginalExpiryCeilingsAndClones(t 
 	}
 }
 
-func TestVerifyResourceSingleflightJoinsOneInFlightUpstreamRequest(t *testing.T) {
+func TestVerifyResourceDoesNotJoinInFlightAuthorizationChecks(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
+	var enterOnce sync.Once
 	var calls atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls.Add(1)
-		close(entered)
+		enterOnce.Do(func() { close(entered) })
 		<-release
 		writeTestIdentity(w, webIdentity("user-a", time.Now().Add(time.Minute)))
 	}))
@@ -102,20 +145,13 @@ func TestVerifyResourceSingleflightJoinsOneInFlightUpstreamRequest(t *testing.T)
 		t.Fatal("verifier request did not start")
 	}
 	deadline := time.Now().Add(time.Second)
-	for {
-		client.verifyCache.mu.Lock()
-		joined := 0
-		for _, flight := range client.verifyCache.flights {
-			joined = flight.joined
-		}
-		client.verifyCache.mu.Unlock()
-		if joined == workers-1 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("singleflight joined=%d, want %d", joined, workers-1)
-		}
+	for calls.Load() < workers && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
+	}
+	if calls.Load() != workers {
+		close(release)
+		wg.Wait()
+		t.Fatalf("in-flight verifier calls=%d, want one fresh call per authorization", calls.Load())
 	}
 	close(release)
 	wg.Wait()
@@ -125,28 +161,24 @@ func TestVerifyResourceSingleflightJoinsOneInFlightUpstreamRequest(t *testing.T)
 			t.Fatal(err)
 		}
 	}
-	if calls.Load() != 1 {
-		t.Fatalf("outbound verifier calls=%d, want 1", calls.Load())
+	if calls.Load() != workers {
+		t.Fatalf("outbound verifier calls=%d, want %d", calls.Load(), workers)
+	}
+	if _, err := client.Verify(context.Background(), "same-credential", "project-a"); err != nil || calls.Load() != workers {
+		t.Fatalf("post-success Web cache calls=%d err=%v; subsequent Web request should reuse success", calls.Load(), err)
 	}
 }
 
-func TestVerifyResourceSingleflightWaiterRejectsExpiredIdentity(t *testing.T) {
+func TestVerifyResourceAdmissionWaitMakesItsOwnAuthorizationCheck(t *testing.T) {
 	base := time.Date(2026, 11, 3, 0, 0, 0, 0, time.UTC)
-	var expired atomic.Bool
 	cache, err := newVerificationCache()
 	if err != nil {
 		t.Fatal(err)
 	}
-	cache.now = func() time.Time {
-		if expired.Load() {
-			return base.Add(verificationReuseTTL)
-		}
-		return base
-	}
-	key := cache.cacheKey("same-token", "dev", "https://auth.example.test", "https://bff.example.test", "project-a")
-	flight := &verificationFlight{done: make(chan struct{})}
+	cache.maxOutbound = 1
+	cache.now = func() time.Time { return base }
 	cache.mu.Lock()
-	cache.flights[key] = flight
+	cache.active = 1
 	cache.mu.Unlock()
 
 	var outbound atomic.Int64
@@ -156,41 +188,27 @@ func TestVerifyResourceSingleflightWaiterRejectsExpiredIdentity(t *testing.T) {
 	}
 	resultCh := make(chan result, 1)
 	go func() {
-		identity, verifyErr := cache.verify(context.Background(), key, func() (Identity, error) {
+		identity, verifyErr := cache.verify(context.Background(), "same-key", func() (Identity, error) {
 			outbound.Add(1)
 			return Identity{}, ErrInvalidCredential
 		})
 		resultCh <- result{identity: identity, err: verifyErr}
 	}()
 
-	deadline := time.Now().Add(time.Second)
-	for {
-		cache.mu.Lock()
-		joined := flight.joined
-		cache.mu.Unlock()
-		if joined == 1 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("waiter did not join the gated verification flight")
-		}
-		time.Sleep(time.Millisecond)
-	}
+	time.Sleep(20 * time.Millisecond)
 	if got := outbound.Load(); got != 0 {
-		t.Fatalf("outbound verification before flight release=%d, want 0", got)
+		t.Fatalf("outbound verification before capacity release=%d, want 0", got)
 	}
 
 	cache.mu.Lock()
-	flight.identity = webIdentity("user-a", base.Add(verificationReuseTTL))
-	flight.validUntil = base.Add(verificationReuseTTL)
-	delete(cache.flights, key)
-	expired.Store(true)
-	close(flight.done)
+	cache.active--
+	close(cache.capacityChanged)
+	cache.capacityChanged = make(chan struct{})
 	cache.mu.Unlock()
 
 	got := <-resultCh
 	if !errors.Is(got.err, ErrInvalidCredential) || got.identity.Subject != "" {
-		t.Fatalf("expired joined identity=%+v err=%v, want fresh invalid-credential rejection", got.identity, got.err)
+		t.Fatalf("admitted identity=%+v err=%v, want fresh invalid-credential rejection", got.identity, got.err)
 	}
 	if got := outbound.Load(); got != 1 {
 		t.Fatalf("post-expiry outbound verifications=%d, want 1", got)
@@ -435,7 +453,7 @@ func TestVerifyResourceAdmissionStaysBoundedWhenEntriesEvict(t *testing.T) {
 	defer server.Close()
 	client := testClient(t, server.URL, func(context.Context, string) (string, error) { return "runtime", nil })
 	client.verifyCache.maxEntries = 2
-	client.verifyCache.maxFlights = 3
+	client.verifyCache.maxOutbound = 3
 	for _, credential := range []string{"warm-a", "warm-b", "warm-c"} {
 		if _, err := client.Verify(context.Background(), credential, "project-a"); err != nil {
 			t.Fatal(err)
@@ -557,6 +575,90 @@ func TestVerifyResourceRevalidatesLogoutAndRevocationAtCacheExpiry(t *testing.T)
 				t.Fatalf("revoked credential outbound calls=%d, want 2", calls.Load())
 			}
 		})
+	}
+}
+
+func TestVerifyResourceRefreshesCLIAndMCPImmediatelyButRetainsWebCache(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		kind       string
+		credential string
+		resource   string
+		project    string
+	}{
+		{name: "Web", kind: "web-access", credential: "web-token", resource: "https://bff.example.test"},
+		{name: "CLI", kind: "cli-access", credential: "cli-token", resource: "https://bff.example.test"},
+		{name: "MCP", kind: "mcp-oauth", credential: "mcp-token", resource: "https://bff.example.test/mcp/projects/project-a", project: "project-a"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls atomic.Int64
+			var revoked atomic.Bool
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				if revoked.Load() {
+					w.WriteHeader(http.StatusUnauthorized)
+					_, _ = w.Write([]byte(`{"error":"revoked"}`))
+					return
+				}
+				identity := webIdentity("user-a", time.Now().Add(time.Minute))
+				identity.CredentialKind = tc.kind
+				if tc.kind == "cli-access" {
+					identity.SessionID = "session-a"
+				}
+				if tc.kind == "mcp-oauth" {
+					identity.Resource = tc.resource
+					identity.ProjectID = tc.project
+					identity.GrantID = "grant-a"
+					identity.ClientID = "client-a"
+				}
+				writeTestIdentity(w, identity)
+			}))
+			defer server.Close()
+			client := testClient(t, server.URL, func(context.Context, string) (string, error) { return "runtime", nil })
+			verify := func() error {
+				_, err := client.VerifyResource(context.Background(), tc.credential, tc.resource, tc.project)
+				return err
+			}
+			if err := verify(); err != nil {
+				t.Fatalf("positive verifier response rejected: %v", err)
+			}
+			revoked.Store(true)
+			if tc.kind == "web-access" {
+				if err := verify(); err != nil || calls.Load() != 1 {
+					t.Fatalf("Web cached response calls=%d err=%v; want the existing positive cache behavior", calls.Load(), err)
+				}
+				return
+			}
+			if err := verify(); !errors.Is(err, ErrInvalidCredential) || calls.Load() != 2 {
+				t.Fatalf("immediate revoked verification calls=%d err=%v; want a second Auth round trip and rejection", calls.Load(), err)
+			}
+		})
+	}
+}
+
+func TestVerifyFreshBypassesAndDoesNotReplaceWebCache(t *testing.T) {
+	var calls atomic.Int64
+	var revoked atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		if revoked.Load() {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":"revoked"}`))
+			return
+		}
+		writeTestIdentity(w, webIdentity("user-a", time.Now().Add(time.Minute)))
+	}))
+	defer server.Close()
+	client := testClient(t, server.URL, func(context.Context, string) (string, error) { return "runtime", nil })
+	if _, err := client.Verify(context.Background(), "web-token", "project-a"); err != nil {
+		t.Fatalf("warm positive Web cache: %v", err)
+	}
+	revoked.Store(true)
+	if _, err := client.VerifyFresh(context.Background(), "web-token", "project-a"); !errors.Is(err, ErrInvalidCredential) || calls.Load() != 2 {
+		t.Fatalf("fresh Web verification calls=%d err=%v; want an immediate authority rejection", calls.Load(), err)
+	}
+	if _, err := client.Verify(context.Background(), "web-token", "project-a"); err != nil || calls.Load() != 2 {
+		t.Fatalf("failed fresh verification replaced legacy Web cache: calls=%d err=%v", calls.Load(), err)
 	}
 }
 

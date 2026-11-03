@@ -263,6 +263,14 @@ func (c *Client) Verify(ctx context.Context, credential, projectID string) (Iden
 	return c.VerifyResource(ctx, credential, c.cfg.Resource, projectID)
 }
 
+// VerifyFresh always reads the current Auth authority before returning an identity.
+func (c *Client) VerifyFresh(ctx context.Context, credential, projectID string) (Identity, error) {
+	if c == nil {
+		return Identity{}, ErrUnavailable
+	}
+	return c.VerifyResourceFresh(ctx, credential, c.cfg.Resource, projectID)
+}
+
 // VerifyResource binds an opaque Project OAuth credential to the exact
 // protected-resource URL selected by the BFF route. Ordinary Web and CLI
 // credentials continue to use the configured BFF resource.
@@ -272,6 +280,17 @@ func (c *Client) VerifyResource(ctx context.Context, credential, resource, proje
 	}
 	key := c.verifyCache.cacheKey(credential, c.cfg.Environment, c.cfg.Issuer, resource, projectID)
 	return c.verifyCache.verify(ctx, key, func() (Identity, error) {
+		return c.verifyResourceUncached(ctx, credential, resource, projectID)
+	})
+}
+
+// VerifyResourceFresh binds an opaque credential to the exact resource and
+// performs a new Auth round trip without reusing or publishing a cached identity.
+func (c *Client) VerifyResourceFresh(ctx context.Context, credential, resource, projectID string) (Identity, error) {
+	if c == nil || strings.TrimSpace(credential) == "" || strings.TrimSpace(resource) == "" {
+		return Identity{}, ErrUnavailable
+	}
+	return c.verifyCache.verifyFresh(ctx, func() (Identity, error) {
 		return c.verifyResourceUncached(ctx, credential, resource, projectID)
 	})
 }
