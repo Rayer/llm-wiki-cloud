@@ -136,6 +136,29 @@ describe('GAT-21 Admin sync binding', () => {
     expect(document.activeElement).toBe(trigger);
   });
 
+  it('accepts a verified historical receipt when the current binding was replaced before readback', async () => {
+    const operationId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    vi.spyOn(window.crypto, 'randomUUID').mockReturnValue(operationId);
+    const replacement = { ...binding('active', '2026-11-03T00:02:00Z'), binding_id: 'binding-b', wiki_id: 'wiki-b' };
+    mocks.binding.mockResolvedValueOnce(bindingDetails(binding('active')))
+      .mockResolvedValueOnce(bindingDetails(binding('active')))
+      .mockResolvedValueOnce(bindingDetails(replacement));
+    mocks.receipt.mockResolvedValue(receipt(operationId));
+    mocks.revoke.mockResolvedValue(receipt(operationId));
+
+    render(<AdminClient />);
+    await openBindingDialog();
+    await screen.findByText('binding-a');
+    fireEvent.click(screen.getByRole('button', { name: 'Admin.syncBindingRevoke' }));
+    fireEvent.change(await screen.findByRole('textbox'), { target: { value: 'security incident' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Admin.syncBindingRevoke' }));
+
+    expect(await screen.findByText('Admin.syncBindingHistoricalSuccess')).toBeDefined();
+    expect(screen.getByText('binding-b')).toBeDefined();
+    expect(mocks.revoke).toHaveBeenCalledTimes(1);
+    expect(mocks.receipt).toHaveBeenCalledWith(operationId);
+  });
+
   it('retries an unknown outcome with the same operation ID and exact request body', async () => {
     const operationId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
     vi.spyOn(window.crypto, 'randomUUID').mockReturnValue(operationId);

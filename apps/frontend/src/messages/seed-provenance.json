@@ -3,7 +3,7 @@
   "locale": "zh_tw",
   "migration_source_revision": "b8f167ef9fe3d7e3f6b53c860356eb1c2d87b9bf",
   "migration_catalog_revision": "3a0e6da83c9113423b9582f6fe3b7df6d15ab414fefc197641b1ef1c6bc25e9b",
-  "seed_map_sha256": "f13010b294577c2348dadb26bca0aca2a9876ff8e39624f4f28492e4e2a2761e",
+  "seed_map_sha256": "a87065971fed52ff145e84a92ac7d6f9b9394e01018a45e6e623c8d42436d999",
   "entries": {
     "AccountSettings.accountTab": "9d4435cd4778e9d6f90f5797c2e556e1baaffe742ef1b78150f3b61931a4a8b2",
     "AccountSettings.bindingActive": "155e79378bcb9e2d77d0d0c40999baccc08c8b72d2bbfbf835a45ea757ef1177",
@@ -1580,7 +1580,9 @@
     "Admin.syncBindingResult": "9155a1a221137ff5fe06619b73eb36d8c7d8ae86e7c223cbc764009d9b7e86f5",
     "Admin.syncBindingRetrySame": "71d2e7b069e0d51cf85bd2c92952cf12f545c60c7fd5f74d8207cf05bce1f01f",
     "Admin.syncBindingRevoke": "3961d09d481fb6232cd57f03de5fa3d3488687f8a3fc5bfb355ff701cf434c6b",
-    "Admin.syncBindingTitle": "67e2208a6e9e5b117affb1ba91de1a4526557edf001a1b85440caacf21440afd"
+    "Admin.syncBindingTitle": "67e2208a6e9e5b117affb1ba91de1a4526557edf001a1b85440caacf21440afd",
+    "Admin.syncBindingHistoricalSuccess": "d10514853376232cdf3f403d889d15991f01d45cb1b9f57db932a93c8d59bb23",
+    "Admin.syncBindingCurrentId": "7768e87e4756c366a2604eaf550894d50be6b38edbaf0cba66bc0d412e396d1e"
   },
   "candidate_catalog_revision": "049a79128b92240ecce6118e76c0c41622ec00bb9c53edb59fde0d7cb9288de6"
 }

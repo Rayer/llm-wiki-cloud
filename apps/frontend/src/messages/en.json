@@ -438,6 +438,8 @@
     "syncBindingCheckOutcome": "Check outcome",
     "syncBindingRetrySame": "Retry same operation",
     "syncBindingComplete": "The receipt and current binding state were read back successfully.",
+    "syncBindingHistoricalSuccess": "The receipt confirms the prior binding revocation. The current binding may have changed and was not changed by this operation.",
+    "syncBindingCurrentId": "Current binding ID",
     "syncBindingResult": "Result",
     "owner": "Owner",
     "conceptCount": "Concept count",

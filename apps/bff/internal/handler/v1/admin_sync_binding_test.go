@@ -25,6 +25,38 @@ type adminBindingVerifierFixture struct {
 	meCalls     int
 }
 
+func TestAdminSyncBindingReadAndMutationRateLimitsUseSeparateBuckets(t *testing.T) {
+	h := &Handler{}
+	now := time.Date(2026, time.November, 3, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < 10; i++ {
+		if !h.allowAdminRequest("actor", adminBindingReadRateClass, 60, now) {
+			t.Fatalf("read %d was rejected before the read limit", i+1)
+		}
+	}
+	if !h.allowAdminRequest("actor", adminBindingMutationRateClass, 10, now) {
+		t.Fatal("mutation was rejected after ten reads")
+	}
+	if !h.allowAdminRequest("actor", adminBindingReadRateClass, 60, now) {
+		t.Fatal("receipt readback was rejected after a mutation")
+	}
+	for i := 11; i < 60; i++ {
+		if !h.allowAdminRequest("actor", adminBindingReadRateClass, 60, now) {
+			t.Fatalf("read %d was rejected before the read limit", i+1)
+		}
+	}
+	if h.allowAdminRequest("actor", adminBindingReadRateClass, 60, now) {
+		t.Fatal("61st read was allowed")
+	}
+	for i := 1; i < 10; i++ {
+		if !h.allowAdminRequest("actor", adminBindingMutationRateClass, 10, now) {
+			t.Fatalf("mutation %d was rejected before the mutation limit", i+1)
+		}
+	}
+	if h.allowAdminRequest("actor", adminBindingMutationRateClass, 10, now) {
+		t.Fatal("11th mutation was allowed")
+	}
+}
+
 func (f *adminBindingVerifierFixture) Verify(_ context.Context, credential, _ string) (authconsumer.Identity, error) {
 	f.verifyCalls++
 	if credential == "" {

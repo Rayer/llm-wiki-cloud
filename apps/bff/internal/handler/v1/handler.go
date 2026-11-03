@@ -37,7 +37,7 @@ type Handler struct {
 	syncBindingWireEnvironment     string
 	adminMutationOrigins           map[string]struct{}
 	adminMutationRateMu            sync.Mutex
-	adminMutationRates             map[string][]time.Time
+	adminRequestRates              map[string][]time.Time
 	projectKeyService              *auth.ProjectKeyService
 	urlIntake                      *urlintake.Service
 	documentImports                *documentimport.Service

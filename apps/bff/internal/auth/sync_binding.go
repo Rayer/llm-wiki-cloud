@@ -36,8 +36,6 @@ var (
 	ErrSyncBindingOperationConflict       = errors.New("sync binding operation ID conflict")
 )
 
-const syncBindingAdminReceiptCollection = "auth_sync_binding_admin_receipts"
-
 var syncBindingAdminOperationIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
 type syncBindingRecord struct {
@@ -70,15 +68,23 @@ type SyncBinding struct {
 }
 
 type syncBindingAuditEvent struct {
-	Action      string    `firestore:"action"`
-	ActorID     string    `firestore:"actor_id"`
-	SubjectID   string    `firestore:"subject_id,omitempty"`
-	ProjectID   string    `firestore:"project_id"`
-	BindingID   string    `firestore:"binding_id"`
-	OperationID string    `firestore:"operation_id,omitempty"`
-	Reason      string    `firestore:"reason"`
-	Result      string    `firestore:"result"`
-	CreatedAt   time.Time `firestore:"created_at"`
+	Action        string                             `firestore:"action"`
+	ActorID       string                             `firestore:"actor_id"`
+	SubjectID     string                             `firestore:"subject_id,omitempty"`
+	ProjectID     string                             `firestore:"project_id"`
+	BindingID     string                             `firestore:"binding_id"`
+	OperationID   string                             `firestore:"operation_id,omitempty"`
+	Reason        string                             `firestore:"reason"`
+	Result        string                             `firestore:"result"`
+	CreatedAt     time.Time                          `firestore:"created_at"`
+	SchemaVersion int                                `firestore:"schema_version,omitempty"`
+	Fingerprint   string                             `firestore:"fingerprint,omitempty"`
+	Authority     string                             `firestore:"authority,omitempty"`
+	Environment   string                             `firestore:"environment,omitempty"`
+	Subject       string                             `firestore:"subject,omitempty"`
+	TargetKind    string                             `firestore:"target_kind,omitempty"`
+	TargetIDs     map[string]string                  `firestore:"target_ids,omitempty"`
+	Receipt       *AdminSyncBindingRevocationReceipt `firestore:"receipt,omitempty"`
 }
 
 type AdminSyncBindingView struct {
@@ -311,9 +317,7 @@ func (a *SyncBindingAuthority) AdminBinding(ctx context.Context, recordID, owner
 // retry must obtain fresh management authority again.
 func (a *SyncBindingAuthority) AdminRevokeBinding(ctx context.Context, request AdminSyncBindingRevocationRequest,
 	authorize func(context.Context) (time.Time, error)) (AdminSyncBindingRevocationReceipt, error) {
-	request.ActorID, request.SubjectID = strings.TrimSpace(request.ActorID), strings.TrimSpace(request.SubjectID)
-	request.ProjectRecordID, request.ProjectID = strings.TrimSpace(request.ProjectRecordID), strings.TrimSpace(request.ProjectID)
-	request.BindingID, request.Reason = strings.TrimSpace(request.BindingID), strings.TrimSpace(request.Reason)
+	request.Reason = strings.TrimSpace(request.Reason)
 	if !a.ready() || authorize == nil || request.Environment != a.environment || !ValidPathSegment(request.ActorID) ||
 		!ValidPathSegment(request.SubjectID) || request.SubjectID == "" || !ValidPathSegment(request.ProjectRecordID) ||
 		!ValidPathSegment(request.ProjectID) || projectDocumentID(request.SubjectID, request.ProjectID) != request.ProjectRecordID ||
@@ -322,7 +326,7 @@ func (a *SyncBindingAuthority) AdminRevokeBinding(ctx context.Context, request A
 		return AdminSyncBindingRevocationReceipt{}, ErrSyncBindingInvalid
 	}
 	fingerprint := syncBindingAdminFingerprint(request)
-	receiptRef := a.adminRevocationReceiptRef(request.OperationID)
+	auditRef := a.adminRevocationAuditRef(request.OperationID)
 	var result AdminSyncBindingRevocationReceipt
 	err := a.fs.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
 		result = AdminSyncBindingRevocationReceipt{}
@@ -333,16 +337,18 @@ func (a *SyncBindingAuthority) AdminRevokeBinding(ctx context.Context, request A
 		if managementAuthorizedAt.IsZero() {
 			return ErrSyncBindingUnauthorized
 		}
-		prior, err := tx.Get(receiptRef)
+		prior, err := tx.Get(auditRef)
 		if err == nil {
-			var receipt AdminSyncBindingRevocationReceipt
-			if prior.DataTo(&receipt) != nil || receipt.SchemaVersion != 1 || receipt.OperationID != request.OperationID {
+			var audit syncBindingAuditEvent
+			if prior.DataTo(&audit) != nil || !validSyncBindingAdminAudit(audit, request.OperationID, request.Environment) {
 				return ErrSyncBindingUnavailable
 			}
-			if receipt.Fingerprint != fingerprint || receipt.ActorID != request.ActorID {
+			if audit.Fingerprint != fingerprint || audit.ActorID != request.ActorID || audit.Subject != request.SubjectID ||
+				audit.TargetIDs["project_record_id"] != request.ProjectRecordID || audit.TargetIDs["project_id"] != request.ProjectID ||
+				audit.TargetIDs["binding_id"] != request.BindingID {
 				return ErrSyncBindingOperationConflict
 			}
-			result = receipt
+			result = *audit.Receipt
 			return nil
 		}
 		if status.Code(err) != codes.NotFound {
@@ -397,13 +403,14 @@ func (a *SyncBindingAuthority) AdminRevokeBinding(ctx context.Context, request A
 			resultStatus = "revoked"
 		}
 		receipt.Result = resultStatus
+		receipt.Fingerprint = fingerprint
 		audit := syncBindingAuditEvent{Action: "sync_binding_admin_revoke", ActorID: request.ActorID, SubjectID: request.SubjectID,
 			ProjectID: request.ProjectID, BindingID: request.BindingID, OperationID: request.OperationID, Reason: request.Reason,
-			Result: resultStatus, CreatedAt: now}
-		if err := tx.Create(scopedfirestore.Collection(a.fs, syncBindingAuditCollection).NewDoc(), audit); err != nil {
-			return ErrSyncBindingUnavailable
-		}
-		if err := tx.Create(receiptRef, receipt); err != nil {
+			Result: resultStatus, CreatedAt: now, SchemaVersion: 1, Fingerprint: fingerprint, Authority: "lwc",
+			Environment: a.environment, Subject: request.SubjectID, TargetKind: "sync_binding",
+			TargetIDs: map[string]string{"project_record_id": request.ProjectRecordID, "project_id": request.ProjectID, "binding_id": request.BindingID},
+			Receipt:   &receipt}
+		if err := tx.Create(auditRef, audit); err != nil {
 			return ErrSyncBindingUnavailable
 		}
 		result = receipt
@@ -419,23 +426,67 @@ func (a *SyncBindingAuthority) AdminReadBindingRevocationReceipt(ctx context.Con
 	if !a.ready() || !ValidPathSegment(actorID) || !validSyncBindingOperationID(operationID) {
 		return AdminSyncBindingRevocationReceipt{}, ErrSyncBindingInvalid
 	}
-	snapshot, err := a.adminRevocationReceiptRef(operationID).Get(ctx)
+	snapshot, err := a.adminRevocationAuditRef(operationID).Get(ctx)
 	if err != nil {
 		if status.Code(err) == codes.NotFound {
 			return AdminSyncBindingRevocationReceipt{}, ErrSyncBindingNotFound
 		}
 		return AdminSyncBindingRevocationReceipt{}, ErrSyncBindingUnavailable
 	}
-	var receipt AdminSyncBindingRevocationReceipt
-	if snapshot.DataTo(&receipt) != nil || receipt.SchemaVersion != 1 || receipt.OperationID != operationID || receipt.ActorID != actorID {
+	var audit syncBindingAuditEvent
+	if snapshot.DataTo(&audit) != nil || !validSyncBindingAdminAudit(audit, operationID, a.environment) {
+		return AdminSyncBindingRevocationReceipt{}, ErrSyncBindingUnavailable
+	}
+	if audit.ActorID != actorID {
 		return AdminSyncBindingRevocationReceipt{}, ErrSyncBindingNotFound
 	}
-	return receipt, nil
+	return *audit.Receipt, nil
 }
 
-func (a *SyncBindingAuthority) adminRevocationReceiptRef(operationID string) *firestore.DocumentRef {
-	sum := sha256.Sum256([]byte(a.environment + "\x00" + operationID))
-	return scopedfirestore.Collection(a.fs, syncBindingAdminReceiptCollection).Doc(hex.EncodeToString(sum[:]))
+func (a *SyncBindingAuthority) adminRevocationAuditRef(operationID string) *firestore.DocumentRef {
+	sum := sha256.Sum256([]byte(a.environment + "\x00admin-revoke-" + operationID))
+	return scopedfirestore.Collection(a.fs, syncBindingAuditCollection).Doc(hex.EncodeToString(sum[:]))
+}
+
+func validSyncBindingAdminAudit(audit syncBindingAuditEvent, operationID, environment string) bool {
+	if audit.Action != "sync_binding_admin_revoke" || audit.SchemaVersion != 1 || audit.OperationID != operationID ||
+		!validSyncBindingOperationID(operationID) || audit.Authority != "lwc" || audit.Environment != environment ||
+		!ValidPathSegment(audit.ActorID) || !ValidPathSegment(audit.Subject) || audit.SubjectID != audit.Subject ||
+		audit.TargetKind != "sync_binding" || !validSyncBindingAdminReason(audit.Reason) || audit.CreatedAt.IsZero() ||
+		len(audit.Fingerprint) != sha256.Size*2 || !isLowerHex(audit.Fingerprint) || audit.Receipt == nil {
+		return false
+	}
+	receipt := audit.Receipt
+	if receipt.SchemaVersion != 1 || receipt.OperationID != operationID || receipt.Authority != "lwc" ||
+		receipt.Environment != environment || receipt.ActorID != audit.ActorID || receipt.SubjectID != audit.Subject ||
+		receipt.TargetKind != audit.TargetKind || receipt.Reason != audit.Reason || receipt.Result != audit.Result ||
+		receipt.Fingerprint != audit.Fingerprint || receipt.CommittedAt.IsZero() || !receipt.CommittedAt.Equal(audit.CreatedAt) ||
+		receipt.ManagementAuthorizedAt.IsZero() || receipt.TargetID == nil || receipt.ClientID != nil || receipt.ProjectID == nil ||
+		*receipt.ProjectID != audit.ProjectID || receipt.PreviousCLIEpoch != nil || receipt.CurrentCLIEpoch != nil ||
+		receipt.AffectedCount == nil || !receipt.CountComplete || len(audit.TargetIDs) != 3 {
+		return false
+	}
+	bindingID, bindingOK := audit.TargetIDs["binding_id"]
+	projectID, projectOK := audit.TargetIDs["project_id"]
+	projectRecordID, recordOK := audit.TargetIDs["project_record_id"]
+	if !bindingOK || !projectOK || !recordOK || !ValidPathSegment(bindingID) || !ValidPathSegment(projectID) ||
+		!ValidPathSegment(projectRecordID) || audit.BindingID != bindingID || audit.ProjectID != projectID ||
+		*receipt.TargetID != bindingID || projectDocumentID(audit.Subject, projectID) != projectRecordID {
+		return false
+	}
+	switch audit.Result {
+	case "revoked":
+		return *receipt.AffectedCount == 1
+	case "already_revoked":
+		return *receipt.AffectedCount == 0
+	default:
+		return false
+	}
+}
+
+func isLowerHex(value string) bool {
+	_, err := hex.DecodeString(value)
+	return err == nil && strings.ToLower(value) == value
 }
 
 func adminSyncBindingView(binding syncBindingRecord, revision string) AdminSyncBindingView {

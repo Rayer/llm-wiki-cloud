@@ -438,6 +438,8 @@
     "syncBindingCheckOutcome": "查詢結果",
     "syncBindingRetrySame": "使用相同操作重試",
     "syncBindingComplete": "已成功讀回操作收據與目前綁定狀態。",
+    "syncBindingHistoricalSuccess": "收據已確認先前的綁定撤銷。目前綁定可能已變更，且未受本操作影響。",
+    "syncBindingCurrentId": "目前綁定 ID",
     "syncBindingResult": "結果",
     "owner": "擁有者",
     "conceptCount": "概念數量",

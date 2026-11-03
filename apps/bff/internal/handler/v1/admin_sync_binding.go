@@ -23,6 +23,11 @@ import (
 
 const adminBindingMutationBodyLimit = 16 << 10
 
+const (
+	adminBindingReadRateClass     = "read"
+	adminBindingMutationRateClass = "mutation"
+)
+
 var adminBindingOperationID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
 type adminBindingRevokeBody struct {
@@ -74,7 +79,7 @@ func (h *Handler) AdminWebAccessOnly() gin.HandlerFunc {
 func (h *Handler) FreshLWCAdminScope() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")
-		if !h.allowAdminRequest(c.GetString("userID"), 60, time.Now().UTC()) {
+		if !h.allowAdminRequest(c.GetString("userID"), adminBindingReadRateClass, 60, time.Now().UTC()) {
 			c.Header("Retry-After", "60")
 			writeAdminBindingError(c, http.StatusTooManyRequests, "rate_limited", true, "", nil)
 			return
@@ -105,7 +110,7 @@ func (h *Handler) AdminBindingMutationGuard() gin.HandlerFunc {
 			writeAdminBindingError(c, http.StatusBadRequest, "invalid_request", false, "", nil)
 			return
 		}
-		if !h.allowAdminRequest(c.GetString("userID"), 10, time.Now().UTC()) {
+		if !h.allowAdminRequest(c.GetString("userID"), adminBindingMutationRateClass, 10, time.Now().UTC()) {
 			c.Header("Retry-After", "60")
 			writeAdminBindingError(c, http.StatusTooManyRequests, "rate_limited", true, "", nil)
 			return
@@ -129,14 +134,15 @@ func exactAdminOrigin(raw string) string {
 	return strings.ToLower(parsed.Scheme) + "://" + strings.ToLower(parsed.Host)
 }
 
-func (h *Handler) allowAdminRequest(actorID string, limit int, now time.Time) bool {
+func (h *Handler) allowAdminRequest(actorID, class string, limit int, now time.Time) bool {
 	h.adminMutationRateMu.Lock()
 	defer h.adminMutationRateMu.Unlock()
-	if h.adminMutationRates == nil {
-		h.adminMutationRates = make(map[string][]time.Time)
+	if h.adminRequestRates == nil {
+		h.adminRequestRates = make(map[string][]time.Time)
 	}
+	key := actorID + "\x00" + class
 	cutoff := now.Add(-time.Minute)
-	for actor, entries := range h.adminMutationRates {
+	for actor, entries := range h.adminRequestRates {
 		kept := entries[:0]
 		for _, entry := range entries {
 			if entry.After(cutoff) {
@@ -144,16 +150,16 @@ func (h *Handler) allowAdminRequest(actorID string, limit int, now time.Time) bo
 			}
 		}
 		if len(kept) == 0 {
-			delete(h.adminMutationRates, actor)
+			delete(h.adminRequestRates, actor)
 		} else {
-			h.adminMutationRates[actor] = kept
+			h.adminRequestRates[actor] = kept
 		}
 	}
-	entries := h.adminMutationRates[actorID]
+	entries := h.adminRequestRates[key]
 	if len(entries) >= limit {
 		return false
 	}
-	h.adminMutationRates[actorID] = append(entries, now)
+	h.adminRequestRates[key] = append(entries, now)
 	return true
 }
 

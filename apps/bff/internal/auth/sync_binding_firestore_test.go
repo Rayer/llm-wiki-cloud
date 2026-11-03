@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	cloudfirestore "cloud.google.com/go/firestore"
 )
 
 func TestSyncBindingAuthorityCreatesChecksReauthorizesAndRevokes(t *testing.T) {
@@ -164,6 +166,15 @@ func TestAdminSyncBindingQueryRevokeReceiptAndReplacementFence(t *testing.T) {
 		receipt.AffectedCount == nil || *receipt.AffectedCount != 1 {
 		t.Fatalf("binding revoke receipt=%+v error=%v", receipt, err)
 	}
+	auditSnapshot, err := authority.adminRevocationAuditRef(request.OperationID).Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var audit syncBindingAuditEvent
+	if auditSnapshot.DataTo(&audit) != nil || !validSyncBindingAdminAudit(audit, request.OperationID, environment) ||
+		audit.Receipt == nil || !reflect.DeepEqual(*audit.Receipt, receipt) {
+		t.Fatalf("canonical audit operation=%+v does not contain receipt=%+v", audit, receipt)
+	}
 	if err := authority.CheckSyncBinding(ctx, ownerID, projectID, created.ID, "gat21-wiki", host); !errors.Is(err, ErrSyncBindingUnauthorized) {
 		t.Fatalf("revoked binding check=%v, want unauthorized", err)
 	}
@@ -202,6 +213,76 @@ func TestAdminSyncBindingQueryRevokeReceiptAndReplacementFence(t *testing.T) {
 	request.ExpectedRevision = replacementRevision
 	if _, err := authority.AdminRevokeBinding(ctx, request, authorize); !errors.Is(err, ErrSyncBindingConflict) {
 		t.Fatalf("old binding revoke after replacement error=%v, want target changed", err)
+	}
+}
+
+func TestAdminSyncBindingCanonicalReceiptRejectsCorruptionAndPaddedTarget(t *testing.T) {
+	fs := accountEmulator(t)
+	ctx := context.Background()
+	const host, environment = "https://auth.example.test", "gat21-binding-receipt-integrity"
+	authority := NewSyncBindingAuthority(fs, environment, host)
+	authorize := func(context.Context) (time.Time, error) { return time.Now().UTC(), nil }
+	fields := []struct {
+		projectID, operationID, field, value string
+	}{
+		{"corrupt-environment", "11111111-1111-4111-8111-111111111111", "environment", "other-environment"},
+		{"corrupt-subject", "22222222-2222-4222-8222-222222222222", "subject", "other-owner"},
+		{"corrupt-result", "33333333-3333-4333-8333-333333333333", "result", "unknown"},
+		{"corrupt-target-kind", "44444444-4444-4444-8444-444444444444", "target_kind", "other"},
+	}
+	for _, test := range fields {
+		t.Run(test.field, func(t *testing.T) {
+			ownerID, projectID := "gat21-integrity-owner", test.projectID
+			if _, err := fs.Collection("projects").Doc(ownerID+"_"+projectID).Set(ctx, map[string]interface{}{"user_id": ownerID, "project_id": projectID}); err != nil {
+				t.Fatal(err)
+			}
+			binding, err := authority.CreateBinding(ctx, ownerID, projectID, "wiki-integrity", host)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, revision, err := authority.AdminBinding(ctx, ownerID+"_"+projectID, ownerID, projectID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := AdminSyncBindingRevocationRequest{ActorID: "gat21-integrity-admin", SubjectID: ownerID,
+				ProjectRecordID: ownerID + "_" + projectID, ProjectID: projectID, BindingID: binding.ID,
+				OperationID: test.operationID, Environment: environment, Reason: "integrity test", ExpectedRevision: revision}
+			if _, err := authority.AdminRevokeBinding(ctx, request, authorize); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := authority.adminRevocationAuditRef(test.operationID).Update(ctx, []cloudfirestore.Update{{Path: "receipt." + test.field, Value: test.value}}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := authority.AdminReadBindingRevocationReceipt(ctx, request.ActorID, test.operationID); !errors.Is(err, ErrSyncBindingUnavailable) {
+				t.Fatalf("corrupt receipt read error=%v, want unavailable", err)
+			}
+			if _, err := authority.AdminRevokeBinding(ctx, request, authorize); !errors.Is(err, ErrSyncBindingUnavailable) {
+				t.Fatalf("corrupt receipt replay error=%v, want unavailable", err)
+			}
+		})
+	}
+
+	ownerID, projectID := "gat21-padding-owner", "padding-project"
+	if _, err := fs.Collection("projects").Doc(ownerID+"_"+projectID).Set(ctx, map[string]interface{}{"user_id": ownerID, "project_id": projectID}); err != nil {
+		t.Fatal(err)
+	}
+	binding, err := authority.CreateBinding(ctx, ownerID, projectID, "wiki-padding", host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, revision, err := authority.AdminBinding(ctx, ownerID+"_"+projectID, ownerID, projectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := AdminSyncBindingRevocationRequest{ActorID: "gat21-padding-admin", SubjectID: ownerID,
+		ProjectRecordID: ownerID + "_" + projectID, ProjectID: projectID, BindingID: " " + binding.ID + " ",
+		OperationID: "55555555-5555-4555-8555-555555555555", Environment: environment, Reason: "padding test", ExpectedRevision: revision}
+	if _, err := authority.AdminRevokeBinding(ctx, request, authorize); !errors.Is(err, ErrSyncBindingInvalid) && !errors.Is(err, ErrSyncBindingConflict) {
+		t.Fatalf("padded binding target error=%v, want invalid or literal-target conflict", err)
+	}
+	current, _, err := authority.AdminBinding(ctx, ownerID+"_"+projectID, ownerID, projectID)
+	if err != nil || current == nil || current.BindingID != binding.ID || current.Status != syncBindingStatusActive {
+		t.Fatalf("padded target mutated current binding: view=%+v error=%v", current, err)
 	}
 }
 

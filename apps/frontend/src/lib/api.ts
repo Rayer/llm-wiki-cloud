@@ -2183,22 +2183,47 @@ export async function getAdminProjectSyncBinding(projectRecordId: string): Promi
   return adminJson(`/api/v1/admin/projects/${encodeURIComponent(projectRecordId)}/sync-binding`, { cache: 'no-store' }) as Promise<AdminSyncBindingDetails>;
 }
 
+function decodeAdminSyncBindingRevocation(payload: unknown): AdminSyncBindingRevocation {
+  const invalid = () => new ApiError('Invalid admin revocation receipt', 503);
+  if (!isRecord(payload)) throw invalid();
+  const validTime = (value: unknown) => typeof value === 'string' &&
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/.test(value) && Number.isFinite(Date.parse(value));
+  if (payload.schema_version !== 1 || typeof payload.operation_id !== 'string' ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(payload.operation_id) ||
+      payload.authority !== 'lwc' || typeof payload.environment !== 'string' || !payload.environment ||
+      typeof payload.actor_id !== 'string' || !payload.actor_id || typeof payload.subject !== 'string' || !payload.subject ||
+      payload.target_kind !== 'sync_binding' || typeof payload.target_id !== 'string' || !payload.target_id ||
+      payload.client_id !== null || typeof payload.project_id !== 'string' || !payload.project_id ||
+      typeof payload.reason !== 'string' || !payload.reason.trim() || Array.from(payload.reason).length > 256 ||
+      /[\u0000-\u001f\u007f-\u009f]/u.test(payload.reason) ||
+      (payload.result !== 'revoked' && payload.result !== 'already_revoked') ||
+      !validTime(payload.committed_at) || !validTime(payload.management_authorized_at) ||
+      payload.previous_cli_epoch !== null || payload.current_cli_epoch !== null ||
+      typeof payload.affected_count !== 'number' || !Number.isInteger(payload.affected_count) ||
+      payload.affected_count !== (payload.result === 'revoked' ? 1 : 0) || payload.count_complete !== true) {
+    throw invalid();
+  }
+  return payload as unknown as AdminSyncBindingRevocation;
+}
+
 export async function revokeAdminProjectSyncBinding(
   projectRecordId: string,
   bindingId: string,
   body: AdminSyncBindingRevocationBody,
 ): Promise<AdminSyncBindingRevocation> {
-  return adminJson(`/api/v1/admin/projects/${encodeURIComponent(projectRecordId)}/sync-binding/${encodeURIComponent(bindingId)}/revoke`, {
+  const payload = await adminJson(`/api/v1/admin/projects/${encodeURIComponent(projectRecordId)}/sync-binding/${encodeURIComponent(bindingId)}/revoke`, {
     method: 'POST',
     json: true,
     cache: 'no-store',
     headers: { 'X-GateAuth-Admin-Browser': '1' },
     body: JSON.stringify(body),
-  }) as Promise<AdminSyncBindingRevocation>;
+  });
+  return decodeAdminSyncBindingRevocation(payload);
 }
 
 export async function getAdminSyncBindingRevocation(operationId: string): Promise<AdminSyncBindingRevocation> {
-  return adminJson(`/api/v1/admin/sync-binding-revocations/${encodeURIComponent(operationId)}`, { cache: 'no-store' }) as Promise<AdminSyncBindingRevocation>;
+  const payload = await adminJson(`/api/v1/admin/sync-binding-revocations/${encodeURIComponent(operationId)}`, { cache: 'no-store' });
+  return decodeAdminSyncBindingRevocation(payload);
 }
 
 export async function renameAdminProject(id: string, name: string): Promise<void> {

@@ -811,12 +811,17 @@ function AdminSyncBindingModal({
   const [operationId, setOperationId] = useState('');
   const [error, setError] = useState('');
   const [receipt, setReceipt] = useState<AdminSyncBindingRevocation | null>(null);
+  const [targetSuperseded, setTargetSuperseded] = useState(false);
   const sequence = useRef(0);
   const alive = useRef(true);
   const requestBody = useRef<AdminSyncBindingRevocationBody | null>(null);
+  const targetBindingId = useRef<string | null>(null);
+  const translateRef = useRef(t);
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const returnFocus = useRef<HTMLElement | null>(null);
   const current = (id: number) => alive.current && sequence.current === id;
+
+  useEffect(() => { translateRef.current = t; }, [t]);
 
   useEffect(() => {
     returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -844,11 +849,11 @@ function AdminSyncBindingModal({
     } catch {
       if (alive.current && sequence.current === id) {
         setPhase('details');
-        setError(t('Admin.syncBindingLoadError'));
+        setError(translateRef.current('Admin.syncBindingLoadError'));
       }
       return null;
     }
-  }, [project.id, t]);
+  }, [project.id]);
 
   const loadDetails = useCallback((nextPhase: BindingPhase = 'details') => {
     const id = ++sequence.current;
@@ -871,6 +876,7 @@ function AdminSyncBindingModal({
       setError(t('Admin.syncBindingChanged'));
       return;
     }
+    targetBindingId.current = fresh.binding.binding_id;
     setReason('');
     setOperationId(window.crypto.randomUUID());
     requestBody.current = null;
@@ -884,13 +890,24 @@ function AdminSyncBindingModal({
     try {
       const confirmed = await getAdminSyncBindingRevocation(body.operation_id);
       if (!current(id)) return false;
-      if (confirmed.operation_id !== body.operation_id || confirmed.actor_id !== actorId ||
-        confirmed.project_id !== project.projectId || confirmed.target_id !== details?.binding?.binding_id) return false;
+      const expectedTargetId = targetBindingId.current;
+      if (!expectedTargetId || confirmed.schema_version !== 1 || confirmed.authority !== 'lwc' ||
+        confirmed.operation_id !== body.operation_id || confirmed.actor_id !== actorId ||
+        confirmed.subject !== body.subject || confirmed.environment !== body.environment ||
+        confirmed.target_kind !== 'sync_binding' || confirmed.target_id !== expectedTargetId ||
+        confirmed.project_id !== project.projectId || confirmed.reason !== body.reason ||
+        (confirmed.result !== 'revoked' && confirmed.result !== 'already_revoked') ||
+        confirmed.count_complete !== true || confirmed.affected_count !== (confirmed.result === 'revoked' ? 1 : 0)) return false;
       const target = await getAdminProjectSyncBinding(project.id);
       if (!current(id)) return false;
-      if (target.binding?.binding_id !== confirmed.target_id || target.binding.status !== 'revoked') return false;
+      if (target.schema_version !== 1 || target.owner_id !== body.subject || target.project_id !== project.projectId ||
+        target.project_record_id !== project.id || target.environment !== body.environment ||
+        (target.binding && target.binding.project_id !== project.projectId)) return false;
+      const currentBinding = target.binding;
+      if (currentBinding?.binding_id === expectedTargetId && currentBinding.status !== 'revoked') return false;
       setReceipt(confirmed);
       setDetails(target);
+      setTargetSuperseded(currentBinding?.binding_id !== expectedTargetId);
       setError('');
       setPhase('complete');
       return true;
@@ -1037,7 +1054,13 @@ function AdminSyncBindingModal({
         {phase === 'unknown' ? <p role="status" aria-live="polite">{t('Admin.syncBindingOutcomeUnknown')}</p> : null}
         {phase === 'complete' && receipt ? (
           <div role="status" aria-live="polite" className="rounded border border-emerald-400/20 bg-emerald-400/5 p-3 text-emerald-100">
-            <p>{t('Admin.syncBindingComplete')}</p>
+            <p>{targetSuperseded
+              ? t('Admin.syncBindingHistoricalSuccess')
+              : t('Admin.syncBindingComplete')}</p>
+            {targetSuperseded ? <>
+              <p>{t('Admin.bindingId')}: {receipt.target_id}</p>
+              <p>{t('Admin.syncBindingCurrentId')}: {binding?.binding_id || '—'}</p>
+            </> : null}
             <p>{t('Admin.syncBindingResult')}: {receipt.result}</p>
             <p className="break-all">{t('Admin.syncBindingOperationId')}: {receipt.operation_id}</p>
             <p>{t('Admin.bindingRevokedAt')}: {dateLabel(receipt.committed_at)}</p>
