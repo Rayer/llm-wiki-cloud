@@ -65,7 +65,7 @@ func (h *Handler) serveAuthenticatedMCPRequest(identity mcpProjectKeyIdentity, w
 		return
 	}
 	r.Body = io.NopCloser(bytes.NewReader(body))
-	preflight, reject := inspectMCPProtectedEnvelope(body)
+	preflight, reject := inspectMCPProtectedEnvelope(body, h.mcpContentReadPolicy())
 	releaseControl()
 	if reject {
 		writeMCPEnvelopeError(w, http.StatusBadRequest)
@@ -156,7 +156,7 @@ func (h *Handler) mcpAdmissionService() (*mcpquota.Limiter, error) {
 	return h.mcpAdmission, h.mcpAdmissionErr
 }
 
-func inspectMCPProtectedEnvelope(body []byte) (mcpProtectedPreflight, bool) {
+func inspectMCPProtectedEnvelope(body []byte, policy mcpContentReadPolicy) (mcpProtectedPreflight, bool) {
 	var envelopes []json.RawMessage
 	trimmed := bytes.TrimSpace(body)
 	if len(trimmed) == 0 {
@@ -168,7 +168,7 @@ func inspectMCPProtectedEnvelope(body []byte) (mcpProtectedPreflight, bool) {
 		}
 		var found *mcpProtectedPreflight
 		for _, raw := range envelopes {
-			current, _ := inspectMCPProtectedObject(raw)
+			current, _ := inspectMCPProtectedObject(raw, policy)
 			if !current.protected {
 				if found != nil {
 					return mcpProtectedPreflight{}, true
@@ -188,10 +188,10 @@ func inspectMCPProtectedEnvelope(body []byte) (mcpProtectedPreflight, bool) {
 		}
 		return mcpProtectedPreflight{}, false
 	}
-	return inspectMCPProtectedObject(trimmed)
+	return inspectMCPProtectedObject(trimmed, policy)
 }
 
-func inspectMCPProtectedObject(raw []byte) (mcpProtectedPreflight, bool) {
+func inspectMCPProtectedObject(raw []byte, policy mcpContentReadPolicy) (mcpProtectedPreflight, bool) {
 	var envelope mcpWireEnvelope
 	if json.Unmarshal(raw, &envelope) != nil {
 		return mcpProtectedPreflight{}, false
@@ -211,7 +211,7 @@ func inspectMCPProtectedObject(raw []byte) (mcpProtectedPreflight, bool) {
 	if !validProtectedMCPID(envelope.ID) || len(params.Meta) > maxMCPProtectedMetaBytes || len(envelope.Params) > maxMCPProtectedParams || jsonDepthExceeds(raw, maxMCPProtectedJSONDepth) || jsonHasDuplicateObjectKeys(raw) {
 		return preflight, true
 	}
-	preflight.validArgs = validMCPProtectedArguments(params.Name, params.Arguments)
+	preflight.validArgs = validMCPProtectedArguments(params.Name, params.Arguments, policy)
 	preflight.canAdmit = preflight.validArgs && len(envelope.ID) > 0 && !bytes.Equal(bytes.TrimSpace(envelope.ID), []byte("null"))
 	return preflight, !preflight.canAdmit
 }
@@ -257,7 +257,7 @@ func validProtectedMCPID(raw json.RawMessage) bool {
 	return false
 }
 
-func validMCPProtectedArguments(name string, raw json.RawMessage) bool {
+func validMCPProtectedArguments(name string, raw json.RawMessage, policy mcpContentReadPolicy) bool {
 	decode := func(target any) bool {
 		if len(raw) == 0 || len(raw) > maxMCPProtectedParams {
 			return false
@@ -276,16 +276,16 @@ func validMCPProtectedArguments(name string, raw json.RawMessage) bool {
 		return decode(&input) && strings.TrimSpace(input.Query) != "" && (input.Mode == "" || input.Mode == "wiki" || input.Mode == "full")
 	case "list_content":
 		var input listContentInput
-		return decode(&input) && validMCPContentKind(input.Kind) && (input.Limit == 0 || input.Limit >= 1 && input.Limit <= 50) && len(input.Cursor) <= mcpContentMaxCursor
+		return decode(&input) && validMCPContentKind(input.Kind) && (input.Limit == 0 || input.Limit >= 1 && input.Limit <= policy.ListMax) && len(input.Cursor) <= mcpContentMaxCursor
 	case "find_content":
 		var input findContentInput
-		return decode(&input) && validMCPContentKind(input.Kind) && strings.TrimSpace(input.Name) != "" && len([]byte(strings.TrimSpace(input.Name))) <= mcpContentMaxName && (input.Limit == 0 || input.Limit >= 1 && input.Limit <= 50) && len(input.Cursor) <= mcpContentMaxCursor
+		return decode(&input) && validMCPContentKind(input.Kind) && strings.TrimSpace(input.Name) != "" && len([]byte(strings.TrimSpace(input.Name))) <= mcpContentMaxName && (input.Limit == 0 || input.Limit >= 1 && input.Limit <= policy.ListMax) && len(input.Cursor) <= mcpContentMaxCursor
 	case "read_content":
 		var input readContentInput
-		return decode(&input) && validMCPContentKind(input.Kind) && len(input.ID) > 0 && len(input.ID) <= mcpContentMaxID && (input.MaxBytes == 0 || input.MaxBytes >= 1 && input.MaxBytes <= mcpContentChunkBytes) && len(input.Generation) <= 128 && len(input.Cursor) <= mcpContentMaxCursor && len(input.RefsCursor) <= mcpContentMaxCursor
+		return decode(&input) && validMCPContentKind(input.Kind) && len(input.ID) > 0 && len(input.ID) <= mcpContentMaxID && (input.MaxBytes == 0 || input.MaxBytes >= 1 && input.MaxBytes <= policy.ChunkMaxBytes) && len(input.Generation) <= 128 && len(input.Cursor) <= mcpContentMaxCursor && len(input.RefsCursor) <= mcpContentMaxCursor
 	case "read_source_raw":
 		var input readSourceRawInput
-		return decode(&input) && len(input.SourceID) > 0 && len(input.SourceID) <= mcpContentMaxID && (input.MaxBytes == 0 || input.MaxBytes >= 1 && input.MaxBytes <= mcpContentChunkBytes) && len(input.Generation) <= 128 && len(input.Cursor) <= mcpContentMaxCursor
+		return decode(&input) && len(input.SourceID) > 0 && len(input.SourceID) <= mcpContentMaxID && (input.MaxBytes == 0 || input.MaxBytes >= 1 && input.MaxBytes <= policy.ChunkMaxBytes) && len(input.Generation) <= 128 && len(input.Cursor) <= mcpContentMaxCursor
 	default:
 		return false
 	}

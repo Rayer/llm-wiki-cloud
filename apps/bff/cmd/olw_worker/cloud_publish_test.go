@@ -2918,6 +2918,80 @@ func TestPublishCloudGenerationArchivesSourceSnapshotsByGeneration(t *testing.T)
 	}
 }
 
+func TestCloudPublisherSourceSnapshotRoundTripsForMCPRawConsumer(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		sourceMap string
+		wantError bool
+	}{
+		{name: "optional SourceFile omitted", sourceMap: `{"concept":{},"source":{"s1":"source"},"source_meta":{"s1":{"slug":"source"}},"redirects":{}}`},
+		{name: "optional SourceFile empty", sourceMap: `{"concept":{},"source":{"s1":"source"},"source_meta":{"s1":{"slug":"source","source_file":""}},"redirects":{}}`},
+		{name: "declared SourceFile matches", sourceMap: `{"concept":{},"source":{"s1":"source"},"source_meta":{"s1":{"slug":"source","source_file":"raw/source.md"}},"redirects":{}}`},
+		{name: "declared SourceFile mismatch", sourceMap: `{"concept":{},"source":{"s1":"source"},"source_meta":{"s1":{"slug":"source","source_file":"raw/other.md"}},"redirects":{}}`, wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const prefix = "users/mcp-owner/mcp-project/"
+			root := t.TempDir()
+			writeCloudRequiredOutputs(t, root)
+			idMapBytes := []byte(tc.sourceMap)
+			if err := os.WriteFile(filepath.Join(root, "cache", "id_map.json"), idMapBytes, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			raw := []byte("producer-retained raw source bytes\n")
+			writePublisherReceipt(t, root, map[string]sourcestatus.Receipt{"s1": publisherReceipt("s1", "raw/source.md", raw, "source annotation")})
+			store := newMemoryObjects()
+			manifest, _, err := publishCloudGeneration(context.Background(), store, prefix, root, []sourceSnapshot{{
+				SourceID: "s1", RawPath: "raw/source.md", RawBytes: raw, RawSHA256: digestBytes(raw),
+			}})
+			if tc.wantError {
+				if err == nil || !strings.Contains(err.Error(), "source path mismatch") {
+					t.Fatalf("mismatched declared SourceFile publish error=%v", err)
+				}
+				if _, _, readErr := store.Read(context.Background(), prefix+generation.ManifestPath, 0, generation.MaxManifestBytes); !isObjectNotFound(readErr) {
+					t.Fatalf("rejected source mapping advanced current generation: %v", readErr)
+				}
+				return
+			}
+			if err != nil || manifest.SourceSnapshotDigest == "" {
+				t.Fatalf("publish source snapshot: digest=%q err=%v", manifest.SourceSnapshotDigest, err)
+			}
+			currentBytes, _, err := store.Read(context.Background(), prefix+generation.ManifestPath, 0, generation.MaxManifestBytes)
+			if err != nil {
+				t.Fatalf("read producer current manifest: %v", err)
+			}
+			current, err := generation.Decode(currentBytes)
+			if err != nil || current.GenerationID != manifest.GenerationID || current.SourceSnapshotDigest != manifest.SourceSnapshotDigest {
+				t.Fatalf("serialized current generation=%+v err=%v", current, err)
+			}
+			inventoryPath, err := generation.SourceSnapshotPath(current.SourceSnapshotDigest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			inventoryBytes, inventoryAttrs, err := store.Read(context.Background(), prefix+inventoryPath, 0, generation.MaxSourceSnapshotBytes)
+			if err != nil || inventoryAttrs.Size != int64(len(inventoryBytes)) || digestBytes(inventoryBytes) != current.SourceSnapshotDigest {
+				t.Fatalf("serialized source inventory attrs=%+v bytes=%d err=%v", inventoryAttrs, len(inventoryBytes), err)
+			}
+			inventory, err := generation.DecodeSourceSnapshot(inventoryBytes)
+			if err != nil || inventory.ContentGeneration != current.GenerationID || len(inventory.Rows) != 1 {
+				t.Fatalf("MCP consumer source inventory=%+v err=%v", inventory, err)
+			}
+			row := inventory.Rows[0]
+			if row.StableID != "s1" || row.RawPath != "raw/source.md" || row.ContentDigest != digestBytes(raw) || row.ObjectGeneration <= 0 {
+				t.Fatalf("producer source mapping row does not bind stable ID, safe path and exact content: %+v", row)
+			}
+			bytesPath, err := generation.SourceBytesPath(row.ContentDigest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			retainedBytes, attrs, err := store.Read(context.Background(), prefix+bytesPath, row.ObjectGeneration, generation.MaxFileBytes)
+			if err != nil || attrs.Generation != row.ObjectGeneration || !bytes.Equal(retainedBytes, raw) {
+				t.Fatalf("MCP retained-byte reader got=%q attrs=%+v err=%v", retainedBytes, attrs, err)
+			}
+			t.Logf("publisher_to_mcp_snapshot source_id=%s source_file_optional=true object_generation=%d bytes=%d", row.StableID, row.ObjectGeneration, len(retainedBytes))
+		})
+	}
+}
+
 func TestPublishCloudGenerationRetainsUnchangedSourceAndBindsReceipt(t *testing.T) {
 	prefix := "users/u/projects/p/"
 	store := newMemoryObjects()

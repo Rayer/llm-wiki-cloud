@@ -63,7 +63,10 @@ func (c *Client) ReadSourceSnapshot(ctx context.Context) (generation.SourceSnaps
 	}
 	object, err := c.readObject(ctx, c.prefix()+"/"+path, 0, generation.MaxSourceSnapshotBytes)
 	if err != nil {
-		return generation.SourceSnapshotManifest{}, fmt.Errorf("%w: %w", ErrSourceSnapshotUnavailable, err)
+		if objectNotFound(err) {
+			return generation.SourceSnapshotManifest{}, fmt.Errorf("%w: %w", store.ErrDeclaredObjectUnavailable, err)
+		}
+		return generation.SourceSnapshotManifest{}, fmt.Errorf("read retained source snapshot: %w", err)
 	}
 	if generation.Digest(object.Data) != manifest.SourceSnapshotDigest {
 		return generation.SourceSnapshotManifest{}, ErrSourceSnapshotInvalid
@@ -74,7 +77,7 @@ func (c *Client) ReadSourceSnapshot(ctx context.Context) (generation.SourceSnaps
 	}
 	idMap, hasIDMap := manifest.File("cache/id_map.json")
 	if !hasIDMap {
-		return generation.SourceSnapshotManifest{}, ErrSourceSnapshotUnavailable
+		return generation.SourceSnapshotManifest{}, ErrSourceSnapshotInvalid
 	}
 	if inventory.ContentGeneration != manifest.GenerationID || inventory.IDMapDigest != idMap.SHA256 {
 		return generation.SourceSnapshotManifest{}, ErrSourceSnapshotInvalid
@@ -100,8 +103,14 @@ func (c *Client) RetainedSourceSnapshotSize(ctx context.Context) (int64, error) 
 		return 0, ErrSourceSnapshotInvalid
 	}
 	object, err := c.objectAttrs(ctx, c.prefix()+"/"+path, 0)
-	if err != nil || object.Size < 0 || object.Size > generation.MaxSourceSnapshotBytes {
-		return 0, ErrSourceSnapshotUnavailable
+	if err != nil {
+		if objectNotFound(err) {
+			return 0, fmt.Errorf("%w: %w", store.ErrDeclaredObjectUnavailable, err)
+		}
+		return 0, fmt.Errorf("read retained source snapshot attributes: %w", err)
+	}
+	if object.Size < 0 || object.Size > generation.MaxSourceSnapshotBytes {
+		return 0, ErrSourceSnapshotInvalid
 	}
 	return object.Size, nil
 }
@@ -133,7 +142,10 @@ func (c *Client) RetainedSourceBytesSize(ctx context.Context, inventory generati
 		}
 		attrs, err := c.objectAttrs(ctx, c.prefix()+"/"+path, row.ObjectGeneration)
 		if err != nil {
-			return 0, fmt.Errorf("%w: %w", store.ErrDeclaredObjectUnavailable, err)
+			if objectNotFound(err) {
+				return 0, fmt.Errorf("%w: %w", store.ErrDeclaredObjectUnavailable, err)
+			}
+			return 0, fmt.Errorf("read retained source attributes: %w", err)
 		}
 		if attrs.Generation != row.ObjectGeneration || attrs.Size < 0 || attrs.Size > generation.MaxFileBytes {
 			return 0, store.ErrDeclaredObjectUnavailable
@@ -159,7 +171,10 @@ func (c *Client) ReadSourceBytesFromSnapshot(ctx context.Context, inventory gene
 		}
 		object, err := c.readObject(ctx, c.prefix()+"/"+path, row.ObjectGeneration, generation.MaxFileBytes)
 		if err != nil {
-			return nil, fmt.Errorf("%w: %w", store.ErrDeclaredObjectUnavailable, err)
+			if objectNotFound(err) {
+				return nil, fmt.Errorf("%w: %w", store.ErrDeclaredObjectUnavailable, err)
+			}
+			return nil, fmt.Errorf("read retained source bytes: %w", err)
 		}
 		if object.Generation != row.ObjectGeneration || generation.Digest(object.Data) != row.ContentDigest {
 			return nil, store.ErrDeclaredObjectUnavailable

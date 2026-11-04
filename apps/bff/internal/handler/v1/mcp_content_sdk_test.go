@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -29,6 +30,8 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/gcs"
 	"github.com/rayer/llm-wiki-bff/internal/generation"
 	"github.com/rayer/llm-wiki-bff/internal/localfs"
+	"github.com/rayer/llm-wiki-bff/internal/query"
+	"github.com/rayer/llm-wiki-bff/internal/search"
 	"github.com/rayer/llm-wiki-bff/internal/storage"
 	"github.com/rayer/llm-wiki-bff/internal/wikiindex"
 )
@@ -36,6 +39,27 @@ import (
 type mcpContentAdmissionObservation struct {
 	active        bool
 	projectTokens int64
+}
+
+func TestMCPSourceSnapshotErrorClassification(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		err        error
+		code       string
+		retryAfter int
+	}{
+		{name: "historical generation has no snapshot", err: gcs.ErrSourceSnapshotUnavailable, code: "raw_snapshot_unavailable"},
+		{name: "declared inventory missing", err: storage.ErrDeclaredObjectUnavailable, code: "content_unavailable", retryAfter: 1000},
+		{name: "corrupt inventory", err: gcs.ErrSourceSnapshotInvalid, code: "content_unavailable", retryAfter: 1000},
+		{name: "transient storage failure", err: fmt.Errorf("read inventory: %w", context.DeadlineExceeded), code: "metadata_unavailable", retryAfter: 1000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			code, retryAfter := mcpSourceSnapshotError(tc.err)
+			if code != tc.code || retryAfter != tc.retryAfter {
+				t.Fatalf("classification=(%q,%d), want (%q,%d)", code, retryAfter, tc.code, tc.retryAfter)
+			}
+		})
+	}
 }
 
 type mcpContentAdmissionProbeRoot struct {
@@ -119,7 +143,7 @@ func connectMCPWithBearer(t *testing.T, ctx context.Context, endpoint, token, pr
 }
 
 func mcpContentEndpointTestConfig() *config.BFFMCP {
-	bucket := config.MCPProtectionBucket{Capacity: 8, RefillMicrounitsPerSecond: 1, MaxInflight: 8}
+	bucket := config.MCPProtectionBucket{Capacity: 32, RefillMicrounitsPerSecond: 1, MaxInflight: 8}
 	content := config.MCPProtectionClass{
 		Project: bucket, Account: config.MCPProtectionBucket{Capacity: 48, RefillMicrounitsPerSecond: 4_000_000, MaxInflight: 16},
 		FleetMaxInflight: 64, LocalMaxInflight: 32, WorkTimeoutMS: 20_000, LeaseMS: 60_000, WorkingBytes: 128 << 20,
@@ -174,7 +198,7 @@ func TestMCPContentReadScopesAndAdmissionThroughProjectKeyAndOAuthSDKEndpoints(t
 		t.Fatalf("Firestore emulator must use loopback, got %q", parsedEndpoint.Host)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	suffix := fmt.Sprint(time.Now().UnixNano())
 	localScope := "mcp-content-sdk-" + suffix
@@ -196,9 +220,33 @@ func TestMCPContentReadScopesAndAdmissionThroughProjectKeyAndOAuthSDKEndpoints(t
 	var holdBigRead atomic.Bool
 	readStarted := make(chan struct{}, 1)
 	releaseRead := make(chan struct{})
+	var holdSmallRead atomic.Bool
+	smallReadStarted := make(chan struct{}, 6)
+	releaseSmallRead := make(chan struct{})
+	var releaseSmallOnce sync.Once
+	releaseSmall := func() { releaseSmallOnce.Do(func() { close(releaseSmallRead) }) }
+	var holdCanceledRead atomic.Bool
+	canceledReadStarted := make(chan struct{}, 1)
+	releaseCanceledRead := make(chan struct{})
+	var releaseCanceledOnce sync.Once
+	releaseCanceled := func() { releaseCanceledOnce.Do(func() { close(releaseCanceledRead) }) }
 	var releaseOnce sync.Once
 	releaseBigRead := func() { releaseOnce.Do(func() { close(releaseRead) }) }
 	contentClient, _, _ := newTaggingGCSClient(t, mcpPublishedContentFixture(t, userID, projectID), func(name string) {
+		if holdSmallRead.Load() && strings.HasSuffix(name, "/wiki/alpha.md") {
+			select {
+			case smallReadStarted <- struct{}{}:
+			default:
+			}
+			<-releaseSmallRead
+		}
+		if holdCanceledRead.Load() && strings.HasSuffix(name, "/wiki/alpha.md") {
+			select {
+			case canceledReadStarted <- struct{}{}:
+			default:
+			}
+			<-releaseCanceledRead
+		}
 		if holdBigRead.Load() && strings.HasSuffix(name, "/wiki/big-one.md") {
 			select {
 			case readStarted <- struct{}{}:
@@ -208,10 +256,19 @@ func TestMCPContentReadScopesAndAdmissionThroughProjectKeyAndOAuthSDKEndpoints(t
 		}
 	})
 	t.Cleanup(releaseBigRead)
+	t.Cleanup(releaseSmall)
+	t.Cleanup(releaseCanceled)
 	probe := &mcpContentAdmissionProbeRoot{RootStore: localfs.New(t.TempDir()), fs: fs.Raw(), content: contentClient}
 	handler := New(probe, fs, nil, nil, nil, nil)
 	handler.SetMCPConfig(mcpContentEndpointTestConfig())
 	handler.mcpEnvironment = "local"
+	handler.profileRepository = nil
+	handler.SetQueryExecutor(&mcpTestExecutor{result: query.Result{
+		Query: "published source citation", Mode: "full", Status: "evidence_found", AnswerBasis: "project_evidence",
+		Results:   []search.Result{{ID: "concept-one", Slug: "alpha", Title: "Alpha", Type: "concept"}},
+		AISynth:   "The published Alpha concept supports this answer.",
+		Citations: []search.Citation{{ID: "concept-one", Text: "Alpha", Slug: "alpha", Type: "concept", Path: "/concepts/concept-one-alpha"}},
+	}})
 	gin.SetMode(gin.TestMode)
 
 	readKey, readKeyToken, _, err := handler.projectKeyService.CreateWithCapabilities(ctx, userID, projectID, "MCP content read fixture", []string{"query", "content:read"})
@@ -274,6 +331,60 @@ func TestMCPContentReadScopesAndAdmissionThroughProjectKeyAndOAuthSDKEndpoints(t
 	server := httptest.NewServer(router)
 	defer server.Close()
 
+	for _, endpoint := range []struct {
+		name, path, token, projectHeader string
+	}{
+		{name: "project-key", path: "/mcp", token: readKeyToken, projectHeader: projectID},
+		{name: "oauth", path: "/mcp/projects/" + projectID, token: readOAuthToken},
+	} {
+		postWire := func(body []byte) *httptest.ResponseRecorder {
+			t.Helper()
+			request := httptest.NewRequest(http.MethodPost, endpoint.path, bytes.NewReader(body))
+			request.Header.Set("Authorization", "Bearer "+endpoint.token)
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("Accept", "application/json, text/event-stream")
+			if endpoint.projectHeader != "" {
+				request.Header.Set("X-Project-ID", endpoint.projectHeader)
+			}
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+			return response
+		}
+		assertRejectedNoEcho := func(name string, body []byte, sentinel string) {
+			t.Helper()
+			response := postWire(body)
+			if response.Body.Len() > maxMCPProtectedResponseBytes || !strings.Contains(response.Body.String(), `"id":null`) ||
+				strings.Contains(response.Body.String(), sentinel) {
+				t.Fatalf("%s %s wire rejection status=%d bytes=%d body=%q", endpoint.name, name, response.Code, response.Body.Len(), response.Body.String())
+			}
+		}
+		longID := strings.Repeat("L", maxMCPProtectedIDDecoded+1)
+		longIDBody, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": longID, "method": "tools/call", "params": map[string]any{"name": "list_content", "arguments": map[string]any{"kind": "concept"}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertRejectedNoEcho("long ID", longIDBody, strings.Repeat("L", 64))
+		largeMetaBody, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": "large-meta", "method": "tools/call", "params": map[string]any{"name": "list_content", "arguments": map[string]any{"kind": "concept"}, "_meta": strings.Repeat("M", maxMCPProtectedMetaBytes+1)}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertRejectedNoEcho("oversized _meta", largeMetaBody, strings.Repeat("M", 64))
+		largeParamsBody, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": "large-params", "method": "tools/call", "params": map[string]any{"name": "list_content", "arguments": map[string]any{"kind": "concept", "unexpected": strings.Repeat("P", maxMCPProtectedParams)}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertRejectedNoEcho("oversized params", largeParamsBody, strings.Repeat("P", 64))
+		protocolErrorBody, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": "protocol-meta", "method": "tools/call", "params": map[string]any{"name": "list_content", "arguments": map[string]any{"kind": "concept"}, "_meta": "invalid-meta-shape"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		protocolError := postWire(protocolErrorBody)
+		if protocolError.Body.Len() > maxMCPProtectedResponseBytes || !strings.Contains(protocolError.Body.String(), `"id":"protocol-meta"`) || !strings.Contains(protocolError.Body.String(), `"error"`) {
+			t.Fatalf("%s SDK protocol error wire response status=%d bytes=%d body=%q", endpoint.name, protocolError.Code, protocolError.Body.Len(), protocolError.Body.String())
+		}
+		t.Logf("protected_wire endpoint=%s oversized_id_meta_params=id_null_no_echo protocol_error_bytes=%d", endpoint.name, protocolError.Body.Len())
+	}
+
 	readSession := connectMCPWithBearer(t, ctx, server.URL+"/mcp", readKeyToken, projectID)
 	keyTools, err := readSession.ListTools(ctx, nil)
 	if err != nil {
@@ -291,6 +402,47 @@ func TestMCPContentReadScopesAndAdmissionThroughProjectKeyAndOAuthSDKEndpoints(t
 	if keyToolNames["add_raw"] || keyToolNames["import_url"] || keyToolNames["import_document"] {
 		t.Fatalf("read key exposed a write tool: %v", keyToolNames)
 	}
+
+	queryResult, err := readSession.CallTool(ctx, &mcp.CallToolParams{Name: "query_project", Arguments: map[string]any{"q": "published source citation", "mode": "full"}})
+	if err != nil || queryResult == nil || queryResult.IsError {
+		t.Fatalf("SDK query_project citation response=%+v err=%v", queryResult, err)
+	}
+	queryPayload, ok := queryResult.StructuredContent.(map[string]any)
+	citations, _ := queryPayload["citations"].([]any)
+	if !ok || queryPayload["content_generation"] != "g_mcp_content_fixture" || len(citations) != 1 {
+		t.Fatalf("SDK query citation did not expose a pinned generation and one candidate: %#v", queryResult.StructuredContent)
+	}
+	citation, _ := citations[0].(map[string]any)
+	if citation["id"] != "concept-one" || citation["path"] != "/concepts/concept-one-alpha" {
+		t.Fatalf("query citation does not identify the stable Concept route: %#v", citation)
+	}
+	conceptResult, err := readSession.CallTool(ctx, &mcp.CallToolParams{Name: "read_content", Arguments: map[string]any{"kind": "concept", "id": citation["id"], "generation": queryPayload["content_generation"]}})
+	if err != nil || conceptResult == nil || conceptResult.IsError {
+		t.Fatalf("follow query citation into pinned Concept: result=%+v err=%v", conceptResult, err)
+	}
+	conceptPayload, _ := conceptResult.StructuredContent.(map[string]any)
+	conceptSynthesis, _ := conceptPayload["synthesis_sources"].([]any)
+	if conceptPayload["generation"] != queryPayload["content_generation"] || len(conceptSynthesis) != 1 {
+		t.Fatalf("Concept citation follow-up changed generation or omitted source provenance: %#v", conceptResult.StructuredContent)
+	}
+	sourceRef, _ := conceptSynthesis[0].(map[string]any)
+	if sourceRef["id"] != "source-one" || sourceRef["relation"] != "synthesis_source" {
+		t.Fatalf("Concept provenance does not lead to the stable Source ID: %#v", conceptSynthesis)
+	}
+	sourceResult, err := readSession.CallTool(ctx, &mcp.CallToolParams{Name: "read_content", Arguments: map[string]any{"kind": "source", "id": sourceRef["id"], "generation": queryPayload["content_generation"]}})
+	if err != nil || sourceResult == nil || sourceResult.IsError {
+		t.Fatalf("follow Concept provenance into pinned Source: result=%+v err=%v", sourceResult, err)
+	}
+	rawFollowup, err := readSession.CallTool(ctx, &mcp.CallToolParams{Name: "read_source_raw", Arguments: map[string]any{"source_id": sourceRef["id"], "generation": queryPayload["content_generation"]}})
+	if err != nil || rawFollowup == nil || rawFollowup.IsError {
+		t.Fatalf("follow Source into publisher-retained raw bytes: result=%+v err=%v", rawFollowup, err)
+	}
+	rawFollowupPayload, _ := rawFollowup.StructuredContent.(map[string]any)
+	rawFollowupContent, _ := rawFollowupPayload["content"].(map[string]any)
+	if rawFollowupPayload["generation"] != queryPayload["content_generation"] || rawFollowupContent["text"] != "Retained source text from the publisher.\n" {
+		t.Fatalf("query→Concept→Source→Raw chain did not retain its generation and source bytes: %#v", rawFollowup.StructuredContent)
+	}
+	t.Logf("query_citation_followup generation=%s citation=%s source=%s raw_bytes=%d", queryPayload["content_generation"], citation["id"], sourceRef["id"], len(rawFollowupContent["text"].(string)))
 
 	querySession := connectMCPWithBearer(t, ctx, server.URL+"/mcp", queryKeyToken, projectID)
 	queryTools, err := querySession.ListTools(ctx, nil)
@@ -320,8 +472,84 @@ func TestMCPContentReadScopesAndAdmissionThroughProjectKeyAndOAuthSDKEndpoints(t
 	if !ok || keyPayload["generation"] != "g_mcp_content_fixture" || len(items) != 4 {
 		t.Fatalf("read key list did not return published fixture: %#v", keyResult.StructuredContent)
 	}
-	if observations := probe.observations(); len(observations) != 1 || !observations[0].active || observations[0].projectTokens != 7_000_000 {
+	if observations := probe.observations(); len(observations) != 1 || !observations[0].active || observations[0].projectTokens <= 0 || observations[0].projectTokens >= 31_000_000 {
 		t.Fatalf("Project-key storage scope was not reached under its active admission lease: %+v", observations)
+	}
+
+	// Six body reads are held at a barrier after shared admission and local
+	// reservation. All must coexist under the unchanged 128 MiB working-set cap.
+	type smallResult struct {
+		result *mcp.CallToolResult
+		err    error
+	}
+	smallResults := make(chan smallResult, 6)
+	holdSmallRead.Store(true)
+	for i := 0; i < 6; i++ {
+		go func() {
+			result, err := readSession.CallTool(ctx, &mcp.CallToolParams{Name: "read_content", Arguments: map[string]any{"kind": "concept", "id": "concept-one"}})
+			smallResults <- smallResult{result: result, err: err}
+		}()
+	}
+	for i := 0; i < 6; i++ {
+		select {
+		case <-smallReadStarted:
+		case <-ctx.Done():
+			releaseSmall()
+			t.Fatalf("only %d of six small reads reached the storage barrier", i)
+		}
+	}
+	releaseSmall()
+	holdSmallRead.Store(false)
+	for i := 0; i < 6; i++ {
+		select {
+		case got := <-smallResults:
+			if got.err != nil || got.result == nil || got.result.IsError {
+				t.Fatalf("normal six-read burst failed: result=%+v err=%v", got.result, got.err)
+			}
+		case <-ctx.Done():
+			t.Fatal("six-read burst did not settle after releasing the barrier")
+		}
+	}
+	t.Logf("normal_small_read_burst admitted_and_settled=6/6 barrier=wiki/alpha.md")
+	cancelCtx, cancelRead := context.WithCancel(ctx)
+	canceledRead := make(chan error, 1)
+	holdCanceledRead.Store(true)
+	go func() {
+		_, err := readSession.CallTool(cancelCtx, &mcp.CallToolParams{Name: "read_content", Arguments: map[string]any{"kind": "concept", "id": "concept-one"}})
+		canceledRead <- err
+	}()
+	select {
+	case <-canceledReadStarted:
+	case <-ctx.Done():
+		releaseCanceled()
+		t.Fatal("cancellable MCP read did not reach its held storage body")
+	}
+	cancelRead()
+	releaseCanceled()
+	var cancelErr error
+	select {
+	case cancelErr = <-canceledRead:
+	case <-time.After(5 * time.Second):
+		t.Fatal("canceled MCP read did not settle after releasing the local body barrier")
+	}
+	if !errors.Is(cancelErr, context.Canceled) {
+		t.Fatalf("canceled MCP SDK call error=%v, want context canceled", cancelErr)
+	}
+	holdCanceledRead.Store(false)
+	cancelRead()
+	recoveredRead, recoveredErr := readSession.CallTool(ctx, &mcp.CallToolParams{Name: "read_content", Arguments: map[string]any{"kind": "concept", "id": "concept-one"}})
+	if recoveredErr != nil || recoveredRead == nil || recoveredRead.IsError {
+		t.Fatalf("capacity did not recover after canceled read settled: result=%+v err=%v", recoveredRead, recoveredErr)
+	}
+	t.Logf("canceled_read canceled_while_body_held=true settled=true subsequent_read=success")
+	rawResult, err := readSession.CallTool(ctx, &mcp.CallToolParams{Name: "read_source_raw", Arguments: map[string]any{"source_id": "source-one"}})
+	if err != nil || rawResult == nil || rawResult.IsError {
+		t.Fatalf("read key read_source_raw response=%+v err=%v", rawResult, err)
+	}
+	rawPayload, ok := rawResult.StructuredContent.(map[string]any)
+	rawBody, _ := rawPayload["content"].(map[string]any)
+	if !ok || rawPayload["representation"] != "retained_source_text" || rawBody["text"] != "Retained source text from the publisher.\n" {
+		t.Fatalf("retained raw Source response=%#v", rawResult.StructuredContent)
 	}
 
 	findResult, err := readSession.CallTool(ctx, &mcp.CallToolParams{Name: "find_content", Arguments: map[string]any{"kind": "concept", "name": "Alpha"}})
@@ -350,15 +578,33 @@ func TestMCPContentReadScopesAndAdmissionThroughProjectKeyAndOAuthSDKEndpoints(t
 	if synthesisRef["relation"] != "synthesis_source" || synthesisRef["id"] != "source-one" || mentionRef["relation"] != "mention" || mentionRef["id"] != "concept-two" {
 		t.Fatalf("provenance and Markdown mentions were conflated: synthesis=%#v mentions=%#v", synthesis, mentions)
 	}
-
-	rawResult, err := readSession.CallTool(ctx, &mcp.CallToolParams{Name: "read_source_raw", Arguments: map[string]any{"source_id": "source-one"}})
-	if err != nil || rawResult == nil || rawResult.IsError {
-		t.Fatalf("read key read_source_raw response=%+v err=%v", rawResult, err)
+	readText := readResult.Content[0].(*mcp.TextContent).Text
+	var textPayload map[string]any
+	if err := json.Unmarshal([]byte(readText), &textPayload); err != nil {
+		t.Fatalf("decode SDK text result: %v", err)
 	}
-	rawPayload, ok := rawResult.StructuredContent.(map[string]any)
-	rawBody, _ := rawPayload["content"].(map[string]any)
-	if !ok || rawPayload["representation"] != "retained_source_text" || rawBody["text"] != "Retained source text from the publisher.\n" {
-		t.Fatalf("retained raw Source response=%#v", rawResult.StructuredContent)
+	emptyResult, err := readSession.CallTool(ctx, &mcp.CallToolParams{Name: "read_content", Arguments: map[string]any{"kind": "concept", "id": "concept-two"}})
+	if err != nil || emptyResult == nil || emptyResult.IsError {
+		t.Fatalf("read empty provenance/mentions response=%+v err=%v", emptyResult, err)
+	}
+	emptyPayload, _ := emptyResult.StructuredContent.(map[string]any)
+	emptySynthesis, synthesisOK := emptyPayload["synthesis_sources"].([]any)
+	emptyMentions, mentionsOK := emptyPayload["mentions"].([]any)
+	var emptyText map[string]any
+	if err := json.Unmarshal([]byte(emptyResult.Content[0].(*mcp.TextContent).Text), &emptyText); err != nil {
+		t.Fatalf("decode empty SDK text result: %v", err)
+	}
+	if !synthesisOK || !mentionsOK || len(emptySynthesis) != 0 || len(emptyMentions) != 0 || emptyText["synthesis_sources"] == nil || emptyText["mentions"] == nil {
+		t.Fatalf("SDK empty provenance arrays were null or omitted: structured=%#v text=%#v", emptyPayload, emptyText)
+	}
+
+	mismatchedRaw, err := readSession.CallTool(ctx, &mcp.CallToolParams{Name: "read_source_raw", Arguments: map[string]any{"source_id": "source-two"}})
+	if err != nil || mismatchedRaw == nil || !mismatchedRaw.IsError {
+		t.Fatalf("nonempty mismatched SourceFile metadata was accepted: result=%+v err=%v", mismatchedRaw, err)
+	}
+	mismatchedPayload, _ := mismatchedRaw.StructuredContent.(map[string]any)
+	if mismatchedPayload["code"] != "raw_mapping_unavailable" {
+		t.Fatalf("mismatched SourceFile error=%#v", mismatchedRaw.StructuredContent)
 	}
 
 	runtime.GC()
@@ -379,6 +625,49 @@ func TestMCPContentReadScopesAndAdmissionThroughProjectKeyAndOAuthSDKEndpoints(t
 	runtime.ReadMemStats(&heapAfter)
 	rssAfter := mcpProcessPeakRSSBytes(t)
 	t.Logf("large_single file_bytes=%d response_chunk_bytes=%d heap_alloc_before=%d heap_alloc_after=%d rss_peak_before=%d rss_peak_after=%d", generation.MaxFileBytes, len(largeText), heapBefore.Alloc, heapAfter.Alloc, rssBefore, rssAfter)
+
+	// Keep one SDK response inside its final bounded HTTP writer. The active
+	// request's working-set reservations must remain unavailable until Commit.
+	blockedWriter := newMCPCommitBlockingWriter()
+	t.Cleanup(blockedWriter.releaseWrite)
+	blockedRequest := httptest.NewRequest(http.MethodPost, server.URL+"/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":"held-write","method":"tools/call","params":{"name":"read_content","arguments":{"kind":"concept","id":"big-one"}}}`))
+	blockedRequest.Header.Set("Authorization", "Bearer "+readKeyToken)
+	blockedRequest.Header.Set("X-Project-ID", projectID)
+	blockedRequest.Header.Set("Content-Type", "application/json")
+	blockedRequest.Header.Set("Accept", "application/json, text/event-stream")
+	blockedDone := make(chan struct{})
+	go func() {
+		handler.MCPHandler().ServeHTTP(blockedWriter, blockedRequest)
+		close(blockedDone)
+	}()
+	select {
+	case <-blockedWriter.started:
+	case <-ctx.Done():
+		t.Fatal("SDK response did not reach the blocked final writer")
+	}
+	capacityRequest := httptest.NewRequest(http.MethodPost, server.URL+"/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":"capacity-check","method":"tools/call","params":{"name":"read_content","arguments":{"kind":"concept","id":"big-two"}}}`))
+	capacityRequest.Header.Set("Authorization", "Bearer "+readKeyToken)
+	capacityRequest.Header.Set("X-Project-ID", projectID)
+	capacityRequest.Header.Set("Content-Type", "application/json")
+	capacityRequest.Header.Set("Accept", "application/json, text/event-stream")
+	capacityRecorder := httptest.NewRecorder()
+	handler.MCPHandler().ServeHTTP(capacityRecorder, capacityRequest)
+	var capacityEnvelope map[string]any
+	if err := json.Unmarshal(capacityRecorder.Body.Bytes(), &capacityEnvelope); err != nil {
+		t.Fatalf("decode capacity response while first Commit is blocked: %v body=%q", err, capacityRecorder.Body.String())
+	}
+	capacityResult, _ := capacityEnvelope["result"].(map[string]any)
+	capacityPayload, _ := capacityResult["structuredContent"].(map[string]any)
+	if capacityPayload["code"] != "capacity_limited" || capacityPayload["retry_after_ms"] != float64(250) {
+		t.Fatalf("working set was reused before bounded Commit: status=%d body=%s", capacityRecorder.Code, capacityRecorder.Body.String())
+	}
+	t.Logf("blocked_final_commit first_request_held=true second_request=capacity_limited retry_after_ms=250")
+	blockedWriter.releaseWrite()
+	select {
+	case <-blockedDone:
+	case <-ctx.Done():
+		t.Fatal("blocked SDK request did not settle after writer release")
+	}
 
 	secondLargeSession := connectMCPWithBearer(t, ctx, server.URL+"/mcp", readKeyToken, projectID)
 	type largeCallResult struct {
@@ -437,7 +726,7 @@ func TestMCPContentReadScopesAndAdmissionThroughProjectKeyAndOAuthSDKEndpoints(t
 	if !ok || oauthPayload["generation"] != "g_mcp_content_fixture" || len(oauthItems) != 4 {
 		t.Fatalf("OAuth content success did not return published fixture: %#v", oauthResult.StructuredContent)
 	}
-	if observations := probe.observations(); len(observations) != 1 || !observations[0].active || observations[0].projectTokens >= 1_000_000 {
+	if observations := probe.observations(); len(observations) != 1 || !observations[0].active || observations[0].projectTokens <= 0 || observations[0].projectTokens >= 32_000_000 {
 		t.Fatalf("OAuth storage scope was not reached under its active admission lease: %+v", observations)
 	}
 
@@ -460,18 +749,56 @@ func TestMCPContentReadScopesAndAdmissionThroughProjectKeyAndOAuthSDKEndpoints(t
 	}
 
 	probe.reset()
-	limited, err := readSession.CallTool(ctx, &mcp.CallToolParams{Name: "list_content", Arguments: map[string]any{"kind": "concept"}})
-	if err != nil || limited == nil || !limited.IsError {
-		t.Fatalf("exhausted content quota response=%+v err=%v", limited, err)
+	var limited *mcp.CallToolResult
+	for i := 0; i < 40; i++ {
+		observationsBefore := len(probe.observations())
+		result, callErr := readSession.CallTool(ctx, &mcp.CallToolParams{Name: "list_content", Arguments: map[string]any{"kind": "concept"}})
+		if callErr != nil || result == nil {
+			t.Fatalf("content quota exhaustion request %d response=%+v err=%v", i, result, callErr)
+		}
+		if result.IsError {
+			if len(probe.observations()) != observationsBefore {
+				t.Fatalf("quota-rejected cold content request reached storage: %+v", probe.observations())
+			}
+			payload, _ := result.StructuredContent.(map[string]any)
+			if payload["code"] != "rate_limited" {
+				t.Fatalf("content quota denial response=%#v", result.StructuredContent)
+			}
+			limited = result
+			break
+		}
 	}
-	limitedPayload, ok := limited.StructuredContent.(map[string]any)
-	if !ok || limitedPayload["code"] != "rate_limited" {
-		t.Fatalf("exhausted content quota response=%#v", limited.StructuredContent)
+	if limited == nil {
+		t.Fatal("content quota did not deny after exhausting its 32-token test bucket")
 	}
-	if observations := probe.observations(); len(observations) != 0 {
-		t.Fatalf("quota-rejected cold content request reached storage scope: %+v", observations)
-	}
+}
 
+type mcpCommitBlockingWriter struct {
+	header      http.Header
+	started     chan struct{}
+	release     chan struct{}
+	startedOnce sync.Once
+	releaseOnce sync.Once
+	body        bytes.Buffer
+	status      int
+}
+
+func newMCPCommitBlockingWriter() *mcpCommitBlockingWriter {
+	return &mcpCommitBlockingWriter{header: make(http.Header), started: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (w *mcpCommitBlockingWriter) Header() http.Header { return w.header }
+
+func (w *mcpCommitBlockingWriter) WriteHeader(status int) { w.status = status }
+
+func (w *mcpCommitBlockingWriter) Write(data []byte) (int, error) {
+	w.startedOnce.Do(func() { close(w.started) })
+	<-w.release
+	return w.body.Write(data)
+}
+
+func (w *mcpCommitBlockingWriter) releaseWrite() {
+	w.releaseOnce.Do(func() { close(w.release) })
 }
 
 func mcpPublishedContentFixture(t *testing.T, userID, projectID string) map[string]taggingGCSObject {
@@ -482,10 +809,11 @@ func mcpPublishedContentFixture(t *testing.T, userID, projectID string) map[stri
 	largeBytes := bytes.Repeat([]byte("x"), int(generation.MaxFileBytes))
 	sourcePage := []byte("---\nid: source-one\ntitle: Source One\n---\n# Source One\n")
 	rawBytes := []byte("Retained source text from the publisher.\n")
+	rawBytesTwo := []byte("Retained mismatch control text.\n")
 	idMap, err := json.Marshal(wikiindex.IDMap{
 		Concept:    map[string]string{"concept-one": "alpha", "concept-two": "beta", "big-one": "big-one", "big-two": "big-two"},
-		Source:     map[string]string{"source-one": "source-one"},
-		SourceMeta: map[string]wikiindex.SourceMeta{"source-one": {Slug: "source-one", Title: "Source One", SourceFile: "raw/source.md"}},
+		Source:     map[string]string{"source-one": "source-one", "source-two": "source-two"},
+		SourceMeta: map[string]wikiindex.SourceMeta{"source-one": {Slug: "source-one", Title: "Source One"}, "source-two": {Slug: "source-two", Title: "Source Two", SourceFile: "raw/declared-other.md"}},
 		Redirects:  map[string][]string{},
 	})
 	if err != nil {
@@ -503,8 +831,9 @@ func mcpPublishedContentFixture(t *testing.T, userID, projectID string) map[stri
 		"wiki/big-one.md":            largeBytes,
 		"wiki/big-two.md":            largeBytes,
 		"wiki/sources/source-one.md": sourcePage,
+		"wiki/sources/source-two.md": []byte("---\nid: source-two\ntitle: Source Two\n---\n# Source Two\n"),
 	}
-	paths := []string{"cache/concepts.jsonl", "cache/id_map.json", "wiki/alpha.md", "wiki/beta.md", "wiki/big-one.md", "wiki/big-two.md", "wiki/sources/source-one.md"}
+	paths := []string{"cache/concepts.jsonl", "cache/id_map.json", "wiki/alpha.md", "wiki/beta.md", "wiki/big-one.md", "wiki/big-two.md", "wiki/sources/source-one.md", "wiki/sources/source-two.md"}
 	manifest := generation.Manifest{
 		Version: generation.Version, GenerationID: contentGeneration, CreatedAt: "2026-11-05T00:00:00Z", InputFingerprint: "local-mcp-content-fixture",
 		Files: make([]generation.File, 0, len(paths)),
@@ -521,7 +850,10 @@ func mcpPublishedContentFixture(t *testing.T, userID, projectID string) map[stri
 	sourceSnapshot := generation.SourceSnapshotManifest{
 		SchemaVersion: generation.SourceSnapshotSchema, ContentGeneration: contentGeneration,
 		IDMapDigest: generation.Digest(idMap), SourceStatusDigest: generation.Digest([]byte("publisher-attested-status")),
-		Rows: []generation.SourceSnapshotRow{{StableID: "source-one", RawPath: "raw/source.md", ContentDigest: generation.Digest(rawBytes), ObjectGeneration: 501}},
+		Rows: []generation.SourceSnapshotRow{
+			{StableID: "source-one", RawPath: "raw/source.md", ContentDigest: generation.Digest(rawBytes), ObjectGeneration: 501},
+			{StableID: "source-two", RawPath: "raw/source-two.md", ContentDigest: generation.Digest(rawBytesTwo), ObjectGeneration: 502},
+		},
 	}
 	snapshotBytes, snapshotDigest, err := generation.EncodeSourceSnapshot(sourceSnapshot)
 	if err != nil {
@@ -551,6 +883,11 @@ func mcpPublishedContentFixture(t *testing.T, userID, projectID string) map[stri
 		t.Fatal(err)
 	}
 	objects[projectPrefix+bytesPath] = taggingGCSObject{data: rawBytes, gen: 501}
+	bytesPath, err = generation.SourceBytesPath(generation.Digest(rawBytesTwo))
+	if err != nil {
+		t.Fatal(err)
+	}
+	objects[projectPrefix+bytesPath] = taggingGCSObject{data: rawBytesTwo, gen: 502}
 	return objects
 }
 

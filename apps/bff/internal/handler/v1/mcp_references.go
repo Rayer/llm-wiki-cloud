@@ -2,8 +2,10 @@ package v1
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -18,6 +20,9 @@ const (
 	maxMCPContentFrontmatterBytes = 1 << 20
 	maxMCPContentReferences       = 20_000
 	maxMCPReferenceDefinitions    = 4096
+	maxMCPReferenceTargetBytes    = 2048
+	maxMCPReferenceLabelBytes     = 2048
+	maxMCPHTMLTagBytes            = 4096
 )
 
 type mcpResolvedRef struct {
@@ -67,7 +72,8 @@ func parseMCPContentFrontmatter(data []byte) mcpMCPFrontmatter {
 	if !bytes.HasPrefix(data, []byte("---\n")) {
 		return result
 	}
-	end := bytes.Index(data[4:], []byte("\n---\n"))
+	frontmatterEnd := min(len(data), maxMCPContentFrontmatterBytes+9)
+	end := bytes.Index(data[4:frontmatterEnd], []byte("\n---\n"))
 	if end < 0 || end+4 > maxMCPContentFrontmatterBytes {
 		return mcpMCPFrontmatter{Available: false}
 	}
@@ -165,11 +171,17 @@ func (s *mcpContentSnapshot) mentionCandidates(target string) (bool, mcpCandidat
 		name = before
 	}
 	if kind, slug, typed := typedMCPWikiTarget(name); typed {
-		if strings.ContainsAny(name, "%\\\x00") || strings.Contains(name, "..") || strings.Contains(slug, "/") || slug == "" {
+		decoded, decodeErr := url.PathUnescape(slug)
+		if decodeErr != nil || strings.ContainsAny(decoded, "/\\\x00") || strings.Contains(decoded, "..") || decoded == "" {
 			return false, s.candidateSet(nil, kind)
 		}
-		indexes := make([]int, 0, len(s.bySlugAndKind[kind+"\x00"+slug]))
-		for _, ref := range s.bySlugAndKind[kind+"\x00"+slug] {
+		if ref, exists := s.byCanonicalRoute[kind+"\x00"+decoded]; exists {
+			if index, ok := s.indexByID[kind+"\x00"+ref.ID]; ok {
+				return false, s.candidateSet([]int{index}, kind)
+			}
+		}
+		indexes := make([]int, 0, len(s.bySlugAndKind[kind+"\x00"+decoded]))
+		for _, ref := range s.bySlugAndKind[kind+"\x00"+decoded] {
 			if index, exists := s.indexByID[kind+"\x00"+ref.ID]; exists {
 				indexes = append(indexes, index)
 			}
@@ -237,10 +249,11 @@ func typedMCPWikiTarget(name string) (string, string, bool) {
 	return "", "", false
 }
 
-func pageMCPReadReferences(snapshot *mcpContentSnapshot, identity mcpProjectKeyIdentity, document mcpContentRef, revision string, data []byte, bodyStart int, synthesisSources []string, cursor mcpContentCursor, hasCursor bool) ([]mcpResolvedRef, []mcpResolvedRef, any, bool, error) {
-	const maxFragments = 50
-	const maxCandidates = 50
-	var synthesis, mentions []mcpResolvedRef
+func pageMCPReadReferences(ctx context.Context, snapshot *mcpContentSnapshot, identity mcpProjectKeyIdentity, document mcpContentRef, revision string, data []byte, bodyStart int, synthesisSources []string, cursor mcpContentCursor, hasCursor bool, pageMax int, responseBase map[string]any) ([]mcpResolvedRef, []mcpResolvedRef, any, bool, error) {
+	if pageMax < 1 || pageMax > 50 {
+		return nil, nil, nil, false, errors.New("metadata_unavailable")
+	}
+	synthesis, mentions := make([]mcpResolvedRef, 0), make([]mcpResolvedRef, 0)
 	startIndex, startCandidate := 0, 0
 	if hasCursor {
 		if cursor.ReferenceIndex < 0 || cursor.CandidateOffset < 0 || cursor.Generation != snapshot.generation || cursor.ManifestSHA != snapshot.manifestSHA || cursor.Revision != revision || cursor.ScopeBinding != mcpContentScopeBinding(identity) || cursor.Kind != document.Kind {
@@ -256,6 +269,10 @@ func pageMCPReadReferences(snapshot *mcpContentSnapshot, identity mcpProjectKeyI
 	nextIndex, nextCandidate := 0, 0
 	var pageErr error
 	addReference := func(reference mcpMarkdownReference, relation string, currentIndex int) bool {
+		if ctx.Err() != nil {
+			pageErr = ctx.Err()
+			return false
+		}
 		if index >= maxMCPContentReferences {
 			pageErr = errors.New("metadata_unavailable")
 			index++
@@ -313,7 +330,7 @@ func pageMCPReadReferences(snapshot *mcpContentSnapshot, identity mcpProjectKeyI
 			pageErr = errors.New("invalid_cursor")
 			return true
 		}
-		if fragmentCount >= maxFragments {
+		if fragmentCount >= pageMax {
 			more = true
 			nextIndex, nextCandidate = current, offset
 			stopped = true
@@ -321,7 +338,7 @@ func pageMCPReadReferences(snapshot *mcpContentSnapshot, identity mcpProjectKeyI
 		}
 		end := offset
 		if candidateTotal > 0 {
-			remaining := maxCandidates - candidateCount
+			remaining := pageMax - candidateCount
 			if remaining <= 0 {
 				more = true
 				nextIndex, nextCandidate = current, offset
@@ -345,10 +362,40 @@ func pageMCPReadReferences(snapshot *mcpContentSnapshot, identity mcpProjectKeyI
 		} else {
 			fragment.ByteStart, fragment.ByteEnd = mcpReferenceRange(reference)
 		}
-		if relation == "synthesis_source" {
-			synthesis = append(synthesis, fragment)
-		} else {
-			mentions = append(mentions, fragment)
+		fits := false
+		for {
+			fragment.Candidates = fragmentCandidates
+			fragment.CandidatesComplete = end == candidateTotal
+			trialSynthesis, trialMentions := synthesis, mentions
+			if relation == "synthesis_source" {
+				trialSynthesis = append(append([]mcpResolvedRef(nil), synthesis...), fragment)
+			} else {
+				trialMentions = append(append([]mcpResolvedRef(nil), mentions...), fragment)
+			}
+			if mcpReferencePageFits(responseBase, trialSynthesis, trialMentions) {
+				if relation == "synthesis_source" {
+					synthesis = trialSynthesis
+				} else {
+					mentions = trialMentions
+				}
+				fits = true
+				break
+			}
+			if len(fragmentCandidates) == 0 {
+				break
+			}
+			fragmentCandidates = fragmentCandidates[:len(fragmentCandidates)-1]
+			end--
+		}
+		if !fits {
+			if fragmentCount > 0 {
+				more = true
+				nextIndex, nextCandidate = current, offset
+				stopped = true
+				return true
+			}
+			pageErr = errors.New("response_limit")
+			return true
 		}
 		fragmentCount++
 		candidateCount += len(fragmentCandidates)
@@ -358,12 +405,12 @@ func pageMCPReadReferences(snapshot *mcpContentSnapshot, identity mcpProjectKeyI
 			stopped = true
 			return true
 		}
-		if fragmentCount >= maxFragments {
+		if fragmentCount >= pageMax {
 			more = true
 			nextIndex, nextCandidate = current+1, 0
 			stopped = true
 		}
-		if candidateCount >= maxCandidates {
+		if candidateCount >= pageMax {
 			more = true
 			nextIndex, nextCandidate = current+1, 0
 			stopped = true
@@ -375,7 +422,7 @@ func pageMCPReadReferences(snapshot *mcpContentSnapshot, identity mcpProjectKeyI
 			break
 		}
 	}
-	scanComplete := scanMCPMarkdownMentions(data, bodyStart, func(reference mcpMarkdownReference) bool {
+	scanComplete := scanMCPMarkdownMentions(ctx, data, bodyStart, func(reference mcpMarkdownReference) bool {
 		return addReference(reference, "mention", index)
 	})
 	if !scanComplete && pageErr == nil {
@@ -406,33 +453,69 @@ func pageMCPReadReferences(snapshot *mcpContentSnapshot, identity mcpProjectKeyI
 	return synthesis, mentions, next, refsComplete, nil
 }
 
+func mcpReferencePageFits(base map[string]any, synthesis, mentions []mcpResolvedRef) bool {
+	value := make(map[string]any, len(base)+2)
+	for key, item := range base {
+		value[key] = item
+	}
+	value["synthesis_sources"] = synthesis
+	value["mentions"] = mentions
+	value["refs_complete"] = false
+	value["next_refs_cursor"] = strings.Repeat("x", mcpContentMaxCursor)
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return false
+	}
+	result := struct {
+		Content           []map[string]string `json:"content"`
+		StructuredContent json.RawMessage     `json:"structuredContent"`
+	}{Content: []map[string]string{{"type": "text", "text": string(encoded)}}, StructuredContent: encoded}
+	// Model the longest accepted protected request ID and a complete JSON-RPC
+	// envelope; the extra bytes cover SDK response fields added around results.
+	requestID := json.RawMessage(`"` + strings.Repeat(`\u0078`, 682) + `"`)
+	wire, err := json.Marshal(struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+		Result  any             `json:"result"`
+	}{JSONRPC: "2.0", ID: requestID, Result: result})
+	return err == nil && len(wire)+512 <= maxMCPProtectedResponseBytes
+}
+
 func stringPointer(value string) *string { return &value }
 
 // scanMCPMarkdownMentions is a deterministic byte-state scanner. It skips
 // fenced and inline code, HTML comments/tags and image links while preserving
 // source offsets; link reference definitions are resolved in a bounded first
 // pass and usages are emitted in document order in the second pass.
-func scanMCPMarkdownMentions(data []byte, bodyStart int, yield func(mcpMarkdownReference) bool) bool {
+func scanMCPMarkdownMentions(ctx context.Context, data []byte, bodyStart int, yield func(mcpMarkdownReference) bool) bool {
 	body := data[bodyStart:]
 	definitions := make(map[string]string)
-	if !scanMCPMarkdown(body, 0, definitions, nil, true) {
+	if !scanMCPMarkdown(ctx, body, 0, definitions, nil, true) {
 		return false
 	}
-	return scanMCPMarkdown(body, bodyStart, definitions, yield, false)
+	return scanMCPMarkdown(ctx, body, bodyStart, definitions, yield, false)
 }
 
-func scanMCPMarkdown(body []byte, base int, definitions map[string]string, yield func(mcpMarkdownReference) bool, collectDefinitions bool) bool {
+func scanMCPMarkdown(ctx context.Context, body []byte, base int, definitions map[string]string, yield func(mcpMarkdownReference) bool, collectDefinitions bool) bool {
 	fenceChar := byte(0)
 	fenceLen := 0
 	inlineTicks := 0
 	inScript := false
 	definitionsCount := 0
 	for i := 0; i < len(body); {
+		if i&0x3ff == 0 && ctx.Err() != nil {
+			return false
+		}
 		lineStart := i == 0 || body[i-1] == '\n'
 		if lineStart {
-			lineEnd := bytes.IndexByte(body[i:], '\n')
+			lineEnd := findByteContext(ctx, body, i, '\n')
 			if lineEnd < 0 {
+				if ctx.Err() != nil {
+					return false
+				}
 				lineEnd = len(body) - i
+			} else {
+				lineEnd -= i
 			}
 			line := body[i : i+lineEnd]
 			space := 0
@@ -465,7 +548,7 @@ func scanMCPMarkdown(body []byte, base int, definitions map[string]string, yield
 				continue
 			}
 			if collectDefinitions {
-				if key, target, ok := parseMCPReferenceDefinition(line); ok {
+				if key, target, ok := parseMCPReferenceDefinition(ctx, line); ok {
 					if definitionsCount < maxMCPReferenceDefinitions {
 						definitions[key] = target
 						definitionsCount++
@@ -486,10 +569,13 @@ func scanMCPMarkdown(body []byte, base int, definitions map[string]string, yield
 		}
 		if inScript {
 			if body[i] == '<' && asciiEqualFoldPrefix(body[i:], "</script") {
-				if end := bytes.IndexByte(body[i:], '>'); end >= 0 {
-					i += end + 1
+				if end := findByteContext(ctx, body, i, '>'); end >= 0 {
+					i = end + 1
 					inScript = false
 					continue
+				}
+				if ctx.Err() != nil {
+					return false
 				}
 			}
 			i++
@@ -513,39 +599,62 @@ func scanMCPMarkdown(body []byte, base int, definitions map[string]string, yield
 			continue
 		}
 		if bytes.HasPrefix(body[i:], []byte("<!--")) {
-			end := bytes.Index(body[i+4:], []byte("-->"))
+			end := findTokenContext(ctx, body, i+4, []byte("-->"))
 			if end < 0 {
+				if ctx.Err() != nil {
+					return false
+				}
 				return true
 			}
-			i += 4 + end + 3
+			i = end + 3
 			continue
 		}
 		if body[i] == '<' {
-			if end := bytes.IndexByte(body[i:], '>'); end >= 0 {
-				tag := strings.TrimSpace(string(body[i+1 : i+end]))
-				if strings.HasPrefix(strings.ToLower(tag), "script") {
+			if end := findByteContext(ctx, body, i, '>'); end >= 0 {
+				tag := bytes.TrimSpace(body[i+1 : end])
+				if asciiEqualFoldPrefix(tag, "script") {
 					inScript = true
 				}
-				i += end + 1
+				i = end + 1
 				continue
+			}
+			if ctx.Err() != nil {
+				return false
 			}
 		}
 		if bytes.HasPrefix(body[i:], []byte("[[")) {
-			if end := bytes.Index(body[i+2:], []byte("]]")); end >= 0 {
-				inside := body[i+2 : i+2+end]
-				target, label := splitMCPWikiTarget(string(inside))
+			if end := findTokenContext(ctx, body, i+2, []byte("]]")); end >= 0 {
+				inside := body[i+2 : end]
+				if len(inside) > maxMCPReferenceTargetBytes+maxMCPReferenceLabelBytes+1 {
+					return false
+				}
+				target, label, ok := splitMCPWikiTargetBytes(inside)
+				if !ok {
+					return false
+				}
 				if target != "" {
-					ref := mcpMarkdownReference{Target: target, Label: label, Origin: "wikilink", Start: base + i, End: base + i + end + 4}
+					ref := mcpMarkdownReference{Target: target, Label: label, Origin: "wikilink", Start: base + i, End: base + end + 2}
 					if yield != nil && !collectDefinitions && !yield(ref) {
 						return false
 					}
 				}
-				i += end + 4
+				i = end + 2
 				continue
 			}
+			if ctx.Err() != nil {
+				return false
+			}
+			return true
 		}
 		if body[i] == '[' && (i == 0 || body[i-1] != '!') {
-			if reference, end, ok := parseMCPMarkdownLink(body, i, definitions); ok {
+			reference, end, ok := parseMCPMarkdownLink(ctx, body, i, definitions)
+			if ctx.Err() != nil {
+				return false
+			}
+			if end < 0 {
+				return false
+			}
+			if ok {
 				if yield != nil && !collectDefinitions {
 					reference.Start += base
 					reference.End += base
@@ -556,55 +665,81 @@ func scanMCPMarkdown(body []byte, base int, definitions map[string]string, yield
 				i = end
 				continue
 			}
+			if end > i {
+				i = end
+				continue
+			}
 		}
 		i++
 	}
 	return true
 }
 
-func parseMCPReferenceDefinition(line []byte) (string, string, bool) {
-	trimmed := bytes.TrimLeft(line, " ")
-	if len(line)-len(trimmed) > 3 || len(trimmed) < 5 || trimmed[0] != '[' {
+func parseMCPReferenceDefinition(ctx context.Context, line []byte) (string, string, bool) {
+	leading := 0
+	for leading < len(line) && leading < 4 && line[leading] == ' ' {
+		leading++
+	}
+	if leading > 3 || len(line)-leading < 5 || line[leading] != '[' {
 		return "", "", false
 	}
-	close := bytes.Index(trimmed, []byte("]:"))
+	trimmed := line[leading:]
+	close := findTokenContext(ctx, trimmed, 1, []byte("]:"))
 	if close <= 1 {
 		return "", "", false
 	}
-	key := normalizeMCPReferenceLabel(string(trimmed[1:close]))
-	target := strings.TrimSpace(string(trimmed[close+2:]))
-	if strings.HasPrefix(target, "<") && strings.HasSuffix(target, ">") && len(target) >= 2 {
-		target = target[1 : len(target)-1]
-	}
-	if key == "" || target == "" || len(key) > 256 || len(target) > 2048 {
+	keyBytes := trimmed[1:close]
+	rawTarget := trimmed[close+2:]
+	if len(rawTarget) > maxMCPReferenceTargetBytes+2 {
 		return "", "", false
 	}
-	return key, target, true
+	targetBytes := bytes.TrimSpace(rawTarget)
+	if len(keyBytes) > 256 || len(targetBytes) > maxMCPReferenceTargetBytes {
+		return "", "", false
+	}
+	key := normalizeMCPReferenceLabel(string(keyBytes))
+	if len(targetBytes) >= 2 && targetBytes[0] == '<' && targetBytes[len(targetBytes)-1] == '>' {
+		targetBytes = targetBytes[1 : len(targetBytes)-1]
+	}
+	if key == "" || len(targetBytes) == 0 || len(targetBytes) > maxMCPReferenceTargetBytes {
+		return "", "", false
+	}
+	return key, string(targetBytes), true
 }
 
-func parseMCPMarkdownLink(data []byte, start int, definitions map[string]string) (mcpMarkdownReference, int, bool) {
-	labelEnd := findUnescapedByte(data, start+1, ']')
-	if labelEnd < 0 || labelEnd-start > 2048 {
-		return mcpMarkdownReference{}, start, false
+func parseMCPMarkdownLink(ctx context.Context, data []byte, start int, definitions map[string]string) (mcpMarkdownReference, int, bool) {
+	labelEnd := findUnescapedByte(ctx, data, start+1, ']', maxMCPReferenceLabelBytes+1)
+	if labelEnd < 0 {
+		return mcpMarkdownReference{}, skipMCPMarkdownLine(ctx, data, start), false
+	}
+	if labelEnd-start > maxMCPReferenceLabelBytes {
+		return mcpMarkdownReference{}, -1, false
 	}
 	label := unescapeMCPMarkdown(string(data[start+1 : labelEnd]))
 	if labelEnd+1 < len(data) && data[labelEnd+1] == '(' {
-		end := findMCPMarkdownDestinationEnd(data, labelEnd+2)
+		end := findMCPMarkdownDestinationEnd(ctx, data, labelEnd+2)
 		if end < 0 {
-			return mcpMarkdownReference{}, start, false
+			return mcpMarkdownReference{}, skipMCPMarkdownLine(ctx, data, labelEnd+2), false
 		}
-		target := parseMCPDestination(data[labelEnd+2 : end])
+		target, ok := parseMCPDestination(ctx, data[labelEnd+2:end])
+		if !ok {
+			return mcpMarkdownReference{}, -1, false
+		}
 		if target == "" {
-			return mcpMarkdownReference{}, start, false
+			return mcpMarkdownReference{}, end + 1, false
 		}
 		return mcpMarkdownReference{Target: target, Label: label, Origin: "markdown_link", Start: start, End: end + 1}, end + 1, true
 	}
 	if labelEnd+1 < len(data) && data[labelEnd+1] == '[' {
-		close := findUnescapedByte(data, labelEnd+2, ']')
+		close := findUnescapedByte(ctx, data, labelEnd+2, ']', 257)
 		if close < 0 {
-			return mcpMarkdownReference{}, start, false
+			return mcpMarkdownReference{}, skipMCPMarkdownLine(ctx, data, labelEnd+2), false
 		}
-		key := string(data[labelEnd+2 : close])
+		keyBytes := data[labelEnd+2 : close]
+		if len(keyBytes) > 256 {
+			return mcpMarkdownReference{}, -1, false
+		}
+		key := string(keyBytes)
 		if key == "" {
 			key = string(data[start+1 : labelEnd])
 		}
@@ -617,9 +752,12 @@ func parseMCPMarkdownLink(data []byte, start int, definitions map[string]string)
 	return mcpMarkdownReference{}, start, false
 }
 
-func findMCPMarkdownDestinationEnd(data []byte, start int) int {
+func findMCPMarkdownDestinationEnd(ctx context.Context, data []byte, start int) int {
 	depth := 0
 	for i := start; i < len(data); i++ {
+		if i&0x3ff == 0 && ctx.Err() != nil {
+			return -1
+		}
 		if data[i] == '\\' {
 			i++
 			continue
@@ -642,23 +780,36 @@ func findMCPMarkdownDestinationEnd(data []byte, start int) int {
 	return -1
 }
 
-func parseMCPDestination(raw []byte) string {
+func parseMCPDestination(ctx context.Context, raw []byte) (string, bool) {
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 {
-		return ""
+		return "", true
 	}
 	if raw[0] == '<' {
-		if end := bytes.IndexByte(raw[1:], '>'); end >= 0 {
-			return unescapeMCPMarkdown(string(raw[1 : end+1]))
-		}
-		return ""
-	}
-	for i, value := range raw {
-		if value == ' ' || value == '\t' {
-			return unescapeMCPMarkdown(string(raw[:i]))
+		if end := findByteContext(ctx, raw, 1, '>'); end >= 0 {
+			raw = raw[1:end]
+		} else {
+			return "", true
 		}
 	}
-	return unescapeMCPMarkdown(string(raw))
+	if len(raw) == 0 {
+		return "", true
+	}
+	if raw[0] != '<' {
+		for i, value := range raw {
+			if i&0x3ff == 0 && ctx.Err() != nil {
+				return "", false
+			}
+			if value == ' ' || value == '\t' {
+				raw = raw[:i]
+				break
+			}
+		}
+	}
+	if len(raw) > maxMCPReferenceTargetBytes {
+		return "", false
+	}
+	return unescapeMCPMarkdown(string(raw)), true
 }
 
 func splitMCPWikiTarget(value string) (string, string) {
@@ -675,8 +826,38 @@ func splitMCPWikiTarget(value string) (string, string) {
 	return target, label
 }
 
-func findUnescapedByte(data []byte, start int, want byte) int {
-	for i := start; i < len(data); i++ {
+func splitMCPWikiTargetBytes(value []byte) (string, string, bool) {
+	target, label, hasLabel := value, []byte(nil), false
+	if separator := bytes.IndexByte(value, '|'); separator >= 0 {
+		target, label, hasLabel = value[:separator], value[separator+1:], true
+	}
+	target = bytes.TrimSpace(target)
+	if anchor := bytes.IndexByte(target, '#'); anchor >= 0 {
+		target = target[:anchor]
+	}
+	label = bytes.TrimSpace(label)
+	if !hasLabel || len(label) == 0 {
+		label = target
+	}
+	if len(target) > maxMCPReferenceTargetBytes || len(label) > maxMCPReferenceLabelBytes {
+		return "", "", false
+	}
+	return string(target), string(label), true
+}
+
+func skipMCPMarkdownLine(ctx context.Context, data []byte, start int) int {
+	if end := findByteContext(ctx, data, start, '\n'); end >= 0 {
+		return end + 1
+	}
+	return len(data)
+}
+
+func findUnescapedByte(ctx context.Context, data []byte, start int, want byte, maxLookahead int) int {
+	end := min(len(data), start+maxLookahead)
+	for i := start; i < end; i++ {
+		if i&0x3ff == 0 && ctx.Err() != nil {
+			return -1
+		}
 		if data[i] == '\\' {
 			i++
 			continue
@@ -686,6 +867,30 @@ func findUnescapedByte(data []byte, start int, want byte) int {
 		}
 		if data[i] == '\n' {
 			return -1
+		}
+	}
+	return -1
+}
+
+func findByteContext(ctx context.Context, data []byte, start int, value byte) int {
+	for i := start; i < len(data); i++ {
+		if i&0x3ff == 0 && ctx.Err() != nil {
+			return -1
+		}
+		if data[i] == value {
+			return i
+		}
+	}
+	return -1
+}
+
+func findTokenContext(ctx context.Context, data []byte, start int, token []byte) int {
+	for i := start; i+len(token) <= len(data); i++ {
+		if i&0x3ff == 0 && ctx.Err() != nil {
+			return -1
+		}
+		if bytes.Equal(data[i:i+len(token)], token) {
+			return i
 		}
 	}
 	return -1

@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/rayer/llm-wiki-bff/internal/config"
 )
 
 func TestInspectMCPProtectedEnvelopeRequiresUnambiguousBoundedID(t *testing.T) {
@@ -24,9 +26,10 @@ func TestInspectMCPProtectedEnvelopeRequiresUnambiguousBoundedID(t *testing.T) {
 		{name: "duplicate protected name", body: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"query_project","name":"list_content","arguments":{"kind":"concept"}}}`, reject: true},
 		{name: "bad protected args", body: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_content","arguments":{"kind":"concept","unexpected":true}}}`, reject: true},
 	}
+	policy := (&Handler{}).mcpContentReadPolicy()
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got, reject := inspectMCPProtectedEnvelope([]byte(test.body))
+			got, reject := inspectMCPProtectedEnvelope([]byte(test.body), policy)
 			if reject != test.reject || got.canAdmit != test.admit {
 				t.Fatalf("inspect = protected:%v admit:%v reject:%v", got.protected, got.canAdmit, reject)
 			}
@@ -48,18 +51,55 @@ func TestMCPContentSchemasAreValidJSON(t *testing.T) {
 	}
 }
 
+func TestMCPContentPolicyDrivesSchemaAndProtectedPreflight(t *testing.T) {
+	handler := &Handler{mcpConfig: &config.BFFMCP{Protection: &config.MCPProtection{ListDefault: 2, ListMax: 4, ChunkMaxBytes: 1024, ReferencePageMax: 3}}}
+	policy := handler.mcpContentReadPolicy()
+	if policy.ListDefault != 2 || policy.ListMax != 4 || policy.ChunkMaxBytes != 1024 || policy.ReferencePageMax != 3 {
+		t.Fatalf("configured content policy was not retained: %+v", policy)
+	}
+	for name, raw := range map[string]json.RawMessage{
+		"list": mcpContentInputSchema(mcpListContentSchema, map[string]any{"limit": map[string]any{"minimum": 1, "maximum": policy.ListMax, "default": policy.ListDefault}}),
+		"read": mcpContentInputSchema(mcpReadContentSchema, map[string]any{"max_bytes": map[string]any{"minimum": 1, "maximum": policy.ChunkMaxBytes, "default": policy.ChunkMaxBytes}}),
+	} {
+		var schema struct {
+			Properties map[string]map[string]any `json:"properties"`
+		}
+		if err := json.Unmarshal(raw, &schema); err != nil {
+			t.Fatalf("decode %s schema: %v", name, err)
+		}
+		property := "limit"
+		wantMax, wantDefault := float64(4), float64(2)
+		if name == "read" {
+			property, wantMax, wantDefault = "max_bytes", 1024, 1024
+		}
+		got := schema.Properties[property]
+		if got["type"] != "integer" || got["maximum"] != wantMax || got["default"] != wantDefault {
+			t.Errorf("%s schema policy property = %#v", name, got)
+		}
+	}
+	for _, body := range []string{
+		`{"jsonrpc":"2.0","id":"x","method":"tools/call","params":{"name":"list_content","arguments":{"kind":"concept","limit":5}}}`,
+		`{"jsonrpc":"2.0","id":"x","method":"tools/call","params":{"name":"read_content","arguments":{"kind":"concept","id":"c1","max_bytes":1025}}}`,
+	} {
+		if _, reject := inspectMCPProtectedEnvelope([]byte(body), policy); !reject {
+			t.Errorf("protected preflight accepted value over configured policy: %s", body)
+		}
+	}
+}
+
 func TestInspectMCPProtectedEnvelopeDepthAndBatch(t *testing.T) {
+	policy := (&Handler{}).mcpContentReadPolicy()
 	args := strings.Repeat("[", maxMCPProtectedJSONDepth+1) + `0` + strings.Repeat("]", maxMCPProtectedJSONDepth+1)
 	body := fmt.Sprintf(`{"jsonrpc":"2.0","id":"x","method":"tools/call","params":{"name":"query_project","arguments":{"q":"q","extra":%s}}}`, args)
-	if _, reject := inspectMCPProtectedEnvelope([]byte(body)); !reject {
+	if _, reject := inspectMCPProtectedEnvelope([]byte(body), policy); !reject {
 		t.Fatal("over-depth protected input was accepted")
 	}
 	protectedBatch := `[{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_content","arguments":{"kind":"concept"}}}]`
-	if _, reject := inspectMCPProtectedEnvelope([]byte(protectedBatch)); !reject {
+	if _, reject := inspectMCPProtectedEnvelope([]byte(protectedBatch), policy); !reject {
 		t.Fatal("protected batch was accepted")
 	}
 	legacyBatch := `[{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"add_raw","arguments":{}}}]`
-	if got, reject := inspectMCPProtectedEnvelope([]byte(legacyBatch)); reject || got.protected {
+	if got, reject := inspectMCPProtectedEnvelope([]byte(legacyBatch), policy); reject || got.protected {
 		t.Fatalf("legacy batch changed: %#v reject=%v", got, reject)
 	}
 }

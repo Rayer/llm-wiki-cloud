@@ -160,11 +160,49 @@ func TestRetainedSourceSnapshotSizeUsesPinnedDigestPathAttributes(t *testing.T) 
 	}
 }
 
+func TestRetainedSourceSnapshotDistinguishesHistoricalMissingAndTransient(t *testing.T) {
+	ctx := context.Background()
+	t.Run("historical without inventory reference", func(t *testing.T) {
+		c, _, _ := sourceInventoryFixture(t)
+		c.view.manifest.SourceSnapshotDigest = ""
+		if _, err := c.ReadSourceSnapshot(ctx); !errors.Is(err, ErrSourceSnapshotUnavailable) {
+			t.Fatalf("historical snapshot error=%v", err)
+		}
+	})
+	t.Run("declared inventory missing", func(t *testing.T) {
+		c, b, _ := sourceInventoryFixture(t)
+		path, _ := generation.SourceSnapshotPath(c.view.manifest.SourceSnapshotDigest)
+		delete(b.objects, projectObject(path))
+		if _, err := c.RetainedSourceSnapshotSize(ctx); !errors.Is(err, store.ErrDeclaredObjectUnavailable) {
+			t.Fatalf("missing declared inventory attrs error=%v", err)
+		}
+		if _, err := c.ReadSourceSnapshot(ctx); !errors.Is(err, store.ErrDeclaredObjectUnavailable) {
+			t.Fatalf("missing declared inventory body error=%v", err)
+		}
+	})
+	t.Run("transient inventory attrs failure", func(t *testing.T) {
+		c, b, _ := sourceInventoryFixture(t)
+		transient := errors.New("synthetic storage timeout")
+		b.attrsErr = transient
+		if _, err := c.RetainedSourceSnapshotSize(ctx); !errors.Is(err, transient) || errors.Is(err, store.ErrDeclaredObjectUnavailable) || errors.Is(err, ErrSourceSnapshotUnavailable) {
+			t.Fatalf("transient attrs error was collapsed: %v", err)
+		}
+	})
+	t.Run("transient inventory read failure", func(t *testing.T) {
+		c, b, _ := sourceInventoryFixture(t)
+		transient := errors.New("synthetic storage timeout")
+		b.readErr = transient
+		if _, err := c.ReadSourceSnapshot(ctx); !errors.Is(err, transient) || errors.Is(err, store.ErrDeclaredObjectUnavailable) || errors.Is(err, ErrSourceSnapshotUnavailable) {
+			t.Fatalf("transient read error was collapsed: %v", err)
+		}
+	})
+}
+
 func TestReadRetainedSourceSnapshotFailsClosed(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		want error
-	}{{"no reference", ErrSourceSnapshotUnavailable}, {"missing object", ErrSourceSnapshotUnavailable}, {"digest", ErrSourceSnapshotInvalid}, {"generation", ErrSourceSnapshotInvalid}, {"id map", ErrSourceSnapshotInvalid}, {"raw path", ErrSourceSnapshotInvalid}, {"missing ID map", ErrSourceSnapshotUnavailable}} {
+	}{{"no reference", ErrSourceSnapshotUnavailable}, {"missing object", store.ErrDeclaredObjectUnavailable}, {"digest", ErrSourceSnapshotInvalid}, {"generation", ErrSourceSnapshotInvalid}, {"id map", ErrSourceSnapshotInvalid}, {"raw path", ErrSourceSnapshotInvalid}, {"missing ID map", ErrSourceSnapshotInvalid}} {
 		t.Run(tc.name, func(t *testing.T) {
 			c, b, inventory := sourceInventoryFixture(t)
 			m := c.view.manifest

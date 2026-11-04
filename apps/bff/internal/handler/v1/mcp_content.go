@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"net/url"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -97,6 +98,7 @@ type mcpContentSnapshot struct {
 	byID                 map[string]mcpContentRef
 	indexByID            map[string]int
 	bySlugAndKind        map[string][]mcpContentRef
+	byCanonicalRoute     map[string]mcpContentRef
 	sourcesByConceptSlug map[string][]string
 	releases             []func()
 }
@@ -134,22 +136,27 @@ func (h *Handler) addMCPContentTools(server *mcp.Server, metadata *config.BFFMCP
 		return
 	}
 	descriptions := metadata.ToolDescriptions
+	policy := h.mcpContentReadPolicy()
+	listSchema := mcpContentInputSchema(mcpListContentSchema, map[string]any{"limit": map[string]any{"minimum": 1, "maximum": policy.ListMax, "default": policy.ListDefault}})
+	findSchema := mcpContentInputSchema(mcpFindContentSchema, map[string]any{"limit": map[string]any{"minimum": 1, "maximum": policy.ListMax, "default": policy.ListDefault}})
+	readSchema := mcpContentInputSchema(mcpReadContentSchema, map[string]any{"max_bytes": map[string]any{"minimum": 1, "maximum": policy.ChunkMaxBytes, "default": policy.ChunkMaxBytes}})
+	rawSchema := mcpContentInputSchema(mcpReadSourceRawSchema, map[string]any{"max_bytes": map[string]any{"minimum": 1, "maximum": policy.ChunkMaxBytes, "default": policy.ChunkMaxBytes}})
 	for _, tool := range []struct {
 		name, title, description string
 		input                    json.RawMessage
 		register                 func()
 	}{
-		{"list_content", "List published content", descriptions.ListContent, mcpListContentSchema, func() {
-			mcp.AddTool[listContentInput, any](server, &mcp.Tool{Name: "list_content", Title: "List published content", Description: descriptions.ListContent, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, DestructiveHint: boolHint(false), OpenWorldHint: boolHint(false)}, InputSchema: mcpListContentSchema, OutputSchema: mcpListContentOutputSchema}, h.callMCPListContent)
+		{"list_content", "List published content", descriptions.ListContent, listSchema, func() {
+			mcp.AddTool[listContentInput, any](server, &mcp.Tool{Name: "list_content", Title: "List published content", Description: descriptions.ListContent, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, DestructiveHint: boolHint(false), OpenWorldHint: boolHint(false)}, InputSchema: listSchema, OutputSchema: mcpListContentOutputSchema}, h.callMCPListContent)
 		}},
-		{"find_content", "Find published content by exact name", descriptions.FindContent, mcpFindContentSchema, func() {
-			mcp.AddTool[findContentInput, any](server, &mcp.Tool{Name: "find_content", Title: "Find published content by exact name", Description: descriptions.FindContent, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, DestructiveHint: boolHint(false), OpenWorldHint: boolHint(false)}, InputSchema: mcpFindContentSchema, OutputSchema: mcpFindContentOutputSchema}, h.callMCPFindContent)
+		{"find_content", "Find published content by exact name", descriptions.FindContent, findSchema, func() {
+			mcp.AddTool[findContentInput, any](server, &mcp.Tool{Name: "find_content", Title: "Find published content by exact name", Description: descriptions.FindContent, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, DestructiveHint: boolHint(false), OpenWorldHint: boolHint(false)}, InputSchema: findSchema, OutputSchema: mcpFindContentOutputSchema}, h.callMCPFindContent)
 		}},
-		{"read_content", "Read published content", descriptions.ReadContent, mcpReadContentSchema, func() {
-			mcp.AddTool[readContentInput, any](server, &mcp.Tool{Name: "read_content", Title: "Read published content", Description: descriptions.ReadContent, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, DestructiveHint: boolHint(false), OpenWorldHint: boolHint(false)}, InputSchema: mcpReadContentSchema, OutputSchema: mcpReadContentOutputSchema}, h.callMCPReadContent)
+		{"read_content", "Read published content", descriptions.ReadContent, readSchema, func() {
+			mcp.AddTool[readContentInput, any](server, &mcp.Tool{Name: "read_content", Title: "Read published content", Description: descriptions.ReadContent, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, DestructiveHint: boolHint(false), OpenWorldHint: boolHint(false)}, InputSchema: readSchema, OutputSchema: mcpReadContentOutputSchema}, h.callMCPReadContent)
 		}},
-		{"read_source_raw", "Read retained source text", descriptions.ReadSourceRaw, mcpReadSourceRawSchema, func() {
-			mcp.AddTool[readSourceRawInput, any](server, &mcp.Tool{Name: "read_source_raw", Title: "Read retained source text", Description: descriptions.ReadSourceRaw, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, DestructiveHint: boolHint(false), OpenWorldHint: boolHint(false)}, InputSchema: mcpReadSourceRawSchema, OutputSchema: mcpReadSourceRawOutputSchema}, h.callMCPReadSourceRaw)
+		{"read_source_raw", "Read retained source text", descriptions.ReadSourceRaw, rawSchema, func() {
+			mcp.AddTool[readSourceRawInput, any](server, &mcp.Tool{Name: "read_source_raw", Title: "Read retained source text", Description: descriptions.ReadSourceRaw, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, DestructiveHint: boolHint(false), OpenWorldHint: boolHint(false)}, InputSchema: rawSchema, OutputSchema: mcpReadSourceRawOutputSchema}, h.callMCPReadSourceRaw)
 		}},
 	} {
 		if strings.TrimSpace(tool.description) != "" {
@@ -158,16 +165,52 @@ func (h *Handler) addMCPContentTools(server *mcp.Server, metadata *config.BFFMCP
 	}
 }
 
+type mcpContentReadPolicy struct {
+	ListDefault      int
+	ListMax          int
+	ChunkMaxBytes    int
+	ReferencePageMax int
+}
+
+func (h *Handler) mcpContentReadPolicy() mcpContentReadPolicy {
+	policy := mcpContentReadPolicy{ListDefault: 20, ListMax: 50, ChunkMaxBytes: mcpContentChunkBytes, ReferencePageMax: 50}
+	if h != nil && h.mcpConfig != nil && h.mcpConfig.Protection != nil {
+		configured := h.mcpConfig.Protection
+		policy = mcpContentReadPolicy{ListDefault: configured.ListDefault, ListMax: configured.ListMax, ChunkMaxBytes: configured.ChunkMaxBytes, ReferencePageMax: configured.ReferencePageMax}
+	}
+	return policy
+}
+
+func mcpContentInputSchema(base json.RawMessage, properties map[string]any) json.RawMessage {
+	var schema map[string]any
+	if json.Unmarshal(base, &schema) != nil {
+		return base
+	}
+	shape, _ := schema["properties"].(map[string]any)
+	for name, updates := range properties {
+		current, _ := shape[name].(map[string]any)
+		for key, value := range updates.(map[string]any) {
+			current[key] = value
+		}
+	}
+	encoded, err := json.Marshal(schema)
+	if err != nil {
+		return base
+	}
+	return encoded
+}
+
 func (h *Handler) callMCPListContent(ctx context.Context, _ *mcp.CallToolRequest, input listContentInput) (*mcp.CallToolResult, any, error) {
 	identity, ok := ctx.Value(mcpProjectKeyIdentityContextKey{}).(mcpProjectKeyIdentity)
 	if !ok || !hasMCPCapability(identity.capabilities, mcpContentReadCapability) {
 		return mcpContentToolError("scope_denied", false, 0), nil, nil
 	}
 	limit := input.Limit
+	policy := h.mcpContentReadPolicy()
 	if limit == 0 {
-		limit = 20
+		limit = policy.ListDefault
 	}
-	if !validMCPContentKind(input.Kind) || limit < 1 || limit > 50 || len(input.Cursor) > mcpContentMaxCursor {
+	if !validMCPContentKind(input.Kind) || limit < 1 || limit > policy.ListMax || len(input.Cursor) > mcpContentMaxCursor {
 		return mcpContentToolError("invalid_input", false, 0), nil, nil
 	}
 	snapshot, cursor, err := h.loadMCPContentSnapshot(ctx, identity, "list", input.Kind, "", input.Cursor, "")
@@ -177,7 +220,6 @@ func (h *Handler) callMCPListContent(ctx context.Context, _ *mcp.CallToolRequest
 	if snapshot == nil {
 		return mcpContentSuccess(map[string]any{"schema_version": 1, "kind": input.Kind, "generation": nil, "knowledge_status": "no_published_generation", "items": []mcpContentRef{}, "next_cursor": nil}), nil, nil
 	}
-	defer snapshot.close()
 	items := make([]mcpContentRef, 0, limit)
 	for _, ref := range snapshot.refs {
 		if ref.Kind != input.Kind || ref.ID <= cursor.LastID {
@@ -202,10 +244,11 @@ func (h *Handler) callMCPFindContent(ctx context.Context, _ *mcp.CallToolRequest
 	}
 	name := strings.TrimSpace(input.Name)
 	limit := input.Limit
+	policy := h.mcpContentReadPolicy()
 	if limit == 0 {
-		limit = 20
+		limit = policy.ListDefault
 	}
-	if !validMCPContentKind(input.Kind) || name == "" || len([]byte(name)) > mcpContentMaxName || limit < 1 || limit > 50 || len(input.Cursor) > mcpContentMaxCursor {
+	if !validMCPContentKind(input.Kind) || name == "" || len([]byte(name)) > mcpContentMaxName || limit < 1 || limit > policy.ListMax || len(input.Cursor) > mcpContentMaxCursor {
 		return mcpContentToolError("invalid_input", false, 0), nil, nil
 	}
 	snapshot, cursor, err := h.loadMCPContentSnapshot(ctx, identity, "find", input.Kind, name, input.Cursor, "")
@@ -215,7 +258,6 @@ func (h *Handler) callMCPFindContent(ctx context.Context, _ *mcp.CallToolRequest
 	if snapshot == nil {
 		return mcpContentSuccess(map[string]any{"schema_version": 1, "kind": input.Kind, "generation": nil, "knowledge_status": "no_published_generation", "status": "not_found", "candidates": []mcpContentRef{}, "next_cursor": nil}), nil, nil
 	}
-	defer snapshot.close()
 	matches := make([]mcpContentRef, 0)
 	for _, ref := range snapshot.refs {
 		if ref.Kind == input.Kind && (ref.exactTitle == name || ref.Slug == name) {
@@ -250,10 +292,11 @@ func (h *Handler) callMCPReadContent(ctx context.Context, _ *mcp.CallToolRequest
 		return mcpContentToolError("scope_denied", false, 0), nil, nil
 	}
 	maxBytes := input.MaxBytes
+	policy := h.mcpContentReadPolicy()
 	if maxBytes == 0 {
-		maxBytes = mcpContentChunkBytes
+		maxBytes = policy.ChunkMaxBytes
 	}
-	if !validMCPContentKind(input.Kind) || len(input.ID) == 0 || len(input.ID) > mcpContentMaxID || maxBytes < 1 || maxBytes > mcpContentChunkBytes || len(input.Cursor) > mcpContentMaxCursor || len(input.RefsCursor) > mcpContentMaxCursor {
+	if !validMCPContentKind(input.Kind) || len(input.ID) == 0 || len(input.ID) > mcpContentMaxID || maxBytes < 1 || maxBytes > policy.ChunkMaxBytes || len(input.Cursor) > mcpContentMaxCursor || len(input.RefsCursor) > mcpContentMaxCursor {
 		return mcpContentToolError("invalid_input", false, 0), nil, nil
 	}
 	contentGeneration := input.Generation
@@ -273,7 +316,6 @@ func (h *Handler) callMCPReadContent(ctx context.Context, _ *mcp.CallToolRequest
 	if snapshot == nil {
 		return mcpContentToolError("knowledge_unavailable", false, 0), nil, nil
 	}
-	defer snapshot.close()
 	requestedID := input.ID
 	id := input.ID
 	if redirected, exists := snapshot.ids.IDRedirects[id]; exists {
@@ -293,11 +335,10 @@ func (h *Handler) callMCPReadContent(ctx context.Context, _ *mcp.CallToolRequest
 	if input.Kind == mcpContentKindSource {
 		path = "wiki/sources/" + ref.Slug + ".md"
 	}
-	data, reserve, ok := reserveMCPContentRead(ctx, snapshot.manifest, path)
+	data, _, ok := reserveMCPContentRead(ctx, snapshot.manifest, path)
 	if !ok {
 		return mcpContentToolError("capacity_limited", true, 250), nil, nil
 	}
-	defer reserve()
 	data, err = snapshot.client.ReadFileBounded(ctx, path, generation.MaxFileBytes)
 	if err != nil {
 		return mcpContentErrorFor(err), nil, nil
@@ -325,7 +366,7 @@ func (h *Handler) callMCPReadContent(ctx context.Context, _ *mcp.CallToolRequest
 	result := map[string]any{
 		"schema_version": 1, "ref": ref, "generation": snapshot.generation, "revision": revision,
 		"content":           map[string]any{"text": string(data[start:end]), "start_byte": start, "end_byte": end, "total_bytes": len(data), "complete": complete, "next_cursor": next},
-		"synthesis_sources": []any{}, "mentions": []any{}, "provenance_status": "unavailable", "refs_complete": true, "next_refs_cursor": nil,
+		"synthesis_sources": []mcpResolvedRef{}, "mentions": []mcpResolvedRef{}, "provenance_status": "unavailable", "refs_complete": true, "next_refs_cursor": nil,
 	}
 	if id != requestedID {
 		result["requested_id"] = requestedID
@@ -352,7 +393,7 @@ func (h *Handler) callMCPReadContent(ctx context.Context, _ *mcp.CallToolRequest
 		}
 	}
 	synthesisRefs, mentionRefs, nextRefsCursor, refsComplete, refErr := pageMCPReadReferences(
-		snapshot, identity, ref, revision, data, frontmatter.BodyStart, synthesisSources, refsCursor, input.RefsCursor != "",
+		ctx, snapshot, identity, ref, revision, data, frontmatter.BodyStart, synthesisSources, refsCursor, input.RefsCursor != "", policy.ReferencePageMax, result,
 	)
 	if refErr != nil {
 		return mcpContentErrorFor(refErr), nil, nil
@@ -371,10 +412,11 @@ func (h *Handler) callMCPReadSourceRaw(ctx context.Context, _ *mcp.CallToolReque
 		return mcpContentToolError("scope_denied", false, 0), nil, nil
 	}
 	maxBytes := input.MaxBytes
+	policy := h.mcpContentReadPolicy()
 	if maxBytes == 0 {
-		maxBytes = mcpContentChunkBytes
+		maxBytes = policy.ChunkMaxBytes
 	}
-	if len(input.SourceID) == 0 || len(input.SourceID) > mcpContentMaxID || maxBytes < 1 || maxBytes > mcpContentChunkBytes || len(input.Cursor) > mcpContentMaxCursor {
+	if len(input.SourceID) == 0 || len(input.SourceID) > mcpContentMaxID || maxBytes < 1 || maxBytes > policy.ChunkMaxBytes || len(input.Cursor) > mcpContentMaxCursor {
 		return mcpContentToolError("invalid_input", false, 0), nil, nil
 	}
 	snapshot, cursor, err := h.loadMCPContentSnapshot(ctx, identity, "raw", mcpContentKindSource, "", input.Cursor, input.Generation)
@@ -384,7 +426,6 @@ func (h *Handler) callMCPReadSourceRaw(ctx context.Context, _ *mcp.CallToolReque
 	if snapshot == nil {
 		return mcpContentToolError("knowledge_unavailable", false, 0), nil, nil
 	}
-	defer snapshot.close()
 	ref, exists := snapshot.byID[mcpContentKindSource+"\x00"+input.SourceID]
 	if !exists {
 		return mcpContentToolError("not_found", false, 0), nil, nil
@@ -399,20 +440,17 @@ func (h *Handler) callMCPReadSourceRaw(ctx context.Context, _ *mcp.CallToolReque
 	// source body while staying within the process working-set cap.
 	inventorySize, err := snapshot.client.RetainedSourceSnapshotSize(ctx)
 	if err != nil {
-		return mcpContentToolError("raw_snapshot_unavailable", false, 0), nil, nil
+		code, retryAfter := mcpSourceSnapshotError(err)
+		return mcpContentToolError(code, retryAfter > 0, retryAfter), nil, nil
 	}
-	inventoryRelease, reserved := lease.ReserveBytes(inventorySize*3 + 8<<20)
+	_, reserved := lease.ReserveBytes(inventorySize*3 + 128<<10)
 	if !reserved {
 		return mcpContentToolError("capacity_limited", true, 250), nil, nil
 	}
-	defer inventoryRelease()
 	inventory, err := snapshot.client.ReadSourceSnapshot(ctx)
 	if err != nil {
-		code := "raw_snapshot_unavailable"
-		if errors.Is(err, gcs.ErrSourceSnapshotInvalid) || errors.Is(err, storage.ErrDeclaredObjectUnavailable) {
-			code = "content_unavailable"
-		}
-		return mcpContentToolError(code, code == "content_unavailable", 1000), nil, nil
+		code, retryAfter := mcpSourceSnapshotError(err)
+		return mcpContentToolError(code, retryAfter > 0, retryAfter), nil, nil
 	}
 	var sourceRow *generation.SourceSnapshotRow
 	for i := range inventory.Rows {
@@ -433,20 +471,17 @@ func (h *Handler) callMCPReadSourceRaw(ctx context.Context, _ *mcp.CallToolReque
 	}
 	sourceSize, err := snapshot.client.RetainedSourceBytesSize(ctx, inventory, input.SourceID)
 	if err != nil {
-		return mcpContentToolError("content_unavailable", true, 1000), nil, nil
+		code, retryAfter := mcpSourceSnapshotError(err)
+		return mcpContentToolError(code, retryAfter > 0, retryAfter), nil, nil
 	}
-	bodyRelease, reserved := lease.ReserveBytes(sourceSize + 8<<20)
+	_, reserved = lease.ReserveBytes(sourceSize + 1<<20)
 	if !reserved {
 		return mcpContentToolError("capacity_limited", true, 250), nil, nil
 	}
-	defer bodyRelease()
 	data, err := snapshot.client.ReadSourceBytesFromSnapshot(ctx, inventory, input.SourceID)
 	if err != nil {
-		code := "content_unavailable"
-		if errors.Is(err, storage.ErrObjectNotExist) || errors.Is(err, gcs.ErrSourceSnapshotUnavailable) {
-			code = "raw_snapshot_unavailable"
-		}
-		return mcpContentToolError(code, code == "content_unavailable", 1000), nil, nil
+		code, retryAfter := mcpSourceSnapshotError(err)
+		return mcpContentToolError(code, retryAfter > 0, retryAfter), nil, nil
 	}
 	if !utf8.Valid(data) || bytes.IndexByte(data, 0) >= 0 || looksLikeBinarySource(data) {
 		return mcpContentToolError("raw_representation_unavailable", false, 0), nil, nil
@@ -575,7 +610,7 @@ func (h *Handler) loadMCPContentSnapshot(ctx context.Context, identity mcpProjec
 }
 
 func buildMCPContentSnapshot(client *gcs.Client, pinned gcs.GenerationSnapshot, identity storage.QueryGenerationIdentity, ids wikiindex.IDMap, concepts []gcs.WikiPage) *mcpContentSnapshot {
-	snapshot := &mcpContentSnapshot{client: client, generation: pinned.Manifest.GenerationID, manifestSHA: pinned.ManifestSHA256, manifest: pinned.Manifest, identity: identity, ids: ids, byID: map[string]mcpContentRef{}, indexByID: map[string]int{}, bySlugAndKind: map[string][]mcpContentRef{}, sourcesByConceptSlug: map[string][]string{}}
+	snapshot := &mcpContentSnapshot{client: client, generation: pinned.Manifest.GenerationID, manifestSHA: pinned.ManifestSHA256, manifest: pinned.Manifest, identity: identity, ids: ids, byID: map[string]mcpContentRef{}, indexByID: map[string]int{}, bySlugAndKind: map[string][]mcpContentRef{}, byCanonicalRoute: map[string]mcpContentRef{}, sourcesByConceptSlug: map[string][]string{}}
 	titles := make(map[string]gcs.WikiPage, len(concepts))
 	for _, page := range concepts {
 		titles[page.Slug] = page
@@ -591,6 +626,7 @@ func buildMCPContentSnapshot(client *gcs.Client, pinned gcs.GenerationSnapshot, 
 		snapshot.refs = append(snapshot.refs, ref)
 		snapshot.byID[ref.Kind+"\x00"+ref.ID] = ref
 		snapshot.bySlugAndKind[ref.Kind+"\x00"+ref.Slug] = append(snapshot.bySlugAndKind[ref.Kind+"\x00"+ref.Slug], ref)
+		snapshot.byCanonicalRoute[ref.Kind+"\x00"+ref.ID+"-"+ref.Slug] = ref
 	}
 	for id, slug := range ids.Source {
 		meta := ids.SourceMeta[id]
@@ -602,6 +638,15 @@ func buildMCPContentSnapshot(client *gcs.Client, pinned gcs.GenerationSnapshot, 
 		snapshot.refs = append(snapshot.refs, ref)
 		snapshot.byID[ref.Kind+"\x00"+ref.ID] = ref
 		snapshot.bySlugAndKind[ref.Kind+"\x00"+ref.Slug] = append(snapshot.bySlugAndKind[ref.Kind+"\x00"+ref.Slug], ref)
+		snapshot.byCanonicalRoute[ref.Kind+"\x00"+ref.ID+"-"+ref.Slug] = ref
+	}
+	for redirect, target := range ids.IDRedirects {
+		if ref, ok := snapshot.byID[mcpContentKindConcept+"\x00"+target]; ok {
+			snapshot.byCanonicalRoute[mcpContentKindConcept+"\x00"+redirect+"-"+ref.Slug] = ref
+		}
+		if ref, ok := snapshot.byID[mcpContentKindSource+"\x00"+target]; ok {
+			snapshot.byCanonicalRoute[mcpContentKindSource+"\x00"+redirect+"-"+ref.Slug] = ref
+		}
 	}
 	sort.Slice(snapshot.refs, func(i, j int) bool {
 		if snapshot.refs[i].Kind == snapshot.refs[j].Kind {
@@ -617,10 +662,7 @@ func buildMCPContentSnapshot(client *gcs.Client, pinned gcs.GenerationSnapshot, 
 
 func makeMCPContentRef(id, kind, title, slug, titleSource string) mcpContentRef {
 	exactTitle := title
-	path := "/" + kind + "s/" + slug
-	if kind == mcpContentKindConcept {
-		path = "/concepts/" + slug
-	}
+	path := "/" + kind + "s/" + id + "-" + url.PathEscape(slug)
 	truncated := len([]byte(title)) > 512
 	if truncated {
 		for len(title) > 0 && len([]byte(title)) > 509 {
@@ -645,9 +687,9 @@ func reserveMCPContentRead(ctx context.Context, manifest generation.Manifest, pa
 	if lease == nil {
 		return nil, func() {}, false
 	}
-	// The exact-size GCS reader holds one body buffer. The additional 16 MiB
-	// covers frontmatter/tokenizer state and bounded response serialization.
-	release, reserved := lease.ReserveBytes(file.Size + 16<<20)
+	// ReadFileBounded materializes one exact-size body. Parsing retains only
+	// bounded reference state; final encoding is separately wire-limited.
+	release, reserved := lease.ReserveBytes(file.Size + 1<<20)
 	return nil, release, reserved
 }
 
@@ -664,7 +706,7 @@ func reserveMCPMetadata(ctx context.Context, manifest generation.Manifest, path 
 		return nil
 	}
 	factor := int64(3)
-	margin := int64(8 << 20)
+	margin := int64(128 << 10)
 	if path == wikiindex.IDMapPath {
 		factor = 4
 	}
@@ -781,7 +823,24 @@ func mcpContentErrorFor(err error) *mcp.CallToolResult {
 			code = err.Error()
 		}
 	}
-	return mcpContentToolError(code, code == "content_unavailable" || code == "capacity_limited", map[bool]int{true: 1000, false: 0}[code == "content_unavailable"])
+	retryAfter := 0
+	if code == "content_unavailable" || code == "metadata_unavailable" {
+		retryAfter = 1000
+	} else if code == "capacity_limited" {
+		retryAfter = 250
+	}
+	return mcpContentToolError(code, code == "content_unavailable" || code == "capacity_limited" || code == "metadata_unavailable", retryAfter)
+}
+
+func mcpSourceSnapshotError(err error) (string, int) {
+	switch {
+	case errors.Is(err, gcs.ErrSourceSnapshotUnavailable):
+		return "raw_snapshot_unavailable", 0
+	case errors.Is(err, gcs.ErrSourceSnapshotInvalid), errors.Is(err, storage.ErrDeclaredObjectUnavailable):
+		return "content_unavailable", 1000
+	default:
+		return "metadata_unavailable", 1000
+	}
 }
 
 func mcpAdmissionLeaseFrom(ctx context.Context) *mcpquota.Lease {

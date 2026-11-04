@@ -18,9 +18,13 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/rayer/llm-wiki-bff/internal/auth"
 	runtimeconfig "github.com/rayer/llm-wiki-bff/internal/config"
+	internalfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	handlerv1 "github.com/rayer/llm-wiki-bff/internal/handler/v1"
 	"github.com/rayer/llm-wiki-bff/internal/localfs"
 	"github.com/rayer/llm-wiki-bff/internal/profiletags"
@@ -528,6 +532,210 @@ func TestRealPklBFFLocalPrepareUsesSelectedSharedSecretVersion(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(failingOutput, "bff.json")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("failed selected-secret prepare left a launchable BFF config: %v", err)
 	}
+}
+
+func TestRealPklMCPProtectionReachesLoadedSDKConsumer(t *testing.T) {
+	emulatorHost := strings.TrimSpace(os.Getenv("FIRESTORE_EMULATOR_HOST"))
+	if emulatorHost == "" {
+		t.Skip("requires a loopback Firestore emulator")
+	}
+	parsed, err := netip.ParseAddrPort(strings.TrimPrefix(emulatorHost, "http://"))
+	if err != nil || !parsed.Addr().IsLoopback() {
+		t.Fatalf("Firestore emulator must use loopback, got %q", emulatorHost)
+	}
+	realPKL := strings.TrimSpace(os.Getenv("PKL_BIN"))
+	if realPKL == "" {
+		realPKL, err = exec.LookPath("pkl")
+		if err != nil {
+			t.Fatalf("Pkl is required for real MCP CaC acceptance: %v", err)
+		}
+	}
+	if _, err := os.Stat(realPKL); err != nil {
+		t.Fatalf("configured Pkl binary is unavailable: %v", err)
+	}
+
+	root := t.TempDir()
+	cacDir := filepath.Join(root, "deploy", "cac")
+	if err := os.MkdirAll(cacDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	repoRoot, err := filepath.Abs(filepath.Join("..", "..", "..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	original, err := os.ReadFile(filepath.Join(repoRoot, "deploy", "cac", "ssot.pkl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"synto.pkl"} {
+		data, err := os.ReadFile(filepath.Join(repoRoot, "deploy", "cac", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(cacDir, name), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mutated := strings.ReplaceAll(string(original), "list_default = 20", "list_default = 2")
+	mutated = strings.ReplaceAll(mutated, "list_max = 50", "list_max = 4")
+	mutated = strings.ReplaceAll(mutated, "chunk_max_bytes = 16384", "chunk_max_bytes = 1024")
+	mutated = strings.ReplaceAll(mutated, "reference_page_max = 50", "reference_page_max = 3")
+	if mutated == string(original) || !strings.Contains(mutated, "reference_page_max = 3") {
+		t.Fatal("synthetic policy lowering did not change the four intended CaC values")
+	}
+	ssotPath := filepath.Join(cacDir, "ssot.pkl")
+	if err := os.WriteFile(ssotPath, []byte(mutated), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LWC_REPOSITORY_ROOT", root)
+	t.Setenv("PKL_BIN", realPKL)
+	t.Setenv("PKL_CACHE_DIR", "")
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "/dev/null")
+	t.Setenv("LWC_PIPELINE_RUN_TIMEOUT_SECONDS", "82800")
+	t.Setenv("LWC_PIPELINE_LOCAL_SECRET_VERSION_RESOURCE", "projects/llm-wiki-cloud/secrets/lwc369-mcp-cac-fixture/versions/1")
+	t.Setenv("LLM_API_KEY", "TEST_ONLY_LOCAL_LLM_KEY")
+	t.Setenv("TYPESAFE_API_KEY", "")
+	t.Setenv("LOCAL_CLOUD_SCOPE", "lwc369-mcp-cac-synthetic")
+	t.Setenv("LOCAL_CLOUD_WORKER_PATH", filepath.Join(root, "olw_worker"))
+	t.Setenv("LOCAL_CLOUD_PIPELINE_CONFIG_PATH", filepath.Join(root, "synthetic-synto.toml"))
+	t.Setenv("LOCAL_CLOUD_PIPELINE_BINDINGS_PATH", filepath.Join(root, "synthetic-bindings.json"))
+	jwtPath := filepath.Join(root, "jwt-key")
+	if err := os.WriteFile(jwtPath, []byte(strings.Repeat("a", 64)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LOCAL_CLOUD_JWT_SECRET_FILE", jwtPath)
+	t.Setenv("PIPELINE_DEMO_USER_IDS", "")
+	t.Setenv("BFF_PORT", "18080")
+	t.Setenv("AUTH_PORT", "18081")
+	t.Setenv("FRONTEND_PORT", "13000")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	suffix := strconv.FormatInt(time.Now().UnixNano(), 10)
+	fs, err := internalfirestore.NewClientWithDatabaseAndScope("lwc-mcp-cac-"+suffix, "", "", "", "mcp-cac-"+suffix)
+	if err != nil {
+		t.Fatalf("create scoped emulator Firestore client: %v", err)
+	}
+	defer fs.Close()
+	userID, projectID := "mcp-cac-owner-"+suffix, "mcp-cac-project-"+suffix
+	if _, err := internalfirestore.Collection(fs.Raw(), "users").Doc(userID).Set(ctx,
+		auth.UserRecord{Email: userID + "@example.test", Status: auth.AccountActive, AuthVersion: 0}); err != nil {
+		t.Fatalf("seed emulator account: %v", err)
+	}
+	if _, err := internalfirestore.Collection(fs.Raw(), "projects").Doc(userID+"_"+projectID).Set(ctx,
+		map[string]any{"user_id": userID, "project_id": projectID, "name": "MCP CaC fixture", "status": "ready"}); err != nil {
+		t.Fatalf("seed emulator Project: %v", err)
+	}
+	_, projectKey, _, err := auth.NewProjectKeyService(fs.Raw()).CreateWithCapabilities(ctx, userID, projectID,
+		"CaC dynamic policy fixture", []string{"query", "content:read"})
+	if err != nil || projectKey == "" {
+		t.Fatalf("create content-read project key: token_present=%t err=%v", projectKey != "", err)
+	}
+
+	assertSDKPolicy := func(policyName string, wantDefault, wantListMax, wantChunk, wantRefs int) {
+		t.Helper()
+		descriptorDir := filepath.Join(root, policyName+"-descriptor")
+		if err := runPrepareTargetMode(ctx, "bff", "local", descriptorDir, true,
+			func(context.Context) (secretReader, error) {
+				return nil, errors.New("descriptor cannot resolve secrets")
+			}); err != nil {
+			t.Fatalf("prepare %s BFF descriptor: %v", policyName, err)
+		}
+		descriptorBytes, err := os.ReadFile(filepath.Join(descriptorDir, "bff-inputs.json"))
+		if err != nil {
+			t.Fatalf("read %s descriptor: %v", policyName, err)
+		}
+		var descriptor bffSourceProjection
+		if err := json.Unmarshal(descriptorBytes, &descriptor); err != nil {
+			t.Fatalf("decode %s descriptor: %v", policyName, err)
+		}
+		if descriptor.MCP.Protection == nil || descriptor.MCP.Protection.ListDefault != wantDefault ||
+			descriptor.MCP.Protection.ListMax != wantListMax || descriptor.MCP.Protection.ChunkMaxBytes != wantChunk ||
+			descriptor.MCP.Protection.ReferencePageMax != wantRefs {
+			t.Fatalf("%s descriptor lost the CaC policy: %+v", policyName, descriptor.MCP.Protection)
+		}
+		reader := &fakeSecretReader{value: []byte("TEST_ONLY_MCP_CAC_SECRET")}
+		runtimeDir := filepath.Join(root, policyName+"-runtime")
+		if err := runPrepareTargetMode(ctx, "bff", "local", runtimeDir, false,
+			func(context.Context) (secretReader, error) { return reader, nil }); err != nil {
+			t.Fatalf("materialize %s BFF config: %v", policyName, err)
+		}
+		loaded, err := runtimeconfig.LoadBFFFile(filepath.Join(runtimeDir, "bff.json"))
+		if err != nil || loaded.MCP == nil || loaded.MCP.Protection == nil {
+			t.Fatalf("load %s BFF runtime config: protection_present=%t err=%v", policyName,
+				loaded.MCP != nil && loaded.MCP.Protection != nil, err)
+		}
+		if got := loaded.MCP.Protection; got.ListDefault != wantDefault || got.ListMax != wantListMax ||
+			got.ChunkMaxBytes != wantChunk || got.ReferencePageMax != wantRefs {
+			t.Fatalf("%s runtime loader lost the CaC policy: %+v", policyName, got)
+		}
+
+		handler := handlerv1.New(nil, fs, nil, nil, nil, nil)
+		handler.SetMCPConfig(loaded.MCP)
+		handler.SetMCPEnvironment("local")
+		router := gin.New()
+		router.Any("/mcp", gin.WrapH(handler.MCPHandler()))
+		server := httptest.NewServer(router)
+		defer server.Close()
+		httpClient := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			cloned := request.Clone(request.Context())
+			cloned.Header = request.Header.Clone()
+			cloned.Header.Set("Authorization", "Bearer "+projectKey)
+			cloned.Header.Set("X-Project-ID", projectID)
+			return http.DefaultTransport.RoundTrip(cloned)
+		})}
+		client := mcp.NewClient(&mcp.Implementation{Name: "mcp-cac-policy-consumer", Version: "local"}, nil)
+		session, err := client.Connect(ctx, &mcp.StreamableClientTransport{Endpoint: server.URL + "/mcp", HTTPClient: httpClient, DisableStandaloneSSE: true}, nil)
+		if err != nil {
+			t.Fatalf("connect actual SDK client to %s BFF: %v", policyName, err)
+		}
+		defer session.Close()
+		listed, err := session.ListTools(ctx, nil)
+		if err != nil {
+			t.Fatalf("actual SDK tools/list for %s: %v", policyName, err)
+		}
+		byName := make(map[string]*mcp.Tool, len(listed.Tools))
+		for _, tool := range listed.Tools {
+			byName[tool.Name] = tool
+		}
+		for _, name := range []string{"list_content", "find_content", "read_content", "read_source_raw"} {
+			if _, ok := byName[name]; !ok {
+				t.Fatalf("%s actual SDK consumer omitted %s", policyName, name)
+			}
+		}
+		assertSchemaNumber := func(toolName, property, key string, want int) {
+			t.Helper()
+			tool := byName[toolName]
+			schema, ok := tool.InputSchema.(map[string]any)
+			if !ok {
+				t.Fatalf("%s %s schema type is %T", policyName, toolName, tool.InputSchema)
+			}
+			properties, ok := schema["properties"].(map[string]any)
+			if !ok {
+				t.Fatalf("%s %s schema has no properties", policyName, toolName)
+			}
+			shape, ok := properties[property].(map[string]any)
+			if !ok {
+				t.Fatalf("%s %s schema has no %s property", policyName, toolName, property)
+			}
+			got, ok := shape[key].(float64)
+			if !ok || int(got) != want {
+				t.Fatalf("%s %s.%s.%s = %v, want %d", policyName, toolName, property, key, shape[key], want)
+			}
+		}
+		assertSchemaNumber("list_content", "limit", "default", wantDefault)
+		assertSchemaNumber("list_content", "limit", "maximum", wantListMax)
+		assertSchemaNumber("find_content", "limit", "maximum", wantListMax)
+		assertSchemaNumber("read_content", "max_bytes", "default", wantChunk)
+		assertSchemaNumber("read_content", "max_bytes", "maximum", wantChunk)
+		assertSchemaNumber("read_source_raw", "max_bytes", "maximum", wantChunk)
+	}
+
+	assertSDKPolicy("lowered", 2, 4, 1024, 3)
+	if err := os.WriteFile(ssotPath, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	assertSDKPolicy("restored", 20, 50, 16_384, 50)
 }
 
 func capturePipelinePrepareStdout(t *testing.T, run func() error) (string, error) {
