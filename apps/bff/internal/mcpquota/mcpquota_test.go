@@ -562,6 +562,50 @@ func TestLimiterFirestoreMalformedRecordFailsClosedEmulator(t *testing.T) {
 	}
 }
 
+func TestLimiterReleaseUnknownCommittedOutcomeReadbackEmulator(t *testing.T) {
+	project := "mcpquota-release-unknown-" + fmt.Sprint(time.Now().UnixNano())
+	scope := "mcpquota-release-unknown-" + fmt.Sprint(time.Now().UnixNano())
+	fs := emulatorClient(t, project, scope)
+	limiter, err := New(fs, "local", testPolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := Identity{Environment: "local", Subject: "release-owner", ProjectID: "release-wiki"}
+	lease, decision, err := limiter.Admit(context.Background(), identity, Content)
+	if err != nil || lease == nil || decision.Code != "admitted" {
+		t.Fatalf("initial release test admission lease=%v decision=%+v err=%v", lease != nil, decision, err)
+	}
+	attempts := 0
+	limiter.releaseRunner = func(ctx context.Context, callback func(context.Context, *cloudfirestore.Transaction) error, maxAttempts int) error {
+		attempts++
+		if err := fs.RunTransaction(ctx, callback, cloudfirestore.MaxAttempts(maxAttempts)); err != nil {
+			return err
+		}
+		return status.Error(codes.Unavailable, "injected lost release response after commit")
+	}
+	started := time.Now()
+	if err := lease.Close(); err != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		present, readErr := limiter.readLeasePresence(ctx, lease.refs, lease.id)
+		cancel()
+		for i, snapshot := range mustReadQuotaRecords(t, fs, lease.refs) {
+			t.Logf("release readback diagnostic dimension=%s data=%#v", lease.refs[i].dimension, snapshot.Data())
+		}
+		t.Fatalf("exact triplet readback did not confirm committed release: close_err=%v readback_present=%d readback_err=%v runner_attempts=%d", err, present, readErr, attempts)
+	}
+	if attempts != limiter.policy.ReleaseMaxAttempts {
+		t.Fatalf("injected response-loss attempts=%d, want bounded maximum %d", attempts, limiter.policy.ReleaseMaxAttempts)
+	}
+	present, err := limiter.readLeasePresence(context.Background(), lease.refs, lease.id)
+	if err != nil || present != 0 {
+		t.Fatalf("post-release lease triplet presence=%d err=%v", present, err)
+	}
+	if limiter.active[Content] != 0 || limiter.activeBytes != 0 {
+		t.Fatalf("local reservation remained after confirmed release: active=%d bytes=%d", limiter.active[Content], limiter.activeBytes)
+	}
+	t.Logf("release_unknown_outcome attempts=%d exact_triplet_present=%d settled=true elapsed_ms=%d", attempts, present, time.Since(started).Milliseconds())
+}
+
 func TestLimiterConcurrentAcrossProcessesEmulator(t *testing.T) {
 	project := "mcpquota-burst-" + fmt.Sprint(time.Now().UnixNano())
 	scope := "mcpquota-burst-" + fmt.Sprint(time.Now().UnixNano())

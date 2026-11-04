@@ -401,12 +401,30 @@ func TestMCPContentReadScopesAndAdmissionThroughProjectKeyAndOAuthSDKEndpoints(t
 	server := httptest.NewServer(router)
 	defer server.Close()
 
-	for _, endpoint := range []struct {
+	wireEndpoints := []struct {
 		name, path, token, projectHeader string
 	}{
 		{name: "project-key", path: "/mcp", token: readKeyToken, projectHeader: projectID},
 		{name: "oauth", path: "/mcp/projects/" + projectID, token: readOAuthToken},
-	} {
+	}
+	postWireByEndpoint := make(map[string]func([]byte) *httptest.ResponseRecorder, len(wireEndpoints))
+	boundaryDecodedID := strings.Repeat("x", 682) + "\t"
+	boundaryEncodedID := `"` + strings.Repeat(`\u0078`, 682) + `\t"`
+	escapedWireID := "wire\"\\\\\nλ" + strings.Repeat("x", 40)
+	escapedEncodedID, err := json.Marshal(escapedWireID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wireIDs := []struct {
+		name, encoded, decoded string
+	}{
+		{name: "encoded-boundary", encoded: boundaryEncodedID, decoded: boundaryDecodedID},
+		{name: "escaped", encoded: string(escapedEncodedID), decoded: escapedWireID},
+	}
+	wireListBody := func(encodedID string) []byte {
+		return []byte(`{"jsonrpc":"2.0","id":` + encodedID + `,"method":"tools/call","params":{"name":"list_content","arguments":{"kind":"concept","limit":1}}}`)
+	}
+	for _, endpoint := range wireEndpoints {
 		postWireWithContext := func(body []byte, requestContext context.Context) *httptest.ResponseRecorder {
 			t.Helper()
 			request := httptest.NewRequest(http.MethodPost, endpoint.path, bytes.NewReader(body)).WithContext(requestContext)
@@ -421,6 +439,7 @@ func TestMCPContentReadScopesAndAdmissionThroughProjectKeyAndOAuthSDKEndpoints(t
 			return response
 		}
 		postWire := func(body []byte) *httptest.ResponseRecorder { return postWireWithContext(body, context.Background()) }
+		postWireByEndpoint[endpoint.name] = postWire
 		assertRejectedNoEcho := func(name string, body []byte, sentinel string) {
 			t.Helper()
 			response := postWire(body)
@@ -461,26 +480,34 @@ func TestMCPContentReadScopesAndAdmissionThroughProjectKeyAndOAuthSDKEndpoints(t
 			}
 			response := postWire(body)
 			var decoded struct {
-				ID    any             `json:"id"`
-				Error json.RawMessage `json:"error"`
+				ID     any             `json:"id"`
+				Error  json.RawMessage `json:"error"`
+				Result struct {
+					IsError           bool           `json:"isError"`
+					StructuredContent map[string]any `json:"structuredContent"`
+				} `json:"result"`
 			}
 			if response.Code != http.StatusOK || response.Body.Len() > maxMCPProtectedResponseBytes ||
-				json.Unmarshal(response.Body.Bytes(), &decoded) != nil || decoded.ID != id || len(decoded.Error) != 0 {
+				json.Unmarshal(response.Body.Bytes(), &decoded) != nil || decoded.ID != id || len(decoded.Error) != 0 || decoded.Result.IsError || len(decoded.Result.StructuredContent) == 0 {
 				t.Fatalf("%s %s wire response status=%d bytes=%d decoded=%+v body=%q", endpoint.name, label, response.Code, response.Body.Len(), decoded, response.Body.String())
 			}
 		}
 		assertWireID("max decoded ID", strings.Repeat("B", maxMCPProtectedIDDecoded))
-		assertWireID("escaped ID", "wire\"\\\\\nλ"+strings.Repeat("x", 40))
-		encodedBoundaryID := `"` + strings.Repeat(`\u0078`, 682) + `\t"`
-		if len(encodedBoundaryID) != maxMCPProtectedIDEncoded {
-			t.Fatalf("constructed JSON string ID encoding has %d bytes, want exactly 4096", len(encodedBoundaryID))
+		assertWireID("escaped ID", escapedWireID)
+		if len(boundaryEncodedID) != maxMCPProtectedIDEncoded {
+			t.Fatalf("constructed JSON string ID encoding has %d bytes, want exactly 4096", len(boundaryEncodedID))
 		}
-		boundaryBody := []byte(`{"jsonrpc":"2.0","id":` + encodedBoundaryID + `,"method":"tools/call","params":{"name":"list_content","arguments":{"kind":"concept","limit":1}}}`)
+		boundaryBody := wireListBody(boundaryEncodedID)
 		boundaryResponse := postWire(boundaryBody)
 		var boundaryDecoded struct {
-			ID any `json:"id"`
+			ID     any             `json:"id"`
+			Error  json.RawMessage `json:"error"`
+			Result struct {
+				IsError           bool           `json:"isError"`
+				StructuredContent map[string]any `json:"structuredContent"`
+			} `json:"result"`
 		}
-		if boundaryResponse.Code != http.StatusOK || boundaryResponse.Body.Len() > maxMCPProtectedResponseBytes || json.Unmarshal(boundaryResponse.Body.Bytes(), &boundaryDecoded) != nil || boundaryDecoded.ID != strings.Repeat("x", 682)+"\t" {
+		if boundaryResponse.Code != http.StatusOK || boundaryResponse.Body.Len() > maxMCPProtectedResponseBytes || json.Unmarshal(boundaryResponse.Body.Bytes(), &boundaryDecoded) != nil || boundaryDecoded.ID != boundaryDecodedID || len(boundaryDecoded.Error) != 0 || boundaryDecoded.Result.IsError || boundaryDecoded.Result.StructuredContent["generation"] != "g_mcp_content_fixture" {
 			t.Fatalf("%s exact encoded-ID boundary response status=%d bytes=%d decoded=%+v body=%q", endpoint.name, boundaryResponse.Code, boundaryResponse.Body.Len(), boundaryDecoded, boundaryResponse.Body.String())
 		}
 		overBoundaryID := `"` + strings.Repeat(`\u0078`, 682) + `\tx"`
@@ -489,30 +516,29 @@ func TestMCPContentReadScopesAndAdmissionThroughProjectKeyAndOAuthSDKEndpoints(t
 		}
 		overBoundaryBody := []byte(`{"jsonrpc":"2.0","id":` + overBoundaryID + `,"method":"tools/call","params":{"name":"list_content","arguments":{"kind":"concept","limit":1}}}`)
 		assertRejectedNoEcho("encoded ID over 4096", overBoundaryBody, "xxxxxxxx")
-		assertOverflowFallback := func(name, canary string, calls *atomic.Int32, register func(*mcp.Server)) {
+		assertOverflowFallback := func(name, canary, encodedID, decodedID string, calls *atomic.Int32, register func(*mcp.Server)) {
 			t.Helper()
-			id := "overflow-" + endpoint.name + "-" + name
-			body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": map[string]any{"name": "list_content", "arguments": map[string]any{"kind": "concept"}}})
-			if err != nil {
-				t.Fatal(err)
-			}
+			body := wireListBody(encodedID)
 			before := calls.Load()
 			wireProbeContext := context.WithValue(context.Background(), mcpSDKTestToolRegistrarContextKey{}, register)
 			response := postWireWithContext(body, wireProbeContext)
 			var decoded struct {
-				ID     any `json:"id"`
+				ID     any             `json:"id"`
+				Error  json.RawMessage `json:"error"`
 				Result struct {
 					Structured map[string]any `json:"structuredContent"`
 					IsError    bool           `json:"isError"`
 				} `json:"result"`
 			}
 			if response.Code != http.StatusOK || response.Body.Len() > maxMCPProtectedResponseBytes || json.Unmarshal(response.Body.Bytes(), &decoded) != nil ||
-				decoded.ID != id || !decoded.Result.IsError || decoded.Result.Structured["code"] != "response_limit" || strings.Contains(response.Body.String(), canary) || calls.Load() != before+1 {
+				decoded.ID != decodedID || len(decoded.Error) != 0 || !decoded.Result.IsError || decoded.Result.Structured["code"] != "response_limit" || strings.Contains(response.Body.String(), canary) || calls.Load() != before+1 {
 				t.Fatalf("%s %s final SDK overflow response status=%d bytes=%d decoded=%+v producer_calls=%d->%d body=%q", endpoint.name, name, response.Code, response.Body.Len(), decoded, before, calls.Load(), response.Body.String())
 			}
 		}
-		assertOverflowFallback("result-meta", metaCanary, &metaProducerCalls, registerMetaProbe)
-		assertOverflowFallback("protocol-error-data", errorCanary, &errorProducerCalls, registerErrorProbe)
+		for _, wireID := range wireIDs {
+			assertOverflowFallback("result-meta-"+wireID.name, metaCanary, wireID.encoded, wireID.decoded, &metaProducerCalls, registerMetaProbe)
+			assertOverflowFallback("protocol-error-data-"+wireID.name, errorCanary, wireID.encoded, wireID.decoded, &errorProducerCalls, registerErrorProbe)
+		}
 		t.Logf("protected_wire endpoint=%s max_decoded_id=1024 encoded_id_4096_legal_4097_rejected=true escaped_id_roundtrip=true oversized_request_id_meta_params=id_null_no_echo sdk_result_meta_and_error_data_overflow=response_limit_no_echo single_execution=true protocol_error_bytes=%d", endpoint.name, protocolError.Body.Len())
 	}
 
@@ -1000,6 +1026,42 @@ func TestMCPContentReadScopesAndAdmissionThroughProjectKeyAndOAuthSDKEndpoints(t
 	if limited == nil {
 		t.Fatal("content quota did not deny after exhausting its 32-token test bucket")
 	}
+	for _, endpoint := range wireEndpoints {
+		for _, wireID := range wireIDs {
+			limitedBoundaryID := false
+			for attempt := 0; attempt < 48; attempt++ {
+				observationsBefore := len(probe.observations())
+				response := postWireByEndpoint[endpoint.name](wireListBody(wireID.encoded))
+				var decoded struct {
+					ID     any             `json:"id"`
+					Error  json.RawMessage `json:"error"`
+					Result struct {
+						IsError           bool           `json:"isError"`
+						StructuredContent map[string]any `json:"structuredContent"`
+					} `json:"result"`
+				}
+				if response.Code != http.StatusOK || response.Body.Len() > maxMCPProtectedResponseBytes || json.Unmarshal(response.Body.Bytes(), &decoded) != nil ||
+					decoded.ID != wireID.decoded || len(decoded.Error) != 0 {
+					t.Fatalf("%s %s quota boundary response status=%d bytes=%d decoded=%+v body=%q", endpoint.name, wireID.name, response.Code, response.Body.Len(), decoded, response.Body.String())
+				}
+				if !decoded.Result.IsError {
+					continue
+				}
+				if decoded.Result.StructuredContent["code"] != "rate_limited" {
+					t.Fatalf("%s %s boundary ID was rejected for unexpected reason: %#v", endpoint.name, wireID.name, decoded.Result.StructuredContent)
+				}
+				if len(probe.observations()) != observationsBefore {
+					t.Fatalf("%s %s quota-rejected cold boundary request reached storage", endpoint.name, wireID.name)
+				}
+				limitedBoundaryID = true
+				break
+			}
+			if !limitedBoundaryID {
+				t.Fatalf("%s %s legal boundary ID never reached the explicit content quota rejection", endpoint.name, wireID.name)
+			}
+			t.Logf("quota_wire endpoint=%s id_case=%s exact_echo=true result_kind=rate_limited response_bytes_bounded=true cold_storage_unchanged=true", endpoint.name, wireID.name)
+		}
+	}
 }
 
 type mcpCommitBlockingWriter struct {
@@ -1062,7 +1124,31 @@ func TestMCPMetadataHeavySDKReadMeasuresReservedWorkingSet(t *testing.T) {
 	if err != nil || token == "" {
 		t.Fatalf("create metadata-heavy content key: token_present=%t err=%v", token != "", err)
 	}
-	objects, idMapBytes, conceptsBytes := mcpMetadataHeavyPublishedFixture(t, userID, projectID, 2000)
+	const metadataRows = 100
+	objects, idMapBytes, conceptsBytes := mcpMetadataHeavyPublishedFixture(t, userID, projectID, metadataRows)
+	modelIDs, err := wikiindex.DecodeIDMap(idMapBytes)
+	if err != nil {
+		t.Fatalf("decode metadata model fixture ID map: %v", err)
+	}
+	modelPages, err := gcs.WikiPagesFromConceptsJSONL(conceptsBytes)
+	var firstPage gcs.WikiPage
+	if len(modelPages) > 0 {
+		firstPage = modelPages[0]
+	}
+	if err != nil || len(modelPages) != metadataRows || len(firstPage.Sources) != 3 || len(firstPage.Title) < 1024 {
+		t.Fatalf("metadata model fixture rows/sources/title: pages=%d first=%+v err=%v", len(modelPages), firstPage, err)
+	}
+	var firstConcept map[string]any
+	if err := json.Unmarshal(bytes.SplitN(conceptsBytes, []byte{'\n'}, 2)[0], &firstConcept); err != nil {
+		t.Fatalf("decode metadata model fixture nested row: %v", err)
+	}
+	frontmatter, _ := firstConcept["frontmatter"].(map[string]any)
+	nested, _ := frontmatter["nested"].(map[string]any)
+	longNote, _ := frontmatter["long_note"].(string)
+	if len(longNote) < 8192 || len(nested) < 2 || len(modelIDs.Concept) != metadataRows || len(modelIDs.Source) != metadataRows || len(modelIDs.IDRedirects) != metadataRows || len(modelIDs.Redirects) != metadataRows {
+		t.Fatalf("metadata model fixture did not exercise nested containers, long strings, multiple sources, and redirects: concepts=%d sources=%d id_redirects=%d redirects=%d source_refs=%d nested=%d long_note_bytes=%d", len(modelIDs.Concept), len(modelIDs.Source), len(modelIDs.IDRedirects), len(modelIDs.Redirects), len(modelPages[0].Sources), len(nested), len(longNote))
+	}
+	t.Logf("metadata_model_inputs concepts=%d sources=%d sources_per_concept_after_dedup=%d id_redirects=%d redirect_lists=%d nested_frontmatter_fields=%d long_title_bytes=%d long_frontmatter_bytes=%d", len(modelIDs.Concept), len(modelIDs.Source), len(firstPage.Sources), len(modelIDs.IDRedirects), len(modelIDs.Redirects), len(nested), len(firstPage.Title), len(longNote))
 	contentClient, readsMu, reads := newTaggingGCSClient(t, objects)
 	probe := &mcpContentAdmissionProbeRoot{RootStore: localfs.New(t.TempDir()), fs: fs.Raw(), content: contentClient}
 	handler := New(probe, fs, nil, nil, nil, nil)
@@ -1137,7 +1223,7 @@ func TestMCPMetadataHeavySDKReadMeasuresReservedWorkingSet(t *testing.T) {
 	sampleMu.Unlock()
 	reservedIDMap := mcpMetadataWorkingSetReservation(wikiindex.IDMapPath, int64(len(idMapBytes)))
 	reservedConcepts := mcpMetadataWorkingSetReservation(wikiindex.ConceptsJSONLPath, int64(len(conceptsBytes)))
-	t.Logf("metadata_heavy_sdk generation=%s concepts=%d sources=%d id_map_bytes=%d concepts_bytes=%d id_map_reserved_bytes=%d concepts_reserved_bytes=%d total_alloc_delta=%d live_heap_delta=%d sampled_heap_peak_delta=%d rss_peak_before=%d rss_peak_after=%d storage_id_map_reads=%d storage_concepts_reads=%d", payload["generation"], 2000, 2000, len(idMapBytes), len(conceptsBytes), reservedIDMap, reservedConcepts, after.TotalAlloc-before.TotalAlloc, int64(after.HeapAlloc)-int64(before.HeapAlloc), int64(peak)-int64(before.HeapAlloc), rssBefore, rssAfter, idMapReads, conceptsReads)
+	t.Logf("metadata_heavy_sdk generation=%s concepts=%d sources=%d id_map_bytes=%d concepts_bytes=%d id_map_reserved_bytes=%d concepts_reserved_bytes=%d total_alloc_delta=%d live_heap_delta=%d sampled_heap_peak_delta=%d rss_peak_before=%d rss_peak_after=%d storage_id_map_reads=%d storage_concepts_reads=%d", payload["generation"], metadataRows, metadataRows, len(idMapBytes), len(conceptsBytes), reservedIDMap, reservedConcepts, after.TotalAlloc-before.TotalAlloc, int64(after.HeapAlloc)-int64(before.HeapAlloc), int64(peak)-int64(before.HeapAlloc), rssBefore, rssAfter, idMapReads, conceptsReads)
 }
 
 func mcpMetadataHeavyPublishedFixture(t *testing.T, userID, projectID string, count int) (map[string]taggingGCSObject, []byte, []byte) {
@@ -1157,9 +1243,28 @@ func mcpMetadataHeavyPublishedFixture(t *testing.T, userID, projectID string, co
 		ids.Concept[conceptID] = slug
 		ids.Source[sourceID] = sourceSlug
 		ids.SourceMeta[sourceID] = wikiindex.SourceMeta{Slug: sourceSlug, Title: "Source " + sourceID}
-		ids.Redirects["old-"+conceptID] = []string{conceptID}
+		ids.Redirects["old-"+conceptID] = []string{"retired-" + conceptID, "older-" + conceptID}
 		ids.IDRedirects["legacy-"+conceptID] = conceptID
-		fmt.Fprintf(&concepts, "{\"slug\":%q,\"title\":%q,\"frontmatter\":{\"id\":%q,\"sources\":[%q]}}\n", slug, "Concept "+conceptID, conceptID, sourceID)
+		sources := []any{sourceID, sourceID, fmt.Sprintf("source-%05d", (i+1)%count), fmt.Sprintf("source-%05d", (i+2)%count)}
+		frontmatter := map[string]any{
+			"id":      conceptID,
+			"sources": sources,
+			"nested": map[string]any{
+				"groups": []any{map[string]any{"label": "metadata fixture", "values": []any{true, false, map[string]any{"rank": i, "note": "nested-value"}}}},
+				"flags":  map[string]any{"enabled": true, "quality": "fixture"},
+			},
+		}
+		title := "Concept " + conceptID
+		if i == 0 {
+			title += strings.Repeat("T", 1024)
+			frontmatter["long_note"] = strings.Repeat("N", 8192)
+		}
+		line, err := json.Marshal(map[string]any{"slug": slug, "title": title, "frontmatter": frontmatter})
+		if err != nil {
+			t.Fatalf("marshal metadata model row %d: %v", i, err)
+		}
+		concepts.Write(line)
+		concepts.WriteByte('\n')
 	}
 	idMapBytes, err := json.Marshal(ids)
 	if err != nil {

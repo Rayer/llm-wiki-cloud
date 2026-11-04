@@ -33,10 +33,10 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/gcs"
 	"github.com/rayer/llm-wiki-bff/internal/generation"
 	handlerv1 "github.com/rayer/llm-wiki-bff/internal/handler/v1"
+	"github.com/rayer/llm-wiki-bff/internal/llm"
 	"github.com/rayer/llm-wiki-bff/internal/localcloud"
 	"github.com/rayer/llm-wiki-bff/internal/localpipeline"
 	"github.com/rayer/llm-wiki-bff/internal/query"
-	"github.com/rayer/llm-wiki-bff/internal/search"
 	"github.com/rayer/llm-wiki-bff/internal/sourcestatus"
 	"github.com/rayer/llm-wiki-bff/internal/storage"
 	"github.com/rayer/llm-wiki-bff/internal/suggestedqueries"
@@ -2932,33 +2932,38 @@ func TestPublishCloudGenerationArchivesSourceSnapshotsByGeneration(t *testing.T)
 	}
 }
 
+const (
+	publisherMCPConceptID = "abcdef123456"
+	publisherMCPSourceID  = "fedcba654321"
+)
+
 func TestCloudPublisherSourceSnapshotRoundTripsForMCPRawConsumer(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		sourceMap string
 		wantError bool
 	}{
-		{name: "optional SourceFile omitted", sourceMap: `{"concept":{"c1":"alpha"},"source":{"s1":"source"},"source_meta":{"s1":{"slug":"source"}},"redirects":{}}`},
-		{name: "optional SourceFile empty", sourceMap: `{"concept":{"c1":"alpha"},"source":{"s1":"source"},"source_meta":{"s1":{"slug":"source","source_file":""}},"redirects":{}}`},
-		{name: "declared SourceFile matches", sourceMap: `{"concept":{"c1":"alpha"},"source":{"s1":"source"},"source_meta":{"s1":{"slug":"source","source_file":"raw/source.md"}},"redirects":{}}`},
-		{name: "declared SourceFile mismatch", sourceMap: `{"concept":{"c1":"alpha"},"source":{"s1":"source"},"source_meta":{"s1":{"slug":"source","source_file":"raw/other.md"}},"redirects":{}}`, wantError: true},
+		{name: "optional SourceFile omitted", sourceMap: `{"concept":{"abcdef123456":"alpha"},"source":{"fedcba654321":"source"},"source_meta":{"fedcba654321":{"slug":"source"}},"redirects":{}}`},
+		{name: "optional SourceFile empty", sourceMap: `{"concept":{"abcdef123456":"alpha"},"source":{"fedcba654321":"source"},"source_meta":{"fedcba654321":{"slug":"source","source_file":""}},"redirects":{}}`},
+		{name: "declared SourceFile matches", sourceMap: `{"concept":{"abcdef123456":"alpha"},"source":{"fedcba654321":"source"},"source_meta":{"fedcba654321":{"slug":"source","source_file":"raw/source.md"}},"redirects":{}}`},
+		{name: "declared SourceFile mismatch", sourceMap: `{"concept":{"abcdef123456":"alpha"},"source":{"fedcba654321":"source"},"source_meta":{"fedcba654321":{"slug":"source","source_file":"raw/other.md"}},"redirects":{}}`, wantError: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			const scope = "mcp-publisher-raw-scope"
 			prefix := localcloud.Scope(scope).ObjectPrefix() + storage.ProjectPrefix("mcp-owner", "mcp-project") + "/"
 			root := t.TempDir()
 			writeCloudRequiredOutputs(t, root)
-			mustWriteFile(t, filepath.Join(root, "wiki", "alpha.md"), []byte("---\nid: c1\nsources:\n  - s1\n---\n# Alpha\nPublished concept body.\n"))
-			mustWriteFile(t, filepath.Join(root, "wiki", "sources", "source.md"), []byte("---\nid: s1\ntitle: Source One\n---\n# Source One\nPublished source body.\n"))
-			mustWriteFile(t, filepath.Join(root, "cache", "concepts.jsonl"), []byte("{\"slug\":\"alpha\",\"title\":\"Alpha\",\"frontmatter\":{\"id\":\"c1\",\"sources\":[\"s1\"]}}\n"))
+			mustWriteFile(t, filepath.Join(root, "wiki", "alpha.md"), []byte("---\nid: "+publisherMCPConceptID+"\nsources:\n  - "+publisherMCPSourceID+"\n---\n# Alpha\nPublished concept body.\n"))
+			mustWriteFile(t, filepath.Join(root, "wiki", "sources", "source.md"), []byte("---\nid: "+publisherMCPSourceID+"\ntitle: Source One\n---\n# Source One\nPublished source body.\n"))
+			mustWriteFile(t, filepath.Join(root, "cache", "concepts.jsonl"), []byte("{\"slug\":\"alpha\",\"title\":\"Alpha\",\"frontmatter\":{\"id\":\""+publisherMCPConceptID+"\",\"sources\":[\""+publisherMCPSourceID+"\"]}}\n"))
 			idMapBytes := []byte(tc.sourceMap)
 			if err := os.WriteFile(filepath.Join(root, "cache", "id_map.json"), idMapBytes, 0o600); err != nil {
 				t.Fatal(err)
 			}
 			raw := []byte("producer-retained raw source bytes\n")
-			writePublisherReceipt(t, root, map[string]sourcestatus.Receipt{"s1": publisherReceipt("s1", "raw/source.md", raw, "source annotation")})
+			writePublisherReceipt(t, root, map[string]sourcestatus.Receipt{publisherMCPSourceID: publisherReceipt(publisherMCPSourceID, "raw/source.md", raw, "source annotation")})
 			store := newMemoryObjects()
-			const matchingSourceMap = `{"concept":{"c1":"alpha"},"source":{"s1":"source"},"source_meta":{"s1":{"slug":"source","source_file":"raw/source.md"}},"redirects":{}}`
+			const matchingSourceMap = `{"concept":{"abcdef123456":"alpha"},"source":{"fedcba654321":"source"},"source_meta":{"fedcba654321":{"slug":"source","source_file":"raw/source.md"}},"redirects":{}}`
 			var manifest generation.Manifest
 			var err error
 			if tc.wantError {
@@ -2966,7 +2971,7 @@ func TestCloudPublisherSourceSnapshotRoundTripsForMCPRawConsumer(t *testing.T) {
 					t.Fatal(err)
 				}
 				manifest, _, err = publishCloudGeneration(context.Background(), store, prefix, root, []sourceSnapshot{{
-					SourceID: "s1", RawPath: "raw/source.md", RawBytes: raw, RawSHA256: digestBytes(raw),
+					SourceID: publisherMCPSourceID, RawPath: "raw/source.md", RawBytes: raw, RawSHA256: digestBytes(raw),
 				}})
 				if err != nil || manifest.SourceSnapshotDigest == "" {
 					t.Fatalf("seed prior valid SourceFile generation: digest=%q err=%v", manifest.SourceSnapshotDigest, err)
@@ -2976,7 +2981,7 @@ func TestCloudPublisherSourceSnapshotRoundTripsForMCPRawConsumer(t *testing.T) {
 					t.Fatal(err)
 				}
 				_, _, err = publishCloudGeneration(context.Background(), store, prefix, root, []sourceSnapshot{{
-					SourceID: "s1", RawPath: "raw/source.md", RawBytes: raw, RawSHA256: digestBytes(raw),
+					SourceID: publisherMCPSourceID, RawPath: "raw/source.md", RawBytes: raw, RawSHA256: digestBytes(raw),
 				}})
 				if err == nil || !strings.Contains(err.Error(), "source path mismatch") {
 					t.Fatalf("mismatched declared SourceFile publish error=%v", err)
@@ -2986,19 +2991,19 @@ func TestCloudPublisherSourceSnapshotRoundTripsForMCPRawConsumer(t *testing.T) {
 				if readErr != nil || decodeErr != nil || current.GenerationID != priorGeneration {
 					t.Fatalf("rejected source mapping advanced current generation: current=%+v read_err=%v decode_err=%v", current, readErr, decodeErr)
 				}
-				assertMCPReaderRejectsMismatchedSourceMap(t, idMapBytes, raw, scope)
 				if err := os.WriteFile(filepath.Join(root, "cache", "id_map.json"), []byte(matchingSourceMap), 0o600); err != nil {
 					t.Fatal(err)
 				}
 				manifest, _, err = publishCloudGeneration(context.Background(), store, prefix, root, []sourceSnapshot{{
-					SourceID: "s1", RawPath: "raw/source.md", RawBytes: raw, RawSHA256: digestBytes(raw),
+					SourceID: publisherMCPSourceID, RawPath: "raw/source.md", RawBytes: raw, RawSHA256: digestBytes(raw),
 				}})
 				if err != nil || manifest.SourceSnapshotDigest == "" || manifest.GenerationID == priorGeneration {
 					t.Fatalf("matching SourceFile publish recovery failed: previous=%q digest=%q new=%q err=%v", priorGeneration, manifest.SourceSnapshotDigest, manifest.GenerationID, err)
 				}
+				assertMCPReaderRejectsMismatchedSourceMap(t, idMapBytes, raw, scope+"-reader-control")
 			} else {
 				manifest, _, err = publishCloudGeneration(context.Background(), store, prefix, root, []sourceSnapshot{{
-					SourceID: "s1", RawPath: "raw/source.md", RawBytes: raw, RawSHA256: digestBytes(raw),
+					SourceID: publisherMCPSourceID, RawPath: "raw/source.md", RawBytes: raw, RawSHA256: digestBytes(raw),
 				}})
 			}
 			if err != nil || manifest.SourceSnapshotDigest == "" {
@@ -3025,7 +3030,7 @@ func TestCloudPublisherSourceSnapshotRoundTripsForMCPRawConsumer(t *testing.T) {
 				t.Fatalf("MCP consumer source inventory=%+v err=%v", inventory, err)
 			}
 			row := inventory.Rows[0]
-			if row.StableID != "s1" || row.RawPath != "raw/source.md" || row.ContentDigest != digestBytes(raw) || row.ObjectGeneration <= 0 {
+			if row.StableID != publisherMCPSourceID || row.RawPath != "raw/source.md" || row.ContentDigest != digestBytes(raw) || row.ObjectGeneration <= 0 {
 				t.Fatalf("producer source mapping row does not bind stable ID, safe path and exact content: %+v", row)
 			}
 			bytesPath, err := generation.SourceBytesPath(row.ContentDigest)
@@ -3040,7 +3045,7 @@ func TestCloudPublisherSourceSnapshotRoundTripsForMCPRawConsumer(t *testing.T) {
 			citation := assertPublishedCloudGenerationThroughMCPSDK(t, store, prefix, manifest.GenerationID, "mcp-publisher-raw", "mcp-owner", "mcp-project", scope, false, nil, false)
 			historicalID := manifest.GenerationID
 			second, _, err := publishCloudGeneration(context.Background(), store, prefix, root, []sourceSnapshot{{
-				SourceID: "s1", RawPath: "raw/source.md", RawBytes: raw, RawSHA256: digestBytes(raw),
+				SourceID: publisherMCPSourceID, RawPath: "raw/source.md", RawBytes: raw, RawSHA256: digestBytes(raw),
 			}})
 			if err != nil || second.GenerationID == historicalID {
 				t.Fatalf("publish newer generation for historical consumer: first=%q second=%q err=%v", historicalID, second.GenerationID, err)
@@ -3055,15 +3060,50 @@ type publisherMCPRoot struct {
 	client *gcs.Client
 }
 
-type publisherMCPQueryExecutor struct{}
+type publisherMCPQueryExecutor struct {
+	service            *query.Service
+	expectedGeneration string
+}
 
-func (publisherMCPQueryExecutor) Execute(_ context.Context, _ conceptcache.Reader, request query.Request) (query.Result, error) {
-	return query.Result{
-		Query: request.Query, Mode: request.Mode, Status: "evidence_found", AnswerBasis: "project_evidence", WikiEvidenceStatus: "evidence_found",
-		Results:   []search.Result{{ID: "c1", Slug: "alpha", Title: "Alpha", Type: "concept"}},
-		Citations: []search.Citation{{ID: "c1", Text: "Alpha", Slug: "alpha", Type: "concept", Path: "/concepts/c1-alpha"}},
-		AISynth:   "The published Alpha Concept supports this answer.",
-	}, nil
+func (e publisherMCPQueryExecutor) Execute(ctx context.Context, reader conceptcache.Reader, request query.Request) (query.Result, error) {
+	identityProvider, ok := reader.(storage.QueryGenerationIdentityProvider)
+	if !ok {
+		return query.Result{}, errors.New("publisher query reader has no pinned generation identity")
+	}
+	identity, err := identityProvider.QueryGenerationIdentity(ctx)
+	if err != nil {
+		return query.Result{}, fmt.Errorf("read publisher query generation identity: %w", err)
+	}
+	if identity.GenerationID != e.expectedGeneration {
+		return query.Result{}, fmt.Errorf("publisher query generation=%q, want %q", identity.GenerationID, e.expectedGeneration)
+	}
+	result, err := e.service.Execute(ctx, reader, request)
+	if err != nil {
+		log.Printf("publisher MCP offline query producer failed: %v", err)
+		return query.Result{}, err
+	}
+	if len(result.Citations) != 1 || result.Citations[0].ID == "" || result.Citations[0].Path == "" {
+		return query.Result{}, fmt.Errorf("pinned query evidence produced no canonical citation")
+	}
+	return result, nil
+}
+
+type publisherMCPCitationChat struct{}
+
+func (publisherMCPCitationChat) Chat(_ context.Context, _, userPrompt string) (string, error) {
+	start := strings.Index(userPrompt, "[CITATION_REF_")
+	if start < 0 {
+		return "", errors.New("offline citation fixture received no server-issued evidence reference")
+	}
+	end := strings.IndexByte(userPrompt[start:], ']')
+	if end < 0 {
+		return "", errors.New("offline citation fixture received an incomplete evidence reference")
+	}
+	return "The published Alpha Concept supports this answer " + userPrompt[start:start+end+1], nil
+}
+
+func (publisherMCPCitationChat) ModelIdentity() (llm.ModelIdentity, bool) {
+	return llm.ModelIdentity{Provider: "offline-fixture", Model: "citation-contract"}, true
 }
 
 type publisherMCPQueryCitation struct {
@@ -3080,25 +3120,11 @@ func assertMCPReaderRejectsMismatchedSourceMap(t *testing.T, idMapBytes, raw []b
 	prefix := localcloud.Scope(scope).ObjectPrefix() + storage.ProjectPrefix(userID, projectID) + "/"
 	files := map[string][]byte{
 		"cache/id_map.json":      idMapBytes,
-		"cache/concepts.jsonl":   []byte("{\"slug\":\"alpha\",\"title\":\"Alpha\",\"frontmatter\":{\"id\":\"c1\",\"sources\":[\"s1\"]}}\n"),
-		"wiki/alpha.md":          []byte("---\nid: c1\nsources:\n  - s1\n---\n# Alpha\nPublished concept body.\n"),
-		"wiki/sources/source.md": []byte("---\nid: s1\ntitle: Source One\n---\n# Source One\nPublished source body.\n"),
+		"cache/concepts.jsonl":   []byte("{\"slug\":\"alpha\",\"title\":\"Alpha\",\"frontmatter\":{\"id\":\"" + publisherMCPConceptID + "\",\"sources\":[\"" + publisherMCPSourceID + "\"]}}\n"),
+		"wiki/alpha.md":          []byte("---\nid: " + publisherMCPConceptID + "\nsources:\n  - " + publisherMCPSourceID + "\n---\n# Alpha\nPublished concept body.\n"),
+		"wiki/sources/source.md": []byte("---\nid: " + publisherMCPSourceID + "\ntitle: Source One\n---\n# Source One\nPublished source body.\n"),
 	}
-	manifest := generation.Manifest{Version: generation.Version, GenerationID: contentGeneration, CreatedAt: "2026-11-05T00:00:00Z", InputFingerprint: "invalid-source-map-reader-fixture"}
 	paths := []string{"cache/concepts.jsonl", "cache/id_map.json", "wiki/alpha.md", "wiki/sources/source.md"}
-	for _, path := range paths {
-		data := files[path]
-		objectPath := prefix + generation.Prefix + contentGeneration + "/" + path
-		attrs, err := objects.Write(ctx, objectPath, data, map[string]string{"sha256": generation.Digest(data)}, objectConditions{DoesNotExist: true})
-		if err != nil {
-			t.Fatalf("write mismatch SDK fixture object %q: %v", path, err)
-		}
-		file, err := generation.NewFile(path, data, attrs.Generation)
-		if err != nil {
-			t.Fatalf("build mismatch SDK manifest entry %q: %v", path, err)
-		}
-		manifest.Files = append(manifest.Files, file)
-	}
 	contentDigest := generation.Digest(raw)
 	rawBytesPath, err := generation.SourceBytesPath(contentDigest)
 	if err != nil {
@@ -3111,43 +3137,72 @@ func assertMCPReaderRejectsMismatchedSourceMap(t *testing.T, idMapBytes, raw []b
 	if _, err := objects.Write(ctx, prefix+"raw/source.md", []byte("mutable raw fallback must not be used\n"), nil, objectConditions{DoesNotExist: true}); err != nil {
 		t.Fatal(err)
 	}
-	inventory := generation.SourceSnapshotManifest{
-		SchemaVersion: generation.SourceSnapshotSchema, ContentGeneration: contentGeneration,
-		IDMapDigest: generation.Digest(idMapBytes), SourceStatusDigest: generation.Digest([]byte("publisher receipt fixture")),
-		Rows: []generation.SourceSnapshotRow{{StableID: "s1", RawPath: "raw/source.md", ContentDigest: contentDigest, ObjectGeneration: rawAttrs.Generation}},
-	}
-	inventoryBytes, inventoryDigest, err := generation.EncodeSourceSnapshot(inventory)
-	if err != nil {
-		t.Fatal(err)
-	}
-	manifest.SourceSnapshotDigest = inventoryDigest
-	inventoryPath, err := generation.SourceSnapshotPath(inventoryDigest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := objects.Write(ctx, prefix+inventoryPath, inventoryBytes, nil, objectConditions{DoesNotExist: true}); err != nil {
-		t.Fatal(err)
-	}
-	if err := manifest.Validate(); err != nil {
-		t.Fatalf("validate deliberately mismatched source-map manifest: %v", err)
-	}
-	manifestBytes, err := json.Marshal(manifest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	archivePath, err := generation.ArchivedManifestPath(contentGeneration)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, object := range []struct {
-		name string
-		data []byte
-	}{{prefix + archivePath, manifestBytes}, {prefix + generation.ManifestPath, manifestBytes}} {
-		if _, err := objects.Write(ctx, object.name, object.data, nil, objectConditions{DoesNotExist: true}); err != nil {
-			t.Fatalf("write mismatch SDK fixture manifest %q: %v", object.name, err)
+	const restoredGeneration = "g_mcp_reader_mapping_restored"
+	writeReaderMappingGeneration := func(idMap []byte, generationID string, current bool) {
+		t.Helper()
+		manifest := generation.Manifest{Version: generation.Version, GenerationID: generationID, CreatedAt: "2026-11-05T00:00:00Z", InputFingerprint: "reader-mapping-history-control"}
+		for _, path := range paths {
+			data := files[path]
+			if path == "cache/id_map.json" {
+				data = idMap
+			}
+			objectPath := prefix + generation.Prefix + generationID + "/" + path
+			attrs, err := objects.Write(ctx, objectPath, data, map[string]string{"sha256": generation.Digest(data)}, objectConditions{DoesNotExist: true})
+			if err != nil {
+				t.Fatalf("write retained reader-mapping object %q: %v", path, err)
+			}
+			file, err := generation.NewFile(path, data, attrs.Generation)
+			if err != nil {
+				t.Fatalf("build retained reader-mapping entry %q: %v", path, err)
+			}
+			manifest.Files = append(manifest.Files, file)
+		}
+		inventory := generation.SourceSnapshotManifest{
+			SchemaVersion: generation.SourceSnapshotSchema, ContentGeneration: generationID,
+			IDMapDigest: generation.Digest(idMap), SourceStatusDigest: generation.Digest([]byte("publisher receipt fixture")),
+			Rows: []generation.SourceSnapshotRow{{StableID: publisherMCPSourceID, RawPath: "raw/source.md", ContentDigest: contentDigest, ObjectGeneration: rawAttrs.Generation}},
+		}
+		inventoryBytes, digest, err := generation.EncodeSourceSnapshot(inventory)
+		if err != nil {
+			t.Fatal(err)
+		}
+		manifest.SourceSnapshotDigest = digest
+		inventoryPath, err := generation.SourceSnapshotPath(digest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := objects.Write(ctx, prefix+inventoryPath, inventoryBytes, nil, objectConditions{DoesNotExist: true}); err != nil {
+			t.Fatalf("write retained reader-mapping inventory: %v", err)
+		}
+		if err := manifest.Validate(); err != nil {
+			t.Fatalf("validate retained reader-mapping manifest: %v", err)
+		}
+		manifestBytes, err := json.Marshal(manifest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		archivePath, err := generation.ArchivedManifestPath(generationID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := objects.Write(ctx, prefix+archivePath, manifestBytes, nil, objectConditions{DoesNotExist: true}); err != nil {
+			t.Fatalf("write retained reader-mapping archive: %v", err)
+		}
+		if current {
+			if _, err := objects.Write(ctx, prefix+generation.ManifestPath, manifestBytes, nil, objectConditions{DoesNotExist: true}); err != nil {
+				t.Fatalf("restore current reader-mapping manifest: %v", err)
+			}
 		}
 	}
-	assertPublishedCloudGenerationThroughMCPSDK(t, objects, prefix, contentGeneration, "mcp-publisher-raw", userID, projectID, scope, false, nil, true)
+	// Keep the mismatched artifact as an archive while current.json points to a
+	// matching restored artifact. The SDK must reject only the historical raw
+	// mapping, then read the restored current generation successfully.
+	writeReaderMappingGeneration(idMapBytes, contentGeneration, false)
+	matchingSourceMap := []byte(`{"concept":{"abcdef123456":"alpha"},"source":{"fedcba654321":"source"},"source_meta":{"fedcba654321":{"slug":"source","source_file":"raw/source.md"}},"redirects":{}}`)
+	writeReaderMappingGeneration(matchingSourceMap, restoredGeneration, true)
+	citation := &publisherMCPQueryCitation{generation: contentGeneration, id: publisherMCPConceptID}
+	assertPublishedCloudGenerationThroughMCPSDK(t, objects, prefix, contentGeneration, "mcp-publisher-raw", userID, projectID, scope, true, citation, true)
+	assertPublishedCloudGenerationThroughMCPSDK(t, objects, prefix, restoredGeneration, "mcp-publisher-raw", userID, projectID, scope, false, nil, false)
 }
 
 func (r *publisherMCPRoot) Scope(userID, projectID string) storage.Store {
@@ -3271,7 +3326,10 @@ func assertPublishedCloudGenerationThroughMCPSDK(t *testing.T, objects *memoryOb
 		Protection: policy,
 	})
 	handler.SetMCPEnvironment("local")
-	handler.SetQueryExecutor(publisherMCPQueryExecutor{})
+	handler.SetQueryExecutor(publisherMCPQueryExecutor{
+		service:            query.NewProjectService(conceptcache.New(), publisherMCPCitationChat{}),
+		expectedGeneration: generationID,
+	})
 	router := gin.New()
 	router.Any("/mcp", gin.WrapH(handler.MCPHandler()))
 	server := httptest.NewServer(router)
@@ -3312,8 +3370,15 @@ func assertPublishedCloudGenerationThroughMCPSDK(t *testing.T, objects *memoryOb
 		}
 		citationMap, _ := citations[0].(map[string]any)
 		citationID, _ := citationMap["id"].(string)
-		if citationID != "c1" || citationMap["path"] != "/concepts/c1-alpha" {
+		if citationID != publisherMCPConceptID || citationMap["path"] != "/concepts/"+publisherMCPConceptID+"-alpha" {
 			t.Fatalf("same-publisher MCP query citation does not bind published Concept: %#v", citationMap)
+		}
+		seenMu.Lock()
+		_, readConceptIndex := seen[prefix+generation.Prefix+generationID+"/cache/concepts.jsonl"]
+		_, readIdentityIndex := seen[prefix+generation.Prefix+generationID+"/cache/id_map.json"]
+		seenMu.Unlock()
+		if !readConceptIndex || !readIdentityIndex {
+			t.Fatalf("query citation did not consume the same pinned artifact: concepts_jsonl=%t id_map=%t", readConceptIndex, readIdentityIndex)
 		}
 		citation = &publisherMCPQueryCitation{generation: generationID, id: citationID}
 	} else if citation.generation != generationID {
@@ -3330,10 +3395,10 @@ func assertPublishedCloudGenerationThroughMCPSDK(t *testing.T, objects *memoryOb
 	if conceptPayload["generation"] != generationID || !strings.Contains(conceptText, "Published concept body") || len(synthesis) != 1 {
 		t.Fatalf("same-publisher Concept-to-Source citation response=%#v", conceptPayload)
 	}
-	if sourceRef, ok := synthesis[0].(map[string]any); !ok || sourceRef["id"] != "s1" {
+	if sourceRef, ok := synthesis[0].(map[string]any); !ok || sourceRef["id"] != publisherMCPSourceID {
 		t.Fatalf("same-publisher Concept did not cite Source s1: %#v", synthesis)
 	}
-	sourceResult, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "read_content", Arguments: map[string]any{"kind": "source", "id": "s1", "generation": generationID}})
+	sourceResult, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "read_content", Arguments: map[string]any{"kind": "source", "id": publisherMCPSourceID, "generation": generationID}})
 	if err != nil || sourceResult == nil || sourceResult.IsError {
 		t.Fatalf("same-publisher artifact MCP Source read result=%+v err=%v", sourceResult, err)
 	}
@@ -3343,7 +3408,7 @@ func assertPublishedCloudGenerationThroughMCPSDK(t *testing.T, objects *memoryOb
 	if sourcePayload["generation"] != generationID || !strings.Contains(sourceText, "Published source body") {
 		t.Fatalf("same-publisher Source artifact response=%#v", sourcePayload)
 	}
-	rawArguments := map[string]any{"source_id": "s1", "generation": generationID}
+	rawArguments := map[string]any{"source_id": publisherMCPSourceID, "generation": generationID}
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "read_source_raw", Arguments: rawArguments})
 	if expectRawMappingUnavailable {
 		if err != nil || result == nil || !result.IsError {

@@ -49,6 +49,7 @@ type Limiter struct {
 	policy        config.MCPProtection
 	clock         func() time.Time
 	admissionGate chan struct{}
+	releaseRunner admissionTransactionRunner
 
 	mu          sync.Mutex
 	active      map[Class]int
@@ -237,6 +238,16 @@ func (lease *Lease) Close() error {
 		}
 		if !waitAdmissionRetry(context.Background(), lease.id+"-release", attempt) {
 			break
+		}
+	}
+	if releaseErr != nil {
+		readbackBudget := time.Duration(owner.policy.ReleaseTimeoutMS) * time.Millisecond
+		ctx, cancel := context.WithTimeout(context.Background(), readbackBudget)
+		present, readErr := owner.readLeasePresence(ctx, lease.refs, lease.id)
+		cancel()
+		if readErr == nil && present == 0 {
+			// The transaction may have committed before its response was lost.
+			releaseErr = nil
 		}
 	}
 	if lease.localHeld {
@@ -497,12 +508,52 @@ func (l *Limiter) readLeaseTriplet(ctx context.Context, keys []recordKey, id str
 	return true, nil
 }
 
+func (l *Limiter) readLeasePresence(ctx context.Context, keys []recordKey, id string) (int, error) {
+	refs := make([]*cloudfirestore.DocumentRef, len(keys))
+	for i, key := range keys {
+		refs[i] = scopedfirestore.Collection(l.fs, collectionName).Doc(key.id)
+	}
+	snapshots, err := l.fs.GetAll(ctx, refs)
+	if err != nil {
+		return 0, err
+	}
+	present := 0
+	for i, snapshot := range snapshots {
+		if !snapshot.Exists() {
+			continue
+		}
+		var record admissionRecord
+		if err := validateStoredSnapshot(snapshot, keys[i]); err != nil {
+			return 0, err
+		}
+		if err := snapshot.DataTo(&record); err != nil {
+			return 0, err
+		}
+		if err := validateRecordIdentity(record, keys[i]); err != nil {
+			return 0, err
+		}
+		for _, item := range record.Leases {
+			if item.ID == id {
+				present++
+				break
+			}
+		}
+	}
+	return present, nil
+}
+
 func (l *Limiter) releaseTransaction(ctx context.Context, keys []recordKey, id string) error {
 	refs := make([]*cloudfirestore.DocumentRef, len(keys))
 	for i, key := range keys {
 		refs[i] = scopedfirestore.Collection(l.fs, collectionName).Doc(key.id)
 	}
-	return l.fs.RunTransaction(ctx, func(ctx context.Context, tx *cloudfirestore.Transaction) error {
+	runner := l.releaseRunner
+	if runner == nil {
+		runner = func(ctx context.Context, callback func(context.Context, *cloudfirestore.Transaction) error, attempts int) error {
+			return l.fs.RunTransaction(ctx, callback, cloudfirestore.MaxAttempts(attempts))
+		}
+	}
+	return runner(ctx, func(ctx context.Context, tx *cloudfirestore.Transaction) error {
 		effectiveNow := l.clock().UTC()
 		records := make([]admissionRecord, len(refs))
 		missing := make([]bool, len(refs))
@@ -520,6 +571,9 @@ func (l *Limiter) releaseTransaction(ctx context.Context, keys []recordKey, id s
 			}
 			if err := snapshot.DataTo(&records[i]); err != nil {
 				return err
+			}
+			if records[i].Leases == nil {
+				records[i].Leases = []storedLease{}
 			}
 			if err := validateRecordIdentity(records[i], keys[i]); err != nil {
 				return err
@@ -549,7 +603,7 @@ func (l *Limiter) releaseTransaction(ctx context.Context, keys []recordKey, id s
 			}
 		}
 		return nil
-	}, cloudfirestore.MaxAttempts(l.policy.ReleaseMaxAttempts))
+	}, l.policy.ReleaseMaxAttempts)
 }
 
 func initialRecord(key recordKey, now time.Time, policy config.MCPProtectionClass, revision string) admissionRecord {
