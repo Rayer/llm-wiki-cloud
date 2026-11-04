@@ -388,6 +388,19 @@ func pageMCPReadReferences(ctx context.Context, snapshot *mcpContentSnapshot, id
 			end--
 		}
 		if !fits {
+			// A reference with candidates must make candidate progress. Keep the
+			// cursor at the first unsent candidate after an earlier page, or fail
+			// explicitly when even one candidate cannot fit an empty page.
+			if candidateTotal > 0 && len(fragmentCandidates) == 0 {
+				if fragmentCount > 0 {
+					more = true
+					nextIndex, nextCandidate = current, offset
+					stopped = true
+					return true
+				}
+				pageErr = errors.New("response_limit")
+				return true
+			}
 			if fragmentCount > 0 {
 				more = true
 				nextIndex, nextCandidate = current, offset
@@ -501,6 +514,8 @@ func scanMCPMarkdown(ctx context.Context, body []byte, base int, definitions map
 	fenceLen := 0
 	inlineTicks := 0
 	inScript := false
+	noTagDelimiterAhead := false
+	noWikiCloserAhead := false
 	definitionsCount := 0
 	for i := 0; i < len(body); {
 		if i&0x3ff == 0 && ctx.Err() != nil {
@@ -577,6 +592,9 @@ func scanMCPMarkdown(ctx context.Context, body []byte, base int, definitions map
 				if ctx.Err() != nil {
 					return false
 				}
+				// No later closing tag can contain '>' either, so the rest of
+				// this unclosed script is text we intentionally suppress.
+				return true
 			}
 			i++
 			continue
@@ -609,7 +627,7 @@ func scanMCPMarkdown(ctx context.Context, body []byte, base int, definitions map
 			i = end + 3
 			continue
 		}
-		if body[i] == '<' {
+		if body[i] == '<' && !noTagDelimiterAhead {
 			if end := findByteContext(ctx, body, i, '>'); end >= 0 {
 				tag := bytes.TrimSpace(body[i+1 : end])
 				if asciiEqualFoldPrefix(tag, "script") {
@@ -621,8 +639,11 @@ func scanMCPMarkdown(ctx context.Context, body []byte, base int, definitions map
 			if ctx.Err() != nil {
 				return false
 			}
+			// Remember the absent delimiter: rescanning every suffix for '>'
+			// makes a body containing many '<' bytes quadratic.
+			noTagDelimiterAhead = true
 		}
-		if bytes.HasPrefix(body[i:], []byte("[[")) {
+		if !noWikiCloserAhead && bytes.HasPrefix(body[i:], []byte("[[")) {
 			if end := findTokenContext(ctx, body, i+2, []byte("]]")); end >= 0 {
 				inside := body[i+2 : end]
 				if len(inside) > maxMCPReferenceTargetBytes+maxMCPReferenceLabelBytes+1 {
@@ -644,7 +665,11 @@ func scanMCPMarkdown(ctx context.Context, body []byte, base int, definitions map
 			if ctx.Err() != nil {
 				return false
 			}
-			return true
+			// Treat the unmatched opener as text and keep looking. Returning
+			// here would claim the page is complete while dropping later links.
+			noWikiCloserAhead = true
+			i += 2
+			continue
 		}
 		if body[i] == '[' && (i == 0 || body[i-1] != '!') {
 			reference, end, ok := parseMCPMarkdownLink(ctx, body, i, definitions)

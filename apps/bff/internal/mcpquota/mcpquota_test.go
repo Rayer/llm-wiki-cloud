@@ -153,6 +153,87 @@ func emulatorClient(t *testing.T, project, scope string) *cloudfirestore.Client 
 	return client
 }
 
+func TestLimiterAdmissionGateCancelAndMixedClassEmulator(t *testing.T) {
+	project := "mcpquota-gate-" + fmt.Sprint(time.Now().UnixNano())
+	scope := "mcpquota-gate-" + fmt.Sprint(time.Now().UnixNano())
+	fs := emulatorClient(t, project, scope)
+	limiter, err := New(fs, "local", testPolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := Identity{Environment: "local", Subject: "gate-owner", ProjectID: "gate-wiki"}
+	limiter.admissionGate <- struct{}{}
+	id := "gate-cancel-0"
+	for i := 1; i < 1000; i++ {
+		candidate := fmt.Sprintf("gate-cancel-%d", i)
+		seed := sha256.Sum256([]byte(candidate))
+		if time.Duration(seed[0])*250*time.Millisecond/255 < 20*time.Millisecond {
+			id = candidate
+			break
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	calledRunner := make(chan struct{}, 1)
+	runner := func(context.Context, func(context.Context, *cloudfirestore.Transaction) error, int) error {
+		calledRunner <- struct{}{}
+		return nil
+	}
+	lease, decision, err := limiter.admitWithRunner(ctx, identity, Content, id, runner)
+	if lease != nil || !errors.Is(err, ErrUnavailable) || decision.Code != "admission_unavailable" {
+		t.Fatalf("canceled gate wait lease=%v decision=%+v err=%v", lease != nil, decision, err)
+	}
+	select {
+	case <-calledRunner:
+		t.Fatal("expired admission reached Firestore after the shared deadline")
+	default:
+	}
+	limiter.mu.Lock()
+	activeContent := limiter.active[Content]
+	limiter.mu.Unlock()
+	if activeContent != 0 || len(limiter.admissionGate) != 1 {
+		t.Fatalf("canceled gate wait leaked local slot or gate: active_content=%d gate=%d", activeContent, len(limiter.admissionGate))
+	}
+	<-limiter.admissionGate
+
+	type outcome struct {
+		class    Class
+		lease    *Lease
+		decision Decision
+		err      error
+	}
+	results := make(chan outcome, 2)
+	for _, class := range []Class{Content, Query} {
+		go func(class Class) {
+			got, decision, err := limiter.Admit(context.Background(), identity, class)
+			results <- outcome{class: class, lease: got, decision: decision, err: err}
+		}(class)
+	}
+	var admitted []*Lease
+	for i := 0; i < 2; i++ {
+		select {
+		case got := <-results:
+			if got.err != nil || got.lease == nil || got.decision.Code != "admitted" {
+				for _, active := range admitted {
+					_ = active.Close()
+				}
+				t.Fatalf("mixed-class %s admission lease=%v decision=%+v err=%v", got.class, got.lease != nil, got.decision, got.err)
+			}
+			admitted = append(admitted, got.lease)
+		case <-time.After(5 * time.Second):
+			for _, active := range admitted {
+				_ = active.Close()
+			}
+			t.Fatal("mixed-class admissions did not settle")
+		}
+	}
+	for _, active := range admitted {
+		if err := active.Close(); err != nil {
+			t.Fatalf("release mixed-class %s lease: %v", active.class, err)
+		}
+	}
+}
+
 func TestLimiterFirestoreAdmissionRateRecoveryCancellationAndLateReleaseEmulator(t *testing.T) {
 	project := "mcpquota-emulator-" + fmt.Sprint(time.Now().UnixNano())
 	scope := "mcpquota-rate-" + fmt.Sprint(time.Now().UnixNano())
@@ -704,9 +785,22 @@ func TestLimiterConcurrentAcrossProcessesEmulator(t *testing.T) {
 	}
 	recoveryLimiter.policy.Content = frozenContentPolicy()
 	recoveryLimiter.clock = func() time.Time { return time.Now().UTC().Add(61 * time.Second) }
-	recoveryLease, decision, err := recoveryLimiter.Admit(context.Background(), identity, Content)
+	recoveryID := uuid.NewString()
+	var transactionErrors []error
+	recoveryRunner := func(ctx context.Context, callback func(context.Context, *cloudfirestore.Transaction) error, attempts int) error {
+		err := fs.RunTransaction(ctx, callback, cloudfirestore.MaxAttempts(attempts))
+		if err != nil {
+			transactionErrors = append(transactionErrors, err)
+		}
+		return err
+	}
+	recoveryLease, decision, err := recoveryLimiter.admitWithRunner(context.Background(), identity, Content, recoveryID, recoveryRunner)
 	if err != nil || recoveryLease == nil || decision.Code != "admitted" {
-		t.Fatalf("post-expiry recovery lease=%v decision=%+v err=%v", recoveryLease != nil, decision, err)
+		readback, readbackErr := recoveryLimiter.readLeaseTriplet(context.Background(), admissionKeys(identity, Content), recoveryID, recoveryLimiter.clock())
+		t.Fatalf("post-expiry recovery lease=%v decision=%+v err=%v transaction_errors=%v exact_readback=%t readback_err=%v", recoveryLease != nil, decision, err, transactionErrors, readback, readbackErr)
+	}
+	if len(transactionErrors) != 0 {
+		t.Logf("post-expiry admission succeeded after transaction errors: %v", transactionErrors)
 	}
 	for i, record := range readRecords() {
 		for id := range pendingExpiry {

@@ -44,10 +44,11 @@ var ErrInvalidIdentity = errors.New("invalid MCP admission identity")
 // Limiter combines a per-process active-work and byte budget with a Firestore
 // transaction over account/project/fleet records.
 type Limiter struct {
-	fs          *cloudfirestore.Client
-	environment string
-	policy      config.MCPProtection
-	clock       func() time.Time
+	fs            *cloudfirestore.Client
+	environment   string
+	policy        config.MCPProtection
+	clock         func() time.Time
+	admissionGate chan struct{}
 
 	mu          sync.Mutex
 	active      map[Class]int
@@ -73,7 +74,7 @@ func New(fs *cloudfirestore.Client, environment string, policy config.MCPProtect
 	if fs == nil || (environment != "local" && environment != "dev" && environment != "prod") || config.ValidateMCPProtection(policy) != nil {
 		return nil, ErrUnavailable
 	}
-	return &Limiter{fs: fs, environment: environment, policy: policy, clock: time.Now, active: map[Class]int{}}, nil
+	return &Limiter{fs: fs, environment: environment, policy: policy, clock: time.Now, admissionGate: make(chan struct{}, 1), active: map[Class]int{}}, nil
 }
 
 func (l *Limiter) Environment() string {
@@ -120,6 +121,17 @@ func (l *Limiter) admitWithRunner(ctx context.Context, identity Identity, class 
 	admissionCtx, cancel := context.WithTimeout(ctx, time.Duration(l.policy.AdmissionTimeoutMS)*time.Millisecond)
 	defer cancel()
 	if !waitAdmissionStartJitter(admissionCtx, id) {
+		l.releaseLocal(class)
+		lease.localHeld = false
+		return nil, Decision{Code: "admission_unavailable", RetryAfterMS: 1000}, ErrUnavailable
+	}
+	// Same-process requests share the account and fleet records. Serialize only
+	// this bounded transaction section to avoid making a normal local burst burn
+	// all SDK transaction attempts against its own writes.
+	select {
+	case l.admissionGate <- struct{}{}:
+		defer func() { <-l.admissionGate }()
+	case <-admissionCtx.Done():
 		l.releaseLocal(class)
 		lease.localHeld = false
 		return nil, Decision{Code: "admission_unavailable", RetryAfterMS: 1000}, ErrUnavailable

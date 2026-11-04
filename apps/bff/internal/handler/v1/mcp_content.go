@@ -839,7 +839,7 @@ func mcpSourceSnapshotError(err error) (string, int) {
 	case errors.Is(err, gcs.ErrSourceSnapshotInvalid), errors.Is(err, storage.ErrDeclaredObjectUnavailable):
 		return "content_unavailable", 1000
 	default:
-		return "metadata_unavailable", 1000
+		return "content_unavailable", 1000
 	}
 }
 

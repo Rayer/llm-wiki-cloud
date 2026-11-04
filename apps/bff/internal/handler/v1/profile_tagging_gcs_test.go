@@ -120,6 +120,15 @@ type taggingGCSObject struct {
 
 func newTaggingGCSClient(t *testing.T, objects map[string]taggingGCSObject, beforeRead ...func(string)) (*gcs.Client, *sync.Mutex, map[string]int) {
 	t.Helper()
+	var before func(string)
+	if len(beforeRead) > 0 {
+		before = beforeRead[0]
+	}
+	return newTaggingGCSClientWithReadFailure(t, objects, before, nil)
+}
+
+func newTaggingGCSClientWithReadFailure(t *testing.T, objects map[string]taggingGCSObject, beforeRead func(string), failRead func(string) bool) (*gcs.Client, *sync.Mutex, map[string]int) {
+	t.Helper()
 	var mu sync.Mutex
 	reads := map[string]int{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -198,8 +207,18 @@ func newTaggingGCSClient(t *testing.T, objects map[string]taggingGCSObject, befo
 			_ = json.NewEncoder(w).Encode(map[string]string{"name": name, "bucket": "tagging-local", "generation": strconv.FormatInt(o.gen, 10), "size": strconv.Itoa(len(o.data))})
 			return
 		}
-		if len(beforeRead) > 0 && beforeRead[0] != nil {
-			beforeRead[0](name)
+		if beforeRead != nil {
+			beforeRead(name)
+		}
+		if r.Context().Err() != nil {
+			return
+		}
+		if failRead != nil && failRead(name) {
+			// A non-retryable fixture status lets the MCP handler expose its own
+			// retryable domain result instead of GCS transparently retrying this
+			// test injection until the SDK backoff budget expires.
+			http.Error(w, "fixture read failure", http.StatusBadRequest)
+			return
 		}
 		w.Header().Set("Content-Length", strconv.Itoa(len(o.data)))
 		w.Header().Set("X-Goog-Generation", strconv.FormatInt(o.gen, 10))

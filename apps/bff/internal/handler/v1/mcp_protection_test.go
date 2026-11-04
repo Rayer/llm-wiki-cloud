@@ -3,6 +3,7 @@ package v1
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -121,39 +122,56 @@ func TestMCPFinalBoundedWriterCommitsOnlyCompleteBoundedResponse(t *testing.T) {
 		}
 	})
 
-	t.Run("overflow fallback", func(t *testing.T) {
-		underlying := httptest.NewRecorder()
-		underlying.Header().Set("X-Existing", "kept-until-complete")
-		writer := newMCPFinalBoundedWriter(underlying, json.RawMessage(`"bounded-id"`), "server-id")
-		writer.Header().Set("Content-Type", "application/json")
-		writer.WriteHeader(500)
-		_, _ = writer.Write([]byte(strings.Repeat("x", maxMCPProtectedResponseBytes)))
-		_, _ = writer.Write([]byte("overflow"))
-		if underlying.Body.Len() != 0 {
-			t.Fatal("partial response escaped")
-		}
-		writer.Commit()
-		if underlying.Code != 200 || underlying.Body.Len() > maxMCPProtectedResponseBytes {
-			t.Fatalf("fallback status/size = %d/%d", underlying.Code, underlying.Body.Len())
-		}
-		var response struct {
-			ID     string `json:"id"`
-			Result struct {
-				IsError bool `json:"isError"`
-				Content []struct {
-					Text string `json:"text"`
-				} `json:"content"`
-				Structured map[string]any `json:"structuredContent"`
-			} `json:"result"`
-		}
-		if err := json.Unmarshal(underlying.Body.Bytes(), &response); err != nil {
-			t.Fatalf("decode fallback: %v", err)
-		}
-		if response.ID != "bounded-id" || !response.Result.IsError || len(response.Result.Content) != 1 || response.Result.Structured["code"] != "response_limit" || !strings.Contains(response.Result.Content[0].Text, `"code":"response_limit"`) || response.Result.Structured["request_id"] != "server-id" {
-			t.Fatalf("fallback response is incomplete: %+v", response)
-		}
-		if underlying.Header().Get("X-Existing") != "kept-until-complete" {
-			t.Fatalf("staged headers lost: %#v", underlying.Header())
-		}
-	})
+	large := strings.Repeat("sentinel-sensitive-output", maxMCPProtectedResponseBytes/24)
+	metaResponse, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": "bounded-id", "result": map[string]any{"_meta": map[string]any{"padding": large}}})
+	errorResponse, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": "bounded-id", "error": map[string]any{"code": -32603, "message": "failed", "data": map[string]any{"padding": large}}})
+	for _, tc := range []struct {
+		name     string
+		response []byte
+	}{
+		{name: "generic overflow", response: append([]byte(strings.Repeat("x", maxMCPProtectedResponseBytes)), []byte("overflow")...)},
+		{name: "encoded result metadata overflow", response: metaResponse},
+		{name: "encoded protocol error data overflow", response: errorResponse},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			underlying := httptest.NewRecorder()
+			underlying.Header().Set("X-Existing", "kept-until-complete")
+			writer := newMCPFinalBoundedWriter(underlying, json.RawMessage(`"bounded-id"`), "server-id")
+			writer.Header().Set("Content-Type", "application/json")
+			writer.WriteHeader(500)
+			half := len(tc.response) / 2
+			_, _ = writer.Write(tc.response[:half])
+			writer.Flush()
+			_, _ = writer.Write(tc.response[half:])
+			if underlying.Body.Len() != 0 {
+				t.Fatal("partial response escaped")
+			}
+			if _, leaksUnwrap := any(writer).(interface{ Unwrap() http.ResponseWriter }); leaksUnwrap {
+				t.Fatal("bounded writer exposes its underlying writer through Unwrap")
+			}
+			writer.Commit()
+			if underlying.Code != http.StatusOK || underlying.Body.Len() > maxMCPProtectedResponseBytes || strings.Contains(underlying.Body.String(), "sentinel-sensitive-output") {
+				t.Fatalf("fallback status/size/body = %d/%d/%q", underlying.Code, underlying.Body.Len(), underlying.Body.String())
+			}
+			var response struct {
+				ID     string `json:"id"`
+				Result struct {
+					IsError bool `json:"isError"`
+					Content []struct {
+						Text string `json:"text"`
+					} `json:"content"`
+					Structured map[string]any `json:"structuredContent"`
+				} `json:"result"`
+			}
+			if err := json.Unmarshal(underlying.Body.Bytes(), &response); err != nil {
+				t.Fatalf("decode fallback: %v", err)
+			}
+			if response.ID != "bounded-id" || !response.Result.IsError || len(response.Result.Content) != 1 || response.Result.Structured["code"] != "response_limit" || !strings.Contains(response.Result.Content[0].Text, `"code":"response_limit"`) || response.Result.Structured["request_id"] != "server-id" {
+				t.Fatalf("fallback response is incomplete: %+v", response)
+			}
+			if underlying.Header().Get("X-Existing") != "kept-until-complete" {
+				t.Fatalf("staged headers lost: %#v", underlying.Header())
+			}
+		})
+	}
 }

@@ -95,6 +95,49 @@ func TestPageMCPReadReferencesFragmentsAmbiguousCandidatesAcrossPages(t *testing
 	if second[0].ReferenceID != first[0].ReferenceID || second[0].CandidateOffset != 50 || len(second[0].Candidates) != 1 || !second[0].CandidatesComplete || second[0].Resolution != "ambiguous" || second[1].ReferenceIndex != 1 || second[1].Resolution != "resolved" {
 		t.Fatalf("candidate page lost ambiguity or next reference: %+v", second)
 	}
+
+	pageAtPadding := func(padding int) (map[string]any, []mcpResolvedRef, mcpContentCursor, error) {
+		base := map[string]any{"padding": strings.Repeat("x", padding)}
+		_, refs, next, complete, err := pageMCPReadReferences(context.Background(), snapshot, identity, document, "sha256:"+strings.Repeat("b", 64), []byte("[[Duplicate]]"), 0, nil, mcpContentCursor{}, false, 50, base)
+		encoded, ok := next.(string)
+		if err != nil || !ok || complete || len(refs) != 1 {
+			return nil, nil, mcpContentCursor{}, fmt.Errorf("padding %d: refs=%+v next=%T complete=%t err=%v", padding, refs, next, complete, err)
+		}
+		cursor, err := decodeMCPContentCursor(encoded)
+		if err != nil {
+			return nil, nil, mcpContentCursor{}, err
+		}
+		return base, refs, cursor, nil
+	}
+	// Find the largest padding for which one candidate still fits. The bound
+	// avoids a slow linear sweep while keeping the protected wire cap as the
+	// measured decision point.
+	low, high := 0, maxMCPProtectedResponseBytes
+	for low+1 < high {
+		middle := low + (high-low)/2
+		_, refs, _, err := pageAtPadding(middle)
+		if err == nil && len(refs[0].Candidates) > 0 {
+			low = middle
+		} else {
+			high = middle
+		}
+	}
+	boundaryBase, boundaryFirst, boundaryCursor, err := pageAtPadding(low)
+	if err != nil || len(boundaryFirst[0].Candidates) != 1 || boundaryCursor.ReferenceIndex != 0 || boundaryCursor.CandidateOffset != 1 {
+		t.Fatalf("could not construct a wire boundary where exactly one candidate fits: padding=%d refs=%+v cursor=%+v err=%v", low, boundaryFirst, boundaryCursor, err)
+	}
+	_, boundaryNext, cursorValue, complete, err := pageMCPReadReferences(context.Background(), snapshot, identity, document, "sha256:"+strings.Repeat("b", 64), []byte("[[Duplicate]]"), 0, nil, boundaryCursor, true, 50, boundaryBase)
+	if err != nil || complete || len(boundaryNext) != 1 || len(boundaryNext[0].Candidates) != 1 || boundaryNext[0].CandidateOffset != 1 {
+		t.Fatalf("boundary retry failed to make one-candidate progress: first=%+v next=%+v cursor=%v complete=%v err=%v", boundaryFirst, boundaryNext, cursorValue, complete, err)
+	}
+	encodedNext, ok := cursorValue.(string)
+	if !ok {
+		t.Fatalf("boundary retry lost its next cursor: %T", cursorValue)
+	}
+	advanced, err := decodeMCPContentCursor(encodedNext)
+	if err != nil || advanced.CandidateOffset != 2 {
+		t.Fatalf("minimum-candidate retry cursor=%+v err=%v", advanced, err)
+	}
 }
 
 func TestMCPReferenceScannerBoundsTextAndStopsForCancellation(t *testing.T) {
@@ -115,6 +158,58 @@ func TestMCPReferenceScannerBoundsTextAndStopsForCancellation(t *testing.T) {
 	if elapsed := time.Since(started); elapsed > 2*time.Second {
 		t.Fatalf("unmatched delimiters were not scanned linearly: %s", elapsed)
 	}
+
+	openTags := append(bytes.Repeat([]byte("<"), 128<<10), []byte("\n[visible](Concept)")...)
+	var visible []mcpMarkdownReference
+	started = time.Now()
+	if !scanMCPMarkdownMentions(context.Background(), openTags, 0, func(reference mcpMarkdownReference) bool {
+		visible = append(visible, reference)
+		return true
+	}) {
+		t.Fatal("an unmatched HTML opener made reference scanning incomplete")
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("repeated unmatched HTML openers were not scanned linearly: %s", elapsed)
+	}
+	if len(visible) != 1 || visible[0].Target != "Concept" {
+		t.Fatalf("HTML delimiter scan lost the following Markdown link: %+v", visible)
+	}
+
+	unclosedScript := []byte("<script>[hidden](Hidden)" + strings.Repeat("</script", 16<<10) + " [also hidden](Hidden)")
+	var hidden []mcpMarkdownReference
+	started = time.Now()
+	if !scanMCPMarkdownMentions(context.Background(), unclosedScript, 0, func(reference mcpMarkdownReference) bool {
+		hidden = append(hidden, reference)
+		return true
+	}) || len(hidden) != 0 {
+		t.Fatalf("unclosed script scan should complete while suppressing script text: complete_refs=%+v", hidden)
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("repeated unclosed script delimiters were not scanned linearly: %s", elapsed)
+	}
+
+	var afterUnclosedWiki []mcpMarkdownReference
+	if !scanMCPMarkdownMentions(context.Background(), []byte("[[unfinished\n[visible](Concept)"), 0, func(reference mcpMarkdownReference) bool {
+		afterUnclosedWiki = append(afterUnclosedWiki, reference)
+		return true
+	}) || len(afterUnclosedWiki) != 1 || afterUnclosedWiki[0].Target != "Concept" {
+		t.Fatalf("unclosed wikilink hid a later valid Markdown link: %+v", afterUnclosedWiki)
+	}
+
+	midScan, cancelMidScan := context.WithCancel(context.Background())
+	var seenBeforeCancel int
+	midScanBody := []byte("[first](Concept)\n" + strings.Repeat("x", 2<<20))
+	if scanMCPMarkdownMentions(midScan, midScanBody, 0, func(mcpMarkdownReference) bool {
+		seenBeforeCancel++
+		cancelMidScan()
+		return true
+	}) {
+		t.Fatal("scanner reported complete after cancellation during the emitting pass")
+	}
+	if seenBeforeCancel != 1 {
+		t.Fatalf("mid-scan cancellation observed references=%d, want 1 before cancellation", seenBeforeCancel)
+	}
+
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
 	if scanMCPMarkdownMentions(canceled, bytes.Repeat([]byte("x"), 1<<20), 0, func(mcpMarkdownReference) bool { return true }) {

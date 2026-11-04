@@ -11,6 +11,9 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,11 +23,19 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/rayer/llm-wiki-bff/internal/annotation"
+	"github.com/rayer/llm-wiki-bff/internal/auth"
+	"github.com/rayer/llm-wiki-bff/internal/config"
+	internalfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
+	"github.com/rayer/llm-wiki-bff/internal/gcs"
 	"github.com/rayer/llm-wiki-bff/internal/generation"
+	handlerv1 "github.com/rayer/llm-wiki-bff/internal/handler/v1"
 	"github.com/rayer/llm-wiki-bff/internal/localcloud"
 	"github.com/rayer/llm-wiki-bff/internal/localpipeline"
 	"github.com/rayer/llm-wiki-bff/internal/sourcestatus"
+	"github.com/rayer/llm-wiki-bff/internal/storage"
 	"github.com/rayer/llm-wiki-bff/internal/suggestedqueries"
 	"go.opentelemetry.io/otel"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -2930,7 +2941,8 @@ func TestCloudPublisherSourceSnapshotRoundTripsForMCPRawConsumer(t *testing.T) {
 		{name: "declared SourceFile mismatch", sourceMap: `{"concept":{},"source":{"s1":"source"},"source_meta":{"s1":{"slug":"source","source_file":"raw/other.md"}},"redirects":{}}`, wantError: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			const prefix = "users/mcp-owner/mcp-project/"
+			const scope = "mcp-publisher-raw-scope"
+			prefix := localcloud.Scope(scope).ObjectPrefix() + storage.ProjectPrefix("mcp-owner", "mcp-project") + "/"
 			root := t.TempDir()
 			writeCloudRequiredOutputs(t, root)
 			idMapBytes := []byte(tc.sourceMap)
@@ -2988,8 +3000,187 @@ func TestCloudPublisherSourceSnapshotRoundTripsForMCPRawConsumer(t *testing.T) {
 				t.Fatalf("MCP retained-byte reader got=%q attrs=%+v err=%v", retainedBytes, attrs, err)
 			}
 			t.Logf("publisher_to_mcp_snapshot source_id=%s source_file_optional=true object_generation=%d bytes=%d", row.StableID, row.ObjectGeneration, len(retainedBytes))
+			if tc.name == "optional SourceFile omitted" {
+				assertPublishedCloudGenerationThroughMCPSDK(t, store, prefix, manifest.GenerationID, "mcp-publisher-raw", "mcp-owner", "mcp-project", scope)
+			}
 		})
 	}
+}
+
+type publisherMCPRoot struct {
+	storage.RootStore
+	client *gcs.Client
+}
+
+func (r *publisherMCPRoot) Scope(userID, projectID string) storage.Store {
+	return r.client.WithScope(userID, projectID)
+}
+
+type publisherMCPBearerTransport struct {
+	next      http.RoundTripper
+	token     string
+	projectID string
+}
+
+func (t publisherMCPBearerTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	cloned := request.Clone(request.Context())
+	cloned.Header = request.Header.Clone()
+	cloned.Header.Set("Authorization", "Bearer "+t.token)
+	cloned.Header.Set("X-Project-ID", t.projectID)
+	return t.next.RoundTrip(cloned)
+}
+
+func assertPublishedCloudGenerationThroughMCPSDK(t *testing.T, objects *memoryObjects, prefix, generationID, bucket, userID, projectID, scope string) {
+	t.Helper()
+	if strings.TrimSpace(os.Getenv("FIRESTORE_EMULATOR_HOST")) == "" {
+		t.Skip("same-artifact MCP SDK chain requires the worker-owned Firestore emulator")
+	}
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "/dev/null")
+	seen := map[string]int64{}
+	var requests []string
+	var seenMu sync.Mutex
+	storageServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenMu.Lock()
+		requests = append(requests, fmt.Sprintf("method=%s url=%s", r.Method, r.URL.String()))
+		seenMu.Unlock()
+		escaped := r.URL.EscapedPath()
+		marker := strings.LastIndex(escaped, "/o/")
+		objectPath := ""
+		if marker >= 0 {
+			objectPath = escaped[marker+3:]
+		} else if strings.HasPrefix(escaped, "/"+bucket+"/") {
+			objectPath = strings.TrimPrefix(escaped, "/"+bucket+"/")
+		} else {
+			http.NotFound(w, r)
+			return
+		}
+		name, err := url.PathUnescape(objectPath)
+		if err != nil {
+			http.Error(w, "invalid object path", http.StatusBadRequest)
+			return
+		}
+		data, attrs, err := objects.Read(r.Context(), name, 0, generation.MaxTotalSize)
+		if err != nil {
+			seenMu.Lock()
+			requests = append(requests, fmt.Sprintf("unavailable_object=%q error=%v expected_prefix=%q", name, err, prefix))
+			seenMu.Unlock()
+			http.NotFound(w, r)
+			return
+		}
+		if requested := r.URL.Query().Get("generation"); requested != "" && requested != strconv.FormatInt(attrs.Generation, 10) {
+			http.NotFound(w, r)
+			return
+		}
+		seenMu.Lock()
+		seen[name] = attrs.Generation
+		seenMu.Unlock()
+		if strings.Contains(r.URL.Path, "/storage/v1/") && r.URL.Query().Get("alt") != "media" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"name": name, "bucket": bucket, "generation": strconv.FormatInt(attrs.Generation, 10),
+				"metageneration": "1", "size": strconv.FormatInt(attrs.Size, 10),
+				"updated": "2026-11-05T00:00:00Z", "contentType": "application/octet-stream",
+			})
+			return
+		}
+		w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+		w.Header().Set("X-Goog-Generation", strconv.FormatInt(attrs.Generation, 10))
+		w.Header().Set("Last-Modified", time.Date(2026, 11, 5, 0, 0, 0, 0, time.UTC).Format(http.TimeFormat))
+		_, _ = w.Write(data)
+	}))
+	defer storageServer.Close()
+	t.Setenv("STORAGE_EMULATOR_HOST", storageServer.URL)
+	storageClient, err := gcs.NewClientWithScope(bucket, scope)
+	if err != nil {
+		t.Fatalf("create local MCP GCS consumer: %v", err)
+	}
+	defer storageClient.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	fs, err := internalfirestore.NewClientWithDatabaseAndScope("lwc-mcp-publisher-"+scope, "", "", "", scope)
+	if err != nil {
+		t.Fatalf("create scoped MCP Firestore client: %v", err)
+	}
+	defer fs.Close()
+	if _, err := internalfirestore.Collection(fs.Raw(), "users").Doc(userID).Set(ctx, auth.UserRecord{Email: userID + "@example.test", Status: auth.AccountActive}); err != nil {
+		t.Fatalf("seed MCP SDK account: %v", err)
+	}
+	if _, err := internalfirestore.Collection(fs.Raw(), "projects").Doc(userID+"_"+projectID).Set(ctx, map[string]any{"user_id": userID, "project_id": projectID, "name": "publisher MCP fixture", "status": "ready"}); err != nil {
+		t.Fatalf("seed MCP SDK project: %v", err)
+	}
+	_, token, _, err := auth.NewProjectKeyService(fs.Raw()).CreateWithCapabilities(ctx, userID, projectID, "publisher source snapshot integration", []string{"query", "content:read"})
+	if err != nil || token == "" {
+		t.Fatalf("create MCP content-read key: token_present=%t err=%v", token != "", err)
+	}
+	bucketPolicy := config.MCPProtectionBucket{Capacity: 32, RefillMicrounitsPerSecond: 1_000_000, MaxInflight: 8}
+	queryBucket := config.MCPProtectionBucket{Capacity: 4, RefillMicrounitsPerSecond: 200_000, MaxInflight: 2}
+	policy := &config.MCPProtection{
+		SchemaVersion: 1, PolicyRevision: "publisher-mcp-source-test-v1",
+		Content:            config.MCPProtectionClass{Project: bucketPolicy, Account: bucketPolicy, FleetMaxInflight: 64, LocalMaxInflight: 32, WorkTimeoutMS: 20_000, LeaseMS: 60_000, WorkingBytes: 128 << 20},
+		Query:              config.MCPProtectionClass{Project: queryBucket, Account: config.MCPProtectionBucket{Capacity: 8, RefillMicrounitsPerSecond: 400_000, MaxInflight: 4}, FleetMaxInflight: 16, LocalMaxInflight: 4, WorkTimeoutMS: 120_000, LeaseMS: 150_000},
+		AdmissionTimeoutMS: 2_000, TransactionMaxAttempts: 3, ReleaseTimeoutMS: 2_000, ReleaseMaxAttempts: 3,
+		ControlLocalMaxInflight: 16, ListDefault: 20, ListMax: 50, ChunkMaxBytes: 16_384, ResponseMaxBytes: 256 << 10, ReferencePageMax: 50,
+	}
+	root := &publisherMCPRoot{client: storageClient}
+	handler := handlerv1.New(root, fs, nil, nil, nil, nil)
+	handler.SetMCPConfig(&config.BFFMCP{
+		Instructions: "Read published content from the bound Project.",
+		ToolDescriptions: config.BFFMCPToolDescriptions{
+			QueryProject: "Query this Project.", AddRaw: "Add Markdown when permitted.", ImportURL: "Import a URL when permitted.",
+			ListContent: "List published content.", FindContent: "Find content by exact name.", ReadContent: "Read published text.", ReadSourceRaw: "Read retained source text.",
+		},
+		Protection: policy,
+	})
+	handler.SetMCPEnvironment("local")
+	router := gin.New()
+	router.Any("/mcp", gin.WrapH(handler.MCPHandler()))
+	server := httptest.NewServer(router)
+	defer server.Close()
+	httpClient := &http.Client{Transport: publisherMCPBearerTransport{next: http.DefaultTransport, token: token, projectID: projectID}}
+	client := mcp.NewClient(&mcp.Implementation{Name: "publisher-source-consumer", Version: "local"}, nil)
+	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{Endpoint: server.URL + "/mcp", HTTPClient: httpClient, DisableStandaloneSSE: true}, nil)
+	if err != nil {
+		t.Fatalf("connect SDK to published generation consumer: %v", err)
+	}
+	defer session.Close()
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "read_source_raw", Arguments: map[string]any{"source_id": "s1"}})
+	if err != nil || result == nil || result.IsError {
+		seenMu.Lock()
+		requestCopy := append([]string(nil), requests...)
+		seenMu.Unlock()
+		t.Fatalf("same-publisher artifact MCP read result=%+v err=%v storage_requests=%v", result, err, requestCopy)
+	}
+	payload, ok := result.StructuredContent.(map[string]any)
+	content, _ := payload["content"].(map[string]any)
+	if !ok || payload["generation"] != generationID || payload["representation"] != "retained_source_text" || content["text"] != "producer-retained raw source bytes\n" || content["complete"] != true {
+		t.Fatalf("same-publisher artifact MCP response=%#v", result.StructuredContent)
+	}
+	manifestBytes, _, err := objects.Read(ctx, prefix+generation.ManifestPath, 0, generation.MaxManifestBytes)
+	if err != nil {
+		t.Fatalf("read exact publisher current manifest: %v", err)
+	}
+	manifest, err := generation.Decode(manifestBytes)
+	if err != nil || manifest.GenerationID != generationID {
+		t.Fatalf("decode exact publisher current manifest=%+v err=%v", manifest, err)
+	}
+	inventoryPath, err := generation.SourceSnapshotPath(manifest.SourceSnapshotDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bytesPath, err := generation.SourceBytesPath(generation.Digest([]byte("producer-retained raw source bytes\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	seenMu.Lock()
+	_, sawInventory := seen[prefix+inventoryPath]
+	_, sawBytes := seen[prefix+bytesPath]
+	_, sawMutableRawFallback := seen[prefix+"raw/source.md"]
+	seenMu.Unlock()
+	if !sawInventory || !sawBytes || sawMutableRawFallback {
+		t.Fatalf("SDK consumer did not read same pinned producer objects: inventory=%t bytes=%t mutable_raw_fallback=%t", sawInventory, sawBytes, sawMutableRawFallback)
+	}
+	t.Logf("same_publisher_artifact_to_sdk_raw generation=%s inventory=%s raw_object=%s mutable_raw_fallback=false", generationID, prefix+inventoryPath, prefix+bytesPath)
 }
 
 func TestPublishCloudGenerationRetainsUnchangedSourceAndBindsReceipt(t *testing.T) {

@@ -41,6 +41,13 @@ type mcpContentAdmissionObservation struct {
 	projectTokens int64
 }
 
+type mcpContentStageMemorySample struct {
+	stage      string
+	totalAlloc uint64
+	heapAlloc  uint64
+	rssPeak    int64
+}
+
 func TestMCPSourceSnapshotErrorClassification(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
@@ -51,7 +58,7 @@ func TestMCPSourceSnapshotErrorClassification(t *testing.T) {
 		{name: "historical generation has no snapshot", err: gcs.ErrSourceSnapshotUnavailable, code: "raw_snapshot_unavailable"},
 		{name: "declared inventory missing", err: storage.ErrDeclaredObjectUnavailable, code: "content_unavailable", retryAfter: 1000},
 		{name: "corrupt inventory", err: gcs.ErrSourceSnapshotInvalid, code: "content_unavailable", retryAfter: 1000},
-		{name: "transient storage failure", err: fmt.Errorf("read inventory: %w", context.DeadlineExceeded), code: "metadata_unavailable", retryAfter: 1000},
+		{name: "transient storage failure", err: fmt.Errorf("read inventory: %w", context.DeadlineExceeded), code: "content_unavailable", retryAfter: 1000},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			code, retryAfter := mcpSourceSnapshotError(tc.err)
@@ -226,13 +233,44 @@ func TestMCPContentReadScopesAndAdmissionThroughProjectKeyAndOAuthSDKEndpoints(t
 	var releaseSmallOnce sync.Once
 	releaseSmall := func() { releaseSmallOnce.Do(func() { close(releaseSmallRead) }) }
 	var holdCanceledRead atomic.Bool
+	var failSourceSnapshotRead atomic.Bool
+	var failCanceledBodyRead atomic.Bool
+	var sourceSnapshotFailureInjected atomic.Bool
 	canceledReadStarted := make(chan struct{}, 1)
+	canceledBodyReturned := make(chan struct{}, 1)
 	releaseCanceledRead := make(chan struct{})
 	var releaseCanceledOnce sync.Once
 	releaseCanceled := func() { releaseCanceledOnce.Do(func() { close(releaseCanceledRead) }) }
 	var releaseOnce sync.Once
 	releaseBigRead := func() { releaseOnce.Do(func() { close(releaseRead) }) }
-	contentClient, _, _ := newTaggingGCSClient(t, mcpPublishedContentFixture(t, userID, projectID), func(name string) {
+	fixtureObjects := mcpPublishedContentFixture(t, userID, projectID)
+	archiveManifestPath, err := generation.ArchivedManifestPath("g_mcp_content_fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var captureMetadataStages atomic.Bool
+	var stageSamplesMu sync.Mutex
+	var stageSamples []mcpContentStageMemorySample
+	recordStageSample := func(stage string) {
+		var memory runtime.MemStats
+		runtime.ReadMemStats(&memory)
+		stageSamplesMu.Lock()
+		stageSamples = append(stageSamples, mcpContentStageMemorySample{stage: stage, totalAlloc: memory.TotalAlloc, heapAlloc: memory.HeapAlloc, rssPeak: mcpProcessPeakRSSSampleBytes()})
+		stageSamplesMu.Unlock()
+	}
+	contentClient, _, _ := newTaggingGCSClientWithReadFailure(t, fixtureObjects, func(name string) {
+		if captureMetadataStages.Load() {
+			switch {
+			case strings.HasSuffix(name, "/"+archiveManifestPath):
+				recordStageSample("before_pinned_archive_manifest_read")
+			case strings.HasSuffix(name, "/"+wikiindex.IDMapPath):
+				recordStageSample("after_manifest_before_id_map_read")
+			case strings.HasSuffix(name, "/"+wikiindex.ConceptsJSONLPath):
+				recordStageSample("after_id_map_decode_before_concepts_read")
+			case strings.HasSuffix(name, "/wiki/alpha.md"):
+				recordStageSample("after_concepts_decode_snapshot_build_before_page_read")
+			}
+		}
 		if holdSmallRead.Load() && strings.HasSuffix(name, "/wiki/alpha.md") {
 			select {
 			case smallReadStarted <- struct{}{}:
@@ -240,12 +278,13 @@ func TestMCPContentReadScopesAndAdmissionThroughProjectKeyAndOAuthSDKEndpoints(t
 			}
 			<-releaseSmallRead
 		}
-		if holdCanceledRead.Load() && strings.HasSuffix(name, "/wiki/alpha.md") {
+		if strings.HasSuffix(name, "/wiki/big-one.md") && holdCanceledRead.CompareAndSwap(true, false) {
 			select {
 			case canceledReadStarted <- struct{}{}:
 			default:
 			}
 			<-releaseCanceledRead
+			canceledBodyReturned <- struct{}{}
 		}
 		if holdBigRead.Load() && strings.HasSuffix(name, "/wiki/big-one.md") {
 			select {
@@ -254,6 +293,17 @@ func TestMCPContentReadScopesAndAdmissionThroughProjectKeyAndOAuthSDKEndpoints(t
 			}
 			<-releaseRead
 		}
+	}, func(name string) bool {
+		if strings.Contains(name, generation.SourceSnapshotPrefix) && failSourceSnapshotRead.Load() {
+			sourceSnapshotFailureInjected.Store(true)
+			return true
+		}
+		// The canceled fixture body is 64 MiB; fail after its barrier instead of
+		// making the test server write that body to the canceled client.
+		if strings.HasSuffix(name, "/wiki/big-one.md") && failCanceledBodyRead.CompareAndSwap(true, false) {
+			return true
+		}
+		return false
 	})
 	t.Cleanup(releaseBigRead)
 	t.Cleanup(releaseSmall)
@@ -382,7 +432,25 @@ func TestMCPContentReadScopesAndAdmissionThroughProjectKeyAndOAuthSDKEndpoints(t
 		if protocolError.Body.Len() > maxMCPProtectedResponseBytes || !strings.Contains(protocolError.Body.String(), `"id":"protocol-meta"`) || !strings.Contains(protocolError.Body.String(), `"error"`) {
 			t.Fatalf("%s SDK protocol error wire response status=%d bytes=%d body=%q", endpoint.name, protocolError.Code, protocolError.Body.Len(), protocolError.Body.String())
 		}
-		t.Logf("protected_wire endpoint=%s oversized_id_meta_params=id_null_no_echo protocol_error_bytes=%d", endpoint.name, protocolError.Body.Len())
+		assertWireID := func(label, id string) {
+			t.Helper()
+			body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": map[string]any{"name": "list_content", "arguments": map[string]any{"kind": "concept", "limit": 1}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			response := postWire(body)
+			var decoded struct {
+				ID    any             `json:"id"`
+				Error json.RawMessage `json:"error"`
+			}
+			if response.Code != http.StatusOK || response.Body.Len() > maxMCPProtectedResponseBytes ||
+				json.Unmarshal(response.Body.Bytes(), &decoded) != nil || decoded.ID != id || len(decoded.Error) != 0 {
+				t.Fatalf("%s %s wire response status=%d bytes=%d decoded=%+v body=%q", endpoint.name, label, response.Code, response.Body.Len(), decoded, response.Body.String())
+			}
+		}
+		assertWireID("max decoded ID", strings.Repeat("B", maxMCPProtectedIDDecoded))
+		assertWireID("escaped ID", "wire\"\\\\\nλ"+strings.Repeat("x", 40))
+		t.Logf("protected_wire endpoint=%s max_decoded_id=1024 escaped_id_roundtrip=true oversized_id_meta_params=id_null_no_echo protocol_error_bytes=%d", endpoint.name, protocolError.Body.Len())
 	}
 
 	readSession := connectMCPWithBearer(t, ctx, server.URL+"/mcp", readKeyToken, projectID)
@@ -416,9 +484,47 @@ func TestMCPContentReadScopesAndAdmissionThroughProjectKeyAndOAuthSDKEndpoints(t
 	if citation["id"] != "concept-one" || citation["path"] != "/concepts/concept-one-alpha" {
 		t.Fatalf("query citation does not identify the stable Concept route: %#v", citation)
 	}
+	fixtureSize := func(suffix string) int64 {
+		for name, object := range fixtureObjects {
+			if strings.HasSuffix(name, suffix) {
+				return int64(len(object.data))
+			}
+		}
+		t.Fatalf("published test fixture is missing %s", suffix)
+		return 0
+	}
+	stageObjectSizes := map[string]int64{
+		"manifest": fixtureSize("/" + archiveManifestPath),
+		"id_map":   fixtureSize("/" + wikiindex.IDMapPath),
+		"concepts": fixtureSize("/" + wikiindex.ConceptsJSONLPath),
+		"markdown": fixtureSize("/wiki/alpha.md"),
+	}
+	stageSamples = nil
+	recordStageSample("before_sdk_read_content")
+	captureMetadataStages.Store(true)
 	conceptResult, err := readSession.CallTool(ctx, &mcp.CallToolParams{Name: "read_content", Arguments: map[string]any{"kind": "concept", "id": citation["id"], "generation": queryPayload["content_generation"]}})
+	captureMetadataStages.Store(false)
+	recordStageSample("after_sdk_read_content_response")
 	if err != nil || conceptResult == nil || conceptResult.IsError {
 		t.Fatalf("follow query citation into pinned Concept: result=%+v err=%v", conceptResult, err)
+	}
+	stageSamplesMu.Lock()
+	measuredStages := append([]mcpContentStageMemorySample(nil), stageSamples...)
+	stageSamplesMu.Unlock()
+	if len(measuredStages) != 6 {
+		t.Fatalf("SDK content stage profiler saw %d of six boundaries: %+v", len(measuredStages), measuredStages)
+	}
+	stageReservations := []int64{
+		int64(generation.MaxManifestBytes) + 1<<20,
+		stageObjectSizes["id_map"]*4 + 128<<10,
+		stageObjectSizes["concepts"]*3 + 128<<10,
+		stageObjectSizes["markdown"] + 1<<20,
+	}
+	previous := measuredStages[0]
+	for i, sample := range measuredStages[1:] {
+		allocated := sample.totalAlloc - previous.totalAlloc
+		t.Logf("mcp_content_working_set_stage stage=%s allocated_delta_bytes=%d heap_alloc_bytes=%d process_rss_peak_bytes=%d next_reservation_bytes=%d id_map_bytes=%d concepts_bytes=%d markdown_bytes=%d", sample.stage, allocated, sample.heapAlloc, sample.rssPeak, stageReservations[min(i, len(stageReservations)-1)], stageObjectSizes["id_map"], stageObjectSizes["concepts"], stageObjectSizes["markdown"])
+		previous = sample
 	}
 	conceptPayload, _ := conceptResult.StructuredContent.(map[string]any)
 	conceptSynthesis, _ := conceptPayload["synthesis_sources"].([]any)
@@ -493,9 +599,32 @@ func TestMCPContentReadScopesAndAdmissionThroughProjectKeyAndOAuthSDKEndpoints(t
 	for i := 0; i < 6; i++ {
 		select {
 		case <-smallReadStarted:
-		case <-ctx.Done():
+		case <-time.After(10 * time.Second):
 			releaseSmall()
-			t.Fatalf("only %d of six small reads reached the storage barrier", i)
+			holdSmallRead.Store(false)
+			var outcomes []string
+			for j := 0; j < 6; j++ {
+				select {
+				case got := <-smallResults:
+					var payload map[string]any
+					if got.result != nil {
+						payload, _ = got.result.StructuredContent.(map[string]any)
+					}
+					outcomes = append(outcomes, fmt.Sprintf("is_error=%t code=%v retry_after=%v err=%v", got.result != nil && got.result.IsError, payload["code"], payload["retry_after_ms"], got.err))
+				case <-time.After(5 * time.Second):
+					j = 6
+				}
+			}
+			var contentRecords []string
+			if docs, err := internalfirestore.Collection(fs.Raw(), "mcp_admission_v1").Documents(context.Background()).GetAll(); err == nil {
+				for _, doc := range docs {
+					data := doc.Data()
+					if data["class"] == "content" {
+						contentRecords = append(contentRecords, fmt.Sprintf("dimension=%v tokens=%v limits=%v leases=%v", data["dimension"], data["tokens_microunits"], data["limits"], data["leases"]))
+					}
+				}
+			}
+			t.Fatalf("only %d of six small reads reached the storage barrier; outcomes=%v probe=%+v records=%v", i, outcomes, probe.observations(), contentRecords)
 		}
 	}
 	releaseSmall()
@@ -512,36 +641,73 @@ func TestMCPContentReadScopesAndAdmissionThroughProjectKeyAndOAuthSDKEndpoints(t
 	}
 	t.Logf("normal_small_read_burst admitted_and_settled=6/6 barrier=wiki/alpha.md")
 	cancelCtx, cancelRead := context.WithCancel(ctx)
-	canceledRead := make(chan error, 1)
+	type canceledOutcome struct {
+		result *mcp.CallToolResult
+		err    error
+	}
+	canceledRead := make(chan canceledOutcome, 1)
 	holdCanceledRead.Store(true)
 	go func() {
-		_, err := readSession.CallTool(cancelCtx, &mcp.CallToolParams{Name: "read_content", Arguments: map[string]any{"kind": "concept", "id": "concept-one"}})
-		canceledRead <- err
+		result, err := callMCPToolWithBoundedAdmissionRetry(t, cancelCtx, readSession, &mcp.CallToolParams{Name: "read_content", Arguments: map[string]any{"kind": "concept", "id": "big-one"}})
+		canceledRead <- canceledOutcome{result: result, err: err}
 	}()
 	select {
 	case <-canceledReadStarted:
-	case <-ctx.Done():
+	case outcome := <-canceledRead:
 		releaseCanceled()
-		t.Fatal("cancellable MCP read did not reach its held storage body")
+		var payload any
+		if outcome.result != nil {
+			payload = outcome.result.StructuredContent
+		}
+		t.Fatalf("cancellable SDK read settled before reaching its held storage body: result=%+v err=%v", payload, outcome.err)
+	case <-time.After(10 * time.Second):
+		releaseCanceled()
+		t.Fatal("cancellable MCP read did not reach its held storage body within 10 seconds")
 	}
 	cancelRead()
-	releaseCanceled()
-	var cancelErr error
+	failCanceledBodyRead.Store(true)
+	var cancelOutcome canceledOutcome
 	select {
-	case cancelErr = <-canceledRead:
+	case cancelOutcome = <-canceledRead:
 	case <-time.After(5 * time.Second):
-		t.Fatal("canceled MCP read did not settle after releasing the local body barrier")
+		t.Fatal("canceled MCP SDK call did not settle while the product producer remained blocked")
 	}
-	if !errors.Is(cancelErr, context.Canceled) {
-		t.Fatalf("canceled MCP SDK call error=%v, want context canceled", cancelErr)
+	if !errors.Is(cancelOutcome.err, context.Canceled) {
+		t.Fatalf("canceled MCP SDK call error=%v, want context canceled", cancelOutcome.err)
 	}
-	holdCanceledRead.Store(false)
+	competingRead, competingErr := callMCPToolWithBoundedAdmissionRetry(t, ctx, readSession, &mcp.CallToolParams{Name: "read_content", Arguments: map[string]any{"kind": "concept", "id": "big-one"}})
+	if competingErr != nil || competingRead == nil || !competingRead.IsError {
+		t.Fatalf("competing SDK read while canceled producer remained blocked: result=%+v err=%v", competingRead, competingErr)
+	}
+	competingPayload, _ := competingRead.StructuredContent.(map[string]any)
+	if competingPayload["code"] != "capacity_limited" || competingPayload["retry_after_ms"] != float64(250) {
+		t.Fatalf("canceled producer released capacity before settling: %#v", competingRead.StructuredContent)
+	}
+	releaseCanceled()
+	select {
+	case <-canceledBodyReturned:
+	case <-ctx.Done():
+		t.Fatal("canceled storage producer did not resume after releasing the barrier")
+	}
 	cancelRead()
-	recoveredRead, recoveredErr := readSession.CallTool(ctx, &mcp.CallToolParams{Name: "read_content", Arguments: map[string]any{"kind": "concept", "id": "concept-one"}})
+	recoveredRead, recoveredErr := callMCPToolUntilCapacityRecovers(t, ctx, readSession, &mcp.CallToolParams{Name: "read_content", Arguments: map[string]any{"kind": "concept", "id": "big-one"}})
 	if recoveredErr != nil || recoveredRead == nil || recoveredRead.IsError {
-		t.Fatalf("capacity did not recover after canceled read settled: result=%+v err=%v", recoveredRead, recoveredErr)
+		t.Fatalf("capacity did not recover after canceled producer settled: result=%+v err=%v", recoveredRead, recoveredErr)
 	}
-	t.Logf("canceled_read canceled_while_body_held=true settled=true subsequent_read=success")
+	t.Logf("canceled_read client_canceled_while_producer_blocked=true competing_read=capacity_limited producer_released=true recovered_read=success")
+	failSourceSnapshotRead.Store(true)
+	transientRaw, transientErr := readSession.CallTool(ctx, &mcp.CallToolParams{Name: "read_source_raw", Arguments: map[string]any{"source_id": "source-one"}})
+	failSourceSnapshotRead.Store(false)
+	if transientErr != nil || transientRaw == nil || !transientRaw.IsError {
+		t.Fatalf("transient source inventory storage failure response=%+v err=%v", transientRaw, transientErr)
+	}
+	transientPayload, _ := transientRaw.StructuredContent.(map[string]any)
+	if !sourceSnapshotFailureInjected.Load() {
+		t.Fatal("transient source snapshot failure control did not intercept a retained snapshot body read")
+	}
+	if transientPayload["code"] != "content_unavailable" || transientPayload["retryable"] != true || transientPayload["retry_after_ms"] != float64(1000) {
+		t.Fatalf("transient source inventory failure was not retryable content_unavailable: %#v", transientRaw.StructuredContent)
+	}
 	rawResult, err := readSession.CallTool(ctx, &mcp.CallToolParams{Name: "read_source_raw", Arguments: map[string]any{"source_id": "source-one"}})
 	if err != nil || rawResult == nil || rawResult.IsError {
 		t.Fatalf("read key read_source_raw response=%+v err=%v", rawResult, err)
@@ -902,4 +1068,71 @@ func mcpProcessPeakRSSBytes(t *testing.T) int64 {
 		peak *= 1024
 	}
 	return peak
+}
+
+func mcpProcessPeakRSSSampleBytes() int64 {
+	var usage syscall.Rusage
+	if syscall.Getrusage(syscall.RUSAGE_SELF, &usage) != nil {
+		return -1
+	}
+	peak := int64(usage.Maxrss)
+	if runtime.GOOS != "darwin" {
+		peak *= 1024
+	}
+	return peak
+}
+
+func callMCPToolWithBoundedAdmissionRetry(t *testing.T, ctx context.Context, session *mcp.ClientSession, params *mcp.CallToolParams) (*mcp.CallToolResult, error) {
+	t.Helper()
+	for attempt := 1; attempt <= 3; attempt++ {
+		result, err := session.CallTool(ctx, params)
+		if err != nil || result == nil || !result.IsError {
+			return result, err
+		}
+		payload, _ := result.StructuredContent.(map[string]any)
+		if payload["code"] != "admission_unavailable" || attempt == 3 {
+			return result, err
+		}
+		retryAfter, _ := payload["retry_after_ms"].(float64)
+		if retryAfter < 1 || retryAfter > 1000 {
+			retryAfter = 1000
+		}
+		t.Logf("bounded_sdk_admission_retry tool=%s attempt=%d code=admission_unavailable retry_after_ms=%.0f", params.Name, attempt, retryAfter)
+		timer := time.NewTimer(time.Duration(retryAfter) * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return nil, errors.New("bounded MCP admission retry loop exhausted")
+}
+
+func callMCPToolUntilCapacityRecovers(t *testing.T, ctx context.Context, session *mcp.ClientSession, params *mcp.CallToolParams) (*mcp.CallToolResult, error) {
+	t.Helper()
+	for attempt := 1; attempt <= 12; attempt++ {
+		result, err := session.CallTool(ctx, params)
+		if err != nil || result == nil || !result.IsError {
+			return result, err
+		}
+		payload, _ := result.StructuredContent.(map[string]any)
+		code, _ := payload["code"].(string)
+		if code != "capacity_limited" && code != "concurrency_limited" && code != "admission_unavailable" || attempt == 12 {
+			return result, err
+		}
+		retryAfter, _ := payload["retry_after_ms"].(float64)
+		if retryAfter < 1 || retryAfter > 1000 {
+			retryAfter = 250
+		}
+		t.Logf("bounded_sdk_capacity_recovery_retry tool=%s attempt=%d code=%s retry_after_ms=%.0f", params.Name, attempt, code, retryAfter)
+		timer := time.NewTimer(time.Duration(retryAfter) * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return nil, errors.New("bounded MCP capacity recovery retry loop exhausted")
 }
