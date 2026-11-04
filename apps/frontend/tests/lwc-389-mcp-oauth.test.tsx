@@ -153,14 +153,16 @@ afterEach(() => {
 });
 
 describe('LWC-389 MCP OAuth frontend', () => {
-  it('shows the actual client and Project only after continuation requires explicit consent', async () => {
+  it('shows the actual client and Project before any decision, then continues only after explicit confirmation', async () => {
     render(<MCPOAuthConsentClient transactionId={transactionId} />);
     expect(await screen.findByText('Hermes Agent')).toBeDefined();
     expect(screen.getByText('owner@example.com')).toBeDefined();
     expect(screen.getByText('Research Project')).toBeDefined();
     expect(screen.getByText('mcp:query')).toBeDefined();
     expect(mocks.readConsent).toHaveBeenCalledWith(transactionId, 'web-session-token');
-    expect(mocks.decideConsent).toHaveBeenCalledWith(transactionId, 'continue', 'web-session-token');
+    expect(mocks.decideConsent).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'MCPOAuth.continueWithAccount' }));
+    await waitFor(() => expect(mocks.decideConsent).toHaveBeenCalledWith(transactionId, 'continue', 'web-session-token'));
     expect(screen.getByRole('button', { name: 'MCPOAuth.allow' })).toBeDefined();
     expect(screen.getByRole('button', { name: 'MCPOAuth.deny' })).toBeDefined();
   });
@@ -208,12 +210,13 @@ describe('LWC-389 MCP OAuth frontend', () => {
     mocks.decideConsent.mockImplementationOnce(() => continuation.promise);
 
     render(<MCPOAuthConsentClient transactionId={transactionId} />);
+    expect(await screen.findByText('Hermes Agent')).toBeDefined();
+    fireEvent.click(screen.getByRole('button', { name: 'MCPOAuth.continueWithAccount' }));
     await waitFor(() => expect(mocks.decideConsent).toHaveBeenCalledWith(transactionId, 'continue', 'web-session-token'));
-    expect(screen.getByRole('status').textContent).toBe('MCPOAuth.loading');
-    expect(screen.queryByText('MCPOAuth.consentTitle')).toBeNull();
-    expect(screen.queryByText('Hermes Agent')).toBeNull();
+    expect(screen.getByText('MCPOAuth.consentTitle')).toBeDefined();
+    expect(screen.getByText('Hermes Agent')).toBeDefined();
     expect(screen.queryByRole('button', { name: 'MCPOAuth.allow' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'MCPOAuth.deny' })).toBeNull();
+    expect(screen.getAllByRole('button', { name: 'MCPOAuth.processing' }).every((button) => button.hasAttribute('disabled'))).toBe(true);
 
     await act(async () => {
       continuation.resolve({ redirect_url: '', requires_consent: true });
@@ -223,7 +226,7 @@ describe('LWC-389 MCP OAuth frontend', () => {
     expect(screen.getByRole('button', { name: 'MCPOAuth.allow' })).toBeDefined();
   });
 
-  it('redirects through the validated callback when the backend confirms a reusable grant', async () => {
+  it('requires an explicit confirmation before a reusable grant can finish the transaction', async () => {
     const assign = mockLocationAssign();
     mocks.readConsent.mockResolvedValueOnce({ ...consent, can_continue: true });
     mocks.decideConsent.mockImplementationOnce(async (_transactionId: string, decision: string) => (
@@ -233,9 +236,24 @@ describe('LWC-389 MCP OAuth frontend', () => {
     ));
 
     render(<MCPOAuthConsentClient transactionId={transactionId} />);
+    expect(await screen.findByText('Hermes Agent')).toBeDefined();
+    expect(assign).not.toHaveBeenCalled();
+    expect(mocks.decideConsent).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'MCPOAuth.continueWithAccount' }));
     await waitFor(() => expect(assign).toHaveBeenCalledWith('http://127.0.0.1:4321/oauth/callback?code=continuation&state=kept'));
     expect(screen.queryByRole('button', { name: 'MCPOAuth.allow' })).toBeNull();
     expect(mocks.decideConsent).toHaveBeenCalledWith(transactionId, 'continue', 'web-session-token');
+  });
+
+  it('rejects a continuation callback unless the server explicitly confirms no consent screen is required', async () => {
+    const assign = mockLocationAssign();
+    mocks.decideConsent.mockResolvedValueOnce({ redirect_url: 'http://127.0.0.1:4321/oauth/callback?code=ambiguous&state=opaque' });
+    render(<MCPOAuthConsentClient transactionId={transactionId} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'MCPOAuth.continueWithAccount' }));
+    expect(await screen.findByRole('alert')).toBeDefined();
+    expect(screen.getByRole('alert').textContent).toBe('MCPOAuth.invalidReturn');
+    expect(assign).not.toHaveBeenCalled();
   });
 
   it('keeps explicit consent when an eligible grant is revoked before continuation commits', async () => {
@@ -244,6 +262,8 @@ describe('LWC-389 MCP OAuth frontend', () => {
     mocks.decideConsent.mockResolvedValueOnce({ redirect_url: '', requires_consent: true });
 
     render(<MCPOAuthConsentClient transactionId={transactionId} />);
+    expect(await screen.findByText('Hermes Agent')).toBeDefined();
+    fireEvent.click(screen.getByRole('button', { name: 'MCPOAuth.continueWithAccount' }));
     expect(await screen.findByRole('button', { name: 'MCPOAuth.allow' })).toBeDefined();
     expect(screen.getByRole('button', { name: 'MCPOAuth.deny' })).toBeDefined();
     expect(assign).not.toHaveBeenCalled();
@@ -262,13 +282,16 @@ describe('LWC-389 MCP OAuth frontend', () => {
     });
     const assign = mockLocationAssign();
     const view = render(<MCPOAuthConsentClient transactionId={transactionId} />);
+    expect(await screen.findByRole('button', { name: 'MCPOAuth.continueWithAccount' })).toBeDefined();
+    fireEvent.click(screen.getByRole('button', { name: 'MCPOAuth.continueWithAccount' }));
     await waitFor(() => expect(mocks.decideConsent).toHaveBeenCalledTimes(1));
 
     mocks.user = { id: 'user-two', email: 'other@example.com' };
     mocks.sessionEpoch = 2;
     mocks.accessToken = 'replacement-session-token';
     view.rerender(<MCPOAuthConsentClient transactionId={transactionId} />);
-    await waitFor(() => expect(mocks.decideConsent).toHaveBeenCalledTimes(2));
+    await screen.findByRole('button', { name: 'MCPOAuth.continueWithAccount' });
+    expect(mocks.decideConsent).toHaveBeenCalledTimes(1);
     await act(async () => {
       pending.resolve({ redirect_url: 'http://127.0.0.1:4321/oauth/callback?code=stale&state=stale', requires_consent: false });
       await pending.promise;
@@ -283,6 +306,7 @@ describe('LWC-389 MCP OAuth frontend', () => {
     mocks.readConsent.mockResolvedValueOnce({ ...consent, can_continue: true });
     mocks.decideConsent.mockImplementationOnce(() => pending.promise);
     const view = render(<MCPOAuthConsentClient transactionId={transactionId} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'MCPOAuth.continueWithAccount' }));
     await waitFor(() => expect(mocks.decideConsent).toHaveBeenCalledTimes(1));
 
     mocks.accessToken = 'rotated-web-session-token';
@@ -373,7 +397,7 @@ describe('LWC-389 MCP OAuth frontend', () => {
     expect(await screen.findByText('mcp:query mcp:raw:write')).toBeDefined();
     expect(screen.getByText('Add permitted raw sources.')).toBeDefined();
     expect(screen.queryByText('MCPOAuth.queryAndRawWrite')).toBeNull();
-    expect(mocks.decideConsent).toHaveBeenCalledWith(transactionId, 'continue', 'web-session-token');
+    expect(mocks.decideConsent).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -404,7 +428,7 @@ describe('LWC-389 MCP OAuth frontend', () => {
     expect(screen.getAllByText('brief:manage').length).toBe(2);
     expect(screen.getByText('Read and manage Daily Brief reports and annotations in your private account space.')).toBeDefined();
     expect(screen.queryByText('MCPOAuth.project')).toBeNull();
-    expect(screen.getByRole('button', { name: 'MCPOAuth.allow' })).toBeDefined();
+    expect(screen.getByRole('button', { name: 'MCPOAuth.continueWithAccount' })).toBeDefined();
     expect(screen.getByRole('button', { name: 'MCPOAuth.deny' })).toBeDefined();
   });
 
@@ -442,12 +466,35 @@ describe('LWC-389 MCP OAuth frontend', () => {
     await waitFor(() => expect(assign).toHaveBeenCalledWith('http://127.0.0.1:4321/oauth/callback?code=opaque&state=opaque'));
   });
 
+  it('keeps a completed transaction return separate from pending authorization decisions', async () => {
+    const assign = mockLocationAssign();
+    mocks.readConsent.mockResolvedValueOnce({
+      ...consent,
+      status: 'completed',
+      requires_consent: false,
+      redirect_url: 'http://127.0.0.1:4321/oauth/callback?code=completed&state=kept',
+    });
+
+    render(<MCPOAuthConsentClient transactionId={transactionId} />);
+    await waitFor(() => expect(assign).toHaveBeenCalledWith('http://127.0.0.1:4321/oauth/callback?code=completed&state=kept'));
+    expect(mocks.decideConsent).not.toHaveBeenCalled();
+  });
+
+  it('rejects a malformed transaction before any consent read or decision', async () => {
+    render(<MCPOAuthConsentClient transactionId="bad-transaction" />);
+    expect((await screen.findByRole('alert')).textContent).toBe('MCPOAuth.invalidTransaction');
+    expect(mocks.readConsent).not.toHaveBeenCalled();
+    expect(mocks.decideConsent).not.toHaveBeenCalled();
+  });
+
   it('makes a stale decision terminal, localizes the error, and offers a restart path', async () => {
     mocks.decideConsent.mockImplementation((_transactionId: string, decision: string) => decision === 'continue'
       ? Promise.resolve({ redirect_url: '', requires_consent: true })
       : Promise.reject(new MCPOAuthApiError('invalid_request', 410)));
     render(<MCPOAuthConsentClient transactionId={transactionId} />);
     await screen.findByText('Hermes Agent');
+    fireEvent.click(screen.getByRole('button', { name: 'MCPOAuth.continueWithAccount' }));
+    await screen.findByRole('button', { name: 'MCPOAuth.allow' });
     fireEvent.click(screen.getByRole('button', { name: 'MCPOAuth.allow' }));
     expect(await screen.findByRole('alert')).toBeDefined();
     expect(screen.getByRole('alert').textContent).toBe('MCPOAuth.expired');
@@ -463,6 +510,8 @@ describe('LWC-389 MCP OAuth frontend', () => {
     const assign = mockLocationAssign();
     const { rerender } = render(<MCPOAuthConsentClient transactionId={transactionId} />);
     await screen.findByText('Hermes Agent');
+    fireEvent.click(screen.getByRole('button', { name: 'MCPOAuth.continueWithAccount' }));
+    await screen.findByRole('button', { name: 'MCPOAuth.allow' });
     fireEvent.click(screen.getByRole('button', { name: 'MCPOAuth.allow' }));
     await waitFor(() => expect(mocks.decideConsent).toHaveBeenCalledWith(transactionId, 'allow', 'web-session-token'));
 
@@ -483,18 +532,20 @@ describe('LWC-389 MCP OAuth frontend', () => {
       : pending.promise);
     const { rerender } = render(<MCPOAuthConsentClient transactionId={transactionId} />);
     await screen.findByText('Hermes Agent');
+    fireEvent.click(screen.getByRole('button', { name: 'MCPOAuth.continueWithAccount' }));
+    await screen.findByRole('button', { name: 'MCPOAuth.allow' });
     fireEvent.click(screen.getByRole('button', { name: 'MCPOAuth.allow' }));
     await waitFor(() => expect(mocks.decideConsent).toHaveBeenCalledWith(transactionId, 'allow', 'web-session-token'));
 
     rerender(<MCPOAuthConsentClient transactionId={otherTransactionId} />);
-    await screen.findByRole('button', { name: 'MCPOAuth.allow' });
+    await screen.findByRole('button', { name: 'MCPOAuth.continueWithAccount' });
     await act(async () => {
       pending.reject(new MCPOAuthApiError('invalid_request', 410));
       await pending.promise.catch(() => undefined);
     });
 
     expect(screen.queryByRole('alert')).toBeNull();
-    expect(screen.getByRole('button', { name: 'MCPOAuth.allow' })).toBeDefined();
+    expect(screen.getByRole('button', { name: 'MCPOAuth.continueWithAccount' })).toBeDefined();
   });
 
   it('rejects A-to-B-to-A stale decision completion by operation generation', async () => {
@@ -505,13 +556,15 @@ describe('LWC-389 MCP OAuth frontend', () => {
     const assign = mockLocationAssign();
     const { rerender } = render(<MCPOAuthConsentClient transactionId={transactionId} />);
     await screen.findByText('Hermes Agent');
+    fireEvent.click(screen.getByRole('button', { name: 'MCPOAuth.continueWithAccount' }));
+    await screen.findByRole('button', { name: 'MCPOAuth.allow' });
     fireEvent.click(screen.getByRole('button', { name: 'MCPOAuth.allow' }));
     await waitFor(() => expect(mocks.decideConsent).toHaveBeenCalledWith(transactionId, 'allow', 'web-session-token'));
 
     rerender(<MCPOAuthConsentClient transactionId={otherTransactionId} />);
     rerender(<MCPOAuthConsentClient transactionId={transactionId} />);
     await waitFor(() => expect(mocks.readConsent).toHaveBeenCalledTimes(3));
-    await screen.findByRole('button', { name: 'MCPOAuth.allow' });
+    await screen.findByRole('button', { name: 'MCPOAuth.continueWithAccount' });
     await act(async () => {
       pending.resolve({ redirect_url: 'http://127.0.0.1:4321/oauth/callback?code=opaque&state=opaque' });
       await pending.promise;
@@ -528,6 +581,8 @@ describe('LWC-389 MCP OAuth frontend', () => {
     const assign = mockLocationAssign();
     const { unmount } = render(<MCPOAuthConsentClient transactionId={transactionId} />);
     await screen.findByText('Hermes Agent');
+    fireEvent.click(screen.getByRole('button', { name: 'MCPOAuth.continueWithAccount' }));
+    await screen.findByRole('button', { name: 'MCPOAuth.allow' });
     fireEvent.click(screen.getByRole('button', { name: 'MCPOAuth.allow' }));
     await waitFor(() => expect(mocks.decideConsent).toHaveBeenCalledWith(transactionId, 'allow', 'web-session-token'));
     unmount();

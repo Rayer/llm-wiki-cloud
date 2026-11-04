@@ -25,6 +25,7 @@ export function MCPOAuthConsentClient({ transactionId }: { transactionId: string
   const translatorRef = useRef(t);
   const [details, setDetails] = useState<MCPOAuthConsent | null>(null);
   const [detailsContextKey, setDetailsContextKey] = useState('');
+  const [requiresConsentContextKey, setRequiresConsentContextKey] = useState('');
   const [error, setError] = useState('');
   const [errorContextKey, setErrorContextKey] = useState('');
   const [busyContextKey, setBusyContextKey] = useState('');
@@ -41,6 +42,7 @@ export function MCPOAuthConsentClient({ transactionId }: { transactionId: string
   const busy = busyContextKey === contextKey;
   const terminal = terminalContextKey === contextKey;
   const selectionRequired = visibleDetails?.prompt === 'select_account' && visibleDetails.account_selected !== true;
+  const explicitConsentRequired = requiresConsentContextKey === contextKey;
   const selectionLoginOpen = selectionLoginContextKey === contextKey;
   const canReturnToDailyBrief = Boolean(visibleError && (
     hasGoogleSelectAccountReturnTo(transactionId)
@@ -70,6 +72,7 @@ export function MCPOAuthConsentClient({ transactionId }: { transactionId: string
     if (requestIdRef.current > 0) {
       setDetails(null);
       setDetailsContextKey('');
+      setRequiresConsentContextKey('');
       setError('');
       setErrorContextKey('');
       setBusyContextKey('');
@@ -106,38 +109,19 @@ export function MCPOAuthConsentClient({ transactionId }: { transactionId: string
       if (result.prompt === 'select_account' && result.account_selected !== true) {
         if (isDailyBriefMcpResource(result.resource)) setDailyBriefRecoveryTransactionId(transactionId);
         clearGoogleLoginReturnTo();
-        setDetails(result);
-        setDetailsContextKey(identityKey);
-        setError('');
-        setErrorContextKey('');
-        setBusyContextKey('');
-        return;
       }
-      const currentAuth = authRef.current;
-      if (currentAuth.userId !== auth.userId || !currentAuth.accessToken || currentAuth.isDemoSession) {
-        throw new Error(translatorRef.current('MCPOAuth.signInRequired'));
-      }
-      const continuation = await decideMCPOAuthConsent(transactionId, 'continue', currentAuth.accessToken);
-      if (!isCurrent()) return;
-      if (continuation.requires_consent === true) {
-        setDetails(result);
-        setDetailsContextKey(identityKey);
-        setError('');
-        setErrorContextKey('');
-        setBusyContextKey('');
-        return;
-      }
-      if (continuation.requires_consent !== false || typeof continuation.redirect_url !== 'string'
-        || !isSafeMCPOAuthReturnURL(continuation.redirect_url)) {
-        throw new Error(translatorRef.current('MCPOAuth.invalidReturn'));
-      }
-      setTerminalContextKey(identityKey);
-      window.location.assign(continuation.redirect_url);
+      setDetails(result);
+      setDetailsContextKey(identityKey);
+      setRequiresConsentContextKey('');
+      setError('');
+      setErrorContextKey('');
+      setBusyContextKey('');
     }).catch((loadError: unknown) => {
       if (!isCurrent()) return;
       const status = loadError instanceof MCPOAuthApiError ? loadError.status : 0;
       setDetails(null);
       setDetailsContextKey('');
+      setRequiresConsentContextKey('');
       setBusyContextKey('');
       setError(status === 410
         ? translatorRef.current('MCPOAuth.expired')
@@ -153,7 +137,7 @@ export function MCPOAuthConsentClient({ transactionId }: { transactionId: string
     return () => { active = false; };
   }, [contextKey, transactionId]);
 
-  const decide = async (decision: 'allow' | 'deny' | 'select') => {
+  const decide = async (decision: 'allow' | 'deny' | 'select' | 'continue') => {
     const auth = authRef.current;
     if (!auth.accessToken || auth.isDemoSession || !visibleDetails || busy || loading || terminal
       || !mountedRef.current || contextRef.current.key !== contextKey) return;
@@ -177,6 +161,7 @@ export function MCPOAuthConsentClient({ transactionId }: { transactionId: string
         if (continuation.requires_consent === true) {
           setDetails({ ...visibleDetails, account_selected: true });
           setDetailsContextKey(contextKey);
+          setRequiresConsentContextKey(contextKey);
           setError('');
           setErrorContextKey('');
           setBusyContextKey('');
@@ -189,6 +174,16 @@ export function MCPOAuthConsentClient({ transactionId }: { transactionId: string
         setTerminalContextKey(contextKey);
         window.location.assign(continuation.redirect_url);
         return;
+      }
+      if (decision === 'continue' && result.requires_consent === true) {
+        setRequiresConsentContextKey(contextKey);
+        setError('');
+        setErrorContextKey('');
+        setBusyContextKey('');
+        return;
+      }
+      if (decision === 'continue' && result.requires_consent !== false) {
+        throw new Error(translatorRef.current('MCPOAuth.invalidReturn'));
       }
       setTerminalContextKey(contextKey);
       if (typeof result.redirect_url !== 'string' || !isSafeMCPOAuthReturnURL(result.redirect_url)) {
@@ -250,10 +245,15 @@ export function MCPOAuthConsentClient({ transactionId }: { transactionId: string
                 <button type="button" disabled={busy || loading || terminal} onClick={() => setSelectionLoginContextKey(contextKey)} className="min-h-11 rounded border border-white/10 px-4 py-2.5 text-sm font-medium text-zinc-200 transition hover:bg-white/10 disabled:opacity-50">{t('MCPOAuth.useAnotherAccount')}</button>
                 <button type="button" disabled={busy || loading || terminal} onClick={() => void decide('select')} className="min-h-11 rounded bg-emerald-300 px-4 py-2.5 text-sm font-semibold text-black transition hover:bg-emerald-200 disabled:opacity-50">{busy ? t('MCPOAuth.processing') : t('MCPOAuth.continueWithAccount')}</button>
               </div>
-            ) : (
+            ) : explicitConsentRequired ? (
               <div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
                 <button type="button" disabled={busy || loading || terminal} onClick={() => void decide('deny')} className="min-h-11 rounded border border-white/10 px-4 py-2.5 text-sm font-medium text-zinc-300 transition hover:bg-white/10 disabled:opacity-50">{busy ? t('MCPOAuth.processing') : t('MCPOAuth.deny')}</button>
                 <button type="button" disabled={busy || loading || terminal} onClick={() => void decide('allow')} className="min-h-11 rounded bg-emerald-300 px-4 py-2.5 text-sm font-semibold text-black transition hover:bg-emerald-200 disabled:opacity-50">{busy ? t('MCPOAuth.processing') : t('MCPOAuth.allow')}</button>
+              </div>
+            ) : (
+              <div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
+                <button type="button" disabled={busy || loading || terminal} onClick={() => void decide('deny')} className="min-h-11 rounded border border-white/10 px-4 py-2.5 text-sm font-medium text-zinc-300 transition hover:bg-white/10 disabled:opacity-50">{busy ? t('MCPOAuth.processing') : t('MCPOAuth.deny')}</button>
+                <button type="button" disabled={busy || loading || terminal} onClick={() => void decide('continue')} className="min-h-11 rounded bg-emerald-300 px-4 py-2.5 text-sm font-semibold text-black transition hover:bg-emerald-200 disabled:opacity-50">{busy ? t('MCPOAuth.processing') : t('MCPOAuth.continueWithAccount')}</button>
               </div>
             )
           )}
