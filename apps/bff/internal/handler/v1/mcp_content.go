@@ -723,22 +723,37 @@ func mcpMetadataWorkingSetReservation(path string, size int64) int64 {
 	}
 	switch path {
 	case wikiindex.IDMapPath:
-		// Seven IDMap collections can each hold at most MaxFiles entries. Each
-		// JSON entry consumes at least five encoded bytes, while redirect string
-		// entries need at least three bytes (quotes and a separator). Include
-		// decoded strings, the duplicate-detection and result maps, the MCP
-		// snapshot's indexes, and slice headers for redirect targets.
+		// Seven IDMap collections each hold at most MaxFiles entries. A string
+		// map entry needs at least five encoded bytes ("":""), so size/5 bounds
+		// aggregate map entries. Each decoder map keeps both a result and a
+		// duplicate-detection map. On 64-bit Go, a string header is 16 bytes and
+		// each 8-slot bucket carries key/value headers plus tophash/overflow
+		// overhead; SourceMeta values are 48 bytes. 256 bytes per encoded entry
+		// covers both maps, map growth/evacuation overlap, and slot slack.
 		mapEntries := min(int64(7*generation.MaxFiles), size/5)
-		redirectItems := size / 3
-		return size*3 + mapEntries*256 + redirectItems*32 + 64<<10
+		activeRefs := min(int64(2*generation.MaxFiles), size/5)
+		redirectItems := size / 2 // an empty JSON string still costs two bytes
+		// Each active Concept/Source contributes an mcpContentRef to refs and
+		// four indexes (byID, indexByID, bySlugAndKind, byCanonicalRoute). A
+		// ref itself is roughly 120 bytes; byID and byCanonicalRoute each retain
+		// one ref value, bySlugAndKind retains another slice value, and refs plus
+		// its per-slug slice retain ref copies. Compound string keys and bucket
+		// slots add more. 640 bytes per active row covers those overlapping
+		// values and slice/map growth while size*3 accounts decoded key strings.
+		return size*3 + mapEntries*256 + activeRefs*640 + redirectItems*32 + 64<<10
 	case wikiindex.ConceptsJSONLPath:
 		// WikiPagesFromConceptsJSONL retains at most MaxFiles rows. Its JSON
-		// decoder materializes a frontmatter map; every node needs at least two
-		// source bytes, so size/2 bounds the node count before allocator costs.
-		// The per-row allowance covers the page and snapshot indexes.
+		// scanner copies each line and json.Unmarshal materializes arbitrary
+		// nested frontmatter maps/slices. size/2 bounds decoded JSON nodes after
+		// accounting for separators. A sources item can overlap as a 16-byte
+		// interface slot, 16-byte string header in the temporary values slice,
+		// duplicate-set bucket/key, and headers in normalized and snapshot-copied
+		// string slices. 96 bytes per node covers those live slots, nested
+		// container headers and ordinary growth slack; size*2 covers line/string
+		// backing copies. The per-row allowance covers WikiPage and index state.
 		rows := min(int64(generation.MaxFiles), size/12) // shortest nonempty slug row: {"slug":"x"}
 		jsonNodes := size / 2
-		return size*2 + jsonNodes*48 + rows*256 + 64<<10
+		return size*2 + jsonNodes*96 + rows*256 + 64<<10
 	default:
 		return 0
 	}

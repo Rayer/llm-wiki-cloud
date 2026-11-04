@@ -151,7 +151,7 @@ func connectMCPWithBearer(t *testing.T, ctx context.Context, endpoint, token, pr
 }
 
 func mcpContentEndpointTestConfig() *config.BFFMCP {
-	bucket := config.MCPProtectionBucket{Capacity: 32, RefillMicrounitsPerSecond: 1, MaxInflight: 8}
+	bucket := config.MCPProtectionBucket{Capacity: 32, RefillMicrounitsPerSecond: 1_000_000, MaxInflight: 8}
 	content := config.MCPProtectionClass{
 		Project: bucket, Account: config.MCPProtectionBucket{Capacity: 48, RefillMicrounitsPerSecond: 4_000_000, MaxInflight: 16},
 		FleetMaxInflight: 64, LocalMaxInflight: 32, WorkTimeoutMS: 20_000, LeaseMS: 60_000, WorkingBytes: 128 << 20,
@@ -379,14 +379,16 @@ func TestMCPContentReadScopesAndAdmissionThroughProjectKeyAndOAuthSDKEndpoints(t
 	const errorCanary = "MCP_ERROR_DATA_OVERFLOW_SENTINEL"
 	var metaProducerCalls atomic.Int32
 	var errorProducerCalls atomic.Int32
-	registerWireProbes := func(server *mcp.Server) {
-		server.AddTool(&mcp.Tool{Name: "wire_meta_overflow", InputSchema: json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`)},
+	registerMetaProbe := func(server *mcp.Server) {
+		server.AddTool(&mcp.Tool{Name: "list_content", InputSchema: json.RawMessage(`{"type":"object","properties":{"kind":{"type":"string"}},"required":["kind"],"additionalProperties":false}`)},
 			func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 				metaProducerCalls.Add(1)
 				return &mcp.CallToolResult{Meta: mcp.Meta{"probe": strings.Repeat(metaCanary, 24_000)}}, nil
 			})
+	}
+	registerErrorProbe := func(server *mcp.Server) {
 		data, _ := json.Marshal(map[string]any{"probe": strings.Repeat(errorCanary, 24_000)})
-		server.AddTool(&mcp.Tool{Name: "wire_error_data_overflow", InputSchema: json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`)},
+		server.AddTool(&mcp.Tool{Name: "list_content", InputSchema: json.RawMessage(`{"type":"object","properties":{"kind":{"type":"string"}},"required":["kind"],"additionalProperties":false}`)},
 			func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 				errorProducerCalls.Add(1)
 				return nil, &jsonrpc.Error{Code: jsonrpc.CodeInternalError, Message: "synthetic wire error", Data: data}
@@ -469,29 +471,33 @@ func TestMCPContentReadScopesAndAdmissionThroughProjectKeyAndOAuthSDKEndpoints(t
 		}
 		assertWireID("max decoded ID", strings.Repeat("B", maxMCPProtectedIDDecoded))
 		assertWireID("escaped ID", "wire\"\\\\\nλ"+strings.Repeat("x", 40))
-		encodedBoundaryID := `"` + strings.Repeat(`\u0078`, 682) + `"`
-		if len(encodedBoundaryID) != maxMCPProtectedIDEncoded-2 {
-			t.Fatalf("constructed JSON string ID encoding has %d bytes, want 4094", len(encodedBoundaryID))
+		encodedBoundaryID := `"` + strings.Repeat(`\u0078`, 682) + `\t"`
+		if len(encodedBoundaryID) != maxMCPProtectedIDEncoded {
+			t.Fatalf("constructed JSON string ID encoding has %d bytes, want exactly 4096", len(encodedBoundaryID))
 		}
 		boundaryBody := []byte(`{"jsonrpc":"2.0","id":` + encodedBoundaryID + `,"method":"tools/call","params":{"name":"list_content","arguments":{"kind":"concept","limit":1}}}`)
 		boundaryResponse := postWire(boundaryBody)
 		var boundaryDecoded struct {
 			ID any `json:"id"`
 		}
-		if boundaryResponse.Code != http.StatusOK || json.Unmarshal(boundaryResponse.Body.Bytes(), &boundaryDecoded) != nil || boundaryDecoded.ID != strings.Repeat("x", 682) {
+		if boundaryResponse.Code != http.StatusOK || boundaryResponse.Body.Len() > maxMCPProtectedResponseBytes || json.Unmarshal(boundaryResponse.Body.Bytes(), &boundaryDecoded) != nil || boundaryDecoded.ID != strings.Repeat("x", 682)+"\t" {
 			t.Fatalf("%s exact encoded-ID boundary response status=%d bytes=%d decoded=%+v body=%q", endpoint.name, boundaryResponse.Code, boundaryResponse.Body.Len(), boundaryDecoded, boundaryResponse.Body.String())
 		}
-		overBoundaryBody := []byte(`{"jsonrpc":"2.0","id":"` + strings.Repeat(`\u0078`, 683) + `","method":"tools/call","params":{"name":"list_content","arguments":{"kind":"concept","limit":1}}}`)
+		overBoundaryID := `"` + strings.Repeat(`\u0078`, 682) + `\tx"`
+		if len(overBoundaryID) != maxMCPProtectedIDEncoded+1 {
+			t.Fatalf("constructed over-boundary JSON string ID encoding has %d bytes, want 4097", len(overBoundaryID))
+		}
+		overBoundaryBody := []byte(`{"jsonrpc":"2.0","id":` + overBoundaryID + `,"method":"tools/call","params":{"name":"list_content","arguments":{"kind":"concept","limit":1}}}`)
 		assertRejectedNoEcho("encoded ID over 4096", overBoundaryBody, "xxxxxxxx")
-		wireProbeContext := context.WithValue(context.Background(), mcpSDKTestToolRegistrarContextKey{}, registerWireProbes)
-		assertOverflowFallback := func(name, toolName, canary string, calls *atomic.Int32) {
+		assertOverflowFallback := func(name, canary string, calls *atomic.Int32, register func(*mcp.Server)) {
 			t.Helper()
 			id := "overflow-" + endpoint.name + "-" + name
-			body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": map[string]any{"name": toolName, "arguments": map[string]any{}}})
+			body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": map[string]any{"name": "list_content", "arguments": map[string]any{"kind": "concept"}}})
 			if err != nil {
 				t.Fatal(err)
 			}
 			before := calls.Load()
+			wireProbeContext := context.WithValue(context.Background(), mcpSDKTestToolRegistrarContextKey{}, register)
 			response := postWireWithContext(body, wireProbeContext)
 			var decoded struct {
 				ID     any `json:"id"`
@@ -505,9 +511,9 @@ func TestMCPContentReadScopesAndAdmissionThroughProjectKeyAndOAuthSDKEndpoints(t
 				t.Fatalf("%s %s final SDK overflow response status=%d bytes=%d decoded=%+v producer_calls=%d->%d body=%q", endpoint.name, name, response.Code, response.Body.Len(), decoded, before, calls.Load(), response.Body.String())
 			}
 		}
-		assertOverflowFallback("result-meta", "wire_meta_overflow", metaCanary, &metaProducerCalls)
-		assertOverflowFallback("protocol-error-data", "wire_error_data_overflow", errorCanary, &errorProducerCalls)
-		t.Logf("protected_wire endpoint=%s max_decoded_id=1024 encoded_id_4094_legal_4100_rejected=true escaped_id_roundtrip=true oversized_request_id_meta_params=id_null_no_echo sdk_result_meta_and_error_data_overflow=response_limit_no_echo single_execution=true protocol_error_bytes=%d", endpoint.name, protocolError.Body.Len())
+		assertOverflowFallback("result-meta", metaCanary, &metaProducerCalls, registerMetaProbe)
+		assertOverflowFallback("protocol-error-data", errorCanary, &errorProducerCalls, registerErrorProbe)
+		t.Logf("protected_wire endpoint=%s max_decoded_id=1024 encoded_id_4096_legal_4097_rejected=true escaped_id_roundtrip=true oversized_request_id_meta_params=id_null_no_echo sdk_result_meta_and_error_data_overflow=response_limit_no_echo single_execution=true protocol_error_bytes=%d", endpoint.name, protocolError.Body.Len())
 	}
 
 	readSession := connectMCPWithBearer(t, ctx, server.URL+"/mcp", readKeyToken, projectID)
@@ -1052,7 +1058,7 @@ func TestMCPMetadataHeavySDKReadMeasuresReservedWorkingSet(t *testing.T) {
 	if _, err := internalfirestore.Collection(fs.Raw(), "projects").Doc(userID+"_"+projectID).Set(ctx, map[string]any{"user_id": userID, "project_id": projectID, "name": "metadata-heavy fixture", "status": "ready"}); err != nil {
 		t.Fatalf("seed metadata-heavy emulator project: %v", err)
 	}
-	_, token, _, err := auth.NewProjectKeyService(fs.Raw()).CreateWithCapabilities(ctx, userID, projectID, "metadata-heavy SDK fixture", []string{"content:read"})
+	_, token, _, err := auth.NewProjectKeyService(fs.Raw()).CreateWithCapabilities(ctx, userID, projectID, "metadata-heavy SDK fixture", []string{"query", "content:read"})
 	if err != nil || token == "" {
 		t.Fatalf("create metadata-heavy content key: token_present=%t err=%v", token != "", err)
 	}
@@ -1101,7 +1107,13 @@ func TestMCPMetadataHeavySDKReadMeasuresReservedWorkingSet(t *testing.T) {
 	runtime.ReadMemStats(&after)
 	rssAfter := mcpProcessPeakRSSBytes(t)
 	if callErr != nil || result == nil || result.IsError {
-		t.Fatalf("metadata-heavy real SDK list failed: result=%+v err=%v", result, callErr)
+		readsMu.Lock()
+		readCopy := make(map[string]int, len(reads))
+		for name, count := range reads {
+			readCopy[name] = count
+		}
+		readsMu.Unlock()
+		t.Fatalf("metadata-heavy real SDK list failed: result=%+v err=%v storage_reads=%v", result, callErr, readCopy)
 	}
 	payload, _ := result.StructuredContent.(map[string]any)
 	items, _ := payload["items"].([]any)
@@ -1109,11 +1121,16 @@ func TestMCPMetadataHeavySDKReadMeasuresReservedWorkingSet(t *testing.T) {
 		t.Fatalf("metadata-heavy SDK list response=%#v", payload)
 	}
 	objectPrefix := "users/" + userID + "/projects/" + projectID + "/"
+	contentObjectPrefix := objectPrefix + generation.Prefix + fmt.Sprint(payload["generation"]) + "/"
 	readsMu.Lock()
-	idMapReads, conceptsReads := reads[objectPrefix+wikiindex.IDMapPath], reads[objectPrefix+wikiindex.ConceptsJSONLPath]
+	idMapReads, conceptsReads := reads[contentObjectPrefix+wikiindex.IDMapPath], reads[contentObjectPrefix+wikiindex.ConceptsJSONLPath]
+	readCopy := make(map[string]int, len(reads))
+	for name, count := range reads {
+		readCopy[name] = count
+	}
 	readsMu.Unlock()
 	if idMapReads == 0 || conceptsReads == 0 {
-		t.Fatalf("metadata-heavy SDK storage reads: id_map=%d concepts=%d", idMapReads, conceptsReads)
+		t.Fatalf("metadata-heavy SDK storage reads: id_map=%d concepts=%d objects=%v", idMapReads, conceptsReads, readCopy)
 	}
 	sampleMu.Lock()
 	peak := peakHeap
@@ -1154,7 +1171,7 @@ func mcpMetadataHeavyPublishedFixture(t *testing.T, userID, projectID string, co
 	manifest := generation.Manifest{Version: generation.Version, GenerationID: contentGeneration, CreatedAt: "2026-11-05T00:00:00Z", InputFingerprint: "metadata-heavy-sdk-test", Files: make([]generation.File, 0, len(files))}
 	objects := map[string]taggingGCSObject{}
 	prefix := "users/" + userID + "/projects/" + projectID + "/"
-	paths := []string{wikiindex.IDMapPath, wikiindex.ConceptsJSONLPath}
+	paths := []string{wikiindex.ConceptsJSONLPath, wikiindex.IDMapPath}
 	for i, path := range paths {
 		file, err := generation.NewFile(path, files[path], int64(100+i))
 		if err != nil {
@@ -1162,6 +1179,9 @@ func mcpMetadataHeavyPublishedFixture(t *testing.T, userID, projectID string, co
 		}
 		manifest.Files = append(manifest.Files, file)
 		objects[prefix+manifest.ObjectPath(file)] = taggingGCSObject{data: files[path], gen: file.Generation}
+	}
+	if err := manifest.Validate(); err != nil {
+		t.Fatalf("validate metadata-heavy generation manifest: %v", err)
 	}
 	manifestBytes, err := json.Marshal(manifest)
 	if err != nil {

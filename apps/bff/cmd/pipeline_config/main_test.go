@@ -82,17 +82,27 @@ type mcpCaCGCSObject struct {
 func newMcpCaCContentFixture(t *testing.T, scope, userID, projectID string) (*gcs.Client, *httptest.Server) {
 	t.Helper()
 	const contentGeneration = "g_mcp_cac_sdk_fixture"
-	alphaBody := "---\nid: alpha-id\ntitle: Alpha Guide\nsources: []\n---\n# Alpha\n\n" + strings.Repeat("fixture content ", 100) + "\n[[beta-id]] [[gamma-id]] [[delta-id]] [[epsilon-id]] [[source-one]]\n"
-	pages := map[string][]byte{
-		"wiki/alpha.md":              []byte(alphaBody),
-		"wiki/beta.md":               []byte("---\nid: beta-id\ntitle: Alpha Guide\n---\n# Beta\n"),
-		"wiki/gamma.md":              []byte("---\nid: gamma-id\ntitle: Gamma\n---\n# Gamma\n"),
-		"wiki/delta.md":              []byte("---\nid: delta-id\ntitle: Delta\n---\n# Delta\n"),
-		"wiki/epsilon.md":            []byte("---\nid: epsilon-id\ntitle: Epsilon\n---\n# Epsilon\n"),
-		"wiki/sources/source-one.md": []byte("---\nid: source-one\ntitle: Source One\n---\n# Source One\n"),
+	const targetConcepts, targetMentions = 50, 51
+	conceptsByID := map[string]string{"alpha-id": "alpha"}
+	pages := map[string][]byte{"wiki/sources/source-one.md": []byte("---\nid: source-one\ntitle: Source One\n---\n# Source One\n")}
+	var concepts strings.Builder
+	concepts.WriteString("{\"slug\":\"alpha\",\"title\":\"Alpha Guide\",\"frontmatter\":{\"id\":\"alpha-id\",\"sources\":[]}}\n")
+	mentionTargets := make([]string, 0, targetMentions)
+	for i := 1; i <= targetConcepts; i++ {
+		id, slug := fmt.Sprintf("concept-%02d-id", i), fmt.Sprintf("concept-%02d", i)
+		conceptsByID[id] = slug
+		pages["wiki/"+slug+".md"] = []byte(fmt.Sprintf("---\nid: %s\ntitle: Concept %02d\n---\n# Concept %02d\n", id, i, i))
+		fmt.Fprintf(&concepts, "{\"slug\":%q,\"title\":%q,\"frontmatter\":{\"id\":%q}}\n", slug, fmt.Sprintf("Concept %02d", i), id)
+		mentionTargets = append(mentionTargets, "[["+id+"]]")
+	}
+	mentionTargets = append(mentionTargets, "[[source-one]]")
+	alphaBody := "---\nid: alpha-id\ntitle: Alpha Guide\nsources: []\n---\n# Alpha\n\n" + strings.Repeat("fixture content ", 1100) + "\n" + strings.Join(mentionTargets, " ") + "\n"
+	pages["wiki/alpha.md"] = []byte(alphaBody)
+	if len(mentionTargets) != targetMentions {
+		t.Fatalf("MCP CaC fixture mentions=%d, want %d", len(mentionTargets), targetMentions)
 	}
 	idMapBytes, err := json.Marshal(wikiindex.IDMap{
-		Concept:     map[string]string{"alpha-id": "alpha", "beta-id": "beta", "gamma-id": "gamma", "delta-id": "delta", "epsilon-id": "epsilon"},
+		Concept:     conceptsByID,
 		Source:      map[string]string{"source-one": "source-one"},
 		SourceMeta:  map[string]wikiindex.SourceMeta{"source-one": {Slug: "source-one", Title: "Source One"}},
 		Redirects:   map[string][]string{},
@@ -101,12 +111,7 @@ func newMcpCaCContentFixture(t *testing.T, scope, userID, projectID string) (*gc
 	if err != nil {
 		t.Fatal(err)
 	}
-	concepts := []byte("{\"slug\":\"alpha\",\"title\":\"Alpha Guide\",\"frontmatter\":{\"id\":\"alpha-id\",\"sources\":[]}}\n" +
-		"{\"slug\":\"beta\",\"title\":\"Alpha Guide\",\"frontmatter\":{\"id\":\"beta-id\"}}\n" +
-		"{\"slug\":\"gamma\",\"title\":\"Gamma\",\"frontmatter\":{\"id\":\"gamma-id\"}}\n" +
-		"{\"slug\":\"delta\",\"title\":\"Delta\",\"frontmatter\":{\"id\":\"delta-id\"}}\n" +
-		"{\"slug\":\"epsilon\",\"title\":\"Epsilon\",\"frontmatter\":{\"id\":\"epsilon-id\"}}\n")
-	files := map[string][]byte{"cache/id_map.json": idMapBytes, "cache/concepts.jsonl": concepts}
+	files := map[string][]byte{"cache/id_map.json": idMapBytes, "cache/concepts.jsonl": []byte(concepts.String())}
 	for name, data := range pages {
 		files[name] = data
 	}
@@ -124,6 +129,9 @@ func newMcpCaCContentFixture(t *testing.T, scope, userID, projectID string) (*gc
 		}
 		manifest.Files = append(manifest.Files, file)
 	}
+	if err := manifest.Validate(); err != nil {
+		t.Fatalf("validate CaC fixture generation manifest: %v", err)
+	}
 	manifestBytes, err := json.Marshal(manifest)
 	if err != nil {
 		t.Fatal(err)
@@ -137,21 +145,29 @@ func newMcpCaCContentFixture(t *testing.T, scope, userID, projectID string) (*gc
 		t.Fatal(err)
 	}
 	objects[prefix+archivePath] = mcpCaCGCSObject{data: manifestBytes, generation: 900}
+	objects[prefix+generation.ManifestPath] = mcpCaCGCSObject{data: manifestBytes, generation: 901}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		escaped := r.URL.EscapedPath()
 		marker := strings.LastIndex(escaped, "/o/")
-		if marker < 0 {
+		encodedName := ""
+		if marker >= 0 {
+			encodedName = escaped[marker+3:]
+		} else if strings.HasPrefix(escaped, "/mcp-cac-content-fixture/") {
+			encodedName = strings.TrimPrefix(escaped, "/mcp-cac-content-fixture/")
+		}
+		if encodedName == "" {
 			http.NotFound(w, r)
 			return
 		}
-		name, err := url.PathUnescape(escaped[marker+3:])
+		name, err := url.PathUnescape(encodedName)
 		if err != nil {
 			http.Error(w, "invalid object path", http.StatusBadRequest)
 			return
 		}
 		object, ok := objects[name]
 		if !ok || r.Method != http.MethodGet {
+			t.Errorf("MCP CaC fixture received unexpected object request method=%s name=%q found=%t", r.Method, name, ok)
 			http.NotFound(w, r)
 			return
 		}
@@ -159,7 +175,7 @@ func newMcpCaCContentFixture(t *testing.T, scope, userID, projectID string) (*gc
 			http.NotFound(w, r)
 			return
 		}
-		if r.URL.Query().Get("alt") == "media" {
+		if !strings.Contains(r.URL.Path, "/storage/v1/") || r.URL.Query().Get("alt") == "media" {
 			w.Header().Set("Content-Length", strconv.Itoa(len(object.data)))
 			w.Header().Set("X-Goog-Generation", strconv.FormatInt(object.generation, 10))
 			_, _ = w.Write(object.data)
@@ -177,6 +193,14 @@ func newMcpCaCContentFixture(t *testing.T, scope, userID, projectID string) (*gc
 	if err != nil {
 		server.Close()
 		t.Fatalf("create local GCS client for CaC fixture: %v", err)
+	}
+	pinCtx, cancelPin := context.WithTimeout(context.Background(), 5*time.Second)
+	_, pinned, exists, pinErr := client.WithScope(userID, projectID).PinCurrentGenerationIfPublished(pinCtx)
+	cancelPin()
+	if pinErr != nil || !exists || pinned.Manifest.GenerationID != contentGeneration {
+		_ = client.Close()
+		server.Close()
+		t.Fatalf("pin current CaC fixture generation=%q exists=%t err=%v", pinned.Manifest.GenerationID, exists, pinErr)
 	}
 	t.Cleanup(func() { _ = client.Close() })
 	return client, server
@@ -669,6 +693,7 @@ func TestRealPklBFFLocalPrepareUsesSelectedSharedSecretVersion(t *testing.T) {
 }
 
 func TestRealPklMCPProtectionReachesLoadedSDKConsumer(t *testing.T) {
+	const expectedMentions = 51
 	emulatorHost := strings.TrimSpace(os.Getenv("FIRESTORE_EMULATOR_HOST"))
 	if emulatorHost == "" {
 		t.Skip("requires a loopback Firestore emulator")
@@ -937,8 +962,23 @@ func TestRealPklMCPProtectionReachesLoadedSDKConsumer(t *testing.T) {
 		}
 		secondListPayload, _ := secondListPage.StructuredContent.(map[string]any)
 		secondListItems, _ := secondListPayload["items"].([]any)
-		if len(secondListItems) != wantDefault || secondListPayload["generation"] != "g_mcp_cac_sdk_fixture" {
+		secondListCursor, _ := secondListPayload["next_cursor"].(string)
+		if len(secondListItems) != wantDefault || secondListPayload["generation"] != "g_mcp_cac_sdk_fixture" || secondListCursor == "" {
 			t.Fatalf("%s SDK second list page items=%d payload=%#v", policyName, len(secondListItems), secondListPayload)
+		}
+		seenListIDs := map[string]struct{}{}
+		for _, pageItems := range [][]any{listItems, secondListItems} {
+			for _, item := range pageItems {
+				ref, _ := item.(map[string]any)
+				id, _ := ref["id"].(string)
+				if id == "" {
+					t.Fatalf("%s CaC list page has an empty item ID: %#v", policyName, item)
+				}
+				if _, exists := seenListIDs[id]; exists {
+					t.Fatalf("%s CaC list pages duplicated ID %q", policyName, id)
+				}
+				seenListIDs[id] = struct{}{}
+			}
 		}
 		readPage, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "read_content", Arguments: map[string]any{"kind": "concept", "id": "alpha-id", "max_bytes": wantChunk}})
 		if err != nil || readPage == nil || readPage.IsError {
@@ -953,15 +993,44 @@ func TestRealPklMCPProtectionReachesLoadedSDKConsumer(t *testing.T) {
 		if len(readText) != wantChunk || contentCursor == "" || len(mentions) != wantRefs || readCursor == "" {
 			t.Fatalf("%s SDK read chunk/refs page text=%d content_cursor=%q mentions=%d refs_cursor=%q payload=%#v", policyName, len(readText), contentCursor, len(mentions), readCursor, readPayload)
 		}
-		nextRefsPage, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "read_content", Arguments: map[string]any{"kind": "concept", "id": "alpha-id", "max_bytes": wantChunk, "refs_cursor": readCursor}})
-		if err != nil || nextRefsPage == nil || nextRefsPage.IsError {
-			t.Fatalf("%s readable SDK read_content refs cursor failed: result=%+v err=%v", policyName, nextRefsPage, err)
+		seenReferences := make(map[string]struct{}, expectedMentions)
+		consumeReferences := func(items []any) {
+			t.Helper()
+			for _, item := range items {
+				ref, _ := item.(map[string]any)
+				referenceID, _ := ref["reference_id"].(string)
+				if referenceID == "" {
+					t.Fatalf("%s CaC reference page has an empty reference ID: %#v", policyName, item)
+				}
+				if _, exists := seenReferences[referenceID]; exists {
+					t.Fatalf("%s CaC reference pages duplicated reference %q", policyName, referenceID)
+				}
+				seenReferences[referenceID] = struct{}{}
+			}
 		}
-		nextRefsPayload, _ := nextRefsPage.StructuredContent.(map[string]any)
-		nextMentions, _ := nextRefsPayload["mentions"].([]any)
-		if len(nextMentions) == 0 || nextRefsPayload["next_refs_cursor"] != nil {
-			t.Fatalf("%s SDK reference cursor page did not finish pagination: mentions=%d cursor=%v payload=%#v", policyName, len(nextMentions), nextRefsPayload["next_refs_cursor"], nextRefsPayload)
+		consumeReferences(mentions)
+		refPages := 1
+		for readCursor != "" {
+			nextRefsPage, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "read_content", Arguments: map[string]any{"kind": "concept", "id": "alpha-id", "max_bytes": wantChunk, "refs_cursor": readCursor}})
+			if err != nil || nextRefsPage == nil || nextRefsPage.IsError {
+				t.Fatalf("%s readable SDK read_content refs cursor failed: result=%+v err=%v", policyName, nextRefsPage, err)
+			}
+			nextRefsPayload, _ := nextRefsPage.StructuredContent.(map[string]any)
+			nextMentions, _ := nextRefsPayload["mentions"].([]any)
+			if len(nextMentions) == 0 || len(nextMentions) > wantRefs {
+				t.Fatalf("%s SDK reference cursor page size=%d, policy max=%d payload=%#v", policyName, len(nextMentions), wantRefs, nextRefsPayload)
+			}
+			consumeReferences(nextMentions)
+			readCursor, _ = nextRefsPayload["next_refs_cursor"].(string)
+			refPages++
+			if refPages > expectedMentions {
+				t.Fatalf("%s SDK reference pagination failed to advance: pages=%d", policyName, refPages)
+			}
 		}
+		if len(seenReferences) != expectedMentions {
+			t.Fatalf("%s SDK reference pagination returned %d distinct mentions across %d pages, want %d", policyName, len(seenReferences), refPages, expectedMentions)
+		}
+		t.Logf("cac_sdk_reference_pages policy=%s mentions=%d pages=%d restored_limit=%d", policyName, len(seenReferences), refPages, wantRefs)
 		barrier.active.Store(true)
 
 		type readOutcome struct {
@@ -971,7 +1040,7 @@ func TestRealPklMCPProtectionReachesLoadedSDKConsumer(t *testing.T) {
 		readDone := make(chan readOutcome, 3)
 		for i := 0; i < concurrentReads; i++ {
 			go func() {
-				result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "read_content", Arguments: map[string]any{"kind": "concept", "id": "mcp-cac-admission-probe"}})
+				result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "read_content", Arguments: map[string]any{"kind": "concept", "id": "alpha-id"}})
 				readDone <- readOutcome{result: result, err: err}
 			}()
 		}
@@ -987,7 +1056,7 @@ func TestRealPklMCPProtectionReachesLoadedSDKConsumer(t *testing.T) {
 		if concurrentReads == 2 {
 			thirdDone := make(chan readOutcome, 1)
 			go func() {
-				result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "read_content", Arguments: map[string]any{"kind": "concept", "id": "mcp-cac-admission-third"}})
+				result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "read_content", Arguments: map[string]any{"kind": "concept", "id": "alpha-id"}})
 				thirdDone <- readOutcome{result: result, err: err}
 			}()
 			select {
@@ -997,7 +1066,8 @@ func TestRealPklMCPProtectionReachesLoadedSDKConsumer(t *testing.T) {
 					t.Fatalf("lowered CaC policy third SDK read was not rejected: result=%+v err=%v", third.result, third.err)
 				}
 				payload, _ := third.result.StructuredContent.(map[string]any)
-				if payload["code"] != "concurrency_limited" || payload["retry_after_ms"] != float64(250) {
+				retryAfter, _ := payload["retry_after_ms"].(float64)
+				if payload["code"] != "concurrency_limited" || retryAfter < 250 {
 					releaseBarrier()
 					t.Fatalf("lowered CaC policy third SDK read response=%#v", third.result.StructuredContent)
 				}
