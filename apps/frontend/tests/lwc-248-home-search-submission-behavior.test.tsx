@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   locale: 'en' as 'en' | 'zh-TW',
   useRealLocaleCopy: false,
   getConcepts: vi.fn(),
+  getProjectContentContext: vi.fn(),
   getProfile: vi.fn(),
   getStatus: vi.fn(),
   searchWiki: vi.fn(),
@@ -35,6 +36,11 @@ vi.mock('@/lib/api', async () => {
     getStatus: mocks.getStatus,
     searchWiki: mocks.searchWiki,
   };
+});
+
+vi.mock('@/lib/projects', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/projects')>('@/lib/projects');
+  return { ...actual, getProjectContentContext: mocks.getProjectContentContext };
 });
 
 vi.mock('@/lib/i18n', async () => {
@@ -134,6 +140,10 @@ beforeEach(() => {
   mocks.useRealLocaleCopy = false;
   mocks.getStatus.mockResolvedValue(status());
   mocks.getConcepts.mockResolvedValue([]);
+  mocks.getProjectContentContext.mockResolvedValue({
+    project_id: 'project-a', status: 'missing', current_generation: null,
+    current_concepts_sha256: null, summary: null, stale: false,
+  });
   mocks.searchWiki.mockResolvedValue(SEARCH_RESPONSE);
   replaceStateSpy = vi.spyOn(window.history, 'replaceState');
 });
