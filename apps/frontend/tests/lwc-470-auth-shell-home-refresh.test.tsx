@@ -318,7 +318,7 @@ describe('LWC-476 Home Query section retention', () => {
         await pendingQuery.promise.catch(() => undefined);
       } else {
         pendingQuery.resolve(outcome === 'success'
-          ? { results: [{ id: 'query-result', slug: 'query-result', title: 'Mounted Query result', type: 'concept', content: '' }], aiAnswer: '', citations: [] }
+          ? { results: [{ id: 'query-result', slug: 'query-result', title: 'Mounted Query result', type: 'concept', content: '', raw: {} }], aiAnswer: '', citations: [] }
           : { results: [], aiAnswer: '', citations: [] });
         await pendingQuery.promise;
       }
@@ -360,7 +360,7 @@ describe('LWC-476 Home Query section retention', () => {
     expect(screen.getByRole('button', { name: translate('en', 'AddMaterial.open') })).toBe(sections.addMaterial);
 
     await act(async () => {
-      pendingQuery.resolve({ results: [{ id: 'rotation-result', slug: 'rotation-result', title: 'Rotation Query result', type: 'concept', content: '' }], aiAnswer: '', citations: [] });
+      pendingQuery.resolve({ results: [{ id: 'rotation-result', slug: 'rotation-result', title: 'Rotation Query result', type: 'concept', content: '', raw: {} }], aiAnswer: '', citations: [] });
       await pendingQuery.promise;
     });
     expect(await screen.findByText('Rotation Query result')).toBeTruthy();
@@ -388,7 +388,7 @@ describe('LWC-476 Home Query section retention', () => {
     fireEvent.change(body, { target: { value: 'Keep this draft while Query finishes.' } });
 
     await act(async () => {
-      pendingQuery.resolve({ results: [{ id: 'draft-result', slug: 'draft-result', title: 'Draft Query result', type: 'concept', content: '' }], aiAnswer: '', citations: [] });
+      pendingQuery.resolve({ results: [{ id: 'draft-result', slug: 'draft-result', title: 'Draft Query result', type: 'concept', content: '', raw: {} }], aiAnswer: '', citations: [] });
       await pendingQuery.promise;
     });
 
@@ -433,7 +433,7 @@ describe('LWC-476 Home Query section retention', () => {
         staleQuery.reject(new QueryApiError('Stale project denial', 403, 'project_access_denied'));
         await staleQuery.promise.catch(() => undefined);
       } else {
-        staleQuery.resolve({ results: [{ id: 'stale-result', slug: 'stale-result', title: 'Stale Project Query result', type: 'concept', content: '' }], aiAnswer: '', citations: [] });
+        staleQuery.resolve({ results: [{ id: 'stale-result', slug: 'stale-result', title: 'Stale Project Query result', type: 'concept', content: '', raw: {} }], aiAnswer: '', citations: [] });
         await staleQuery.promise;
       }
     });
