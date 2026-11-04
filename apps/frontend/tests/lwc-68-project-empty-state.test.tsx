@@ -26,18 +26,24 @@ afterEach(() => {
 
 describe('LWC-68 project empty state', () => {
   it('hides empty-state create action in demo sessions', () => {
+    localStorage.setItem('locale', 'en');
     mocks.isDemoSession = true;
 
     render(<ProjectEmptyState />);
 
     expect(screen.getByText('Welcome to LLM Wiki Cloud')).toBeDefined();
-    expect(screen.queryByRole('button', { name: '+ Create Project' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Create your first Wiki' })).toBeNull();
     expect(mocks.openNewProject).not.toHaveBeenCalled();
   });
 
-  it('renders create action for normal sessions and calls openNewProject', async () => {
+  it.each([
+    ['en', 'Create your first Wiki', 'Create your first Wiki to start building a searchable knowledge workspace.'],
+    ['zh-TW', '建立第一個 Wiki', '建立你的第一個 Wiki，開始打造可搜尋的知識工作空間。'],
+  ] as const)('renders localized first-Wiki guidance for %s', async (locale, buttonLabel, guidance) => {
+    localStorage.setItem('locale', locale);
     render(<ProjectEmptyState />);
-    const createButton = screen.getByRole('button', { name: '+ Create Project' });
+    expect(screen.getByText(guidance)).toBeDefined();
+    const createButton = screen.getByRole('button', { name: buttonLabel });
 
     await fireEvent.click(createButton);
 

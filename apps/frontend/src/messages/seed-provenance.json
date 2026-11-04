@@ -3,7 +3,7 @@
   "locale": "zh_tw",
   "migration_source_revision": "b8f167ef9fe3d7e3f6b53c860356eb1c2d87b9bf",
   "migration_catalog_revision": "3a0e6da83c9113423b9582f6fe3b7df6d15ab414fefc197641b1ef1c6bc25e9b",
-  "seed_map_sha256": "bf0e93da5f6fd3a675b9ef86266da5a83575e6cef5d151650ed7d49a92426b17",
+  "seed_map_sha256": "7eea68b4cbd15ed28972d078c241237bc7865e637b8cba0c1d8d7daecc5b9afe",
   "entries": {
     "AccountSettings.accountTab": "9d4435cd4778e9d6f90f5797c2e556e1baaffe742ef1b78150f3b61931a4a8b2",
     "AccountSettings.bindingActive": "155e79378bcb9e2d77d0d0c40999baccc08c8b72d2bbfbf835a45ea757ef1177",
@@ -1186,6 +1186,9 @@
     "ProjectDescription.saving": "7b17ebbb6c9c9f96f36eebf10fdcebf4975b5abe5c3bbc278181d63c2af523cc",
     "ProjectDescription.title": "867846e19814b856ace257e719341b9b5f5feb7ca4e4d04cdf475bba043dffe3",
     "ProjectDescription.useLatest": "13c0ef44eef766dccfa416296fd50223df07a68a2067caec9f7a814856367d19",
+    "ProjectEmptyState.createFirstWiki": "7e7a53e27edd3ba19f494226b34d3aac64e42b0faa72b48e4995c8837a60106f",
+    "ProjectEmptyState.guidance": "8e0ed75a2490a34a8ae11a7390a6dfa8bae599e30435236f6acf51ccb2e4249c",
+    "ProjectEmptyState.title": "c6682a08707fd5840d877848a10998f8b57ffb9a806a83b623652271294dde59",
     "ProjectRename.cancel": "b49ca8f3ece2ad9b7266109f568da3fdea299fb4757b32479c0b4bd4ffb23350",
     "ProjectRename.close": "63bfab456d45f78f4d2406ac99f14a39beb17572a7d9f547703a09503cb08f5d",
     "ProjectRename.length": "acc8939ee82ada5d25ca891612513bba7ad1da48ea7c8f9810cac97639a12a97",

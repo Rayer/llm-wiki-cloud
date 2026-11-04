@@ -48,7 +48,6 @@ function ShellContent({ children }: { children: React.ReactNode }) {
     currentProject,
     projectsLoading,
     projectsError,
-    productSetupPending,
     isDemoSession,
     navCounts,
     selectProject,
@@ -429,12 +428,9 @@ function ShellContent({ children }: { children: React.ReactNode }) {
         ) : token && projectsError && projects.length === 0 ? (
           <div className="mx-auto mt-20 max-w-lg rounded border border-red-400/20 bg-red-400/10 p-6 text-center animate-scale-in">
             <h1 className="text-xl font-semibold text-white">
-              {productSetupPending ? t('Shell.workspaceSetupPending') : t('Shell.projectsUnavailable')}
+              {t('Shell.projectsUnavailable')}
             </h1>
             <p className="mt-2 text-sm text-red-100">{projectsError}</p>
-            {productSetupPending ? (
-              <p className="mt-2 text-sm text-red-100">{t('Shell.workspaceSetupPendingHint')}</p>
-            ) : null}
             <button
               type="button"
               onClick={() => void refreshProjects()}
@@ -447,6 +443,18 @@ function ShellContent({ children }: { children: React.ReactNode }) {
           <ProjectEmptyState />
         ) : token && currentProject ? (
           <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-10">
+            {projectsError ? (
+              <div role="alert" className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded border border-red-400/20 bg-red-400/10 p-4 text-sm text-red-100">
+                <p>{projectsError}</p>
+                <button
+                  type="button"
+                  onClick={() => void refreshProjects(true)}
+                  className="min-h-11 rounded bg-white px-4 py-2 font-semibold text-black transition hover:bg-emerald-200"
+                >
+                  {t('Shell.retry')}
+                </button>
+              </div>
+            ) : null}
             {children}
           </div>
         ) : null}

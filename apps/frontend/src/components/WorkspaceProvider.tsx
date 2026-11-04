@@ -23,7 +23,6 @@ import {
 import { getDocumentImportFailureSummary, getStatus } from '@/lib/api';
 import { clearCompletedQueryResults } from '@/lib/query-result-history';
 import {
-  bootstrapDefaultProject,
   createProject,
   renameProject as renameProjectRequest,
   getProjects,
@@ -142,7 +141,6 @@ type WorkspaceContextValue = {
   currentProject: Project | null;
   projectsLoading: boolean;
   projectsError: string;
-  productSetupPending: boolean;
   isDemoSession: boolean;
   loginOpen: boolean;
   newProjectOpen: boolean;
@@ -188,7 +186,6 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [currentProject, setCurrentProject] = useState<Project | null>(null);
   const [projectsLoading, setProjectsLoading] = useState(false);
   const [projectsError, setProjectsError] = useState('');
-  const [productSetupPending, setProductSetupPending] = useState(false);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [profileOnboarding, setProfileOnboarding] = useState<ProfileOnboardingIntent | null>(null);
   const [navCounts, setNavCounts] = useState<NavCounts>(emptyNavCounts);
@@ -208,8 +205,6 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const activeProjectLoadRef = useRef<{ token: string; sessionEpoch: number; generation: number } | null>(null);
   const restartProjectLoadRef = useRef(false);
   const autoLoadIdentityRef = useRef<{ ownerId: string | null; sessionIdentityEpoch: number } | null>(null);
-  const setupReadyOwnerRef = useRef<string | null>(null);
-  const bootstrapFlightsRef = useRef(new Map<string, Promise<string>>());
   const renameGenerationByProjectRef = useRef(new Map<string, number>());
   const profileOnboardingOwnerRef = useRef<string | null>(null);
   const queryResultScopeRef = useRef({
@@ -342,7 +337,6 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       sessionEpoch: operationSessionEpoch,
       generation: startedGeneration,
     };
-    const operationOwnerId = user?.id ?? operationToken;
     const ownsState = () => (
       projectStateActiveRef.current
       && projectListGenerationRef.current === startedGeneration
@@ -352,39 +346,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     if (!background) setProjectsLoading(true);
     setProjectsError('');
     try {
-      if (!background && setupReadyOwnerRef.current !== operationOwnerId) {
-        setProductSetupPending(true);
-        let bootstrap = bootstrapFlightsRef.current.get(operationToken);
-        if (!bootstrap) {
-          bootstrap = bootstrapDefaultProject(operationToken);
-          bootstrapFlightsRef.current.set(operationToken, bootstrap);
-        }
-        try {
-          await bootstrap;
-        } finally {
-          if (bootstrapFlightsRef.current.get(operationToken) === bootstrap) {
-            bootstrapFlightsRef.current.delete(operationToken);
-          }
-        }
-        if (!ownsState()) return;
-        setupReadyOwnerRef.current = operationOwnerId;
-        setProductSetupPending(false);
-      }
-
-      let nextProjects = await getProjects();
+      const nextProjects = await getProjects();
       if (!ownsState()) return;
-      if (nextProjects.length === 0) {
-        if (background) return;
-        setProductSetupPending(true);
-        await bootstrapDefaultProject(operationToken);
-        if (!ownsState()) return;
-        setupReadyOwnerRef.current = operationOwnerId;
-        nextProjects = await getProjects();
-        if (!ownsState()) return;
-      }
-      if (nextProjects.length === 0) {
-        throw new Error('Workspace setup is pending; try again.');
-      }
+      if (background && nextProjects.length === 0) return;
       const existingSelection = currentProjectRef.current;
       const selected = (background && existingSelection
         ? nextProjects.find((project) => project.id === existingSelection.id)
@@ -393,18 +357,15 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       setCurrentProject(selected);
       projectsReadyRef.current = true;
       writeLastProjectId(selected?.id ?? null);
-      setProductSetupPending(false);
     } catch (error) {
       if (!ownsState()) return;
       if (background && projectsReadyRef.current) {
         setProjectsError(error instanceof Error ? error.message : 'Unable to refresh projects.');
         return;
       }
-      setupReadyOwnerRef.current = null;
       setProjects([]);
       setCurrentProject(null);
       projectsReadyRef.current = false;
-      setProductSetupPending(true);
       setProjectsError(error instanceof Error ? error.message : 'Unable to load projects.');
     } finally {
       if (!background && ownsState()) setProjectsLoading(false);
@@ -412,7 +373,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         activeProjectLoadRef.current = null;
       }
     }
-  }, [sessionEpoch, token, user?.id]);
+  }, [sessionEpoch, token]);
 
   const signIn = useCallback(async (email: string, password: string) => {
     await login(email, password);
@@ -438,9 +399,6 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setCurrentProject(null);
     setProjectsLoading(false);
     setProjectsError('');
-    setProductSetupPending(false);
-    setupReadyOwnerRef.current = null;
-    bootstrapFlightsRef.current.clear();
     setNewProjectOpen(false);
     setProfileOnboarding(null);
     setNavCounts(emptyNavCounts);
@@ -605,9 +563,6 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setCurrentProject(null);
     projectsReadyRef.current = false;
     setProjectsError('');
-    setupReadyOwnerRef.current = null;
-    bootstrapFlightsRef.current.clear();
-    setProductSetupPending(false);
     setNavCounts(emptyNavCounts);
   }, [hydrated, loadProjects, sessionEpoch, sessionIdentityEpoch, token, user?.id]);
 
@@ -666,7 +621,6 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     currentProject,
     projectsLoading,
     projectsError,
-    productSetupPending,
     isDemoSession,
     loginOpen: hydrated && !token,
     newProjectOpen,
@@ -704,7 +658,6 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     markProfileOnboardingPresented,
     projects,
     projectsError,
-    productSetupPending,
     refreshAccessToken,
     refreshNavCounts,
     register,

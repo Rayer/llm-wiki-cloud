@@ -9,14 +9,16 @@ if (!(React as { act?: (callback: () => unknown) => Promise<unknown> | unknown }
   });
 }
 
-const { act, cleanup, fireEvent, render, screen, waitFor } = await import('@testing-library/react');
+const { act, cleanup, fireEvent, render, screen, waitFor, within } = await import('@testing-library/react');
 
 const mocks = vi.hoisted(() => ({
   bootstrapDefaultProject: vi.fn(),
   getProjects: vi.fn(),
+  createProject: vi.fn(),
   renameProject: vi.fn(),
   getStatus: vi.fn(),
   replace: vi.fn(),
+  push: vi.fn(),
   pathname: '/',
   token: 'auth-token' as string | null,
   user: { id: 'user-1', email: 'owner@example.com', role: 'owner' },
@@ -26,7 +28,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('next/navigation', () => ({
   usePathname: () => mocks.pathname,
-  useRouter: () => ({ replace: mocks.replace }),
+  useRouter: () => ({ replace: mocks.replace, push: mocks.push }),
 }));
 
 vi.mock('@/lib/projects', async () => {
@@ -35,6 +37,7 @@ vi.mock('@/lib/projects', async () => {
     ...actual,
     bootstrapDefaultProject: mocks.bootstrapDefaultProject,
     getProjects: mocks.getProjects,
+    createProject: mocks.createProject,
     renameProject: mocks.renameProject,
   };
 });
@@ -60,6 +63,7 @@ vi.mock('@/lib/auth', () => ({
 }));
 
 import { Shell } from '@/components/Shell';
+import { useWorkspace } from '@/components/WorkspaceProvider';
 import { recordRequestIDHeader } from '@/lib/request-ids';
 
 function apiStatus() {
@@ -81,6 +85,17 @@ function renderShell() {
   );
 }
 
+function BackgroundRefreshProbe() {
+  const { currentProject, refreshProjects } = useWorkspace();
+  return (
+    <>
+      <button type="button" onClick={() => void refreshProjects(true)}>refresh mounted workspace</button>
+      <p data-testid="mounted-current-project-id">{currentProject?.id ?? ''}</p>
+      <div>workspace content</div>
+    </>
+  );
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason: unknown) => void;
@@ -95,10 +110,11 @@ let observers: ReturnType<typeof installShellIntersectionObserver>;
 beforeEach(() => {
   observers = installShellIntersectionObserver();
   mocks.bootstrapDefaultProject.mockReset().mockResolvedValue('default');
-  mocks.getProjects.mockResolvedValue([
+  mocks.getProjects.mockReset().mockResolvedValue([
     { id: 'project-a', name: 'Project Alpha' },
     { id: 'project-b', name: 'Project Beta' },
   ]);
+  mocks.createProject.mockReset().mockResolvedValue({ id: 'created', name: 'Created' });
   mocks.renameProject.mockResolvedValue('Renamed project');
   mocks.getStatus.mockResolvedValue(apiStatus());
   mocks.pathname = '/';
@@ -106,6 +122,7 @@ beforeEach(() => {
   mocks.user = { id: 'user-1', email: 'owner@example.com', role: 'owner' };
   mocks.isDemoSession = false;
   mocks.logout.mockReset().mockResolvedValue(undefined);
+  mocks.push.mockReset();
   localStorage.setItem('llm-wiki-last-project', 'project-a');
 });
 
@@ -117,6 +134,69 @@ afterEach(() => {
 });
 
 describe('LWC-174 production Shell rename behavior', () => {
+  it('loads an empty Shell, opens and cancels creation without mutation, then selects the server ID on submit', async () => {
+    localStorage.setItem('locale', 'en');
+    mocks.getProjects.mockResolvedValueOnce([]);
+    mocks.createProject.mockResolvedValueOnce({ id: 'server-generated-wiki-id', name: 'First Wiki' });
+    render(<Shell><BackgroundRefreshProbe /></Shell>);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Create your first Wiki' }));
+    expect(await screen.findByRole('dialog', { name: 'Create project' })).toBeTruthy();
+    expect(mocks.createProject).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(mocks.createProject).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create your first Wiki' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Project name' }), { target: { value: 'First Wiki' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create project' }));
+    await waitFor(() => expect(screen.getByTestId('mounted-current-project-id').textContent).toBe('server-generated-wiki-id'));
+    expect(mocks.createProject).toHaveBeenCalledOnce();
+    expect(mocks.push).toHaveBeenCalledWith('/profile');
+    expect(mocks.bootstrapDefaultProject).not.toHaveBeenCalled();
+  });
+
+  it('shows a load error instead of the empty CTA and retries the list read', async () => {
+    localStorage.setItem('locale', 'en');
+    mocks.getProjects.mockRejectedValueOnce(new Error('initial list failed'));
+    renderShell();
+
+    expect(await screen.findByRole('heading', { name: 'Projects unavailable' })).toBeTruthy();
+    expect(screen.getByText('initial list failed')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Create your first Wiki' })).toBeNull();
+    expect(mocks.bootstrapDefaultProject).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByText('workspace content')).toBeTruthy();
+    expect(mocks.getProjects).toHaveBeenCalledTimes(2);
+    expect(mocks.bootstrapDefaultProject).not.toHaveBeenCalled();
+  });
+
+  it('keeps mounted content and shows a visible retry after background list failure', async () => {
+    localStorage.setItem('locale', 'en');
+    render(<Shell><BackgroundRefreshProbe /></Shell>);
+    expect(await screen.findByText('workspace content')).toBeTruthy();
+    expect(mocks.bootstrapDefaultProject).not.toHaveBeenCalled();
+
+    mocks.getProjects.mockRejectedValueOnce(new Error('background list failed'));
+    fireEvent.click(screen.getByRole('button', { name: 'refresh mounted workspace' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('background list failed');
+    expect(screen.getByText('workspace content')).toBeTruthy();
+
+    const retry = deferred<{ id: string; name: string }[]>();
+    mocks.getProjects.mockReturnValueOnce(retry.promise);
+    fireEvent.click(within(alert).getByRole('button', { name: 'Try again' }));
+    expect(screen.getByText('workspace content')).toBeTruthy();
+    await act(async () => {
+      retry.resolve([{ id: 'project-a', name: 'Project Alpha' }]);
+      await retry.promise;
+    });
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+    expect(screen.getByText('workspace content')).toBeTruthy();
+    expect(mocks.bootstrapDefaultProject).not.toHaveBeenCalled();
+  });
+
   it('uses the observed marker to reveal scroll-to-top only above the viewport and disconnects on unmount', async () => {
     localStorage.setItem('locale', 'en');
     const view = renderShell();

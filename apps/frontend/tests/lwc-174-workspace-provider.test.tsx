@@ -69,6 +69,7 @@ vi.mock('@/components/NavigationBlocker', () => ({
 
 import { WorkspaceProvider, useWorkspace } from '@/components/WorkspaceProvider';
 import { NewProjectModal } from '@/components/NewProjectModal';
+import { ProjectEmptyState } from '@/components/ProjectEmptyState';
 import {
   clearCompletedQueryResults,
   getCompletedQueryResult,
@@ -79,7 +80,6 @@ import {
 function ProjectStateProbe() {
   const {
     projects, currentProject, projectsLoading, projectsError,
-    productSetupPending,
     addProject, renameProject, refreshProjects, profileOnboarding, openNewProject,
     markProfileOnboardingPresented, selectProject,
   } = useWorkspace();
@@ -95,7 +95,6 @@ function ProjectStateProbe() {
       <p data-testid="result">{result}</p>
       <p data-testid="projects-loading">{String(projectsLoading)}</p>
       <p data-testid="projects-error">{projectsError}</p>
-      <p data-testid="product-setup-pending">{String(productSetupPending)}</p>
       <p data-testid="profile-onboarding-project">{profileOnboarding?.projectId ?? ''}</p>
       <button type="button" onClick={async () => {
         try {
@@ -144,6 +143,9 @@ function ProjectStateProbe() {
       <button type="button" onClick={() => void refreshProjects()}>
         refresh projects
       </button>
+      <button type="button" onClick={() => void refreshProjects(true)}>
+        refresh projects in background
+      </button>
       <button type="button" onClick={() => setResult(String(profileOnboarding
         ? markProfileOnboardingPresented(profileOnboarding.ownerId, profileOnboarding.projectId, profileOnboarding.sessionEpoch)
         : false))}>
@@ -161,6 +163,7 @@ function ProjectStateProbe() {
       <button type="button" onClick={openNewProject}>
         open new project
       </button>
+      {projects.length === 0 ? <ProjectEmptyState /> : null}
       <NewProjectModal />
     </div>
   );
@@ -190,32 +193,102 @@ beforeEach(() => {
   ]);
   mocks.bootstrapDefaultProject.mockReset().mockResolvedValue('default');
   mocks.renameProject.mockResolvedValue('Rename from API');
-  mocks.createProject.mockResolvedValue({ id: 'created', name: 'Created' });
+  mocks.createProject.mockReset().mockResolvedValue({ id: 'created', name: 'Created' });
   mocks.getStatus.mockResolvedValue(apiStatus());
   localStorage.setItem('llm-wiki-last-project', 'project-a');
   localStorage.setItem('locale', 'en');
   mocks.push.mockReset();
 });
 
-it('keeps Project loading behind bootstrap and retries the same setup without a new identity action', async () => {
-  mocks.bootstrapDefaultProject
-    .mockRejectedValueOnce(new Error('temporary bootstrap outage'))
-    .mockResolvedValueOnce('default');
+it('loads Projects directly and retries list failures without bootstrap', async () => {
+  mocks.getProjects
+    .mockRejectedValueOnce(new Error('temporary project outage'))
+    .mockResolvedValueOnce([
+      { id: 'project-a', name: 'Project Alpha' },
+      { id: 'project-b', name: 'Project Beta' },
+    ]);
   render(
     <WorkspaceProvider>
       <ProjectStateProbe />
     </WorkspaceProvider>,
   );
 
-  await waitFor(() => expect(screen.getByTestId('product-setup-pending').textContent).toBe('true'));
-  expect(mocks.getProjects).not.toHaveBeenCalled();
-  expect(screen.getByTestId('projects-error').textContent).toContain('temporary bootstrap outage');
+  await waitFor(() => expect(screen.getByTestId('projects-error').textContent).toContain('temporary project outage'));
+  expect(mocks.getProjects).toHaveBeenCalledOnce();
+  expect(mocks.bootstrapDefaultProject).not.toHaveBeenCalled();
 
   fireEvent.click(screen.getByRole('button', { name: 'refresh projects' }));
   await waitFor(() => expect(screen.getByTestId('current-project-id').textContent).toBe('project-a'));
-  expect(mocks.bootstrapDefaultProject).toHaveBeenCalledTimes(2);
+  expect(mocks.getProjects).toHaveBeenCalledTimes(2);
+  expect(mocks.createProject).not.toHaveBeenCalled();
+  expect(mocks.bootstrapDefaultProject).not.toHaveBeenCalled();
+});
+
+it('loads an existing Wiki even when the compatibility bootstrap would conflict', async () => {
+  mocks.bootstrapDefaultProject.mockRejectedValueOnce(new Error('legacy bootstrap conflict 409'));
+  render(
+    <WorkspaceProvider>
+      <ProjectStateProbe />
+    </WorkspaceProvider>,
+  );
+
+  await waitFor(() => expect(screen.getByTestId('current-project-id').textContent).toBe('project-a'));
   expect(mocks.getProjects).toHaveBeenCalledOnce();
-  expect(screen.getByTestId('product-setup-pending').textContent).toBe('false');
+  expect(mocks.bootstrapDefaultProject).not.toHaveBeenCalled();
+});
+
+it('keeps the current selection when a background list refresh returns empty', async () => {
+  render(
+    <WorkspaceProvider>
+      <ProjectStateProbe />
+    </WorkspaceProvider>,
+  );
+  await waitFor(() => expect(screen.getByTestId('current-project-id').textContent).toBe('project-a'));
+
+  mocks.getProjects.mockResolvedValueOnce([]);
+  fireEvent.click(screen.getByRole('button', { name: 'refresh projects in background' }));
+
+  await waitFor(() => expect(mocks.getProjects).toHaveBeenCalledTimes(2));
+  expect(screen.getByTestId('current-project-id').textContent).toBe('project-a');
+  expect(screen.getByTestId('project-name-project-b').textContent).toBe('Project Beta');
+  expect(screen.getByTestId('projects-error').textContent).toBe('');
+  expect(mocks.bootstrapDefaultProject).not.toHaveBeenCalled();
+  expect(mocks.createProject).not.toHaveBeenCalled();
+});
+
+it('treats an empty list as success and creates a first Wiki only after explicit form submit', async () => {
+  localStorage.setItem('locale', 'en');
+  mocks.getProjects.mockResolvedValueOnce([]);
+  mocks.createProject.mockResolvedValueOnce({ id: 'server-generated-wiki-id', name: 'First Wiki' });
+  render(
+    <WorkspaceProvider>
+      <ProjectStateProbe />
+    </WorkspaceProvider>,
+  );
+
+  const firstWikiButton = await screen.findByRole('button', { name: 'Create your first Wiki' });
+  await waitFor(() => expect(screen.getByTestId('projects-loading').textContent).toBe('false'));
+  expect(screen.getByTestId('current-project-id').textContent).toBe('');
+  expect(screen.getByTestId('projects-error').textContent).toBe('');
+  expect(mocks.bootstrapDefaultProject).not.toHaveBeenCalled();
+  expect(mocks.createProject).not.toHaveBeenCalled();
+
+  fireEvent.click(firstWikiButton);
+  expect(await screen.findByRole('dialog', { name: 'Create project' })).toBeDefined();
+  expect(mocks.createProject).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  expect(screen.queryByRole('dialog')).toBeNull();
+  expect(mocks.createProject).not.toHaveBeenCalled();
+  expect(screen.getByTestId('current-project-id').textContent).toBe('');
+
+  fireEvent.click(screen.getByRole('button', { name: 'Create your first Wiki' }));
+  fireEvent.change(screen.getByRole('textbox', { name: 'Project name' }), { target: { value: 'First Wiki' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Create project' }));
+
+  await waitFor(() => expect(screen.getByTestId('current-project-id').textContent).toBe('server-generated-wiki-id'));
+  expect(mocks.createProject).toHaveBeenCalledOnce();
+  expect(mocks.bootstrapDefaultProject).not.toHaveBeenCalled();
+  expect(mocks.push).toHaveBeenCalledWith('/profile');
 });
 
 afterEach(() => {

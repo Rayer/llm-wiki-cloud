@@ -309,7 +309,7 @@ beforeEach(() => {
 });
 
 describe('LWC-221 auth redirect behavior', () => {
-  it('keeps a committed registration session and retries workspace bootstrap without registering again', async () => {
+  it('keeps a committed registration session and loads Projects without workspace bootstrap', async () => {
     setQueue('refresh', [{ status: 401, body: { error: 'missing' } }]);
     setQueue('register', [{
       status: 201,
@@ -320,10 +320,7 @@ describe('LWC-221 auth redirect behavior', () => {
         default_project_id: 'default',
       },
     }]);
-    setQueue('onboarding', [
-      { status: 503, body: { error: 'temporary bootstrap outage' } },
-      { status: 200, body: { schema_version: 1, status: 'ready', default_project_id: 'default' } },
-    ]);
+    setQueue('onboarding', [{ status: 503, body: { error: 'unexpected bootstrap request' } }]);
     setQueue('projects', [{
       status: 200,
       body: [{ id: 'default', name: 'Default Project' }],
@@ -334,26 +331,13 @@ describe('LWC-221 auth redirect behavior', () => {
     await act(async () => {
       await workspaceRef.current!.register('registered@example.test', 'password');
     });
-    await waitUntil(() => workspaceRef.current?.productSetupPending === true);
-
-    expect(readStoredAccessToken(window.localStorage)).toBe('registration-token');
-    expect(workspaceRef.current?.projects).toEqual([]);
-    expect(requestLog.filter((request) => request.route === 'register')).toHaveLength(1);
-    expect(requestLog.filter((request) => request.route === 'projects')).toHaveLength(0);
-    const failedBootstrap = requestLog.find((request) => request.route === 'onboarding');
-    expect(failedBootstrap?.authorization).toBe('Bearer registration-token');
-    expect(failedBootstrap?.savedToken).toBe('registration-token');
-    expect(failedBootstrap?.body).toBe('{"schema_version":1}');
-
-    await act(async () => {
-      await workspaceRef.current!.refreshProjects();
-    });
     await waitUntil(() => workspaceRef.current?.currentProject?.id === 'default');
 
+    expect(readStoredAccessToken(window.localStorage)).toBe('registration-token');
+    expect(workspaceRef.current?.projects.map(({ id }) => id)).toEqual(['default']);
     expect(requestLog.filter((request) => request.route === 'register')).toHaveLength(1);
-    expect(requestLog.filter((request) => request.route === 'onboarding')).toHaveLength(2);
+    expect(requestLog.filter((request) => request.route === 'onboarding')).toHaveLength(0);
     expect(requestLog.filter((request) => request.route === 'projects')).toHaveLength(1);
-    expect(workspaceRef.current?.productSetupPending).toBe(false);
   });
 
   it('preserves normal login for the reserved demo email across hydration', async () => {
@@ -538,9 +522,6 @@ describe('LWC-221 auth redirect behavior', () => {
     writeStoredAuthUser(window.localStorage, TEST_USER);
     setQueue('projects', [oldProjects.promise, {
       status: 200,
-      body: [],
-    }, {
-      status: 200,
       body: [{ id: 'new-project', name: 'New Project' }],
     }]);
     setQueue('login', [{ status: 200, body: loginBody('new-token') }]);
@@ -562,9 +543,6 @@ describe('LWC-221 auth redirect behavior', () => {
     writeStoredAccessToken(window.localStorage, 'old-token');
     writeStoredAuthUser(window.localStorage, TEST_USER);
     setQueue('projects', [oldProjects.promise, {
-      status: 200,
-      body: [],
-    }, {
       status: 200,
       body: [{ id: 'new-project', name: 'New Project' }],
     }]);
@@ -1166,28 +1144,33 @@ describe('LWC-221 auth redirect behavior', () => {
 
 it('recovers project loading after a same-token soft refresh advances the session epoch', async () => {
   const refresh = deferred<FetchResponse>();
-  const bootstrap = deferred<FetchResponse>();
+  const oldProjects = deferred<FetchResponse>();
   writeStoredAccessToken(window.localStorage, 'parent-same-token');
   writeStoredAuthUser(window.localStorage, TEST_USER);
   setQueue('refresh', [refresh.promise]);
-  setQueue('onboarding', [bootstrap.promise]);
-  setQueue('projects', [{ status: 200, body: [{ id: 'default', name: 'Default Project' }] }]);
+  setQueue('projects', [oldProjects.promise, {
+    status: 200,
+    body: [{ id: 'default', name: 'Default Project' }],
+  }]);
 
   await renderProviders();
-  await waitUntil(() => requestLog.some((request) => request.route === 'onboarding'));
+  await waitUntil(() => requestLog.some((request) => request.route === 'projects'));
   expect(workspaceRef.current?.projectsLoading).toBe(true);
 
   await resolveDeferred(refresh, {
     status: 200,
     body: hydrateBody('parent-same-token'),
   });
-  await resolveDeferred(bootstrap, {
-    status: 200,
-    body: { schema_version: 1, status: 'ready', default_project_id: 'default' },
-  });
+  await waitUntil(() => requestLog.filter((request) => request.route === 'projects').length === 2);
 
   await waitFor(() => {
     expect(workspaceRef.current?.projectsLoading).toBe(false);
     expect(workspaceRef.current?.currentProject?.id).toBe('default');
   }, { timeout: 1000 });
+  await resolveDeferred(oldProjects, {
+    status: 200,
+    body: [{ id: 'old-project', name: 'Old Project' }],
+  });
+  expect(workspaceRef.current?.currentProject?.id).toBe('default');
+  expect(requestLog.filter((request) => request.route === 'onboarding')).toHaveLength(0);
 });

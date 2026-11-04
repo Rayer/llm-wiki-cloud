@@ -11,7 +11,7 @@ import {
   selectDefaultProject,
 } from '../src/lib/project-core.ts';
 import { configureApiAuth } from '../src/lib/api.ts';
-import { getProjectContentContext } from '../src/lib/projects.ts';
+import { getProjectContentContext, getProjects } from '../src/lib/projects.ts';
 
 test('normalizeProjects accepts array and wrapped API responses', () => {
   assert.deepEqual(
@@ -26,6 +26,70 @@ test('normalizeProjects accepts array and wrapped API responses', () => {
       { id: 'bravo', name: 'Bravo', createdAt: null, lastUsedAt: null, description: '', descriptionRevision: 0 },
     ],
   );
+});
+
+test('getProjects accepts supported list envelopes and project item shapes at the HTTP boundary', async () => {
+  const originalFetch = globalThis.fetch;
+  const items = [
+    'legacy-string',
+    { id: 'direct', name: 'Direct' },
+    { project_id: 'snake', project_name: 'Snake' },
+    { projectId: 'camel', projectName: 'Camel' },
+    { slug: 'slug', title: 'Slug' },
+    { project: { id: 'nested', name: 'Nested' } },
+    { project: 'fallback' },
+  ];
+  const ids = items.map((item) => typeof item === 'string'
+    ? item
+    : typeof item.project === 'string'
+      ? item.project
+      : item.project && typeof item.project === 'object'
+        ? item.project.id
+        : item.id ?? item.project_id ?? item.projectId ?? item.slug);
+  let payload = items;
+  configureApiAuth({ getAccessToken: () => 'test-token', refreshAccessToken: async () => null, onUnauthorized: () => undefined });
+  globalThis.fetch = async () => Response.json(payload);
+
+  try {
+    for (const response of [items, { projects: items }, { items }, { data: items }]) {
+      payload = response;
+      const projects = await getProjects();
+      assert.equal(projects.length, items.length);
+      assert.deepEqual(projects.map(({ id }) => id).sort(), ids.sort());
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('getProjects rejects malformed, invalid, and mixed-invalid successful responses', async () => {
+  const originalFetch = globalThis.fetch;
+  const valid = { id: 'valid', name: 'Valid' };
+  const malformed = [
+    null,
+    {},
+    { projects: 'not-an-array' },
+    { items: null },
+    [null],
+    [valid, null],
+    { data: [{ name: 'Missing identity' }] },
+  ];
+  let response = Response.json(null);
+  configureApiAuth({ getAccessToken: () => 'test-token', refreshAccessToken: async () => null, onUnauthorized: () => undefined });
+  globalThis.fetch = async () => response;
+
+  try {
+    for (const payload of malformed) {
+      response = Response.json(payload);
+      await assert.rejects(getProjects(), /Projects response is invalid/);
+    }
+    response = new Response('{not-json', { status: 200 });
+    await assert.rejects(getProjects(), /Projects response is invalid/);
+    response = Response.json({ error: 'temporarily unavailable' }, { status: 503 });
+    await assert.rejects(getProjects(), /temporarily unavailable/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('normalizeProject accepts a project returned from init-project', () => {
