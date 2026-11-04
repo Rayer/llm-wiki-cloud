@@ -185,6 +185,29 @@ function expectQuerySections() {
 }
 
 describe('LWC-248 home search submission contract', () => {
+  it.each([
+    { name: 'single Wiki', projects: [{ id: 'project-a', name: 'Project A' }], demo: false, addMaterial: true },
+    { name: 'Demo session', projects: [{ id: 'project-a', name: 'Project A' }, { id: 'project-b', name: 'Project B' }], demo: true, addMaterial: false },
+  ])('preserves the existing Wiki and AddMaterial gates for a $name after Query', async ({ projects, demo, addMaterial }) => {
+    mocks.projects = projects;
+    mocks.isDemoSession = demo;
+    mocks.searchWiki.mockResolvedValueOnce({ results: [], aiAnswer: '', citations: [] });
+    render(<HomeClient />);
+    await waitForInitialSearchState();
+    expect(document.querySelector('section[aria-labelledby="current-wiki-heading"]')).not.toBeNull();
+    expect(document.querySelector('section[aria-labelledby="other-wikis-heading"]')).toBeNull();
+    expect(Boolean(screen.queryByRole('button', { name: 'AddMaterial.open' }))).toBe(addMaterial);
+
+    await act(async () => {
+      fireEvent.change(screen.getByRole('textbox', { name: 'Demo.search' }), { target: { value: `${demo ? 'demo' : 'single'} gate query` } });
+      fireEvent.submit((await getFormFromSearchButton()).form);
+    });
+    expect(await screen.findByText('QueryResults.noResults')).toBeTruthy();
+    expect(document.querySelector('section[aria-labelledby="current-wiki-heading"]')).not.toBeNull();
+    expect(document.querySelector('section[aria-labelledby="other-wikis-heading"]')).toBeNull();
+    expect(Boolean(screen.queryByRole('button', { name: 'AddMaterial.open' }))).toBe(addMaterial);
+  });
+
   it('keeps Project Profile out of Search and does not load it there', async () => {
     render(<HomeClient />);
     await waitForInitialSearchState();
