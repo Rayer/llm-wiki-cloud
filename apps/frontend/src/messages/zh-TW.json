@@ -1674,6 +1674,11 @@
     "copied": "命令已複製",
     "copyFailed": "無法複製命令，請手動選取並複製。"
   },
+  "ProjectEmptyState": {
+    "title": "歡迎使用 LLM Wiki Cloud",
+    "guidance": "建立你的第一個 Wiki，開始打造可搜尋的知識工作空間。",
+    "createFirstWiki": "建立第一個 Wiki"
+  },
   "ProjectDescription": {
     "title": "專案描述",
     "mainTitle": "Wiki 用途",

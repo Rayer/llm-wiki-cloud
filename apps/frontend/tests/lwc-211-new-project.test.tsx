@@ -166,6 +166,19 @@ describe('LWC-406 project creation', () => {
     expect(mocks.push).not.toHaveBeenCalled();
   });
 
+  it('retries an unknown first-create response with the same operation ID', async () => {
+    mocks.addProject.mockRejectedValueOnce(new Error('response was lost'));
+    render(<NewProjectModal />);
+    fireEvent.change(screen.getByRole('textbox', { name: 'Project name' }), { target: { value: 'First Wiki' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create project' }));
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', 'response was lost');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create project' }));
+    await waitFor(() => expect(mocks.addProject).toHaveBeenCalledTimes(2));
+    expect(mocks.addProject.mock.calls[1][2]).toBe(mocks.addProject.mock.calls[0][2]);
+    expect(mocks.push).toHaveBeenCalledWith('/profile');
+  });
+
   it('retries navigation for the created project without sending a second create', async () => {
     mocks.push.mockImplementationOnce(() => { throw new Error('transition unavailable'); });
     render(<NewProjectModal />);

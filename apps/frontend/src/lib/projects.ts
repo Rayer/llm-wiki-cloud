@@ -109,7 +109,15 @@ export async function getProjects(): Promise<Project[]> {
   if (!response.ok) {
     throw new Error(apiError(payload, `Unable to load projects (${response.status})`));
   }
-  return normalizeProjects(payload);
+  const items = Array.isArray(payload)
+    ? payload
+    : payload && typeof payload === 'object'
+      ? ['projects', 'items', 'data'].map((key) => (payload as Record<string, unknown>)[key]).find(Array.isArray)
+      : null;
+  if (!Array.isArray(items)) throw new Error('Projects response is invalid.');
+  const projects = normalizeProjects(payload);
+  if (projects.length !== items.length) throw new Error('Projects response is invalid.');
+  return projects;
 }
 
 export async function bootstrapDefaultProject(accessToken: string): Promise<string> {

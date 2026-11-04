@@ -1674,6 +1674,11 @@
     "copied": "Command copied",
     "copyFailed": "Could not copy the command. Select and copy it manually."
   },
+  "ProjectEmptyState": {
+    "title": "Welcome to LLM Wiki Cloud",
+    "guidance": "Create your first Wiki to start building a searchable knowledge workspace.",
+    "createFirstWiki": "Create your first Wiki"
+  },
   "ProjectDescription": {
     "title": "Project description",
     "mainTitle": "About this Wiki",
