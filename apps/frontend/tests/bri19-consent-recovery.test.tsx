@@ -1,6 +1,7 @@
 import React from 'react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { AuthProvider } from '@/lib/auth';
+import MCPOAuthConsentPage from '@/app/(workspace)/oauth/consent/page';
 import { readStoredAccessToken, writeStoredAccessToken, writeStoredAuthUser } from '@/lib/auth-core';
 import { setRuntimeConfigForTests } from '@/lib/runtime-config';
 import { installShellIntersectionObserver } from './shell-intersection-observer-helper';
@@ -48,9 +49,9 @@ const { cleanup, fireEvent, render, screen, waitFor } = await import('@testing-l
 import { usePathname } from 'next/navigation';
 import { Shell } from '@/components/Shell';
 import { GoogleCompletionClient } from '@/components/GoogleCompletionClient';
-import { MCPOAuthConsentClient } from '@/components/MCPOAuthConsentClient';
 
 const transactionId = `lwc_mcp_tx_${'R'.repeat(43)}`;
+const consentPage = await MCPOAuthConsentPage({ searchParams: Promise.resolve({ transaction_id: transactionId }) });
 const consentPath = `/oauth/consent?transaction_id=${transactionId}`;
 const briefResource = 'https://brief.dev.rayer.idv.tw/mcp';
 const authToken = (sub: string) => `header.${btoa(JSON.stringify({ sub }))}.signature`;
@@ -65,14 +66,14 @@ function requestURL(input: Parameters<typeof fetch>[0]): string {
   return input.url;
 }
 
-function RouteContent() {
+function RouteContent({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   if (pathname === '/login') return <GoogleCompletionClient />;
-  return <MCPOAuthConsentClient transactionId={transactionId} />;
+  return children;
 }
 
-function App() {
-  return <AuthProvider><Shell><RouteContent /></Shell></AuthProvider>;
+function App({ children }: { children: React.ReactNode }) {
+  return <AuthProvider><Shell><RouteContent>{children}</RouteContent></Shell></AuthProvider>;
 }
 
 function consentDetails() {
@@ -140,7 +141,7 @@ afterEach(() => {
 it('shows a fixed Daily Brief landing above the signed-out login modal without trusting return_to', async () => {
   navigation.pathname = '/oauth/consent';
   window.history.replaceState({}, '', `${consentPath}&return_to=${encodeURIComponent('https://evil.example/')}`);
-  view = render(<App />);
+  view = render(<App>{consentPage}</App>);
 
   const recovery = await screen.findByRole('link', { name: 'MCPOAuth.returnToDailyBrief' });
   expect(recovery.getAttribute('href')).toBe('https://brief.dev.rayer.idv.tw/');
@@ -150,7 +151,7 @@ it('shows a fixed Daily Brief landing above the signed-out login modal without t
   expect(calls.every(({ authorization }) => authorization === null)).toBe(true);
 
   navigation.pathname = '/advanced';
-  view.rerender(<App />);
+  view.rerender(<App>{consentPage}</App>);
   expect(screen.queryByRole('link', { name: 'MCPOAuth.returnToDailyBrief' })).toBeNull();
 });
 
@@ -169,11 +170,11 @@ it('returns from provider cancellation to the same transaction and offers the fi
     if (url.includes('/api/v1/auth/mcp/oauth/consent/')) return jsonResponse({ error: 'expired' }, 410);
     return jsonResponse({});
   });
-  view = render(<App />);
+  view = render(<App>{consentPage}</App>);
 
   fireEvent.click(await screen.findByRole('button', { name: 'GoogleCompletion.returnToConsent' }));
   await waitFor(() => expect(navigation.replace).toHaveBeenCalledWith(consentPath));
-  view.rerender(<App />);
+  view.rerender(<App>{consentPage}</App>);
   const recovery = await screen.findByRole('link', { name: 'MCPOAuth.returnToDailyBrief' });
   expect(recovery.getAttribute('href')).toBe('https://brief.dev.rayer.idv.tw/');
   expect(calls.some(({ url, method }) => url.includes(`/consent/${transactionId}`) && method === 'POST')).toBe(false);
@@ -196,7 +197,7 @@ it('offers fixed recovery after a flagged selection becomes terminal and sends n
     }
     return jsonResponse({});
   });
-  view = render(<App />);
+  view = render(<App>{consentPage}</App>);
 
   fireEvent.click(await screen.findByRole('button', { name: 'MCPOAuth.continueWithAccount' }));
   const recovery = await screen.findByRole('link', { name: 'MCPOAuth.returnToDailyBrief' });
@@ -228,7 +229,7 @@ it('retains only fixed Daily Brief navigation context when password sign-in chan
     }
     return jsonResponse({});
   });
-  view = render(<App />);
+  view = render(<App>{consentPage}</App>);
 
   fireEvent.click(await screen.findByRole('button', { name: 'MCPOAuth.useAnotherAccount' }));
   await screen.findByRole('dialog');
@@ -246,4 +247,25 @@ it('retains only fixed Daily Brief navigation context when password sign-in chan
   expect(consentRequests.some(({ method }) => method === 'POST')).toBe(false);
   expect(screen.queryByRole('button', { name: 'MCPOAuth.continueWithAccount' })).toBeNull();
   expect(screen.queryByRole('button', { name: 'MCPOAuth.allow' })).toBeNull();
+});
+
+it('mounts the actual consent route with providers over an empty Wiki list and sends no decision', async () => {
+  writeStoredAccessToken(localStorage, authToken('account-a'));
+  writeStoredAuthUser(localStorage, { id: 'account-a', email: 'account-a@example.test' });
+  mocks.getProjects.mockResolvedValueOnce([]);
+  mocks.fetch.mockImplementation(async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const url = requestURL(input);
+    const method = init?.method ?? 'GET';
+    const authorization = new Headers(init?.headers).get('Authorization');
+    calls.push({ url, method, authorization });
+    if (url.endsWith('/api/v1/auth/refresh')) return jsonResponse({ error: 'synthetic no refresh cookie' }, 401);
+    if (url.includes(`/api/v1/auth/mcp/oauth/consent/${transactionId}`)) return jsonResponse(consentDetails());
+    return jsonResponse({});
+  });
+
+  view = render(<App>{consentPage}</App>);
+  expect(await screen.findByText('Daily Brief MCP client')).toBeDefined();
+  await waitFor(() => expect(mocks.getProjects).toHaveBeenCalled());
+  expect(mocks.bootstrapDefaultProject).not.toHaveBeenCalled();
+  expect(calls.some(({ url, method }) => url.includes(`/consent/${transactionId}`) && method === 'POST')).toBe(false);
 });
