@@ -45,9 +45,13 @@ export function AgentMcpTabs({
   t: Translate;
 }) {
   const [selectedTool, setSelectedTool] = useState<ToolId>('hermes');
+  const [requestContentRead, setRequestContentRead] = useState(false);
+  const [requestRawWrite, setRequestRawWrite] = useState(false);
   const [copyFeedback, setCopyFeedback] = useState<CopyFeedback | null>(null);
   const [sharedCopyFeedback, setSharedCopyFeedback] = useState<'copied' | 'error' | null>(null);
   const sharedInstructions = t('MCPOAuth.sharedInstructions');
+  const requestedScopes = ['mcp:query', ...(requestContentRead ? ['mcp:content:read'] : []), ...(requestRawWrite ? ['mcp:raw:write'] : [])];
+  const requestedScope = requestedScopes.join(' ');
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const identityRef = useRef({ key: identityKey, generation: 0 });
   const copyOperationRef = useRef(0);
@@ -130,7 +134,7 @@ export function AgentMcpTabs({
   };
 
   const renderCopyBlock = (target: MCPGuideTarget, buttonKey: string) => {
-    const snippet = buildMCPGuideSnippet(target, resourceURL, locale);
+    const snippet = buildMCPGuideSnippet(target, resourceURL, locale, requestedScopes);
     const feedback = copyFeedback?.identityKey === identityKey
       && copyFeedback.target === target
       && selectedTool === (target === 'grok-cli' || target === 'grok-bot' ? 'grok' : target === 'openai-web' ? 'codex' : target)
@@ -153,12 +157,12 @@ export function AgentMcpTabs({
     return <a className="mt-3 inline-block text-sm text-emerald-200 underline decoration-emerald-200/40 underline-offset-4 hover:text-white" href={href} target="_blank" rel="noreferrer">{t('MCPOAuth.officialGuide')}</a>;
   };
 
-  const renderTechnicalDetails = (scope: string) => (
+  const renderTechnicalDetails = () => (
     <details className="mt-4 rounded border border-white/8 bg-black/15 px-4 py-3">
       <summary className="cursor-pointer text-sm text-zinc-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300">{t('MCPOAuth.technicalDetails')}</summary>
       <dl className="mt-3 grid gap-3 text-sm sm:grid-cols-2">
         <div><dt className="text-xs text-zinc-500">{t('MCPOAuth.environment')}</dt><dd className="mt-1 text-zinc-200">{environmentLabel}</dd></div>
-        <div><dt className="text-xs text-zinc-500">{t('MCPOAuth.scope')}</dt><dd className="mt-1 font-sans text-emerald-200">{scope}</dd></div>
+        <div><dt className="text-xs text-zinc-500">{t('MCPOAuth.scope')}</dt><dd className="mt-1 font-sans text-emerald-200">{requestedScope}</dd></div>
         <div className="sm:col-span-2"><dt className="text-xs text-zinc-500">{t('MCPOAuth.resource')}</dt><dd className="mt-1 break-all font-sans text-xs leading-5 text-zinc-300">{isUsableMCPResourceURL(resourceURL) ? resourceURL : t('MCPOAuth.resourceUnavailable')}</dd></div>
       </dl>
     </details>
@@ -174,7 +178,7 @@ export function AgentMcpTabs({
       {renderCopyBlock(target, 'MCPOAuth.copySetup')}
       <p className="mt-3 text-xs leading-5 text-amber-100">{t(`MCPOAuth.panel.${id}.evidence`)}</p>
       {renderSource(target)}
-      {renderTechnicalDetails(target === 'claude-code' ? 'mcp:query' : 'mcp:query mcp:raw:write')}
+      {renderTechnicalDetails()}
     </div>
   );
 
@@ -183,6 +187,20 @@ export function AgentMcpTabs({
       <div className="p-5 pb-0 sm:p-6 sm:pb-0">
         <h2 id="mcp-oauth-setup-title" className="mt-2 text-lg font-semibold text-white">{t('MCPOAuth.setupTitle')}</h2>
         <p className="mt-2 text-sm leading-6 text-zinc-400">{t('MCPOAuth.setupIntro')}</p>
+        <fieldset className="mt-4 rounded border border-white/10 bg-black/20 p-4">
+          <legend className="px-1 text-sm font-semibold text-white">{t('MCPOAuth.requestedPermissions')}</legend>
+          <p className="mb-2 text-xs leading-5 text-zinc-400">{t('MCPOAuth.queryScopeRequired')}</p>
+          <label className="flex min-h-11 items-center gap-3 text-sm text-zinc-200">
+            <input type="checkbox" checked={requestContentRead} onChange={(event) => setRequestContentRead(event.target.checked)} className="size-4 accent-emerald-300" />
+            <span>{t('MCPOAuth.contentReadScope')}</span>
+          </label>
+          <p className="ml-7 text-xs leading-5 text-zinc-500">{t('MCPOAuth.contentReadScopeHint')}</p>
+          <label className="mt-2 flex min-h-11 items-center gap-3 text-sm text-zinc-200">
+            <input type="checkbox" checked={requestRawWrite} onChange={(event) => setRequestRawWrite(event.target.checked)} className="size-4 accent-emerald-300" />
+            <span>{t('MCPOAuth.rawWriteScope')}</span>
+          </label>
+          <p className="ml-7 text-xs leading-5 text-zinc-500">{t('MCPOAuth.scopeClientWarning')}</p>
+        </fieldset>
         <details className="mt-4 rounded border border-white/10 bg-black/20 p-4">
           <summary className="cursor-pointer font-semibold text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300">{t('MCPOAuth.sharedInstructionsTitle')}</summary>
           <div className="mt-3">
@@ -238,7 +256,7 @@ export function AgentMcpTabs({
               </ol>
               {renderCopyBlock('hermes', 'MCPOAuth.copyConfig')}
               <p className="mt-3 text-xs leading-5 text-amber-100">{t('MCPOAuth.nativeCheck')}</p>
-              {renderTechnicalDetails('mcp:query mcp:raw:write')}
+              {renderTechnicalDetails()}
             </div>
           ) : tool.id === 'grok' ? (
             <div>
@@ -261,7 +279,7 @@ export function AgentMcpTabs({
                 <p className="mt-3 text-xs leading-5 text-amber-100">{t('MCPOAuth.panel.grok.botEvidence')}</p>
                 {renderSource('grok-bot')}
               </section>
-              {renderTechnicalDetails('mcp:query')}
+              {renderTechnicalDetails()}
             </div>
           ) : tool.id === 'codex' ? (
             <>
@@ -275,7 +293,7 @@ export function AgentMcpTabs({
                 {renderCopyBlock('openai-web', 'MCPOAuth.copyPrompt')}
                 <p className="mt-3 text-xs leading-5 text-amber-100">{t('MCPOAuth.panel.openaiWeb.evidence')}</p>
                 {renderSource('openai-web')}
-                {renderTechnicalDetails('mcp:query')}
+                {renderTechnicalDetails()}
               </section>
             </>
           )

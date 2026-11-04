@@ -22,12 +22,12 @@ func (h *Handler) ListProjectKeys(c *gin.Context) {
 }
 
 func (h *Handler) CreateProjectKey(c *gin.Context) {
-	name, err := decodeProjectKeyCreateBody(c)
+	request, err := decodeProjectKeyCreateBody(c)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": auth.ErrProjectKeyInvalidInput.Error()})
 		return
 	}
-	key, secret, outcomeKeyID, err := h.projectKeyService.Create(c.Request.Context(), c.GetString("userID"), c.Param("pid"), name)
+	key, secret, outcomeKeyID, err := h.projectKeyService.CreateWithCapabilities(c.Request.Context(), c.GetString("userID"), c.Param("pid"), request.Name, request.Capabilities)
 	if err != nil {
 		writeProjectKeyManagementError(c, err, outcomeKeyID)
 		return
@@ -44,24 +44,27 @@ func (h *Handler) RevokeProjectKey(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"key": key})
 }
 
-func decodeProjectKeyCreateBody(c *gin.Context) (string, error) {
+type projectKeyCreateRequest struct {
+	Name         string   `json:"name"`
+	Capabilities []string `json:"capabilities,omitempty"`
+}
+
+func decodeProjectKeyCreateBody(c *gin.Context) (projectKeyCreateRequest, error) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, projectKeyCreateBodyLimit)
 	decoder := json.NewDecoder(c.Request.Body)
 	decoder.DisallowUnknownFields()
-	var request struct {
-		Name string `json:"name"`
-	}
+	var request projectKeyCreateRequest
 	if err := decoder.Decode(&request); err != nil {
-		return "", err
+		return projectKeyCreateRequest{}, err
 	}
 	var extra interface{}
 	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
 		if err == nil {
-			return "", errors.New("multiple JSON values")
+			return projectKeyCreateRequest{}, errors.New("multiple JSON values")
 		}
-		return "", err
+		return projectKeyCreateRequest{}, err
 	}
-	return request.Name, nil
+	return request, nil
 }
 
 func writeProjectKeyManagementError(c *gin.Context, err error, outcomeKeyID string) {

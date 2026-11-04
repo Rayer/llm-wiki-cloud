@@ -765,7 +765,7 @@ func validateBFFDescriptorShape(fields map[string]json.RawMessage, schemaVersion
 	}
 	if !exact(fields["llm"], "provider", "base_url", "request_timeout_seconds", "model") ||
 		!exact(fields["pipeline_schedule"], "cron", "timezone", "audience", "service_account") ||
-		!exact(fields["mcp"], "instructions", "tool_descriptions", "discovery_ttl_ms", "tools_list_ttl_ms") ||
+		!exact(fields["mcp"], "instructions", "tool_descriptions", "discovery_ttl_ms", "tools_list_ttl_ms", "protection") ||
 		!exact(fields["query"], "stage_config_path", "legacy") ||
 		!exact(fields["deepseek_api_key_reference"], "source", "env_name", "resource") ||
 		!exact(fields["typesafe_api_key_reference"], "source", "env_name", "resource") ||
@@ -785,7 +785,7 @@ func validateBFFDescriptorShape(fields map[string]json.RawMessage, schemaVersion
 		return errors.New("generated BFF Auth consumer has an invalid shape")
 	}
 	var mcpFields map[string]json.RawMessage
-	if json.Unmarshal(fields["mcp"], &mcpFields) != nil || !exact(mcpFields["tool_descriptions"], "query_project", "add_raw", "import_url") {
+	if json.Unmarshal(fields["mcp"], &mcpFields) != nil || !exact(mcpFields["tool_descriptions"], "query_project", "add_raw", "import_url", "list_content", "find_content", "read_content", "read_source_raw") {
 		return errors.New("generated BFF input descriptor has an invalid MCP metadata shape")
 	}
 	var query map[string]json.RawMessage

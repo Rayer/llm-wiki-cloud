@@ -118,14 +118,14 @@ type taggingGCSObject struct {
 	gen  int64
 }
 
-func newTaggingGCSClient(t *testing.T, objects map[string]taggingGCSObject) (*gcs.Client, *sync.Mutex, map[string]int) {
+func newTaggingGCSClient(t *testing.T, objects map[string]taggingGCSObject, beforeRead ...func(string)) (*gcs.Client, *sync.Mutex, map[string]int) {
 	t.Helper()
 	var mu sync.Mutex
 	reads := map[string]int{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		defer mu.Unlock()
 		if r.Method == http.MethodPost {
+			mu.Lock()
+			defer mu.Unlock()
 			if r.URL.Query().Get("ifGenerationMatch") != "0" {
 				t.Errorf("non-create-only write: %s", r.URL)
 				http.Error(w, "precondition required", 400)
@@ -176,8 +176,10 @@ func newTaggingGCSClient(t *testing.T, objects map[string]taggingGCSObject) (*gc
 		if decoded, err := url.PathUnescape(name); err == nil {
 			name = decoded
 		}
+		mu.Lock()
 		reads[name]++
 		o, ok := objects[name]
+		mu.Unlock()
 		if !ok {
 			http.Error(w, "missing", 404)
 			return
@@ -195,6 +197,9 @@ func newTaggingGCSClient(t *testing.T, objects map[string]taggingGCSObject) (*gc
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]string{"name": name, "bucket": "tagging-local", "generation": strconv.FormatInt(o.gen, 10), "size": strconv.Itoa(len(o.data))})
 			return
+		}
+		if len(beforeRead) > 0 && beforeRead[0] != nil {
+			beforeRead[0](name)
 		}
 		w.Header().Set("Content-Length", strconv.Itoa(len(o.data)))
 		w.Header().Set("X-Goog-Generation", strconv.FormatInt(o.gen, 10))

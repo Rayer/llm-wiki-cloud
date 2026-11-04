@@ -524,6 +524,7 @@ func (h *Handler) Query(c *gin.Context) {
 		setQueryIdentityHeaders(c, identity)
 		diagnostic.setGeneration(identity.GenerationID)
 	}
+	response.ContentGeneration = queryContentGeneration(c.Request.Context(), gcsClient, c.GetString("projectID"))
 	diagnostic.succeed(response.Status, response.Reason, diagnostic.receipt.Receipt())
 	c.JSON(http.StatusOK, response)
 }

@@ -259,7 +259,8 @@
       "kind": "literal",
       "context": "Short natural-language MCP setup prompt for Grok Bot.",
       "params": [
-        "resourceURL"
+        "resourceURL",
+        "scopes"
       ],
       "protected_literals": [
         "MCP"
@@ -269,7 +270,8 @@
       "kind": "literal",
       "context": "Short natural-language MCP connection prompt for ChatGPT web.",
       "params": [
-        "resourceURL"
+        "resourceURL",
+        "scopes"
       ]
     },
     "MCPOAuth.connection.confirmPrompt": {
@@ -649,6 +651,60 @@
         "count",
         "total"
       ]
+    },
+    "AccountSettings.projectKeyPermissions": {
+      "kind": "literal"
+    },
+    "AccountSettings.projectKeyQuery": {
+      "kind": "literal"
+    },
+    "AccountSettings.projectKeyContentRead": {
+      "kind": "literal"
+    },
+    "AccountSettings.projectKeyContentReadHint": {
+      "kind": "literal"
+    },
+    "AccountSettings.projectKeyQueryAndContentRead": {
+      "kind": "literal"
+    },
+    "MCPOAuth.requestedPermissions": {
+      "kind": "literal"
+    },
+    "MCPOAuth.queryScopeRequired": {
+      "kind": "literal"
+    },
+    "MCPOAuth.contentReadScope": {
+      "kind": "literal"
+    },
+    "MCPOAuth.contentReadScopeHint": {
+      "kind": "literal"
+    },
+    "MCPOAuth.rawWriteScope": {
+      "kind": "literal"
+    },
+    "MCPOAuth.scopeClientWarning": {
+      "kind": "literal"
+    },
+    "MCPOAuth.scopeSnippetNote": {
+      "kind": "literal",
+      "params": [
+        "scopes"
+      ]
+    },
+    "MCPOAuth.scopeQueryDescription": {
+      "kind": "literal"
+    },
+    "MCPOAuth.scopeContentReadDescription": {
+      "kind": "literal"
+    },
+    "MCPOAuth.scopeRawWriteDescription": {
+      "kind": "literal"
+    },
+    "MCPOAuth.unknownScopeDescription": {
+      "kind": "literal"
+    },
+    "AccountSettings.projectKeysHint": {
+      "kind": "literal"
     }
   }
 }

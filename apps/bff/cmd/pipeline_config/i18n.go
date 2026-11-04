@@ -69,9 +69,13 @@ type i18nTranslation struct {
 type i18nMCPSource struct {
 	Instructions     string `json:"instructions"`
 	ToolDescriptions struct {
-		QueryProject string `json:"query_project"`
-		AddRaw       string `json:"add_raw"`
-		ImportURL    string `json:"import_url"`
+		QueryProject  string `json:"query_project"`
+		AddRaw        string `json:"add_raw"`
+		ImportURL     string `json:"import_url"`
+		ListContent   string `json:"list_content"`
+		FindContent   string `json:"find_content"`
+		ReadContent   string `json:"read_content"`
+		ReadSourceRaw string `json:"read_source_raw"`
 	} `json:"tool_descriptions"`
 }
 
@@ -404,7 +408,9 @@ func validateI18nConfig(config i18nConfig, environment string) error {
 
 func validateI18NMCPSource(source i18nMCPSource) error {
 	if strings.TrimSpace(source.Instructions) == "" || strings.TrimSpace(source.ToolDescriptions.QueryProject) == "" ||
-		strings.TrimSpace(source.ToolDescriptions.AddRaw) == "" || strings.TrimSpace(source.ToolDescriptions.ImportURL) == "" {
+		strings.TrimSpace(source.ToolDescriptions.AddRaw) == "" || strings.TrimSpace(source.ToolDescriptions.ImportURL) == "" ||
+		strings.TrimSpace(source.ToolDescriptions.ListContent) == "" || strings.TrimSpace(source.ToolDescriptions.FindContent) == "" ||
+		strings.TrimSpace(source.ToolDescriptions.ReadContent) == "" || strings.TrimSpace(source.ToolDescriptions.ReadSourceRaw) == "" {
 		return errors.New("i18n CaC projection is incomplete")
 	}
 	return nil
@@ -527,6 +533,14 @@ func i18nCACValue(source i18nMCPSource, ref string) (string, bool) {
 		return source.ToolDescriptions.AddRaw, true
 	case "mcp.tool_descriptions.import_url":
 		return source.ToolDescriptions.ImportURL, true
+	case "mcp.tool_descriptions.list_content":
+		return source.ToolDescriptions.ListContent, true
+	case "mcp.tool_descriptions.find_content":
+		return source.ToolDescriptions.FindContent, true
+	case "mcp.tool_descriptions.read_content":
+		return source.ToolDescriptions.ReadContent, true
+	case "mcp.tool_descriptions.read_source_raw":
+		return source.ToolDescriptions.ReadSourceRaw, true
 	default:
 		return "", false
 	}

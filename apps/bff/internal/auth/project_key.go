@@ -27,6 +27,7 @@ import (
 const (
 	projectKeyPrefix       = "lwc_pk_"
 	projectKeySchema       = 1
+	projectKeyReadSchema   = 2
 	projectKeyIDBytes      = 16
 	projectKeySecretBytes  = 32
 	projectKeyCapability   = "query"
@@ -114,7 +115,7 @@ func (s *ProjectKeyService) SetAccountLookup(lookup AccountLookup) {
 func (r ProjectKeyRecord) Metadata() ProjectKeyMetadata {
 	metadata := ProjectKeyMetadata{
 		KeyID: r.KeyID, Name: r.Name, ProjectID: r.ProjectID,
-		Capabilities: []string{projectKeyCapability}, State: r.State, CreatedAt: r.CreatedAt,
+		Capabilities: append([]string(nil), r.Capabilities...), State: r.State, CreatedAt: r.CreatedAt,
 	}
 	if !r.RevokedAt.IsZero() {
 		revokedAt := r.RevokedAt
@@ -184,10 +185,10 @@ func validateProjectKeyRecord(docID string, data map[string]interface{}) (Projec
 	}
 	name, validName := validProjectKeyName(record.Name)
 	digest, digestErr := hex.DecodeString(record.SecretHash)
-	if record.SchemaVersion != projectKeySchema || !validProjectKeyID(docID) || record.KeyID != docID ||
+	if (record.SchemaVersion != projectKeySchema && record.SchemaVersion != projectKeyReadSchema) || !validProjectKeyID(docID) || record.KeyID != docID ||
 		!ValidPathSegment(record.UserID) || !ValidPathSegment(record.ProjectID) || !validName || name != record.Name ||
 		digestErr != nil || len(digest) != sha256.Size || hex.EncodeToString(digest) != record.SecretHash ||
-		len(record.Capabilities) != 1 || record.Capabilities[0] != projectKeyCapability || record.CreatedAt.IsZero() {
+		!validProjectKeyCapabilities(record.SchemaVersion, record.Capabilities) || record.CreatedAt.IsZero() {
 		return ProjectKeyRecord{}, ErrProjectKeyUnavailable
 	}
 	switch record.State {
@@ -203,6 +204,27 @@ func validateProjectKeyRecord(docID string, data map[string]interface{}) (Projec
 		return ProjectKeyRecord{}, ErrProjectKeyUnavailable
 	}
 	return record, nil
+}
+
+func validProjectKeyCapabilities(schema int, capabilities []string) bool {
+	if len(capabilities) == 1 && capabilities[0] == projectKeyCapability {
+		return true
+	}
+	return schema == projectKeyReadSchema && len(capabilities) == 2 &&
+		capabilities[0] == projectKeyCapability && capabilities[1] == "content:read"
+}
+
+func normalizeProjectKeyCapabilities(capabilities []string) ([]string, int, bool) {
+	if len(capabilities) == 0 {
+		return []string{projectKeyCapability}, projectKeySchema, true
+	}
+	if len(capabilities) == 1 && capabilities[0] == projectKeyCapability {
+		return []string{projectKeyCapability}, projectKeySchema, true
+	}
+	if len(capabilities) == 2 && capabilities[0] == projectKeyCapability && capabilities[1] == "content:read" {
+		return []string{projectKeyCapability, "content:read"}, projectKeyReadSchema, true
+	}
+	return nil, 0, false
 }
 
 // firestoreDataTo keeps record decoding local without exposing a Firestore
@@ -230,7 +252,7 @@ func (s firestoreProjectKeyStore) Create(ctx context.Context, record ProjectKeyR
 		"project_id":     record.ProjectID,
 		"name":           record.Name,
 		"secret_hash":    record.SecretHash,
-		"capabilities":   []string{projectKeyCapability},
+		"capabilities":   append([]string(nil), record.Capabilities...),
 		"state":          "active",
 		"created_at":     firestore.ServerTimestamp,
 	})
@@ -469,8 +491,16 @@ func (s *ProjectKeyService) List(ctx context.Context, userID, projectID string) 
 // Create issues a 256-bit secret once. The third return value is only a safe
 // correlation ID when an ambiguous write could not be reconciled.
 func (s *ProjectKeyService) Create(ctx context.Context, userID, projectID, name string) (metadata ProjectKeyMetadata, secret string, outcomeKeyID string, err error) {
+	return s.CreateWithCapabilities(ctx, userID, projectID, name, nil)
+}
+
+func (s *ProjectKeyService) CreateWithCapabilities(ctx context.Context, userID, projectID, name string, requested []string) (metadata ProjectKeyMetadata, secret string, outcomeKeyID string, err error) {
 	if err := s.requireOwner(ctx, userID, projectID); err != nil {
 		return ProjectKeyMetadata{}, "", "", err
+	}
+	capabilities, schema, valid := normalizeProjectKeyCapabilities(requested)
+	if !valid {
+		return ProjectKeyMetadata{}, "", "", ErrProjectKeyInvalidInput
 	}
 	name, ok := validProjectKeyName(name)
 	if !ok {
@@ -482,14 +512,14 @@ func (s *ProjectKeyService) Create(ctx context.Context, userID, projectID, name 
 			return ProjectKeyMetadata{}, "", "", ErrProjectKeyUnavailable
 		}
 		record := ProjectKeyRecord{
-			SchemaVersion: projectKeySchema, KeyID: id, UserID: userID, ProjectID: projectID,
-			Name: name, SecretHash: digest, Capabilities: []string{projectKeyCapability}, State: "active",
+			SchemaVersion: schema, KeyID: id, UserID: userID, ProjectID: projectID,
+			Name: name, SecretHash: digest, Capabilities: capabilities, State: "active",
 		}
 		createdAt, createErr := s.store.Create(ctx, record)
 		if createErr == nil {
 			if createdAt.IsZero() {
 				record, readErr := s.store.Read(ctx, id)
-				if readErr != nil || !projectKeyCreateMatches(record, id, userID, projectID, name, digest) {
+				if readErr != nil || !projectKeyCreateMatches(record, id, userID, projectID, name, digest, schema, capabilities) {
 					return ProjectKeyMetadata{}, "", id, ErrProjectKeyCreateUnknown
 				}
 				return record.Metadata(), token, "", nil
@@ -501,7 +531,7 @@ func (s *ProjectKeyService) Create(ctx context.Context, userID, projectID, name 
 			continue
 		}
 		record, readErr := s.store.Read(ctx, id)
-		if readErr == nil && projectKeyCreateMatches(record, id, userID, projectID, name, digest) {
+		if readErr == nil && projectKeyCreateMatches(record, id, userID, projectID, name, digest, schema, capabilities) {
 			return record.Metadata(), token, "", nil
 		}
 		return ProjectKeyMetadata{}, "", id, ErrProjectKeyCreateUnknown
@@ -509,11 +539,22 @@ func (s *ProjectKeyService) Create(ctx context.Context, userID, projectID, name 
 	return ProjectKeyMetadata{}, "", "", ErrProjectKeyUnavailable
 }
 
-func projectKeyCreateMatches(record ProjectKeyRecord, id, userID, projectID, name, digest string) bool {
+func projectKeyCreateMatches(record ProjectKeyRecord, id, userID, projectID, name, digest string, schema int, capabilities []string) bool {
 	return record.KeyID == id && record.UserID == userID && record.ProjectID == projectID &&
 		record.Name == name && record.SecretHash == digest && record.State == "active" &&
-		record.SchemaVersion == projectKeySchema && len(record.Capabilities) == 1 &&
-		record.Capabilities[0] == projectKeyCapability
+		record.SchemaVersion == schema && equalProjectKeyCapabilities(record.Capabilities, capabilities)
+}
+
+func equalProjectKeyCapabilities(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // Revoke is idempotent and never deletes or reactivates a project key.

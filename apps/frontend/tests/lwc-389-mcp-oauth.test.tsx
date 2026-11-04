@@ -158,7 +158,7 @@ describe('LWC-389 MCP OAuth frontend', () => {
     expect(await screen.findByText('Hermes Agent')).toBeDefined();
     expect(screen.getByText('owner@example.com')).toBeDefined();
     expect(screen.getByText('Research Project')).toBeDefined();
-    expect(screen.getByText('mcp:query')).toBeDefined();
+    expect(screen.getAllByText('mcp:query')).toHaveLength(2);
     expect(mocks.readConsent).toHaveBeenCalledWith(transactionId, 'web-session-token');
     expect(mocks.decideConsent).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'MCPOAuth.continueWithAccount' }));
@@ -395,19 +395,39 @@ describe('LWC-389 MCP OAuth frontend', () => {
     });
     render(<MCPOAuthConsentClient transactionId={transactionId} />);
     expect(await screen.findByText('mcp:query mcp:raw:write')).toBeDefined();
-    expect(screen.getByText('Add permitted raw sources.')).toBeDefined();
+    expect(screen.getByText('MCPOAuth.scopeQueryDescription')).toBeDefined();
+    expect(screen.getByText('MCPOAuth.scopeRawWriteDescription')).toBeDefined();
+    expect(screen.queryByText('Add permitted raw sources.')).toBeNull();
     expect(screen.queryByText('MCPOAuth.queryAndRawWrite')).toBeNull();
     expect(mocks.decideConsent).not.toHaveBeenCalled();
   });
 
+  it('shows the exact optional content-read scope with its localized permission description', async () => {
+    mocks.readConsent.mockResolvedValueOnce({
+      ...consent,
+      scope: 'mcp:query mcp:content:read',
+      scope_details: [
+        { name: 'mcp:query', description: 'server-provided query copy' },
+        { name: 'mcp:content:read', description: 'server-provided content copy' },
+      ],
+    });
+    render(<MCPOAuthConsentClient transactionId={transactionId} />);
+    expect(await screen.findByText('mcp:query mcp:content:read')).toBeDefined();
+    expect(screen.getByText('MCPOAuth.scopeQueryDescription')).toBeDefined();
+    expect(screen.getByText('MCPOAuth.scopeContentReadDescription')).toBeDefined();
+    expect(screen.queryByText('server-provided content copy')).toBeNull();
+    expect(mocks.decideConsent).not.toHaveBeenCalled();
+  });
+
   it.each([
-    ['legacy query response', 'mcp:query', 'MCPOAuth.queryOnly'],
-    ['legacy query and raw-write response', 'mcp:query mcp:raw:write', 'MCPOAuth.queryAndRawWrite'],
-  ])('keeps the localized explanation for a %s', async (_name, scope, explanation) => {
+    ['legacy query response', 'mcp:query', ['MCPOAuth.scopeQueryDescription']],
+    ['legacy query and raw-write response', 'mcp:query mcp:raw:write', ['MCPOAuth.scopeQueryDescription', 'MCPOAuth.scopeRawWriteDescription']],
+  ])('keeps per-scope catalog explanations for a %s', async (_name, scope, explanations) => {
     mocks.readConsent.mockResolvedValueOnce({ ...consent, scope });
     render(<MCPOAuthConsentClient transactionId={transactionId} />);
-    expect(await screen.findByText(scope)).toBeDefined();
-    expect(screen.getByText(explanation)).toBeDefined();
+    expect((await screen.findAllByText(scope)).length).toBeGreaterThan(0);
+    if (scope === 'mcp:query') expect(screen.getAllByText('mcp:query')).toHaveLength(2);
+    for (const explanation of explanations) expect(screen.getByText(explanation)).toBeDefined();
   });
 
   it('renders fixed Daily Brief consent without Project fields or labels', async () => {
@@ -643,7 +663,7 @@ describe('LWC-389 MCP OAuth frontend', () => {
     const config = document.querySelector('code')!;
     expect(config.textContent).toContain('http://localhost:18080/mcp/projects/project-one');
     expect(config.textContent).toContain('auth: oauth');
-    expect(config.textContent).toContain('scope: "mcp:query mcp:raw:write"');
+    expect(config.textContent).toContain('scope: "mcp:query"');
     expect(config.textContent).not.toContain('Bearer');
     const writeText = navigator.clipboard.writeText as ReturnType<typeof vi.fn>;
     fireEvent.click(screen.getByRole('button', { name: 'MCPOAuth.copyConfig' }));

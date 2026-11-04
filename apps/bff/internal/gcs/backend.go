@@ -129,7 +129,7 @@ func (c *Client) readObject(ctx context.Context, name string, generation, limit 
 		finishOnce(nil)
 		return backendObject{}, errors.New("object size does not match attributes")
 	}
-	data, err := store.ReadBoundedBody(r, limit)
+	data, err := store.ReadExactBoundedBody(r, r.Attrs.Size, limit)
 	if err != nil {
 		if errors.Is(err, store.ErrReadLimitExceeded) {
 			finishOnce(nil)

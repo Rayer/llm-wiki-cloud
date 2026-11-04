@@ -17,6 +17,8 @@ export type CreatedProjectKey = {
   secret: string;
 };
 
+export type ProjectKeyCapability = 'query' | 'content:read';
+
 export class ProjectKeyApiError extends Error {
   readonly status: number;
   readonly keyId?: string;
@@ -53,12 +55,16 @@ export async function listProjectKeys(projectId: string): Promise<ProjectKey[]> 
   return Array.isArray(payload.keys) ? payload.keys : [];
 }
 
-export async function createProjectKey(projectId: string, name: string): Promise<CreatedProjectKey> {
+export async function createProjectKey(
+  projectId: string,
+  name: string,
+  capabilities: readonly ProjectKeyCapability[] = ['query'],
+): Promise<CreatedProjectKey> {
   const response = await apiFetch(route(projectId), {
     method: 'POST',
     projectId,
     json: true,
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({ name, capabilities }),
   });
   return readResponse<CreatedProjectKey>(response);
 }

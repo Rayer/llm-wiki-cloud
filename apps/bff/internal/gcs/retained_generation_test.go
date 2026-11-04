@@ -144,6 +144,22 @@ func TestReadRetainedSourceSnapshot(t *testing.T) {
 	}
 }
 
+func TestRetainedSourceSnapshotSizeUsesPinnedDigestPathAttributes(t *testing.T) {
+	c, b, _ := sourceInventoryFixture(t)
+	path, err := generation.SourceSnapshotPath(c.view.manifest.SourceSnapshotDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := int64(len(b.objects[projectObject(path)].Data))
+	got, err := c.RetainedSourceSnapshotSize(context.Background())
+	if err != nil || got != want {
+		t.Fatalf("retained inventory size=%d err=%v, want %d", got, err, want)
+	}
+	if _, err := c.WithScope("user", "other").RetainedSourceSnapshotSize(context.Background()); !errors.Is(err, store.ErrQueryGenerationUnpinned) {
+		t.Fatalf("cross-scope inventory size error=%v", err)
+	}
+}
+
 func TestReadRetainedSourceSnapshotFailsClosed(t *testing.T) {
 	for _, tc := range []struct {
 		name string

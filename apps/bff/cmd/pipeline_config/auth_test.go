@@ -70,8 +70,8 @@ func authProjectionForTest(environment string) authSourceProjection {
 			{
 				ID: "lwc-project", Kind: "project-template", Enabled: true,
 				URI: "https://bff." + environment + ".example.test/mcp/projects/{project_id}", Name: "LWC Project",
-				Scopes:           []config.AuthOAuthScope{{Name: "mcp:query", Description: "Query project knowledge."}, {Name: "mcp:raw:write", Description: "Add permitted raw sources."}},
-				AllowedScopeSets: [][]string{{"mcp:query"}, {"mcp:query", "mcp:raw:write"}}, DefaultScopeSet: []string{"mcp:query"},
+				Scopes:           []config.AuthOAuthScope{{Name: "mcp:query", Description: "Query project knowledge."}, {Name: "mcp:content:read", Description: "List and read published Concepts, Sources, and retained Source text in this Project."}, {Name: "mcp:raw:write", Description: "Add permitted raw sources."}},
+				AllowedScopeSets: [][]string{{"mcp:query"}, {"mcp:query", "mcp:content:read"}, {"mcp:query", "mcp:raw:write"}, {"mcp:query", "mcp:content:read", "mcp:raw:write"}}, DefaultScopeSet: []string{"mcp:query"},
 			},
 			{
 				ID: "daily-brief", Kind: "fixed", Enabled: false, URI: briefURI, Name: "Daily Brief",
