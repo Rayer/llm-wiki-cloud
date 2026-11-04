@@ -268,6 +268,10 @@ beforeEach(() => {
       const next = mocks.authResponses.shift();
       return next ? authResponse(next.access_token, next.user) : new Response('{}', { status: 401 });
     }
+    if (url.endsWith('/api/v1/auth/login')) {
+      const next = mocks.authResponses.shift();
+      return next ? authResponse(next.access_token, next.user) : new Response('{}', { status: 401 });
+    }
     if (url.endsWith('/api/v1/auth/logout')) return new Response('{}', { status: 200 });
     throw new Error(`Unexpected fetch in synthetic integration test: ${url}`);
   }));
@@ -440,6 +444,161 @@ describe('LWC-476 Home Query section retention', () => {
     expect(screen.queryByText('Stale Project Query result')).toBeNull();
     expect(screen.queryByText(translate('en', 'QueryErrors.queryFailure'))).toBeNull();
     expectHomeSectionsToRemain(sections);
+  });
+
+  it.each(['success', 'denial'] as const)('keeps a second Wiki Query loading when stale A %s settles', async (completion) => {
+    const staleQuery = deferred<SearchResponse>();
+    const currentQuery = deferred<SearchResponse>();
+    mocks.getProjects.mockResolvedValue([projectA, projectB]);
+    mocks.getConcepts.mockImplementation(async (projectId: string) => [
+      conceptEntry(projectId === 'project-b' ? 'Private Project Beta concept' : 'Private Project Alpha concept', projectId),
+    ]);
+    mocks.searchWiki.mockReturnValueOnce(staleQuery.promise).mockReturnValueOnce(currentQuery.promise);
+
+    renderPage();
+    expect(await screen.findByText('Private Project Alpha concept')).toBeTruthy();
+    const sections = homeSections();
+    const queryInput = screen.getByRole('textbox', { name: translate('en', 'Demo.search') });
+    fireEvent.change(queryInput, { target: { value: 'old Alpha request' } });
+    fireEvent.submit(queryInput.closest('form') as HTMLFormElement);
+    expect(await screen.findByText(`${translate('en', 'QueryResults.searching')}...`)).toBeTruthy();
+
+    await act(async () => { mocks.workspace!.selectProject('project-b'); });
+    await waitFor(() => expect(mocks.workspace?.currentProject?.id).toBe('project-b'));
+    expect(await screen.findByText('Private Project Beta concept')).toBeTruthy();
+    expect(screen.queryByText('Private Project Alpha concept')).toBeNull();
+
+    fireEvent.change(queryInput, { target: { value: 'current Beta request' } });
+    fireEvent.submit(queryInput.closest('form') as HTMLFormElement);
+    await waitFor(() => expect(mocks.searchWiki).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText(`${translate('en', 'QueryResults.searching')}...`)).toBeTruthy();
+    expectHomeSectionsToRemain(sections);
+
+    await act(async () => {
+      if (completion === 'denial') {
+        staleQuery.reject(new QueryApiError('Stale Alpha denial', 403, 'project_access_denied'));
+        await staleQuery.promise.catch(() => undefined);
+      } else {
+        staleQuery.resolve({ results: [{ id: 'old-alpha', slug: 'old-alpha', title: 'Stale Alpha result', type: 'concept', content: '', raw: {} }], aiAnswer: '', citations: [] });
+        await staleQuery.promise;
+      }
+    });
+
+    expect(await screen.findByText(`${translate('en', 'QueryResults.searching')}...`)).toBeTruthy();
+    expect(screen.queryByText('Stale Alpha result')).toBeNull();
+    expect(screen.queryByText(translate('en', 'QueryErrors.queryFailure'))).toBeNull();
+    expectHomeSectionsToRemain(sections);
+
+    await act(async () => {
+      currentQuery.resolve({ results: [{ id: 'current-beta', slug: 'current-beta', title: 'Current Beta result', type: 'concept', content: '', raw: {} }], aiAnswer: '', citations: [] });
+      await currentQuery.promise;
+    });
+    expect(await screen.findByText('Current Beta result')).toBeTruthy();
+    expect(screen.queryByText('Stale Alpha result')).toBeNull();
+    expectHomeSectionsToRemain(sections);
+  });
+
+  it('does not restore a pending Home Query or AddMaterial draft after same-account logout and login', async () => {
+    const pendingQuery = deferred<SearchResponse>();
+    mocks.getProjects.mockResolvedValue([projectA, projectB]);
+    mocks.getConcepts.mockResolvedValue([conceptEntry('Private session concept', 'private-session')]);
+    mocks.searchWiki.mockReturnValueOnce(pendingQuery.promise);
+    renderPage();
+    expect(await screen.findByText('Private session concept')).toBeTruthy();
+    const oldSections = homeSections();
+    const queryInput = screen.getByRole('textbox', { name: translate('en', 'Demo.search') });
+    fireEvent.change(queryInput, { target: { value: 'private pending query' } });
+    fireEvent.submit(queryInput.closest('form') as HTMLFormElement);
+    expect(await screen.findByText(`${translate('en', 'QueryResults.searching')}...`)).toBeTruthy();
+    fireEvent.click(oldSections.addMaterial);
+    fireEvent.change(screen.getByLabelText(translate('en', 'AddMaterial.textTitle')), { target: { value: 'Private session draft' } });
+
+    const identityBeforeLogout = mocks.auth?.sessionIdentityEpoch ?? 0;
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    await act(async () => { await mocks.workspace!.signOut(); });
+    await waitFor(() => expect(mocks.homeUnmounts).toBe(1));
+    expect(mocks.auth?.user).toBeNull();
+    expect(screen.queryByText('Private session concept')).toBeNull();
+    expect(screen.queryByDisplayValue('private pending query')).toBeNull();
+    expect(screen.queryByDisplayValue('Private session draft')).toBeNull();
+
+    mocks.authResponses.push({ access_token: 'token-a-after-login', user: userA });
+    await act(async () => { await mocks.auth!.login(userA.email, 'synthetic-test-password'); });
+    await waitFor(() => expect(mocks.workspace?.currentProject?.id).toBe('project-a'));
+    await waitFor(() => expect(mocks.homeMounts).toBe(2));
+    expect(mocks.auth?.user?.id).toBe('user-a');
+    expect(mocks.auth?.sessionIdentityEpoch).toBeGreaterThan(identityBeforeLogout);
+    const newSections = homeSections();
+    expect(newSections.current).not.toBe(oldSections.current);
+    expect(newSections.other).not.toBe(oldSections.other);
+    expect(screen.getByRole('textbox', { name: translate('en', 'Demo.search') })).toHaveProperty('value', 'private pending query');
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.queryByText('Private session concept')).toBeTruthy();
+    expect(await screen.findByText(translate('en', 'QueryResults.resultUnavailable'))).toBeTruthy();
+    expect(mocks.searchWiki).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      pendingQuery.resolve({ results: [{ id: 'stale-private', slug: 'stale-private', title: 'Old session Query result', type: 'concept', content: '', raw: {} }], aiAnswer: '', citations: [] });
+      await pendingQuery.promise;
+    });
+    expect(screen.queryByText('Old session Query result')).toBeNull();
+    expect(screen.queryByText(translate('en', 'QueryErrors.queryFailure'))).toBeNull();
+    expect(screen.getByText(translate('en', 'QueryResults.resultUnavailable'))).toBeTruthy();
+    expect(mocks.searchWiki).toHaveBeenCalledTimes(1);
+    expectHomeSectionsToRemain(newSections);
+  });
+
+  it.each(['Query first', 'receipt first'] as const)('preserves pending and committed AddMaterial receipt state when %s completes', async (firstCompletion) => {
+    const pendingQuery = deferred<SearchResponse>();
+    const pendingUpload = deferred<RawUploadResult>();
+    mocks.getProjects.mockResolvedValue([projectA, projectB]);
+    mocks.searchWiki.mockReturnValueOnce(pendingQuery.promise);
+    mocks.uploadRawFile.mockReturnValueOnce(pendingUpload.promise);
+    renderPage();
+    await waitFor(() => expect(mocks.workspace?.currentProject?.id).toBe('project-a'));
+    const sections = homeSections();
+
+    const queryInput = screen.getByRole('textbox', { name: translate('en', 'Demo.search') });
+    fireEvent.change(queryInput, { target: { value: 'receipt interleaving query' } });
+    fireEvent.submit(queryInput.closest('form') as HTMLFormElement);
+    expect(await screen.findByText(`${translate('en', 'QueryResults.searching')}...`)).toBeTruthy();
+
+    fireEvent.click(sections.addMaterial);
+    const dialog = screen.getByRole('dialog');
+    fireEvent.change(screen.getByLabelText(translate('en', 'AddMaterial.textTitle')), { target: { value: 'Receipt interleaving' } });
+    fireEvent.change(screen.getByLabelText(translate('en', 'AddMaterial.textBody')), { target: { value: 'Synthetic pending upload body.' } });
+    fireEvent.click(screen.getByRole('button', { name: translate('en', 'AddMaterial.saveText') }));
+    await waitFor(() => expect(mocks.uploadRawFile).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole('button', { name: translate('en', 'AddMaterial.saving') })).toBeTruthy();
+
+    const finishQuery = async () => {
+      await act(async () => {
+        pendingQuery.resolve({ results: [{ id: 'receipt-query', slug: 'receipt-query', title: 'Receipt Query result', type: 'concept', content: '', raw: {} }], aiAnswer: '', citations: [] });
+        await pendingQuery.promise;
+      });
+      expect(await screen.findByText('Receipt Query result')).toBeTruthy();
+      expectHomeSectionsToRemain(sections);
+      expect(screen.getByRole('dialog')).toBe(dialog);
+    };
+    const finishReceipt = async () => {
+      await act(async () => { pendingUpload.resolve(savedReceipt); await pendingUpload.promise; });
+      expect(await screen.findByText(new RegExp(savedReceipt.path))).toBeTruthy();
+      expectHomeSectionsToRemain(sections);
+    };
+
+    if (firstCompletion === 'Query first') {
+      await finishQuery();
+      expect(screen.getByRole('button', { name: translate('en', 'AddMaterial.saving') })).toBeTruthy();
+      await finishReceipt();
+    } else {
+      await finishReceipt();
+      expect(await screen.findByText(`${translate('en', 'QueryResults.searching')}...`)).toBeTruthy();
+      await finishQuery();
+    }
+
+    expect(await screen.findByText(new RegExp(savedReceipt.path))).toBeTruthy();
+    expect(await screen.findByText('Receipt Query result')).toBeTruthy();
+    expect(mocks.triggerPipeline).not.toHaveBeenCalled();
   });
 
 });
