@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { installShellIntersectionObserver } from './shell-intersection-observer-helper';
 
@@ -11,6 +11,8 @@ const mocks = vi.hoisted(() => ({
   getDocumentImportFailureSummary: vi.fn(),
   getConcepts: vi.fn(),
   getProjectContentContext: vi.fn(),
+  searchWiki: vi.fn(),
+  getExportState: vi.fn(),
   getProfile: vi.fn(),
   getProfileBootstrapGuidance: vi.fn(),
   saveProfile: vi.fn(),
@@ -65,7 +67,13 @@ vi.mock('@/lib/api', async () => {
     getProfile: mocks.getProfile,
     getProfileBootstrapGuidance: mocks.getProfileBootstrapGuidance,
     saveProfile: mocks.saveProfile,
+    searchWiki: mocks.searchWiki,
   };
+});
+
+vi.mock('@/lib/export-api', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/export-api')>('@/lib/export-api');
+  return { ...actual, getExportState: mocks.getExportState };
 });
 
 import { Shell } from '@/components/Shell';
@@ -76,7 +84,8 @@ import { AuthProvider, useAuth } from '@/lib/auth';
 import ProfilePage from '@/app/(workspace)/profile/page';
 import { translate } from '@/lib/i18n';
 import type { Project } from '@/lib/project-core';
-import type { ProfileState, RawUploadResult } from '@/lib/api';
+import { QueryApiError, type ProfileState, type RawUploadResult, type SearchResponse } from '@/lib/api';
+import { clearCompletedQueryResults } from '@/lib/query-result-history';
 
 const projectA: Project = {
   id: 'project-a', name: 'Project Alpha', createdAt: null, lastUsedAt: null,
@@ -115,6 +124,20 @@ function AuthWorkspaceProfilePage() {
 
 function renderPage() {
   return render(<AuthProvider><AuthStateProbe /><Shell><AuthWorkspaceHome /></Shell></AuthProvider>);
+}
+
+function homeSections() {
+  const current = document.querySelector<HTMLElement>('section[aria-labelledby="current-wiki-heading"]');
+  const other = document.querySelector<HTMLElement>('section[aria-labelledby="other-wikis-heading"]');
+  const addMaterial = screen.getByRole('button', { name: translate('en', 'AddMaterial.open') });
+  if (!current || !other) throw new Error('Expected both Home Wiki sections to be mounted.');
+  return { current, other, addMaterial };
+}
+
+function expectHomeSectionsToRemain(sections: ReturnType<typeof homeSections>) {
+  expect(document.querySelector('section[aria-labelledby="current-wiki-heading"]')).toBe(sections.current);
+  expect(document.querySelector('section[aria-labelledby="other-wikis-heading"]')).toBe(sections.other);
+  expect(screen.getByRole('button', { name: translate('en', 'AddMaterial.open') })).toBeTruthy();
 }
 
 function renderProfilePage() {
@@ -229,6 +252,12 @@ beforeEach(() => {
   mocks.getProfileBootstrapGuidance.mockReset().mockResolvedValue({ bootstrap_guidance: null });
   mocks.saveProfile.mockReset();
   mocks.getProjects.mockReset().mockResolvedValue([projectA]);
+  mocks.searchWiki.mockReset().mockResolvedValue({ results: [], aiAnswer: '', citations: [] });
+  mocks.getExportState.mockReset().mockResolvedValue({
+    latest_job: null, current: null, previous: null, eligible: false, rejection_reason: null, next_allowed_at: null,
+  });
+  clearCompletedQueryResults();
+  window.history.replaceState(null, '', '/');
   localStorage.clear();
   localStorage.setItem('locale', 'en');
   localStorage.setItem('llm-wiki-last-project', 'project-a');
@@ -246,9 +275,173 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  clearCompletedQueryResults();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   localStorage.clear();
+});
+
+describe('LWC-476 Home Query section retention', () => {
+  it.each(['success', 'empty', 'failure'] as const)('keeps mounted Home sections and child state through a %s Query', async (outcome) => {
+    const pendingQuery = deferred<SearchResponse>();
+    const initialConcept = conceptEntry('Project Alpha concept', 'project-alpha-concept');
+    mocks.getProjects.mockResolvedValue([projectA, projectB]);
+    mocks.getConcepts.mockResolvedValue([initialConcept]);
+    mocks.searchWiki.mockReturnValueOnce(pendingQuery.promise);
+
+    renderPage();
+    expect(await screen.findByText(initialConcept.title)).toBeTruthy();
+    await waitFor(() => expect(mocks.getProjectContentContext).toHaveBeenCalledTimes(1));
+
+    const sections = homeSections();
+    const contentContext = sections.current.querySelector('section[aria-labelledby="content-context-project-a"]');
+    expect(contentContext).not.toBeNull();
+    const pickerTrigger = within(sections.other).getByRole('button', { name: translate('en', 'Home.findWiki') });
+    fireEvent.click(pickerTrigger);
+    const pickerSearch = within(sections.other).getByRole('searchbox');
+    fireEvent.change(pickerSearch, { target: { value: 'Beta' } });
+
+    const queryInput = screen.getByRole('textbox', { name: translate('en', 'Demo.search') });
+    fireEvent.change(queryInput, { target: { value: 'mounted sections query' } });
+    fireEvent.submit(queryInput.closest('form') as HTMLFormElement);
+
+    expect(mocks.searchWiki).toHaveBeenCalledTimes(1);
+    expectHomeSectionsToRemain(sections);
+    expect(screen.getByRole('button', { name: translate('en', 'AddMaterial.open') })).toBe(sections.addMaterial);
+    expect(sections.current.querySelector('section[aria-labelledby="content-context-project-a"]')).toBe(contentContext);
+    expect((pickerSearch as HTMLInputElement).value).toBe('Beta');
+    expect(await screen.findByText(`${translate('en', 'QueryResults.searching')}...`)).toBeTruthy();
+
+    await act(async () => {
+      if (outcome === 'failure') {
+        pendingQuery.reject(new QueryApiError('Synthetic current Wiki denial', 403, 'project_access_denied'));
+        await pendingQuery.promise.catch(() => undefined);
+      } else {
+        pendingQuery.resolve(outcome === 'success'
+          ? { results: [{ id: 'query-result', slug: 'query-result', title: 'Mounted Query result', type: 'concept', content: '' }], aiAnswer: '', citations: [] }
+          : { results: [], aiAnswer: '', citations: [] });
+        await pendingQuery.promise;
+      }
+    });
+
+    expectHomeSectionsToRemain(sections);
+    expect(sections.current.querySelector('section[aria-labelledby="content-context-project-a"]')).toBe(contentContext);
+    expect((pickerSearch as HTMLInputElement).value).toBe('Beta');
+    expect(mocks.getProjectContentContext).toHaveBeenCalledTimes(1);
+    if (outcome === 'success') {
+      expect(await screen.findByText('Mounted Query result')).toBeTruthy();
+      expect(screen.queryByText(translate('en', 'QueryResults.noResults'))).toBeNull();
+    } else if (outcome === 'empty') {
+      expect(await screen.findByText(translate('en', 'QueryResults.noResults'))).toBeTruthy();
+    } else {
+      expect(screen.getByText(translate('en', 'QueryErrors.queryFailure'))).toBeTruthy();
+      expect(screen.queryByText(translate('en', 'QueryResults.noResults'))).toBeNull();
+    }
+  });
+
+  it('keeps the sections through same-Wiki token rotation while Query is pending', async () => {
+    const pendingQuery = deferred<SearchResponse>();
+    mocks.getProjects.mockResolvedValue([projectA, projectB]);
+    mocks.searchWiki.mockReturnValueOnce(pendingQuery.promise);
+    renderPage();
+    await waitFor(() => expect(mocks.workspace?.currentProject?.id).toBe('project-a'));
+    const sections = homeSections();
+
+    const queryInput = screen.getByRole('textbox', { name: translate('en', 'Demo.search') });
+    fireEvent.change(queryInput, { target: { value: 'rotation query' } });
+    fireEvent.submit(queryInput.closest('form') as HTMLFormElement);
+    expect(await screen.findByText(`${translate('en', 'QueryResults.searching')}...`)).toBeTruthy();
+
+    mocks.authResponses.push({ access_token: 'token-a-2', user: userA });
+    await act(async () => { await mocks.auth!.refreshAccessToken(); });
+    await waitFor(() => expect(mocks.workspace?.currentProject?.id).toBe('project-a'));
+    expect(mocks.auth?.sessionIdentityEpoch).toBe(1);
+    expectHomeSectionsToRemain(sections);
+    expect(screen.getByRole('button', { name: translate('en', 'AddMaterial.open') })).toBe(sections.addMaterial);
+
+    await act(async () => {
+      pendingQuery.resolve({ results: [{ id: 'rotation-result', slug: 'rotation-result', title: 'Rotation Query result', type: 'concept', content: '' }], aiAnswer: '', citations: [] });
+      await pendingQuery.promise;
+    });
+    expect(await screen.findByText('Rotation Query result')).toBeTruthy();
+    expectHomeSectionsToRemain(sections);
+  });
+
+  it('preserves an AddMaterial draft while a pending Query completes', async () => {
+    const pendingQuery = deferred<SearchResponse>();
+    mocks.getProjects.mockResolvedValue([projectA, projectB]);
+    mocks.searchWiki.mockReturnValueOnce(pendingQuery.promise);
+    renderPage();
+    await waitFor(() => expect(mocks.workspace?.currentProject?.id).toBe('project-a'));
+    const sections = homeSections();
+
+    const queryInput = screen.getByRole('textbox', { name: translate('en', 'Demo.search') });
+    fireEvent.change(queryInput, { target: { value: 'draft preservation query' } });
+    fireEvent.submit(queryInput.closest('form') as HTMLFormElement);
+    expect(await screen.findByText(`${translate('en', 'QueryResults.searching')}...`)).toBeTruthy();
+
+    fireEvent.click(sections.addMaterial);
+    const dialog = screen.getByRole('dialog');
+    const title = screen.getByLabelText(translate('en', 'AddMaterial.textTitle')) as HTMLInputElement;
+    const body = screen.getByLabelText(translate('en', 'AddMaterial.textBody')) as HTMLTextAreaElement;
+    fireEvent.change(title, { target: { value: 'Query-safe draft' } });
+    fireEvent.change(body, { target: { value: 'Keep this draft while Query finishes.' } });
+
+    await act(async () => {
+      pendingQuery.resolve({ results: [{ id: 'draft-result', slug: 'draft-result', title: 'Draft Query result', type: 'concept', content: '' }], aiAnswer: '', citations: [] });
+      await pendingQuery.promise;
+    });
+
+    expect(screen.getByRole('dialog')).toBe(dialog);
+    expect(screen.getByLabelText(translate('en', 'AddMaterial.textTitle'))).toBe(title);
+    expect(screen.getByLabelText(translate('en', 'AddMaterial.textBody'))).toBe(body);
+    expect(title.value).toBe('Query-safe draft');
+    expect(body.value).toBe('Keep this draft while Query finishes.');
+    expect(await screen.findByText('Draft Query result')).toBeTruthy();
+    expectHomeSectionsToRemain(sections);
+  });
+
+  it.each(['success', 'denial'] as const)('ignores stale %s Query completion after A→B→A', async (completion) => {
+    const staleQuery = deferred<SearchResponse>();
+    mocks.getProjects.mockResolvedValue([projectA, projectB]);
+    mocks.getConcepts.mockImplementation(async (projectId: string) => [
+      conceptEntry(projectId === 'project-b' ? 'Private Project Beta concept' : 'Private Project Alpha concept', projectId),
+    ]);
+    mocks.searchWiki.mockReturnValueOnce(staleQuery.promise);
+    renderPage();
+    expect(await screen.findByText('Private Project Alpha concept')).toBeTruthy();
+    const sections = homeSections();
+
+    const queryInput = screen.getByRole('textbox', { name: translate('en', 'Demo.search') });
+    fireEvent.change(queryInput, { target: { value: 'stale project query' } });
+    fireEvent.submit(queryInput.closest('form') as HTMLFormElement);
+    expect(await screen.findByText(`${translate('en', 'QueryResults.searching')}...`)).toBeTruthy();
+
+    await act(async () => { mocks.workspace!.selectProject('project-b'); });
+    await waitFor(() => expect(mocks.workspace?.currentProject?.id).toBe('project-b'));
+    expect(await screen.findByText('Private Project Beta concept')).toBeTruthy();
+    expect(screen.queryByText('Private Project Alpha concept')).toBeNull();
+    expectHomeSectionsToRemain(sections);
+
+    await act(async () => { mocks.workspace!.selectProject('project-a'); });
+    await waitFor(() => expect(mocks.workspace?.currentProject?.id).toBe('project-a'));
+    expect(await screen.findByText('Private Project Alpha concept')).toBeTruthy();
+    expectHomeSectionsToRemain(sections);
+
+    await act(async () => {
+      if (completion === 'denial') {
+        staleQuery.reject(new QueryApiError('Stale project denial', 403, 'project_access_denied'));
+        await staleQuery.promise.catch(() => undefined);
+      } else {
+        staleQuery.resolve({ results: [{ id: 'stale-result', slug: 'stale-result', title: 'Stale Project Query result', type: 'concept', content: '' }], aiAnswer: '', citations: [] });
+        await staleQuery.promise;
+      }
+    });
+    expect(screen.queryByText('Stale Project Query result')).toBeNull();
+    expect(screen.queryByText(translate('en', 'QueryErrors.queryFailure'))).toBeNull();
+    expectHomeSectionsToRemain(sections);
+  });
+
 });
 
 it('keeps Shell and Home mounted, query drafts, and an in-flight material receipt across same-user credential rotation', async () => {
