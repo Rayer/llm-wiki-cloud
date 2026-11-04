@@ -695,29 +695,53 @@ func reserveMCPContentRead(ctx context.Context, manifest generation.Manifest, pa
 
 func reserveMCPMetadata(ctx context.Context, manifest generation.Manifest, path string) func() {
 	file, ok := manifest.File(path)
-	if !ok || file.Size < 0 {
+	if !ok || file.Size < 0 || file.Size > generation.MaxFileBytes {
 		return nil
 	}
 	lease := mcpAdmissionLeaseFrom(ctx)
 	if lease == nil {
 		return nil
 	}
-	if file.Size > (generation.MaxTotalSize-4<<20)/2 {
+	reservation := mcpMetadataWorkingSetReservation(path, file.Size)
+	if reservation <= 0 {
 		return nil
 	}
-	factor := int64(3)
-	margin := int64(128 << 10)
-	if path == wikiindex.IDMapPath {
-		factor = 4
-	}
-	if file.Size > (generation.MaxTotalSize-margin)/factor {
-		return nil
-	}
-	release, reserved := lease.ReserveBytes(file.Size*factor + margin)
+	release, reserved := lease.ReserveBytes(reservation)
 	if !reserved {
 		return nil
 	}
 	return release
+}
+
+// mcpMetadataWorkingSetReservation uses the actual decoder's logical bounds
+// and the encoded object size to account for retained headers and container
+// slots as well as the source bytes. It deliberately estimates working set,
+// not RSS or object-size equality.
+func mcpMetadataWorkingSetReservation(path string, size int64) int64 {
+	if size < 0 || size > generation.MaxFileBytes {
+		return 0
+	}
+	switch path {
+	case wikiindex.IDMapPath:
+		// Seven IDMap collections can each hold at most MaxFiles entries. Each
+		// JSON entry consumes at least five encoded bytes, while redirect string
+		// entries need at least three bytes (quotes and a separator). Include
+		// decoded strings, the duplicate-detection and result maps, the MCP
+		// snapshot's indexes, and slice headers for redirect targets.
+		mapEntries := min(int64(7*generation.MaxFiles), size/5)
+		redirectItems := size / 3
+		return size*3 + mapEntries*256 + redirectItems*32 + 64<<10
+	case wikiindex.ConceptsJSONLPath:
+		// WikiPagesFromConceptsJSONL retains at most MaxFiles rows. Its JSON
+		// decoder materializes a frontmatter map; every node needs at least two
+		// source bytes, so size/2 bounds the node count before allocator costs.
+		// The per-row allowance covers the page and snapshot indexes.
+		rows := min(int64(generation.MaxFiles), size/12) // shortest nonempty slug row: {"slug":"x"}
+		jsonNodes := size / 2
+		return size*2 + jsonNodes*48 + rows*256 + 64<<10
+	default:
+		return 0
+	}
 }
 
 func (s *mcpContentSnapshot) resolveID(kind, id string) (mcpContentRef, string, bool) {

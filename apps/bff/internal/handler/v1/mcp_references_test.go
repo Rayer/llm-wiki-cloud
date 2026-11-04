@@ -126,6 +126,11 @@ func TestPageMCPReadReferencesFragmentsAmbiguousCandidatesAcrossPages(t *testing
 	if err != nil || len(boundaryFirst[0].Candidates) != 1 || boundaryCursor.ReferenceIndex != 0 || boundaryCursor.CandidateOffset != 1 {
 		t.Fatalf("could not construct a wire boundary where exactly one candidate fits: padding=%d refs=%+v cursor=%+v err=%v", low, boundaryFirst, boundaryCursor, err)
 	}
+	tooLargeBase := map[string]any{"padding": strings.Repeat("x", low+1)}
+	_, tooLarge, _, _, err := pageMCPReadReferences(context.Background(), snapshot, identity, document, "sha256:"+strings.Repeat("b", 64), []byte("[[Duplicate]]"), 0, nil, mcpContentCursor{}, false, 50, tooLargeBase)
+	if err == nil || err.Error() != "response_limit" || len(tooLarge) != 0 {
+		t.Fatalf("first candidate that cannot fit should fail without an empty fragment: refs=%+v err=%v", tooLarge, err)
+	}
 	_, boundaryNext, cursorValue, complete, err := pageMCPReadReferences(context.Background(), snapshot, identity, document, "sha256:"+strings.Repeat("b", 64), []byte("[[Duplicate]]"), 0, nil, boundaryCursor, true, 50, boundaryBase)
 	if err != nil || complete || len(boundaryNext) != 1 || len(boundaryNext[0].Candidates) != 1 || boundaryNext[0].CandidateOffset != 1 {
 		t.Fatalf("boundary retry failed to make one-candidate progress: first=%+v next=%+v cursor=%v complete=%v err=%v", boundaryFirst, boundaryNext, cursorValue, complete, err)
@@ -137,6 +142,28 @@ func TestPageMCPReadReferencesFragmentsAmbiguousCandidatesAcrossPages(t *testing
 	advanced, err := decodeMCPContentCursor(encodedNext)
 	if err != nil || advanced.CandidateOffset != 2 {
 		t.Fatalf("minimum-candidate retry cursor=%+v err=%v", advanced, err)
+	}
+
+	firstReferenceFits := func(padding int) bool {
+		base := map[string]any{"padding": strings.Repeat("x", padding)}
+		_, refs, _, complete, err := pageMCPReadReferences(context.Background(), snapshot, identity, document, "sha256:"+strings.Repeat("b", 64), []byte("[[After]]"), 0, nil, mcpContentCursor{}, false, 50, base)
+		return err == nil && complete && len(refs) == 1 && len(refs[0].Candidates) == 1
+	}
+	low, high = 0, maxMCPProtectedResponseBytes
+	for low+1 < high {
+		middle := low + (high-low)/2
+		if firstReferenceFits(middle) {
+			low = middle
+		} else {
+			high = middle
+		}
+	}
+	priorBase := map[string]any{"padding": strings.Repeat("x", low)}
+	_, priorPage, priorCursorValue, priorComplete, err := pageMCPReadReferences(context.Background(), snapshot, identity, document, "sha256:"+strings.Repeat("b", 64), []byte("[[After]] [[Duplicate]]"), 0, nil, mcpContentCursor{}, false, 50, priorBase)
+	priorCursorText, cursorOK := priorCursorValue.(string)
+	priorCursor, cursorErr := decodeMCPContentCursor(priorCursorText)
+	if err != nil || priorComplete || !cursorOK || cursorErr != nil || len(priorPage) != 1 || priorPage[0].ReferenceIndex != 0 || len(priorPage[0].Candidates) != 1 || priorCursor.ReferenceIndex != 1 || priorCursor.CandidateOffset != 0 {
+		t.Fatalf("later oversized candidate should keep the cursor before its first unsent item: refs=%+v cursor=%+v complete=%t err=%v cursor_err=%v", priorPage, priorCursor, priorComplete, err, cursorErr)
 	}
 }
 

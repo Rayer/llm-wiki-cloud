@@ -254,6 +254,13 @@ func (h *Handler) mcpSDKHandlerWithProjectContext(ctx context.Context, identity 
 			InputSchema: mcpImportDocumentInputSchema,
 		}, h.callMCPImportDocument)
 	}
+	// This in-process context seam lets tests exercise the actual SDK serializer
+	// and authenticated request writer with synthetic result/error envelopes.
+	// HTTP clients cannot set Go request context values, so production tool
+	// registration is unchanged for network requests.
+	if register, ok := ctx.Value(mcpSDKTestToolRegistrarContextKey{}).(func(*mcp.Server)); ok {
+		register(server)
+	}
 
 	transport := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
 		return server

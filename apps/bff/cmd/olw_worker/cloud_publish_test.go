@@ -2935,16 +2935,19 @@ func TestCloudPublisherSourceSnapshotRoundTripsForMCPRawConsumer(t *testing.T) {
 		sourceMap string
 		wantError bool
 	}{
-		{name: "optional SourceFile omitted", sourceMap: `{"concept":{},"source":{"s1":"source"},"source_meta":{"s1":{"slug":"source"}},"redirects":{}}`},
-		{name: "optional SourceFile empty", sourceMap: `{"concept":{},"source":{"s1":"source"},"source_meta":{"s1":{"slug":"source","source_file":""}},"redirects":{}}`},
-		{name: "declared SourceFile matches", sourceMap: `{"concept":{},"source":{"s1":"source"},"source_meta":{"s1":{"slug":"source","source_file":"raw/source.md"}},"redirects":{}}`},
-		{name: "declared SourceFile mismatch", sourceMap: `{"concept":{},"source":{"s1":"source"},"source_meta":{"s1":{"slug":"source","source_file":"raw/other.md"}},"redirects":{}}`, wantError: true},
+		{name: "optional SourceFile omitted", sourceMap: `{"concept":{"c1":"alpha"},"source":{"s1":"source"},"source_meta":{"s1":{"slug":"source"}},"redirects":{}}`},
+		{name: "optional SourceFile empty", sourceMap: `{"concept":{"c1":"alpha"},"source":{"s1":"source"},"source_meta":{"s1":{"slug":"source","source_file":""}},"redirects":{}}`},
+		{name: "declared SourceFile matches", sourceMap: `{"concept":{"c1":"alpha"},"source":{"s1":"source"},"source_meta":{"s1":{"slug":"source","source_file":"raw/source.md"}},"redirects":{}}`},
+		{name: "declared SourceFile mismatch", sourceMap: `{"concept":{"c1":"alpha"},"source":{"s1":"source"},"source_meta":{"s1":{"slug":"source","source_file":"raw/other.md"}},"redirects":{}}`, wantError: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			const scope = "mcp-publisher-raw-scope"
 			prefix := localcloud.Scope(scope).ObjectPrefix() + storage.ProjectPrefix("mcp-owner", "mcp-project") + "/"
 			root := t.TempDir()
 			writeCloudRequiredOutputs(t, root)
+			mustWriteFile(t, filepath.Join(root, "wiki", "alpha.md"), []byte("---\nid: c1\nsources:\n  - s1\n---\n# Alpha\nPublished concept body.\n"))
+			mustWriteFile(t, filepath.Join(root, "wiki", "sources", "source.md"), []byte("---\nid: s1\ntitle: Source One\n---\n# Source One\nPublished source body.\n"))
+			mustWriteFile(t, filepath.Join(root, "cache", "concepts.jsonl"), []byte("{\"slug\":\"alpha\",\"title\":\"Alpha\",\"frontmatter\":{\"id\":\"c1\",\"sources\":[\"s1\"]}}\n"))
 			idMapBytes := []byte(tc.sourceMap)
 			if err := os.WriteFile(filepath.Join(root, "cache", "id_map.json"), idMapBytes, 0o600); err != nil {
 				t.Fatal(err)
@@ -2962,7 +2965,15 @@ func TestCloudPublisherSourceSnapshotRoundTripsForMCPRawConsumer(t *testing.T) {
 				if _, _, readErr := store.Read(context.Background(), prefix+generation.ManifestPath, 0, generation.MaxManifestBytes); !isObjectNotFound(readErr) {
 					t.Fatalf("rejected source mapping advanced current generation: %v", readErr)
 				}
-				return
+				if err := os.WriteFile(filepath.Join(root, "cache", "id_map.json"), []byte(`{"concept":{"c1":"alpha"},"source":{"s1":"source"},"source_meta":{"s1":{"slug":"source","source_file":"raw/source.md"}},"redirects":{}}`), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				manifest, _, err = publishCloudGeneration(context.Background(), store, prefix, root, []sourceSnapshot{{
+					SourceID: "s1", RawPath: "raw/source.md", RawBytes: raw, RawSHA256: digestBytes(raw),
+				}})
+				if err != nil || manifest.SourceSnapshotDigest == "" {
+					t.Fatalf("matching SourceFile publish recovery failed: digest=%q err=%v", manifest.SourceSnapshotDigest, err)
+				}
 			}
 			if err != nil || manifest.SourceSnapshotDigest == "" {
 				t.Fatalf("publish source snapshot: digest=%q err=%v", manifest.SourceSnapshotDigest, err)
@@ -3000,8 +3011,16 @@ func TestCloudPublisherSourceSnapshotRoundTripsForMCPRawConsumer(t *testing.T) {
 				t.Fatalf("MCP retained-byte reader got=%q attrs=%+v err=%v", retainedBytes, attrs, err)
 			}
 			t.Logf("publisher_to_mcp_snapshot source_id=%s source_file_optional=true object_generation=%d bytes=%d", row.StableID, row.ObjectGeneration, len(retainedBytes))
-			if tc.name == "optional SourceFile omitted" {
-				assertPublishedCloudGenerationThroughMCPSDK(t, store, prefix, manifest.GenerationID, "mcp-publisher-raw", "mcp-owner", "mcp-project", scope)
+			assertPublishedCloudGenerationThroughMCPSDK(t, store, prefix, manifest.GenerationID, "mcp-publisher-raw", "mcp-owner", "mcp-project", scope, false)
+			if tc.name == "declared SourceFile matches" {
+				historicalID := manifest.GenerationID
+				second, _, err := publishCloudGeneration(context.Background(), store, prefix, root, []sourceSnapshot{{
+					SourceID: "s1", RawPath: "raw/source.md", RawBytes: raw, RawSHA256: digestBytes(raw),
+				}})
+				if err != nil || second.GenerationID == historicalID {
+					t.Fatalf("publish newer generation for historical consumer: first=%q second=%q err=%v", historicalID, second.GenerationID, err)
+				}
+				assertPublishedCloudGenerationThroughMCPSDK(t, store, prefix, historicalID, "mcp-publisher-raw", "mcp-owner", "mcp-project", scope, true)
 			}
 		})
 	}
@@ -3030,7 +3049,7 @@ func (t publisherMCPBearerTransport) RoundTrip(request *http.Request) (*http.Res
 	return t.next.RoundTrip(cloned)
 }
 
-func assertPublishedCloudGenerationThroughMCPSDK(t *testing.T, objects *memoryObjects, prefix, generationID, bucket, userID, projectID, scope string) {
+func assertPublishedCloudGenerationThroughMCPSDK(t *testing.T, objects *memoryObjects, prefix, generationID, bucket, userID, projectID, scope string, historical bool) {
 	t.Helper()
 	if strings.TrimSpace(os.Getenv("FIRESTORE_EMULATOR_HOST")) == "" {
 		t.Skip("same-artifact MCP SDK chain requires the worker-owned Firestore emulator")
@@ -3144,7 +3163,44 @@ func assertPublishedCloudGenerationThroughMCPSDK(t *testing.T, objects *memoryOb
 		t.Fatalf("connect SDK to published generation consumer: %v", err)
 	}
 	defer session.Close()
-	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "read_source_raw", Arguments: map[string]any{"source_id": "s1"}})
+	listResult, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "list_content", Arguments: map[string]any{"kind": "concept", "limit": 1}})
+	if err != nil || listResult == nil || listResult.IsError {
+		t.Fatalf("same-publisher artifact MCP list result=%+v err=%v", listResult, err)
+	}
+	listPayload, _ := listResult.StructuredContent.(map[string]any)
+	listItems, _ := listPayload["items"].([]any)
+	if len(listItems) != 1 {
+		t.Fatalf("same-publisher artifact MCP Concept list=%#v", listPayload)
+	}
+	conceptResult, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "read_content", Arguments: map[string]any{"kind": "concept", "id": "c1"}})
+	if err != nil || conceptResult == nil || conceptResult.IsError {
+		t.Fatalf("same-publisher artifact MCP Concept read result=%+v err=%v", conceptResult, err)
+	}
+	conceptPayload, _ := conceptResult.StructuredContent.(map[string]any)
+	conceptContent, _ := conceptPayload["content"].(map[string]any)
+	synthesis, _ := conceptPayload["synthesis_sources"].([]any)
+	conceptText, _ := conceptContent["text"].(string)
+	if conceptPayload["generation"] != generationID || !strings.Contains(conceptText, "Published concept body") || len(synthesis) != 1 {
+		t.Fatalf("same-publisher Concept-to-Source citation response=%#v", conceptPayload)
+	}
+	if sourceRef, ok := synthesis[0].(map[string]any); !ok || sourceRef["id"] != "s1" {
+		t.Fatalf("same-publisher Concept did not cite Source s1: %#v", synthesis)
+	}
+	sourceResult, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "read_content", Arguments: map[string]any{"kind": "source", "id": "s1", "generation": generationID}})
+	if err != nil || sourceResult == nil || sourceResult.IsError {
+		t.Fatalf("same-publisher artifact MCP Source read result=%+v err=%v", sourceResult, err)
+	}
+	sourcePayload, _ := sourceResult.StructuredContent.(map[string]any)
+	sourceContent, _ := sourcePayload["content"].(map[string]any)
+	sourceText, _ := sourceContent["text"].(string)
+	if sourcePayload["generation"] != generationID || !strings.Contains(sourceText, "Published source body") {
+		t.Fatalf("same-publisher Source artifact response=%#v", sourcePayload)
+	}
+	rawArguments := map[string]any{"source_id": "s1"}
+	if historical {
+		rawArguments["generation"] = generationID
+	}
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "read_source_raw", Arguments: rawArguments})
 	if err != nil || result == nil || result.IsError {
 		seenMu.Lock()
 		requestCopy := append([]string(nil), requests...)
@@ -3156,13 +3212,27 @@ func assertPublishedCloudGenerationThroughMCPSDK(t *testing.T, objects *memoryOb
 	if !ok || payload["generation"] != generationID || payload["representation"] != "retained_source_text" || content["text"] != "producer-retained raw source bytes\n" || content["complete"] != true {
 		t.Fatalf("same-publisher artifact MCP response=%#v", result.StructuredContent)
 	}
-	manifestBytes, _, err := objects.Read(ctx, prefix+generation.ManifestPath, 0, generation.MaxManifestBytes)
+	manifestPath := generation.ManifestPath
+	if historical {
+		manifestPath, err = generation.ArchivedManifestPath(generationID)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	manifestBytes, _, err := objects.Read(ctx, prefix+manifestPath, 0, generation.MaxManifestBytes)
 	if err != nil {
-		t.Fatalf("read exact publisher current manifest: %v", err)
+		t.Fatalf("read publisher manifest %q: %v", manifestPath, err)
 	}
 	manifest, err := generation.Decode(manifestBytes)
 	if err != nil || manifest.GenerationID != generationID {
-		t.Fatalf("decode exact publisher current manifest=%+v err=%v", manifest, err)
+		t.Fatalf("decode publisher manifest %q=%+v err=%v", manifestPath, manifest, err)
+	}
+	if historical {
+		currentBytes, _, currentErr := objects.Read(ctx, prefix+generation.ManifestPath, 0, generation.MaxManifestBytes)
+		current, decodeErr := generation.Decode(currentBytes)
+		if currentErr != nil || decodeErr != nil || current.GenerationID == generationID {
+			t.Fatalf("historical SDK read did not retain a superseded archive: current=%+v read_err=%v decode_err=%v", current, currentErr, decodeErr)
+		}
 	}
 	inventoryPath, err := generation.SourceSnapshotPath(manifest.SourceSnapshotDigest)
 	if err != nil {

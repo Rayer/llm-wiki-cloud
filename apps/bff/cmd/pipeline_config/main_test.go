@@ -11,9 +11,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,11 +28,14 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/auth"
 	runtimeconfig "github.com/rayer/llm-wiki-bff/internal/config"
 	internalfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
+	"github.com/rayer/llm-wiki-bff/internal/gcs"
+	"github.com/rayer/llm-wiki-bff/internal/generation"
 	handlerv1 "github.com/rayer/llm-wiki-bff/internal/handler/v1"
 	"github.com/rayer/llm-wiki-bff/internal/localfs"
 	"github.com/rayer/llm-wiki-bff/internal/profiletags"
 	"github.com/rayer/llm-wiki-bff/internal/storage"
 	"github.com/rayer/llm-wiki-bff/internal/urlintake"
+	"github.com/rayer/llm-wiki-bff/internal/wikiindex"
 	"google.golang.org/api/cloudresourcemanager/v3"
 	"google.golang.org/api/idtoken"
 	"google.golang.org/api/option"
@@ -55,14 +60,126 @@ type mcpCaCAdmissionBarrierRoot struct {
 	entered chan struct{}
 	release chan struct{}
 	active  atomic.Bool
+	content *gcs.Client
 }
 
-func (r *mcpCaCAdmissionBarrierRoot) Scope(string, string) storage.Store {
+func (r *mcpCaCAdmissionBarrierRoot) Scope(userID, projectID string) storage.Store {
 	if r.active.Load() {
 		r.entered <- struct{}{}
 		<-r.release
 	}
-	return nil
+	if r.content != nil {
+		return r.content.WithScope(userID, projectID)
+	}
+	return r.RootStore.Scope(userID, projectID)
+}
+
+type mcpCaCGCSObject struct {
+	data       []byte
+	generation int64
+}
+
+func newMcpCaCContentFixture(t *testing.T, scope, userID, projectID string) (*gcs.Client, *httptest.Server) {
+	t.Helper()
+	const contentGeneration = "g_mcp_cac_sdk_fixture"
+	alphaBody := "---\nid: alpha-id\ntitle: Alpha Guide\nsources: []\n---\n# Alpha\n\n" + strings.Repeat("fixture content ", 100) + "\n[[beta-id]] [[gamma-id]] [[delta-id]] [[epsilon-id]] [[source-one]]\n"
+	pages := map[string][]byte{
+		"wiki/alpha.md":              []byte(alphaBody),
+		"wiki/beta.md":               []byte("---\nid: beta-id\ntitle: Alpha Guide\n---\n# Beta\n"),
+		"wiki/gamma.md":              []byte("---\nid: gamma-id\ntitle: Gamma\n---\n# Gamma\n"),
+		"wiki/delta.md":              []byte("---\nid: delta-id\ntitle: Delta\n---\n# Delta\n"),
+		"wiki/epsilon.md":            []byte("---\nid: epsilon-id\ntitle: Epsilon\n---\n# Epsilon\n"),
+		"wiki/sources/source-one.md": []byte("---\nid: source-one\ntitle: Source One\n---\n# Source One\n"),
+	}
+	idMapBytes, err := json.Marshal(wikiindex.IDMap{
+		Concept:     map[string]string{"alpha-id": "alpha", "beta-id": "beta", "gamma-id": "gamma", "delta-id": "delta", "epsilon-id": "epsilon"},
+		Source:      map[string]string{"source-one": "source-one"},
+		SourceMeta:  map[string]wikiindex.SourceMeta{"source-one": {Slug: "source-one", Title: "Source One"}},
+		Redirects:   map[string][]string{},
+		IDRedirects: map[string]string{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	concepts := []byte("{\"slug\":\"alpha\",\"title\":\"Alpha Guide\",\"frontmatter\":{\"id\":\"alpha-id\",\"sources\":[]}}\n" +
+		"{\"slug\":\"beta\",\"title\":\"Alpha Guide\",\"frontmatter\":{\"id\":\"beta-id\"}}\n" +
+		"{\"slug\":\"gamma\",\"title\":\"Gamma\",\"frontmatter\":{\"id\":\"gamma-id\"}}\n" +
+		"{\"slug\":\"delta\",\"title\":\"Delta\",\"frontmatter\":{\"id\":\"delta-id\"}}\n" +
+		"{\"slug\":\"epsilon\",\"title\":\"Epsilon\",\"frontmatter\":{\"id\":\"epsilon-id\"}}\n")
+	files := map[string][]byte{"cache/id_map.json": idMapBytes, "cache/concepts.jsonl": concepts}
+	for name, data := range pages {
+		files[name] = data
+	}
+	paths := make([]string, 0, len(files))
+	for name := range files {
+		paths = append(paths, name)
+	}
+	sort.Strings(paths)
+	manifest := generation.Manifest{Version: generation.Version, GenerationID: contentGeneration, CreatedAt: "2026-11-05T00:00:00Z", InputFingerprint: "local-mcp-cac-fixture", Files: make([]generation.File, 0, len(paths))}
+	objects := map[string]mcpCaCGCSObject{}
+	for i, name := range paths {
+		file, err := generation.NewFile(name, files[name], int64(100+i))
+		if err != nil {
+			t.Fatalf("make CaC fixture manifest entry %q: %v", name, err)
+		}
+		manifest.Files = append(manifest.Files, file)
+	}
+	manifestBytes, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix := "local_scopes/" + scope + "/users/" + userID + "/projects/" + projectID + "/"
+	for _, file := range manifest.Files {
+		objects[prefix+manifest.ObjectPath(file)] = mcpCaCGCSObject{data: files[file.Path], generation: file.Generation}
+	}
+	archivePath, err := generation.ArchivedManifestPath(contentGeneration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	objects[prefix+archivePath] = mcpCaCGCSObject{data: manifestBytes, generation: 900}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		escaped := r.URL.EscapedPath()
+		marker := strings.LastIndex(escaped, "/o/")
+		if marker < 0 {
+			http.NotFound(w, r)
+			return
+		}
+		name, err := url.PathUnescape(escaped[marker+3:])
+		if err != nil {
+			http.Error(w, "invalid object path", http.StatusBadRequest)
+			return
+		}
+		object, ok := objects[name]
+		if !ok || r.Method != http.MethodGet {
+			http.NotFound(w, r)
+			return
+		}
+		if requested := r.URL.Query().Get("generation"); requested != "" && requested != strconv.FormatInt(object.generation, 10) {
+			http.NotFound(w, r)
+			return
+		}
+		if r.URL.Query().Get("alt") == "media" {
+			w.Header().Set("Content-Length", strconv.Itoa(len(object.data)))
+			w.Header().Set("X-Goog-Generation", strconv.FormatInt(object.generation, 10))
+			_, _ = w.Write(object.data)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"name": name, "bucket": "mcp-cac-content-fixture", "generation": strconv.FormatInt(object.generation, 10),
+			"metageneration": "1", "size": strconv.Itoa(len(object.data)), "updated": "2026-11-05T00:00:00Z", "contentType": "application/octet-stream",
+		})
+	}))
+	t.Setenv("STORAGE_EMULATOR_HOST", server.URL)
+	t.Setenv("GOOGLE_CLOUD_PROJECT", "mcp-cac-content-fixture")
+	client, err := gcs.NewClientWithScope("mcp-cac-content-fixture", scope)
+	if err != nil {
+		server.Close()
+		t.Fatalf("create local GCS client for CaC fixture: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	return client, server
 }
 
 func newOwnedLoopbackTestServer(t *testing.T, handler http.Handler) *httptest.Server {
@@ -611,11 +728,9 @@ func TestRealPklMCPProtectionReachesLoadedSDKConsumer(t *testing.T) {
 	mutated = strings.ReplaceAll(mutated, "reference_page_max = 50", "reference_page_max = 3")
 	mutated = strings.Replace(mutated, `policy_revision = "mcp-protection-v1"`, `policy_revision = "mcp-cac-lowered-v1"`, 1)
 	mutated = strings.Replace(mutated, "project = new BffMcpRateBucket { capacity = 24; refill_microunits_per_second = 2000000; max_inflight = 8 }", "project = new BffMcpRateBucket { capacity = 24; refill_microunits_per_second = 2000000; max_inflight = 2 }", 1)
-	mutated = strings.Replace(mutated, "account = new BffMcpRateBucket { capacity = 48; refill_microunits_per_second = 4000000; max_inflight = 16 }", "account = new BffMcpRateBucket { capacity = 48; refill_microunits_per_second = 4000000; max_inflight = 2 }", 1)
-	mutated = strings.Replace(mutated, "fleet_max_inflight = 64", "fleet_max_inflight = 2", 1)
-	mutated = strings.Replace(mutated, "local_max_inflight = 32", "local_max_inflight = 2", 1)
-	if mutated == string(original) || !strings.Contains(mutated, "reference_page_max = 3") {
-		t.Fatal("synthetic policy lowering did not change the four intended CaC values")
+	if mutated == string(original) || !strings.Contains(mutated, "reference_page_max = 3") ||
+		!strings.Contains(mutated, "project = new BffMcpRateBucket { capacity = 24; refill_microunits_per_second = 2000000; max_inflight = 2 }") {
+		t.Fatal("synthetic policy lowering did not change only the intended project admission policy and content limits")
 	}
 	ssotPath := filepath.Join(cacDir, "ssot.pkl")
 	if err := os.WriteFile(ssotPath, []byte(mutated), 0o600); err != nil {
@@ -665,6 +780,8 @@ func TestRealPklMCPProtectionReachesLoadedSDKConsumer(t *testing.T) {
 	if err != nil || projectKey == "" {
 		t.Fatalf("create content-read project key: token_present=%t err=%v", projectKey != "", err)
 	}
+	contentClient, contentServer := newMcpCaCContentFixture(t, "lwc369-mcp-cac-synthetic", userID, projectID)
+	defer contentServer.Close()
 
 	assertSDKPolicy := func(policyName string, wantDefault, wantListMax, wantChunk, wantRefs, wantProjectInflight, wantAccountInflight, wantFleetInflight, wantLocalInflight, concurrentReads int) {
 		t.Helper()
@@ -735,7 +852,7 @@ func TestRealPklMCPProtectionReachesLoadedSDKConsumer(t *testing.T) {
 		}
 		t.Logf("cac_materialized_loaded policy=%s revision=%s", policyName, loaded.MCP.Protection.PolicyRevision)
 
-		barrier := &mcpCaCAdmissionBarrierRoot{entered: make(chan struct{}, 3), release: make(chan struct{})}
+		barrier := &mcpCaCAdmissionBarrierRoot{entered: make(chan struct{}, 3), release: make(chan struct{}), content: contentClient}
 		var releaseOnce sync.Once
 		releaseBarrier := func() { releaseOnce.Do(func() { close(barrier.release) }) }
 		t.Cleanup(releaseBarrier)
@@ -769,7 +886,6 @@ func TestRealPklMCPProtectionReachesLoadedSDKConsumer(t *testing.T) {
 			t.Fatalf("actual SDK tools/list for %s: %v", policyName, err)
 		}
 		t.Logf("cac_sdk_tools_list policy=%s tools=%d", policyName, len(listed.Tools))
-		barrier.active.Store(true)
 		byName := make(map[string]*mcp.Tool, len(listed.Tools))
 		for _, tool := range listed.Tools {
 			byName[tool.Name] = tool
@@ -805,6 +921,48 @@ func TestRealPklMCPProtectionReachesLoadedSDKConsumer(t *testing.T) {
 		assertSchemaNumber("read_content", "max_bytes", "default", wantChunk)
 		assertSchemaNumber("read_content", "max_bytes", "maximum", wantChunk)
 		assertSchemaNumber("read_source_raw", "max_bytes", "maximum", wantChunk)
+		listPage, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "list_content", Arguments: map[string]any{"kind": "concept"}})
+		if err != nil || listPage == nil || listPage.IsError {
+			t.Fatalf("%s readable SDK list_content failed: result=%+v err=%v", policyName, listPage, err)
+		}
+		listPayload, _ := listPage.StructuredContent.(map[string]any)
+		listItems, _ := listPayload["items"].([]any)
+		listCursor, _ := listPayload["next_cursor"].(string)
+		if len(listItems) != wantDefault || listCursor == "" {
+			t.Fatalf("%s SDK list page items=%d cursor=%q payload=%#v", policyName, len(listItems), listCursor, listPayload)
+		}
+		secondListPage, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "list_content", Arguments: map[string]any{"kind": "concept", "cursor": listCursor}})
+		if err != nil || secondListPage == nil || secondListPage.IsError {
+			t.Fatalf("%s readable SDK list_content cursor failed: result=%+v err=%v", policyName, secondListPage, err)
+		}
+		secondListPayload, _ := secondListPage.StructuredContent.(map[string]any)
+		secondListItems, _ := secondListPayload["items"].([]any)
+		if len(secondListItems) != wantDefault || secondListPayload["generation"] != "g_mcp_cac_sdk_fixture" {
+			t.Fatalf("%s SDK second list page items=%d payload=%#v", policyName, len(secondListItems), secondListPayload)
+		}
+		readPage, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "read_content", Arguments: map[string]any{"kind": "concept", "id": "alpha-id", "max_bytes": wantChunk}})
+		if err != nil || readPage == nil || readPage.IsError {
+			t.Fatalf("%s readable SDK read_content failed: result=%+v err=%v", policyName, readPage, err)
+		}
+		readPayload, _ := readPage.StructuredContent.(map[string]any)
+		readBody, _ := readPayload["content"].(map[string]any)
+		readText, _ := readBody["text"].(string)
+		readCursor, _ := readPayload["next_refs_cursor"].(string)
+		mentions, _ := readPayload["mentions"].([]any)
+		contentCursor, _ := readBody["next_cursor"].(string)
+		if len(readText) != wantChunk || contentCursor == "" || len(mentions) != wantRefs || readCursor == "" {
+			t.Fatalf("%s SDK read chunk/refs page text=%d content_cursor=%q mentions=%d refs_cursor=%q payload=%#v", policyName, len(readText), contentCursor, len(mentions), readCursor, readPayload)
+		}
+		nextRefsPage, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "read_content", Arguments: map[string]any{"kind": "concept", "id": "alpha-id", "max_bytes": wantChunk, "refs_cursor": readCursor}})
+		if err != nil || nextRefsPage == nil || nextRefsPage.IsError {
+			t.Fatalf("%s readable SDK read_content refs cursor failed: result=%+v err=%v", policyName, nextRefsPage, err)
+		}
+		nextRefsPayload, _ := nextRefsPage.StructuredContent.(map[string]any)
+		nextMentions, _ := nextRefsPayload["mentions"].([]any)
+		if len(nextMentions) == 0 || nextRefsPayload["next_refs_cursor"] != nil {
+			t.Fatalf("%s SDK reference cursor page did not finish pagination: mentions=%d cursor=%v payload=%#v", policyName, len(nextMentions), nextRefsPayload["next_refs_cursor"], nextRefsPayload)
+		}
+		barrier.active.Store(true)
 
 		type readOutcome struct {
 			result *mcp.CallToolResult
@@ -852,12 +1010,12 @@ func TestRealPklMCPProtectionReachesLoadedSDKConsumer(t *testing.T) {
 		for i := 0; i < concurrentReads; i++ {
 			select {
 			case outcome := <-readDone:
-				if outcome.err != nil || outcome.result == nil || !outcome.result.IsError {
-					t.Fatalf("%s admitted SDK read did not reach the held storage boundary: result=%+v err=%v", policyName, outcome.result, outcome.err)
+				if outcome.err != nil || outcome.result == nil || outcome.result.IsError {
+					t.Fatalf("%s admitted SDK read did not return readable content after release: result=%+v err=%v", policyName, outcome.result, outcome.err)
 				}
 				payload, _ := outcome.result.StructuredContent.(map[string]any)
-				if payload["code"] != "content_unavailable" {
-					t.Fatalf("%s admitted SDK read ended with unexpected storage-boundary response=%#v", policyName, payload)
+				if payload["generation"] != "g_mcp_cac_sdk_fixture" {
+					t.Fatalf("%s admitted SDK read returned wrong generation payload=%#v", policyName, payload)
 				}
 			case <-ctx.Done():
 				t.Fatalf("%s admitted SDK reads did not settle after releasing the storage barrier: %v", policyName, ctx.Err())
@@ -866,7 +1024,7 @@ func TestRealPklMCPProtectionReachesLoadedSDKConsumer(t *testing.T) {
 		t.Logf("cac_sdk_admission policy=%s admitted_reads=%d third_blocked=%t restored=%t", policyName, concurrentReads, concurrentReads == 2, concurrentReads > 2)
 	}
 
-	assertSDKPolicy("lowered", 2, 4, 1024, 3, 2, 2, 2, 2, 2)
+	assertSDKPolicy("lowered", 2, 4, 1024, 3, 2, 16, 64, 32, 2)
 	if err := os.WriteFile(ssotPath, original, 0o600); err != nil {
 		t.Fatal(err)
 	}

@@ -12,6 +12,7 @@ const maxMCPProtectedResponseBytes = 256 << 10
 type mcpProtectedRequestContextKey struct{}
 type mcpProtectedRequestIDContextKey struct{}
 type mcpProtectedServerRequestIDContextKey struct{}
+type mcpSDKTestToolRegistrarContextKey struct{}
 
 // mcpFinalBoundedWriter buffers the SDK's complete protected JSON response so
 // no header or prefix escapes if the encoded envelope exceeds the wire limit.

@@ -366,6 +366,9 @@ func pageMCPReadReferences(ctx context.Context, snapshot *mcpContentSnapshot, id
 		for {
 			fragment.Candidates = fragmentCandidates
 			fragment.CandidatesComplete = end == candidateTotal
+			if candidateTotal > 0 && len(fragmentCandidates) == 0 {
+				break
+			}
 			trialSynthesis, trialMentions := synthesis, mentions
 			if relation == "synthesis_source" {
 				trialSynthesis = append(append([]mcpResolvedRef(nil), synthesis...), fragment)
