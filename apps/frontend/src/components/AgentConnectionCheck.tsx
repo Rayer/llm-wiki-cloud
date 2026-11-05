@@ -31,7 +31,7 @@ function AgentConnectionCheckSession({ projectId, identityKey, locale, t }: Agen
   const [createFailed, setCreateFailed] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
   const [replaced, setReplaced] = useState(false);
-  const [copyStatus, setCopyStatus] = useState<'prompt' | 'example' | 'error' | null>(null);
+  const [copyStatus, setCopyStatus] = useState<'prompt' | 'error' | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -133,12 +133,12 @@ function AgentConnectionCheckSession({ projectId, identityKey, locale, t }: Agen
     }
   };
 
-  const copyText = async (text: string, kind: 'prompt' | 'example') => {
+  const copyText = async (text: string) => {
     setCopyStatus(null);
     try {
       await navigator.clipboard.writeText(text);
       if (!mountedRef.current) return;
-      setCopyStatus(kind);
+      setCopyStatus('prompt');
     } catch {
       if (mountedRef.current) setCopyStatus('error');
     }
@@ -147,7 +147,6 @@ function AgentConnectionCheckSession({ projectId, identityKey, locale, t }: Agen
   const prompt = state?.status === 'waiting' && state.setup_id && state.confirmation_token
     ? t('MCPOAuth.connection.confirmPrompt', { setup_id: state.setup_id, confirmation_token: state.confirmation_token })
     : '';
-  const example = t('MCPOAuth.connection.examplePrompt');
   const formattedConfirmedAt = state?.status === 'confirmed' && state.confirmed_at
     ? new Date(state.confirmed_at).toLocaleString(locale === 'zh-TW' ? 'zh-TW' : locale === 'zh-CN' ? 'zh-CN' : 'en-US')
     : '';
@@ -179,12 +178,11 @@ function AgentConnectionCheckSession({ projectId, identityKey, locale, t }: Agen
             <p className="mt-3 break-words whitespace-pre-wrap font-mono text-xs leading-5 text-zinc-300">{prompt}</p>
           </details>
           <div className="mt-4 flex flex-wrap gap-3">
-            <button type="button" onClick={() => void copyText(prompt, 'prompt')} className="min-h-11 rounded bg-emerald-300 px-4 py-2 text-sm font-semibold text-black hover:bg-emerald-200">{t('MCPOAuth.connection.copyPrompt')}</button>
-            <button type="button" onClick={() => void copyText(example, 'example')} className="min-h-11 rounded border border-white/15 px-4 py-2 text-sm text-zinc-100 hover:bg-white/5">{t('MCPOAuth.connection.copyExample')}</button>
+            <button type="button" onClick={() => void copyText(prompt)} className="min-h-11 rounded bg-emerald-300 px-4 py-2 text-sm font-semibold text-black hover:bg-emerald-200">{t('MCPOAuth.connection.copyPrompt')}</button>
           </div>
         </div>
       ) : null}
-      {copyStatus ? <p role="status" className="mt-3 text-sm text-zinc-300">{t(`MCPOAuth.connection.${copyStatus === 'error' ? 'copyFailed' : copyStatus === 'prompt' ? 'promptCopied' : 'exampleCopied'}`)}</p> : null}
+      {copyStatus ? <p role="status" className="mt-3 text-sm text-zinc-300">{t(`MCPOAuth.connection.${copyStatus === 'error' ? 'copyFailed' : 'promptCopied'}`)}</p> : null}
       <button type="button" disabled={creating || loading} onClick={() => void createSetup()} aria-busy={creating} className="mt-4 min-h-11 rounded border border-white/15 px-4 py-2 text-sm font-medium text-zinc-100 hover:bg-white/5 disabled:cursor-wait disabled:opacity-50">
         {creating ? t('MCPOAuth.connection.creating') : state?.setup_id ? t('MCPOAuth.connection.replaceSetup') : t('MCPOAuth.connection.createSetup')}
       </button>
