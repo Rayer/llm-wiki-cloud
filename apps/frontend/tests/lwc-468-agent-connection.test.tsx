@@ -22,8 +22,8 @@ const waiting = (setupId = 'setup-a') => ({
 });
 const t = (key: string, params?: Record<string, string | number>) => translate('en', key, params);
 
-function renderCheck(projectId = 'project-a', identityKey = `user-a:${projectId}`) {
-  return render(<AgentConnectionCheck projectId={projectId} identityKey={identityKey} locale="en" t={t} />);
+function renderCheck(projectId = 'project-a', identityKey = `user-a:${projectId}`, locale: 'en' | 'zh-TW' = 'en') {
+  return render(<AgentConnectionCheck projectId={projectId} identityKey={identityKey} locale={locale} t={(key, params) => translate(locale, key, params)} />);
 }
 
 beforeEach(() => {
@@ -47,6 +47,8 @@ describe('LWC-468 Agent connection check', () => {
     expect(await screen.findByText(t('MCPOAuth.connection.waiting'))).toBeDefined();
     expect(mocks.create).not.toHaveBeenCalled();
     expect(screen.queryByText(t('MCPOAuth.connection.confirmed'))).toBeNull();
+    expect(screen.queryByRole('button', { name: /Query/i })).toBeNull();
+    expect(screen.getByRole('region', { name: 'Confirm this Agent connection' }).textContent).not.toMatch(/Query/i);
 
     fireEvent.click(screen.getByRole('button', { name: t('MCPOAuth.connection.copyPrompt') }));
     await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
@@ -56,15 +58,51 @@ describe('LWC-468 Agent connection check', () => {
     expect(screen.getByText(t('MCPOAuth.connection.waiting'))).toBeDefined();
   });
 
-  it('creates a challenge only after an explicit action and reports the matching setup prompt', async () => {
+  it('creates, copies, and reads back confirmation for the same setup', async () => {
     mocks.create.mockResolvedValue(waiting('setup-new'));
-    mocks.get.mockResolvedValue({ project_id: 'project-a', status: 'not_started', confirmed_at: null });
+    mocks.get
+      .mockResolvedValueOnce({ project_id: 'project-a', status: 'not_started', confirmed_at: null })
+      .mockResolvedValueOnce({
+        project_id: 'project-a', status: 'confirmed', setup_id: 'setup-new', created_at: now,
+        expires_at: '2026-11-03T12:30:00Z', confirmed_at: now,
+      });
     renderCheck();
     await screen.findByText(t('MCPOAuth.connection.notStarted'));
     fireEvent.click(screen.getByRole('button', { name: t('MCPOAuth.connection.createSetup') }));
     await waitFor(() => expect(mocks.create).toHaveBeenCalledWith('project-a'));
     expect(await screen.findByText(t('MCPOAuth.connection.waiting'))).toBeDefined();
     expect(screen.getByText(t('MCPOAuth.connection.confirmPrompt', { setup_id: 'setup-new', confirmation_token: 'A'.repeat(43) }))).toBeDefined();
+    fireEvent.click(screen.getByRole('button', { name: t('MCPOAuth.connection.copyPrompt') }));
+    await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining('setup_id=setup-new')));
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining(`confirmation_token=${'A'.repeat(43)}`));
+
+    await act(async () => { fireEvent(window, new Event('focus')); });
+    expect(await screen.findByText('Agent connection confirmation received.')).toBeDefined();
+    const connection = screen.getByRole('region', { name: 'Confirm this Agent connection' });
+    expect(connection.querySelector('time')?.getAttribute('datetime')).toBe(now);
+    expect(connection.textContent).not.toMatch(/Query/i);
+    expect(screen.queryByRole('button', { name: /Query/i })).toBeNull();
+    expect(mocks.get).toHaveBeenCalledTimes(2);
+    expect(mocks.create).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { locale: 'en' as const, title: 'Confirm this Agent connection', waitingLabel: 'Waiting for the selected Agent client to call confirm_connection.', copyLabel: 'Copy confirmation prompt' },
+    { locale: 'zh-TW' as const, title: '確認 Agent 連線', waitingLabel: '正在等待目前選取的 Agent 用戶端呼叫 confirm_connection。', copyLabel: '複製確認提示' },
+  ])('copies only the connection prompt without Query steps in $locale', async ({ locale, title, waitingLabel, copyLabel }) => {
+    mocks.get.mockResolvedValue(waiting());
+    renderCheck('project-a', 'user-a:project-a', locale);
+    expect(await screen.findByText(waitingLabel)).toBeDefined();
+    const connection = screen.getByRole('region', { name: title });
+    expect(connection.textContent).not.toMatch(/Query/i);
+
+    fireEvent.click(screen.getByRole('button', { name: copyLabel }));
+    await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledTimes(1));
+    const copiedPrompt = vi.mocked(navigator.clipboard.writeText).mock.calls[0][0];
+    expect(copiedPrompt).toContain('setup_id=setup-a');
+    expect(copiedPrompt).toContain(`confirmation_token=${'A'.repeat(43)}`);
+    expect(copiedPrompt).not.toMatch(/Query/i);
+    expect(screen.queryByRole('button', { name: /Query/i })).toBeNull();
   });
 
   it('does not let a focus read overtake an in-flight create receipt', async () => {
@@ -86,15 +124,20 @@ describe('LWC-468 Agent connection check', () => {
     }))).toBeDefined();
   });
 
-  it('shows the server receipt time and explicitly says Query was not tested', async () => {
+  it.each([
+    { locale: 'en' as const, confirmedLabel: 'Agent connection confirmation received.' },
+    { locale: 'zh-TW' as const, confirmedLabel: '已收到 Agent 連線確認。' },
+  ])('renders a localized confirmation and exact receipt time in $locale', async ({ locale, confirmedLabel }) => {
     mocks.get.mockResolvedValue({
       project_id: 'project-a', status: 'confirmed', setup_id: 'setup-a', created_at: now,
       expires_at: '2026-11-03T12:30:00Z', confirmed_at: now,
     });
-    renderCheck();
-    expect(await screen.findByText(t('MCPOAuth.connection.confirmed'))).toBeDefined();
-    expect(screen.getByText(t('MCPOAuth.connection.confirmedAt'))).toBeDefined();
-    expect(screen.getByText(t('MCPOAuth.connection.confirmed'))).toBeDefined();
+    renderCheck('project-a', 'user-a:project-a', locale);
+    expect(await screen.findByText(confirmedLabel)).toBeDefined();
+    const connection = screen.getByRole('region', { name: locale === 'en' ? 'Confirm this Agent connection' : '確認 Agent 連線' });
+    expect(connection.querySelector('time')?.getAttribute('datetime')).toBe(now);
+    expect(connection.textContent).not.toMatch(/Query|尚未測試/i);
+    expect(screen.queryByRole('button', { name: /Query|Query 範例/i })).toBeNull();
     expect(mocks.create).not.toHaveBeenCalled();
   });
 
