@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -191,7 +192,7 @@ func mcpContentOAuthResources(origin string) []config.AuthOAuthResource {
 		AllowedScopeSets: [][]string{
 			{"mcp:query"}, {"mcp:query", "mcp:content:read"}, {"mcp:query", "mcp:raw:write"}, {"mcp:query", "mcp:content:read", "mcp:raw:write"},
 		},
-		DefaultScopeSet: []string{"mcp:query"},
+		DefaultScopeSet: []string{"mcp:query", "mcp:content:read", "mcp:raw:write"},
 	}}
 }
 
@@ -339,6 +340,51 @@ func TestMCPContentReadScopesAndAdmissionThroughProjectKeyAndOAuthSDKEndpoints(t
 		"http://localhost:13000", "local-test-oauth-secret", mcpContentOAuthResources(resourceOrigin))
 	handler.SetConsumerVerifier(mcpOAuthTestConsumer{service: service, issuer: issuer})
 	handler.SetCLIProjectAuthorizer(auth.FirestoreProjectOwnerAuthorizer(fs.Raw()))
+	router := gin.New()
+	router.Any("/mcp", gin.WrapH(handler.MCPHandler()))
+	router.Any("/mcp/projects/:projectID", handler.MCPProjectOAuthHandler("local", resourceOrigin))
+	router.GET("/.well-known/oauth-protected-resource/mcp/projects/:projectID",
+		MCPProjectResourceMetadataHandler(resourceOrigin, issuer))
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	challengeRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/mcp/projects/"+projectID, nil)
+	if err != nil {
+		t.Fatalf("build initial OAuth challenge request: %v", err)
+	}
+	challengeResponse, err := server.Client().Do(challengeRequest)
+	if err != nil {
+		t.Fatalf("fetch initial OAuth challenge: %v", err)
+	}
+	defer challengeResponse.Body.Close()
+	challengeHeader := challengeResponse.Header.Get("WWW-Authenticate")
+	resourceMetadata, scopeParameter, hasScope := strings.Cut(challengeHeader, `, scope=`)
+	requestedScopes, unquoteErr := strconv.Unquote(scopeParameter)
+	if challengeResponse.StatusCode != http.StatusUnauthorized || !hasScope || unquoteErr != nil ||
+		!strings.HasPrefix(resourceMetadata, `Bearer resource_metadata="`+resourceOrigin+`/.well-known/oauth-protected-resource/mcp/projects/`+projectID+`"`) {
+		t.Fatalf("initial OAuth challenge status=%d header=%q", challengeResponse.StatusCode, challengeHeader)
+	}
+	if strings.Join(strings.Fields(requestedScopes), " ") != requestedScopes {
+		t.Fatalf("initial OAuth challenge scopes are not canonical: %q", requestedScopes)
+	}
+	metadataRequest, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		server.URL+"/.well-known/oauth-protected-resource/mcp/projects/"+projectID, nil)
+	if err != nil {
+		t.Fatalf("build resource metadata request: %v", err)
+	}
+	metadataResponse, err := server.Client().Do(metadataRequest)
+	if err != nil {
+		t.Fatalf("fetch resource metadata: %v", err)
+	}
+	defer metadataResponse.Body.Close()
+	var resourceMetadataDocument struct {
+		ScopesSupported []string `json:"scopes_supported"`
+	}
+	if metadataResponse.StatusCode != http.StatusOK || json.NewDecoder(metadataResponse.Body).Decode(&resourceMetadataDocument) != nil ||
+		strings.Join(resourceMetadataDocument.ScopesSupported, " ") != requestedScopes {
+		t.Fatalf("resource metadata status=%d scopes=%v, challenge scopes=%q", metadataResponse.StatusCode,
+			resourceMetadataDocument.ScopesSupported, requestedScopes)
+	}
 	makeOAuthToken := func(requestedScopes, clientName, callbackPath string) string {
 		t.Helper()
 		client, err := service.RegisterClient(ctx, clientName, []string{"http://127.0.0.1:43125" + callbackPath})
@@ -375,6 +421,13 @@ func TestMCPContentReadScopesAndAdmissionThroughProjectKeyAndOAuthSDKEndpoints(t
 		}
 		return tokens.AccessToken
 	}
+	defaultOAuthToken := makeOAuthToken(requestedScopes, "MCP default scopes fixture", "/default-callback")
+	defaultIdentity, err := (mcpOAuthTestConsumer{service: service, issuer: issuer}).VerifyResource(ctx, defaultOAuthToken,
+		service.ResourceURL(projectID), projectID)
+	if err != nil || !sameMCPStringSet(defaultIdentity.Scopes, resourceMetadataDocument.ScopesSupported) {
+		t.Fatalf("default PKCE/consent token scopes=%v want challenge scopes=%v err=%v", defaultIdentity.Scopes,
+			resourceMetadataDocument.ScopesSupported, err)
+	}
 	readOAuthToken := makeOAuthToken("mcp:query mcp:content:read", "MCP content read fixture", "/callback")
 	queryOAuthToken := makeOAuthToken("mcp:query", "MCP query-only fixture", "/query-callback")
 	const metaCanary = "MCP_META_OVERFLOW_SENTINEL"
@@ -397,17 +450,12 @@ func TestMCPContentReadScopesAndAdmissionThroughProjectKeyAndOAuthSDKEndpoints(t
 			})
 	}
 
-	router := gin.New()
-	router.Any("/mcp", gin.WrapH(handler.MCPHandler()))
-	router.Any("/mcp/projects/:projectID", handler.MCPProjectOAuthHandler("local", resourceOrigin))
-	server := httptest.NewServer(router)
-	defer server.Close()
-
 	wireEndpoints := []struct {
 		name, path, token, projectHeader string
 	}{
 		{name: "project-key", path: "/mcp", token: readKeyToken, projectHeader: projectID},
 		{name: "oauth", path: "/mcp/projects/" + projectID, token: readOAuthToken},
+		{name: "oauth-default", path: "/mcp/projects/" + projectID, token: defaultOAuthToken},
 	}
 	postWireByEndpoint := make(map[string]func([]byte) *httptest.ResponseRecorder, len(wireEndpoints))
 	boundaryDecodedID := strings.Repeat("x", 682) + "\t"

@@ -24,7 +24,7 @@ export function buildMCPGuideSnippet(
   target: MCPGuideTarget,
   resourceURL: string,
   locale: Locale = 'en',
-  scopes: readonly string[] = ['mcp:query'],
+  scopes: readonly string[] = ['mcp:query', 'mcp:content:read', 'mcp:raw:write'],
 ): string {
   if (!isUsableMCPResourceURL(resourceURL)) return '';
   const requestedScopes = scopes.length ? scopes.join(' ') : 'mcp:query';
@@ -47,13 +47,13 @@ export function buildMCPGuideSnippet(
         `codex mcp login llm-wiki --scopes ${codexScopes} --oauth-client-registration dcr`,
       ].join('\n');
     case 'grok-cli':
-      return `grok mcp add --transport http llm-wiki ${shellQuote(resourceURL)}\n# ${translate(locale, 'MCPOAuth.scopeSnippetNote', { scopes: requestedScopes })}`;
+      return `grok mcp add --transport http llm-wiki ${shellQuote(resourceURL)}`;
     case 'grok-bot':
-      return translate(locale, 'MCPOAuth.shortPromptGrokBot', { resourceURL, scopes: requestedScopes });
+      return translate(locale, 'MCPOAuth.shortPromptGrokBot', { resourceURL });
     case 'openai-web':
-      return translate(locale, 'MCPOAuth.shortPromptOpenAIWeb', { resourceURL, scopes: requestedScopes });
+      return translate(locale, 'MCPOAuth.shortPromptOpenAIWeb', { resourceURL });
     case 'claude-code':
-      return `claude mcp add --transport http llm-wiki ${shellQuote(resourceURL)}\n# ${translate(locale, 'MCPOAuth.scopeSnippetNote', { scopes: requestedScopes })}`;
+      return `claude mcp add --transport http llm-wiki ${shellQuote(resourceURL)}`;
     case 'openclaw': {
       const definition = JSON.stringify({
         url: resourceURL,

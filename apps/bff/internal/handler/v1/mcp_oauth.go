@@ -28,7 +28,8 @@ func (h *Handler) MCPProjectOAuthHandler(environment, resourceOrigin string) gin
 		metadata := strings.TrimRight(resourceOrigin, "/") + "/.well-known/oauth-protected-resource/mcp/projects/" + projectID
 		token, ok := mcpBearerToken(c.GetHeader("Authorization"))
 		if !ok {
-			c.Header("WWW-Authenticate", `Bearer resource_metadata="`+metadata+`"`)
+			scopes := strings.Join([]string{mcpQueryCapability, mcpContentReadCapability, mcpRawWriteCapability}, " ")
+			c.Header("WWW-Authenticate", `Bearer resource_metadata="`+metadata+`", scope="`+scopes+`"`)
 			c.Header("Cache-Control", "no-store")
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "access token required"})
 			return

@@ -65,7 +65,7 @@ func TestMCPProjectOAuthUsesConfiguredResourceMetadata(t *testing.T) {
 	challengeRequest.Host = "attacker.example.test"
 	router.ServeHTTP(challengeResponse, challengeRequest)
 	if challengeResponse.Code != http.StatusUnauthorized ||
-		challengeResponse.Header().Get("WWW-Authenticate") != `Bearer resource_metadata="http://localhost:8080/.well-known/oauth-protected-resource/mcp/projects/project-1"` {
+		challengeResponse.Header().Get("WWW-Authenticate") != `Bearer resource_metadata="http://localhost:8080/.well-known/oauth-protected-resource/mcp/projects/project-1", scope="mcp:query mcp:content:read mcp:raw:write"` {
 		t.Fatalf("resource challenge status=%d header=%q", challengeResponse.Code, challengeResponse.Header().Get("WWW-Authenticate"))
 	}
 }

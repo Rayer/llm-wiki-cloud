@@ -50,32 +50,51 @@ describe('LWC-389 Agent & MCP client guides', () => {
     expect(mcpResourceURL('project/a & team')).toBe('https://api.runtime.test/mcp/projects/project%2Fa%20%26%20team');
   });
 
-  it('requests query by default and adds only the scopes selected by the user', () => {
+  it('shows fixed default permissions and preserves narrower explicit helper scopes', () => {
     renderTabs();
-    const contentReadLabel = translate('en', 'MCPOAuth.contentReadScope');
-    const rawWriteLabel = translate('en', 'MCPOAuth.rawWriteScope');
-    expect((screen.getByRole('checkbox', { name: contentReadLabel }) as HTMLInputElement).checked).toBe(false);
-    expect((screen.getByRole('checkbox', { name: rawWriteLabel }) as HTMLInputElement).checked).toBe(false);
-    expect(buildMCPGuideSnippet('hermes', resourceURLA)).toContain('scope: "mcp:query"');
+    expect(screen.queryByRole('checkbox')).toBeNull();
+    expect(screen.getByText('mcp:query — query access')).toBeDefined();
+    expect(screen.getByText('mcp:content:read — read published content')).toBeDefined();
+    expect(screen.getByText('mcp:raw:write — add or import sources')).toBeDefined();
+    expect(screen.getByText('Review the account, client, Project, and requested scopes shown on the consent screen before allowing.')).toBeDefined();
 
-    fireEvent.click(screen.getByRole('checkbox', { name: contentReadLabel }));
-    const readScopes = ['mcp:query', 'mcp:content:read'];
-    const hermesSnippet = buildMCPGuideSnippet('hermes', resourceURLA, 'en', readScopes);
-    expect(hermesSnippet).toContain('scope: "mcp:query mcp:content:read"');
+    const allScopes = ['mcp:query', 'mcp:content:read', 'mcp:raw:write'];
+    const hermesSnippet = buildMCPGuideSnippet('hermes', resourceURLA);
+    expect(hermesSnippet).toContain(`scope: "${allScopes.join(' ')}"`);
     expect(within(screen.getByRole('tabpanel')).getByText((_, element) => element?.tagName === 'CODE' && element.textContent === hermesSnippet)).toBeDefined();
+    expect(buildMCPGuideSnippet('codex', resourceURLA)).toContain('--scopes mcp:query,mcp:content:read,mcp:raw:write');
+    expect(buildMCPGuideSnippet('openclaw', resourceURLA)).toContain(`"scope":"${allScopes.join(' ')}"`);
+    fireEvent.click(within(screen.getByRole('tabpanel')).getByText(translate('en', 'MCPOAuth.technicalDetails')));
+    expect(within(screen.getByRole('tabpanel')).getByText(allScopes.join(' '))).toBeDefined();
+    for (const target of ['grok-cli', 'claude-code', 'grok-bot', 'openai-web'] as MCPGuideTarget[]) {
+      const snippet = buildMCPGuideSnippet(target, resourceURLA);
+      expect(snippet).not.toContain('mcp:query');
+      expect(snippet).not.toMatch(/request exactly these scopes|請僅要求這些權限|scopeSnippetNote/i);
+    }
+
+    const readScopes = ['mcp:query', 'mcp:content:read'];
+    const narrowHermesSnippet = buildMCPGuideSnippet('hermes', resourceURLA, 'en', readScopes);
+    expect(narrowHermesSnippet).toContain('scope: "mcp:query mcp:content:read"');
     expect(buildMCPGuideSnippet('codex', resourceURLA, 'en', readScopes)).toContain('--scopes mcp:query,mcp:content:read');
-    expect(buildMCPGuideSnippet('grok-cli', resourceURLA, 'en', readScopes)).toContain('mcp:query mcp:content:read');
-    expect(buildMCPGuideSnippet('grok-bot', resourceURLA, 'en', readScopes)).toContain('mcp:query mcp:content:read');
-    expect(buildMCPGuideSnippet('openai-web', resourceURLA, 'en', readScopes)).toContain('mcp:query mcp:content:read');
-    expect(buildMCPGuideSnippet('claude-code', resourceURLA, 'en', readScopes)).toContain('mcp:query mcp:content:read');
+    expect(buildMCPGuideSnippet('openclaw', resourceURLA, 'en', readScopes)).toContain('"scope":"mcp:query mcp:content:read"');
+    expect(buildMCPGuideSnippet('grok-cli', resourceURLA, 'en', readScopes)).not.toContain('mcp:query');
+    expect(buildMCPGuideSnippet('grok-bot', resourceURLA, 'en', readScopes)).not.toContain('mcp:query');
+    expect(buildMCPGuideSnippet('openai-web', resourceURLA, 'en', readScopes)).not.toContain('mcp:query');
+    expect(buildMCPGuideSnippet('claude-code', resourceURLA, 'en', readScopes)).not.toContain('mcp:query');
     expect(buildMCPGuideSnippet('openclaw', resourceURLA, 'en', readScopes)).toContain('mcp:query mcp:content:read');
 
-    fireEvent.click(screen.getByRole('checkbox', { name: rawWriteLabel }));
-    const allScopes = [...readScopes, 'mcp:raw:write'];
-    const codexSnippet = buildMCPGuideSnippet('codex', resourceURLA, 'en', allScopes);
+    const codexSnippet = buildMCPGuideSnippet('codex', resourceURLA);
     expect(codexSnippet).toContain('--scopes mcp:query,mcp:content:read,mcp:raw:write');
     fireEvent.click(screen.getByRole('tab', { name: translate('en', 'MCPOAuth.toolCodex') }));
     expect(within(screen.getByRole('tabpanel')).getByText((_, element) => element?.tagName === 'CODE' && element.textContent === codexSnippet)).toBeDefined();
+  });
+
+  it.each([
+    ['en', 'Review the account, client, Project, and requested scopes shown on the consent screen before allowing.'],
+    ['zh-TW', '核准前，請確認授權畫面上顯示的帳戶、用戶端、Project 與權限範圍。'],
+  ] as const)('renders the generated %s permission guidance literally', (locale, guidance) => {
+    renderTabs(locale);
+    expect(screen.getByText(guidance)).toBeDefined();
   });
 
   it.each(['en', 'zh-TW'] as const)('keeps the five accessible, horizontally scrollable tabs in %s', (locale) => {
@@ -221,6 +240,7 @@ describe('LWC-389 Agent & MCP client guides', () => {
     expect(within(panel).getByText((_, element) => element?.tagName === 'CODE' && element.textContent === prompt)).toBeDefined();
     expect(prompt).toContain(resourceURLA);
     expect(prompt).toContain(locale === 'zh-TW' ? '請填寫此 Project 要處理的資料用途' : '[describe the data this Project should handle]');
+    expect(prompt).not.toMatch(/mcp:|scope|權限/);
     expect(prompt).not.toContain('Setup → Plugins');
     fireEvent.click(within(panel).getByRole('button', { name: t('MCPOAuth.copyPrompt') }));
     expect(navigator.clipboard.writeText).toHaveBeenLastCalledWith(prompt);
@@ -240,6 +260,7 @@ describe('LWC-389 Agent & MCP client guides', () => {
     expect(within(panel).getByText((_, element) => element?.tagName === 'CODE' && element.textContent === prompt)).toBeDefined();
     expect(prompt).toContain(resourceURLA);
     expect(prompt).not.toContain('example.invalid');
+    expect(prompt).not.toMatch(/mcp:|scope|權限/);
     const guideLinks = within(panel).getAllByRole('link', { name: t('MCPOAuth.officialGuide') });
     expect(guideLinks.some((link) => link.getAttribute('href') === guideSourcesOpenAI)).toBe(true);
     fireEvent.click(within(panel).getByRole('button', { name: t('MCPOAuth.copyPrompt') }));
