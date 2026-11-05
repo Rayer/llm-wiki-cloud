@@ -17,6 +17,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/firestore"
 	handlerapi "github.com/rayer/llm-wiki-bff/internal/handler"
 	"github.com/rayer/llm-wiki-bff/internal/llm"
+	"github.com/rayer/llm-wiki-bff/internal/mcpquota"
 	"github.com/rayer/llm-wiki-bff/internal/query"
 	"github.com/rayer/llm-wiki-bff/internal/search"
 	store "github.com/rayer/llm-wiki-bff/internal/storage"
@@ -39,6 +40,12 @@ type Handler struct {
 	documentImportJobURL           string
 	mcpFrontendOrigin              string
 	mcpConfig                      *config.BFFMCP
+	mcpEnvironment                 string
+	mcpAdmissionMu                 sync.Mutex
+	mcpAdmission                   *mcpquota.Limiter
+	mcpAdmissionErr                error
+	mcpControlOnce                 sync.Once
+	mcpControlSlots                chan struct{}
 	store                          store.RootStore
 	firestore                      *firestore.Client
 	index                          *search.Index
@@ -208,7 +215,13 @@ func (h *Handler) SetMCPFrontendOrigin(origin string) {
 // historical metadata for callers still using schema2 configs without mcp.
 func (h *Handler) SetMCPConfig(metadata *config.BFFMCP) {
 	h.mcpConfig = metadata
+	h.mcpAdmissionMu.Lock()
+	h.mcpAdmission = nil
+	h.mcpAdmissionErr = nil
+	h.mcpAdmissionMu.Unlock()
 }
+
+func (h *Handler) SetMCPEnvironment(environment string) { h.mcpEnvironment = environment }
 
 func (h *Handler) SetLocalPipelineExecutor(executor LocalPipelineExecutor) {
 	h.localPipeline = executor

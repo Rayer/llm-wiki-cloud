@@ -63,7 +63,10 @@ func (c *Client) ReadSourceSnapshot(ctx context.Context) (generation.SourceSnaps
 	}
 	object, err := c.readObject(ctx, c.prefix()+"/"+path, 0, generation.MaxSourceSnapshotBytes)
 	if err != nil {
-		return generation.SourceSnapshotManifest{}, fmt.Errorf("%w: %w", ErrSourceSnapshotUnavailable, err)
+		if objectNotFound(err) {
+			return generation.SourceSnapshotManifest{}, fmt.Errorf("%w: %w", store.ErrDeclaredObjectUnavailable, err)
+		}
+		return generation.SourceSnapshotManifest{}, fmt.Errorf("read retained source snapshot: %w", err)
 	}
 	if generation.Digest(object.Data) != manifest.SourceSnapshotDigest {
 		return generation.SourceSnapshotManifest{}, ErrSourceSnapshotInvalid
@@ -74,7 +77,7 @@ func (c *Client) ReadSourceSnapshot(ctx context.Context) (generation.SourceSnaps
 	}
 	idMap, hasIDMap := manifest.File("cache/id_map.json")
 	if !hasIDMap {
-		return generation.SourceSnapshotManifest{}, ErrSourceSnapshotUnavailable
+		return generation.SourceSnapshotManifest{}, ErrSourceSnapshotInvalid
 	}
 	if inventory.ContentGeneration != manifest.GenerationID || inventory.IDMapDigest != idMap.SHA256 {
 		return generation.SourceSnapshotManifest{}, ErrSourceSnapshotInvalid
@@ -84,11 +87,78 @@ func (c *Client) ReadSourceSnapshot(ctx context.Context) (generation.SourceSnaps
 	return inventory, nil
 }
 
+// RetainedSourceSnapshotSize returns the authenticated inventory size from the
+// pinned generation manifest so callers can reserve a conservative working set
+// before reading or decoding the inventory body.
+func (c *Client) RetainedSourceSnapshotSize(ctx context.Context) (int64, error) {
+	if c.view == nil || c.view.manifest == nil {
+		return 0, store.ErrQueryGenerationUnpinned
+	}
+	manifest := c.view.manifest
+	if manifest.SourceSnapshotDigest == "" {
+		return 0, ErrSourceSnapshotUnavailable
+	}
+	path, err := generation.SourceSnapshotPath(manifest.SourceSnapshotDigest)
+	if err != nil {
+		return 0, ErrSourceSnapshotInvalid
+	}
+	object, err := c.objectAttrs(ctx, c.prefix()+"/"+path, 0)
+	if err != nil {
+		if objectNotFound(err) {
+			return 0, fmt.Errorf("%w: %w", store.ErrDeclaredObjectUnavailable, err)
+		}
+		return 0, fmt.Errorf("read retained source snapshot attributes: %w", err)
+	}
+	if object.Size < 0 || object.Size > generation.MaxSourceSnapshotBytes {
+		return 0, ErrSourceSnapshotInvalid
+	}
+	return object.Size, nil
+}
+
 // ReadSourceBytes resolves a stable ID from the verified pinned inventory and
 // reads its content-addressed bytes at the exact retained object generation.
 func (c *Client) ReadSourceBytes(ctx context.Context, stableID string) ([]byte, error) {
 	inventory, err := c.ReadSourceSnapshot(ctx)
 	if err != nil {
+		return nil, err
+	}
+	return c.ReadSourceBytesFromSnapshot(ctx, inventory, stableID)
+}
+
+// RetainedSourceBytesSize reads metadata for the exact object generation
+// declared by a previously verified same-generation inventory. Callers can
+// reserve working set before materializing the retained source body.
+func (c *Client) RetainedSourceBytesSize(ctx context.Context, inventory generation.SourceSnapshotManifest, stableID string) (int64, error) {
+	if err := c.validatePinnedSourceInventory(inventory); err != nil {
+		return 0, err
+	}
+	for _, row := range inventory.Rows {
+		if row.StableID != stableID {
+			continue
+		}
+		path, err := generation.SourceBytesPath(row.ContentDigest)
+		if err != nil {
+			return 0, ErrSourceSnapshotInvalid
+		}
+		attrs, err := c.objectAttrs(ctx, c.prefix()+"/"+path, row.ObjectGeneration)
+		if err != nil {
+			if objectNotFound(err) {
+				return 0, fmt.Errorf("%w: %w", store.ErrDeclaredObjectUnavailable, err)
+			}
+			return 0, fmt.Errorf("read retained source attributes: %w", err)
+		}
+		if attrs.Generation != row.ObjectGeneration || attrs.Size < 0 || attrs.Size > generation.MaxFileBytes {
+			return 0, store.ErrDeclaredObjectUnavailable
+		}
+		return attrs.Size, nil
+	}
+	return 0, store.ErrObjectNotExist
+}
+
+// ReadSourceBytesFromSnapshot uses a caller-reserved, previously verified
+// inventory and preserves exact object generation and digest checks.
+func (c *Client) ReadSourceBytesFromSnapshot(ctx context.Context, inventory generation.SourceSnapshotManifest, stableID string) ([]byte, error) {
+	if err := c.validatePinnedSourceInventory(inventory); err != nil {
 		return nil, err
 	}
 	for _, row := range inventory.Rows {
@@ -101,7 +171,10 @@ func (c *Client) ReadSourceBytes(ctx context.Context, stableID string) ([]byte, 
 		}
 		object, err := c.readObject(ctx, c.prefix()+"/"+path, row.ObjectGeneration, generation.MaxFileBytes)
 		if err != nil {
-			return nil, fmt.Errorf("%w: %w", store.ErrDeclaredObjectUnavailable, err)
+			if objectNotFound(err) {
+				return nil, fmt.Errorf("%w: %w", store.ErrDeclaredObjectUnavailable, err)
+			}
+			return nil, fmt.Errorf("read retained source bytes: %w", err)
 		}
 		if object.Generation != row.ObjectGeneration || generation.Digest(object.Data) != row.ContentDigest {
 			return nil, store.ErrDeclaredObjectUnavailable
@@ -109,4 +182,22 @@ func (c *Client) ReadSourceBytes(ctx context.Context, stableID string) ([]byte, 
 		return object.Data, nil
 	}
 	return nil, store.ErrObjectNotExist
+}
+
+func (c *Client) validatePinnedSourceInventory(inventory generation.SourceSnapshotManifest) error {
+	if c.view == nil || c.view.manifest == nil || inventory.ContentGeneration != c.view.manifest.GenerationID {
+		return ErrSourceSnapshotInvalid
+	}
+	if err := inventory.Validate(); err != nil {
+		return ErrSourceSnapshotInvalid
+	}
+	idMap, hasIDMap := c.view.manifest.File("cache/id_map.json")
+	if !hasIDMap || inventory.IDMapDigest != idMap.SHA256 || c.view.manifest.SourceSnapshotDigest == "" {
+		return ErrSourceSnapshotInvalid
+	}
+	_, digest, err := generation.EncodeSourceSnapshot(inventory)
+	if err != nil || digest != c.view.manifest.SourceSnapshotDigest {
+		return ErrSourceSnapshotInvalid
+	}
+	return nil
 }

@@ -16,12 +16,17 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/rayer/llm-wiki-bff/internal/auth"
 	"github.com/rayer/llm-wiki-bff/internal/buildinfo"
+	"github.com/rayer/llm-wiki-bff/internal/mcpquota"
 	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"github.com/rayer/llm-wiki-bff/internal/query"
 	"github.com/rayer/llm-wiki-bff/internal/storage"
 )
 
 type mcpProjectKeyIdentityContextKey struct{}
+type mcpAdmissionLeaseContextKey struct{}
+type mcpAdmissionOutcomeContextKey struct{}
+
+type mcpAdmissionOutcome struct{ decision mcpquota.Decision }
 
 type mcpProjectKeyIdentity struct {
 	userID       string
@@ -32,8 +37,9 @@ type mcpProjectKeyIdentity struct {
 }
 
 const (
-	mcpQueryCapability    = "mcp:query"
-	mcpRawWriteCapability = "mcp:raw:write"
+	mcpQueryCapability       = "mcp:query"
+	mcpContentReadCapability = "mcp:content:read"
+	mcpRawWriteCapability    = "mcp:raw:write"
 )
 
 const mcpQueryProjectToolDescription = "Read-only search of the single project bound to the supplied project key. The key grants query-only access; project and user are fixed by the credential."
@@ -58,6 +64,7 @@ var queryProjectOutputSchema = json.RawMessage(`{
 	"properties":{
 		"query":{"type":"string"},
 		"mode":{"type":"string","enum":["wiki","full"]},
+		"content_generation":{"type":"string","maxLength":128},
 		"results":{"type":"array","items":{"type":"object"}},
 		"expand":{"type":"object"},
 		"ai_synth":{"type":"string"},
@@ -96,20 +103,34 @@ func (h *Handler) MCPHandler() http.Handler {
 		}
 		identity := mcpProjectKeyIdentity{
 			userID: record.UserID, projectID: record.ProjectID, keyID: record.KeyID,
-			capabilities: []string{mcpQueryCapability},
+			capabilities: projectKeyMCPCapabilities(record.Capabilities),
 		}
 		identity.revalidate = func(ctx context.Context) error {
 			fresh, err := h.projectKeyService.AuthenticateWithoutUsage(ctx, token, record.ProjectID)
 			if err != nil {
 				return err
 			}
-			if fresh.UserID != identity.userID || fresh.ProjectID != identity.projectID || fresh.KeyID != identity.keyID {
+			if fresh.UserID != identity.userID || fresh.ProjectID != identity.projectID || fresh.KeyID != identity.keyID ||
+				!sameMCPStringSet(projectKeyMCPCapabilities(fresh.Capabilities), identity.capabilities) {
 				return auth.ErrProjectKeyAccessDenied
 			}
 			return nil
 		}
-		h.serveAuthenticatedMCP(h.mcpSDKHandlerWithContext(r.Context(), identity), identity, w, r)
+		h.serveAuthenticatedMCPRequest(identity, w, r)
 	})
+}
+
+func projectKeyMCPCapabilities(capabilities []string) []string {
+	result := make([]string, 0, len(capabilities))
+	for _, capability := range capabilities {
+		switch capability {
+		case "query":
+			result = append(result, mcpQueryCapability)
+		case "content:read":
+			result = append(result, mcpContentReadCapability)
+		}
+	}
+	return result
 }
 
 func (h *Handler) mcpSDKHandler(identity mcpProjectKeyIdentity) http.Handler {
@@ -117,6 +138,10 @@ func (h *Handler) mcpSDKHandler(identity mcpProjectKeyIdentity) http.Handler {
 }
 
 func (h *Handler) mcpSDKHandlerWithContext(ctx context.Context, identity mcpProjectKeyIdentity) http.Handler {
+	return h.mcpSDKHandlerWithProjectContext(ctx, identity, true)
+}
+
+func (h *Handler) mcpSDKHandlerWithProjectContext(ctx context.Context, identity mcpProjectKeyIdentity, includeProjectContext bool) http.Handler {
 	capabilities := identity.capabilities
 	metadata := h.mcpConfig
 	instructions := ""
@@ -132,7 +157,7 @@ func (h *Handler) mcpSDKHandlerWithContext(ctx context.Context, identity mcpProj
 	if hasMCPCapability(capabilities, mcpQueryCapability) && !strings.Contains(instructions, confirmConnectionInstructions) {
 		instructions = strings.TrimSpace(instructions + "\n\n" + confirmConnectionInstructions)
 	}
-	if h.firestore != nil && h.firestore.Raw() != nil && h.store != nil {
+	if includeProjectContext && h.firestore != nil && h.firestore.Raw() != nil && h.store != nil {
 		projectContext := h.authenticatedMCPProjectContext(ctx, identity)
 		instructions = appendMCPProjectContext(instructions, projectContext)
 		queryDescription = appendMCPProjectContextHint(queryDescription, projectContext)
@@ -175,6 +200,9 @@ func (h *Handler) mcpSDKHandlerWithContext(ctx context.Context, identity mcpProj
 		Version: buildinfo.Current().ProductVersion,
 	}, serverOptions)
 	server.AddReceivingMiddleware(mcpRequestObservationMiddleware)
+	if hasMCPCapability(capabilities, mcpContentReadCapability) {
+		h.addMCPContentTools(server, metadata)
+	}
 	if hasMCPCapability(capabilities, mcpQueryCapability) {
 		server.AddResource(&mcp.Resource{
 			URI: pipelineEventsURI(identity.projectID), Name: "pipeline-events", Title: "Project Pipeline events", MIMEType: "application/json",
@@ -226,6 +254,13 @@ func (h *Handler) mcpSDKHandlerWithContext(ctx context.Context, identity mcpProj
 			InputSchema: mcpImportDocumentInputSchema,
 		}, h.callMCPImportDocument)
 	}
+	// This in-process context seam lets tests exercise the actual SDK serializer
+	// and authenticated request writer with synthetic result/error envelopes.
+	// HTTP clients cannot set Go request context values, so production tool
+	// registration is unchanged for network requests.
+	if register, ok := ctx.Value(mcpSDKTestToolRegistrarContextKey{}).(func(*mcp.Server)); ok {
+		register(server)
+	}
 
 	transport := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
 		return server
@@ -255,13 +290,24 @@ func (h *Handler) serveAuthenticatedMCP(sdkAuthenticated http.Handler, identity 
 	ctx := context.WithValue(r.Context(), mcpProjectKeyIdentityContextKey{}, identity)
 	control := newMCPListenControl(h.eventTiming())
 	ctx = context.WithValue(ctx, mcpListenControlContextKey{}, control)
-	observed := &mcpResponseObservationWriter{ResponseWriter: w, listen: control}
+	responseWriter := w
+	var bounded *mcpFinalBoundedWriter
+	if protected, _ := ctx.Value(mcpProtectedRequestContextKey{}).(bool); protected {
+		requestID, _ := ctx.Value(mcpProtectedRequestIDContextKey{}).(json.RawMessage)
+		serverRequestID, _ := ctx.Value(mcpProtectedServerRequestIDContextKey{}).(string)
+		bounded = newMCPFinalBoundedWriter(w, requestID, serverRequestID)
+		responseWriter = bounded
+	}
+	observed := &mcpResponseObservationWriter{ResponseWriter: responseWriter, listen: control}
 	sdkAuthenticated.ServeHTTP(observed, r.WithContext(ctx))
 	if observed.hasProtocolError() {
 		// The pinned SDK may turn a parameter decode failure into a JSON-RPC
 		// error response before AddReceivingMiddleware runs. Classify only the
 		// protocol envelope; never retain or log its message/data fields.
 		observability.MarkRequestProtocolError(ctx)
+	}
+	if bounded != nil {
+		bounded.Commit()
 	}
 }
 
@@ -301,8 +347,6 @@ func (w *mcpResponseObservationWriter) Write(p []byte) (int, error) {
 	}
 	return n, err
 }
-
-func (w *mcpResponseObservationWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 func (w *mcpResponseObservationWriter) FlushError() error {
 	if w.listen != nil && w.listen.isActive() {
@@ -387,6 +431,9 @@ func mcpRequestObservationMiddleware(next mcp.MethodHandler) mcp.MethodHandler {
 		}
 		envelopeID := observability.RequestIDFromContext(ctx)
 		requestID := uuid.NewString()
+		if protectedRequestID, ok := ctx.Value(mcpProtectedServerRequestIDContextKey{}).(string); ok && protectedRequestID != "" {
+			requestID = protectedRequestID
+		}
 		if strings.HasPrefix(method, "notifications/") && envelopeID != "" {
 			requestID = envelopeID
 		}
@@ -403,7 +450,17 @@ func mcpRequestObservationMiddleware(next mcp.MethodHandler) mcp.MethodHandler {
 			ctx = context.WithValue(ctx, mcpQueryObservationKey{}, observation)
 		}
 
-		result, err := next(ctx, method, request)
+		var result mcp.Result
+		var err error
+		if _, ok := request.(*mcp.CallToolRequest); ok {
+			if outcome, rejected := ctx.Value(mcpAdmissionOutcomeContextKey{}).(mcpAdmissionOutcome); rejected && outcome.decision.Code != "admitted" {
+				result = mcpAdmissionToolError(outcome.decision, requestID)
+			} else {
+				result, err = next(ctx, method, request)
+			}
+		} else {
+			result, err = next(ctx, method, request)
+		}
 		toolError := false
 		callResult, isToolResult := result.(*mcp.CallToolResult)
 		if isToolResult && callResult == nil {
@@ -530,6 +587,7 @@ func (h *Handler) callMCPQuery(ctx context.Context, _ *mcp.CallToolRequest, inpu
 		}
 		return mcpQueryToolError(failure.message, failure.code, diagnostic.id), nil, nil
 	}
+	response.ContentGeneration = queryContentGeneration(ctx, reader, identity.projectID)
 	data, err := json.Marshal(response)
 	if err != nil {
 		return fail("response_encode", err, reader)
@@ -545,6 +603,18 @@ func (h *Handler) callMCPQuery(ctx context.Context, _ *mcp.CallToolRequest, inpu
 		Content:           []mcp.Content{&mcp.TextContent{Text: string(data)}},
 		StructuredContent: json.RawMessage(data),
 	}, nil, nil
+}
+
+func queryContentGeneration(ctx context.Context, reader storage.Store, projectID string) string {
+	provider, ok := reader.(storage.QueryGenerationIdentityProvider)
+	if !ok {
+		return ""
+	}
+	identity, err := provider.QueryGenerationIdentity(ctx)
+	if err != nil || identity.GenerationID == "" || identity.ProjectID != projectID || len(identity.GenerationID) > 128 {
+		return ""
+	}
+	return identity.GenerationID
 }
 
 func mcpQueryToolError(message, code, diagnosticID string) *mcp.CallToolResult {

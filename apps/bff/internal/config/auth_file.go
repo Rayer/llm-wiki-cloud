@@ -540,8 +540,8 @@ func validateAuthOAuthResources(file AuthFile) error {
 		}
 	}
 	if project == nil || brief == nil || !project.Enabled ||
-		!equalStringSlices(project.ScopesNames(), []string{"mcp:query", "mcp:raw:write"}) ||
-		!equalStringSetSlices(project.AllowedScopeSets, [][]string{{"mcp:query"}, {"mcp:query", "mcp:raw:write"}}) ||
+		!equalStringSlices(project.ScopesNames(), []string{"mcp:query", "mcp:content:read", "mcp:raw:write"}) ||
+		!equalStringSetSlices(project.AllowedScopeSets, [][]string{{"mcp:query"}, {"mcp:query", "mcp:content:read"}, {"mcp:query", "mcp:raw:write"}, {"mcp:query", "mcp:content:read", "mcp:raw:write"}}) ||
 		!equalStringSlices(project.DefaultScopeSet, []string{"mcp:query"}) ||
 		!equalStringSlices(brief.ScopesNames(), []string{"brief:manage"}) ||
 		!equalStringSetSlices(brief.AllowedScopeSets, [][]string{{"brief:manage"}}) || len(brief.DefaultScopeSet) != 0 {

@@ -20,8 +20,15 @@ function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
-export function buildMCPGuideSnippet(target: MCPGuideTarget, resourceURL: string, locale: Locale = 'en'): string {
+export function buildMCPGuideSnippet(
+  target: MCPGuideTarget,
+  resourceURL: string,
+  locale: Locale = 'en',
+  scopes: readonly string[] = ['mcp:query'],
+): string {
   if (!isUsableMCPResourceURL(resourceURL)) return '';
+  const requestedScopes = scopes.length ? scopes.join(' ') : 'mcp:query';
+  const codexScopes = requestedScopes.replaceAll(' ', ',');
 
   switch (target) {
     case 'hermes':
@@ -32,27 +39,27 @@ export function buildMCPGuideSnippet(target: MCPGuideTarget, resourceURL: string
         '    auth: oauth',
         '    oauth:',
         '      cimd: false',
-        '      scope: "mcp:query mcp:raw:write"',
+        `      scope: ${JSON.stringify(requestedScopes)}`,
       ].join('\n');
     case 'codex':
       return [
         `codex mcp add llm-wiki --url ${shellQuote(resourceURL)}`,
-        'codex mcp login llm-wiki --scopes mcp:query,mcp:raw:write --oauth-client-registration dcr',
+        `codex mcp login llm-wiki --scopes ${codexScopes} --oauth-client-registration dcr`,
       ].join('\n');
     case 'grok-cli':
-      return `grok mcp add --transport http llm-wiki ${shellQuote(resourceURL)}`;
+      return `grok mcp add --transport http llm-wiki ${shellQuote(resourceURL)}\n# ${translate(locale, 'MCPOAuth.scopeSnippetNote', { scopes: requestedScopes })}`;
     case 'grok-bot':
-      return translate(locale, 'MCPOAuth.shortPromptGrokBot', { resourceURL });
+      return translate(locale, 'MCPOAuth.shortPromptGrokBot', { resourceURL, scopes: requestedScopes });
     case 'openai-web':
-      return translate(locale, 'MCPOAuth.shortPromptOpenAIWeb', { resourceURL });
+      return translate(locale, 'MCPOAuth.shortPromptOpenAIWeb', { resourceURL, scopes: requestedScopes });
     case 'claude-code':
-      return `claude mcp add --transport http llm-wiki ${shellQuote(resourceURL)}`;
+      return `claude mcp add --transport http llm-wiki ${shellQuote(resourceURL)}\n# ${translate(locale, 'MCPOAuth.scopeSnippetNote', { scopes: requestedScopes })}`;
     case 'openclaw': {
       const definition = JSON.stringify({
         url: resourceURL,
         transport: 'streamable-http',
         auth: 'oauth',
-        oauth: { scope: 'mcp:query mcp:raw:write' },
+        oauth: { scope: requestedScopes },
       });
       return [
         `openclaw mcp set llm-wiki ${shellQuote(definition)}`,

@@ -91,7 +91,7 @@ func (h *Handler) MCPProjectOAuthHandler(environment, resourceOrigin string) gin
 			}
 			return nil
 		}
-		h.serveAuthenticatedMCP(h.mcpSDKHandlerWithContext(c.Request.Context(), requestIdentity), requestIdentity, c.Writer, c.Request)
+		h.serveAuthenticatedMCPRequest(requestIdentity, c.Writer, c.Request)
 	}
 }
 
@@ -156,7 +156,7 @@ func MCPProjectResourceMetadataHandler(resourceOrigin, authorizationServer strin
 		c.JSON(http.StatusOK, gin.H{
 			"resource":                 resourceOrigin + "/mcp/projects/" + projectID,
 			"authorization_servers":    []string{authorizationServer},
-			"scopes_supported":         []string{mcpQueryCapability, mcpRawWriteCapability},
+			"scopes_supported":         []string{mcpQueryCapability, mcpContentReadCapability, mcpRawWriteCapability},
 			"bearer_methods_supported": []string{"header"},
 		})
 	}

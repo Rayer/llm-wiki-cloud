@@ -338,6 +338,36 @@ func TestQueryDiagnosticsFinalizeSafelyAndExportActualSpanTree(t *testing.T) {
 	testAuthenticatedMCPQuerySchemaDiagnostics(t, provider, exporter, &logs)
 }
 
+func TestMCPQueryReturnsPinnedContentGenerationForCitationFollowup(t *testing.T) {
+	root := &generationSwitchRoot{currentGeneration: "generation-captured"}
+	h := New(root, nil, nil, nil, nil, nil)
+	h.SetQueryExecutor(receiptTraceExecutor{})
+	identity := mcpProjectKeyIdentity{userID: "query-owner", projectID: "diagnostic-test-project", keyID: "query-key", capabilities: []string{mcpQueryCapability}}
+	response := serveMCPRequest(t, h, identity, mcpToolCallBody(1, "query_project", `{"q":"local pinned-citation fixture"}`))
+	payload := mcpStructuredResult(t, response)
+	if payload["content_generation"] != "generation-captured" {
+		t.Fatalf("MCP query content generation=%#v, want the captured generation", payload["content_generation"])
+	}
+	result, ok := response["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("MCP query result=%#v", response["result"])
+	}
+	content, ok := result["content"].([]any)
+	if !ok || len(content) != 1 {
+		t.Fatalf("MCP query text content=%#v", result["content"])
+	}
+	var textPayload map[string]any
+	if err := json.Unmarshal([]byte(content[0].(map[string]any)["text"].(string)), &textPayload); err != nil {
+		t.Fatalf("decode MCP query text payload: %v", err)
+	}
+	if !reflect.DeepEqual(textPayload, payload) {
+		t.Fatalf("MCP query structured/text content differ: structured=%#v text=%#v", payload, textPayload)
+	}
+	if root.pins != 1 || root.manifestReads != 1 || root.identityReads != 2 || root.currentGeneration != "generation-new" {
+		t.Fatalf("MCP query did not keep one pinned view: pins=%d manifests=%d identities=%d current=%q", root.pins, root.manifestReads, root.identityReads, root.currentGeneration)
+	}
+}
+
 func TestCitationValidationEventPreservesValidAndRejectedQueryBehavior(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	baseTransport := http.DefaultTransport

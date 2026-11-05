@@ -92,6 +92,7 @@ type QueryRequest struct {
 type QueryResponse struct {
 	Query               string                     `json:"query"`
 	Mode                string                     `json:"mode"`
+	ContentGeneration   string                     `json:"content_generation,omitempty"`
 	Results             []search.Result            `json:"results"`
 	Expand              *llm.ExpandResult          `json:"expand,omitempty"`
 	AIOperationFailures []query.AIOperationFailure `json:"ai_operation_failures,omitempty"`

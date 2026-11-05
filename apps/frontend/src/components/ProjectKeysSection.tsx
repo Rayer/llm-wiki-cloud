@@ -41,6 +41,7 @@ export function ProjectKeysSection({
   const [projectKeys, setProjectKeys] = useState<ProjectKey[]>([]);
   const [projectKeysStale, setProjectKeysStale] = useState(true);
   const [projectKeyName, setProjectKeyName] = useState('');
+  const [projectKeyContentRead, setProjectKeyContentRead] = useState(false);
   const [projectKeySecret, setProjectKeySecret] = useState('');
   const [projectKeyBusy, setProjectKeyBusy] = useState(false);
   const [projectKeyError, setProjectKeyError] = useState('');
@@ -106,7 +107,7 @@ export function ProjectKeysSection({
     setProjectKeyNotice('');
     setProjectKeySecret('');
     try {
-      const created = await createProjectKey(projectId, name);
+      const created = await createProjectKey(projectId, name, projectKeyContentRead ? ['query', 'content:read'] : ['query']);
       if (!created || !created.key || typeof created.key.key_id !== 'string' || !created.key.key_id || typeof created.secret !== 'string' || !created.secret) {
         throw new Error('Project API key creation response was incomplete.');
       }
@@ -199,13 +200,25 @@ export function ProjectKeysSection({
       ) : (
         <p className="mt-3 rounded border border-white/10 bg-black/20 p-3 text-sm text-zinc-400">{t('AccountSettings.projectKeyNoProject')}</p>
       )}
-      <form onSubmit={(event) => void handleCreateProjectKey(event)} className="mt-4 flex flex-col gap-3 sm:flex-row">
+      <form onSubmit={(event) => void handleCreateProjectKey(event)} className="mt-4 flex flex-col gap-3">
         <label className="min-w-0 flex-1 text-sm text-zinc-300">
           {t('AccountSettings.projectKeyName')}
           <input value={projectKeyName} onChange={(event) => setProjectKeyName(event.target.value)} className="mt-2 min-h-11 w-full rounded border border-white/10 bg-black/30 px-3 text-white outline-none focus:border-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400" />
           <span className="mt-1 block text-xs text-zinc-500">{t('AccountSettings.projectKeyNameHint')}</span>
         </label>
-        <button type="submit" disabled={!accessToken || !projectId || projectKeyBusy || projectKeysStale || keyNameLength < 1 || keyNameLength > 64} className="min-h-11 self-end rounded bg-emerald-300 px-4 py-2.5 text-sm font-semibold text-black hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-50">
+        <fieldset className="rounded border border-white/10 bg-black/20 p-3">
+          <legend className="px-1 text-xs text-zinc-400">{t('AccountSettings.projectKeyPermissions')}</legend>
+          <label className="flex min-h-11 items-center gap-3 text-sm text-zinc-200">
+            <input type="checkbox" checked disabled className="size-4 accent-emerald-300" />
+            <span>{t('AccountSettings.projectKeyQuery')}</span>
+          </label>
+          <label className="flex min-h-11 items-center gap-3 text-sm text-zinc-200">
+            <input type="checkbox" checked={projectKeyContentRead} onChange={(event) => setProjectKeyContentRead(event.target.checked)} className="size-4 accent-emerald-300" />
+            <span>{t('AccountSettings.projectKeyContentRead')}</span>
+          </label>
+          <p className="ml-7 text-xs leading-5 text-zinc-500">{t('AccountSettings.projectKeyContentReadHint')}</p>
+        </fieldset>
+        <button type="submit" disabled={!accessToken || !projectId || projectKeyBusy || projectKeysStale || keyNameLength < 1 || keyNameLength > 64} className="min-h-11 self-start rounded bg-emerald-300 px-4 py-2.5 text-sm font-semibold text-black hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-50">
           {projectKeyBusy ? t('AccountSettings.projectKeyProcessing') : t('AccountSettings.projectKeyCreate')}
         </button>
       </form>
@@ -229,7 +242,7 @@ export function ProjectKeysSection({
               <div className="min-w-0 text-sm">
                 <p className="font-medium text-white">{key.name} <span className="text-zinc-500">· {t(key.state === 'active' ? 'AccountSettings.projectKeyActive' : 'AccountSettings.projectKeyRevokedState')}</span></p>
                 <p className="mt-1 break-all font-sans text-xs text-zinc-500">{key.key_id}</p>
-                <p className="mt-1 text-xs text-zinc-500">{t('AccountSettings.projectKeyQueryOnly')} · {new Date(key.created_at).toLocaleString(locale === 'zh-TW' ? 'zh-TW' : locale === 'zh-CN' ? 'zh-CN' : 'en-US')}</p>
+                <p className="mt-1 text-xs text-zinc-500">{key.capabilities?.includes('content:read') ? t('AccountSettings.projectKeyQueryAndContentRead') : t('AccountSettings.projectKeyQueryOnly')} · {new Date(key.created_at).toLocaleString(locale === 'zh-TW' ? 'zh-TW' : locale === 'zh-CN' ? 'zh-CN' : 'en-US')}</p>
                   <p className="mt-1 text-xs text-zinc-500">{projectKeyUsageLabel(key, t, locale)}</p>
               </div>
               {key.state === 'active' ? (

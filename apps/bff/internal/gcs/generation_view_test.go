@@ -36,6 +36,8 @@ type memoryBackend struct {
 	commitManifestOnWrite   []byte
 	manifestAfterLeaseWrite []byte
 	manifestReadErr         error
+	readErr                 error
+	attrsErr                error
 	attrsDelay              time.Duration
 	attrsActive             int
 	attrsMaxActive          int
@@ -82,6 +84,9 @@ func newMemoryClient() (*Client, *memoryBackend) {
 func (m *memoryBackend) Read(_ context.Context, name string, generation, limit int64) (backendObject, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.readErr != nil {
+		return backendObject{}, m.readErr
+	}
 	m.requests = append(m.requests, backendObject{Name: name, Generation: generation})
 	m.requestedLimits = append(m.requestedLimits, limit)
 	object, ok := m.objects[name]
@@ -103,6 +108,9 @@ func (m *memoryBackend) Read(_ context.Context, name string, generation, limit i
 }
 
 func (m *memoryBackend) Attrs(_ context.Context, name string, generation int64) (backendObject, error) {
+	if m.attrsErr != nil {
+		return backendObject{}, m.attrsErr
+	}
 	if name == projectObject(generationManifestPath) && m.manifestReadErr != nil {
 		return backendObject{}, m.manifestReadErr
 	}

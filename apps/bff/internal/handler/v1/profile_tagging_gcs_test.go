@@ -118,14 +118,23 @@ type taggingGCSObject struct {
 	gen  int64
 }
 
-func newTaggingGCSClient(t *testing.T, objects map[string]taggingGCSObject) (*gcs.Client, *sync.Mutex, map[string]int) {
+func newTaggingGCSClient(t *testing.T, objects map[string]taggingGCSObject, beforeRead ...func(string)) (*gcs.Client, *sync.Mutex, map[string]int) {
+	t.Helper()
+	var before func(string)
+	if len(beforeRead) > 0 {
+		before = beforeRead[0]
+	}
+	return newTaggingGCSClientWithReadFailure(t, objects, before, nil)
+}
+
+func newTaggingGCSClientWithReadFailure(t *testing.T, objects map[string]taggingGCSObject, beforeRead func(string), failRead func(string) bool) (*gcs.Client, *sync.Mutex, map[string]int) {
 	t.Helper()
 	var mu sync.Mutex
 	reads := map[string]int{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		defer mu.Unlock()
 		if r.Method == http.MethodPost {
+			mu.Lock()
+			defer mu.Unlock()
 			if r.URL.Query().Get("ifGenerationMatch") != "0" {
 				t.Errorf("non-create-only write: %s", r.URL)
 				http.Error(w, "precondition required", 400)
@@ -176,8 +185,10 @@ func newTaggingGCSClient(t *testing.T, objects map[string]taggingGCSObject) (*gc
 		if decoded, err := url.PathUnescape(name); err == nil {
 			name = decoded
 		}
+		mu.Lock()
 		reads[name]++
 		o, ok := objects[name]
+		mu.Unlock()
 		if !ok {
 			http.Error(w, "missing", 404)
 			return
@@ -194,6 +205,19 @@ func newTaggingGCSClient(t *testing.T, objects map[string]taggingGCSObject) (*gc
 		if strings.Contains(r.URL.Path, "/storage/v1/") && r.URL.Query().Get("alt") != "media" {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]string{"name": name, "bucket": "tagging-local", "generation": strconv.FormatInt(o.gen, 10), "size": strconv.Itoa(len(o.data))})
+			return
+		}
+		if beforeRead != nil {
+			beforeRead(name)
+		}
+		if r.Context().Err() != nil {
+			return
+		}
+		if failRead != nil && failRead(name) {
+			// A non-retryable fixture status lets the MCP handler expose its own
+			// retryable domain result instead of GCS transparently retrying this
+			// test injection until the SDK backoff budget expires.
+			http.Error(w, "fixture read failure", http.StatusBadRequest)
 			return
 		}
 		w.Header().Set("Content-Length", strconv.Itoa(len(o.data)))

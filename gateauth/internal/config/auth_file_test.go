@@ -34,6 +34,22 @@ func localAuthFileForTest() AuthFile {
 	return file
 }
 
+func schema4AuthFileForTest() AuthFile {
+	inputs := validAuthInputSnapshotV4ForTest()
+	return AuthFile{
+		SchemaVersion: 4, Target: inputs.Target, Environment: inputs.Environment, ConfigID: inputs.ConfigID,
+		GCPProject: inputs.GCPProject, FirestoreDatabaseID: inputs.FirestoreDatabaseID,
+		LocalCloudScope: inputs.LocalCloudScope, AuthServiceURL: inputs.AuthServiceURL, SyncServiceURL: inputs.SyncServiceURL,
+		AllowedHosts: inputs.AllowedHosts, AllowedOrigins: inputs.AllowedOrigins,
+		AuthSessionEnvironment: inputs.AuthSessionEnvironment, AuthSessionMigration: inputs.AuthSessionMigration,
+		AuthDemoUserID: inputs.AuthDemoUserID, AuthDemoUserEmail: inputs.AuthDemoUserEmail, AuthDemoUserRole: inputs.AuthDemoUserRole,
+		JWTSecret: "synthetic-schema-4-test-secret", OAuthResources: inputs.OAuthResources,
+		ManagementScopes: inputs.ManagementScopes, ConsumerVerifiers: inputs.ConsumerVerifiers,
+		ConsumerPublicProjection: inputs.ConsumerPublicProjection,
+		Portal:                   &AuthFilePortal{LWCBFFOrigin: inputs.Portal.LWCBFFOrigin},
+	}
+}
+
 func writeAuthFileForTest(t *testing.T, file AuthFile) string {
 	t.Helper()
 	data, err := json.Marshal(file)
@@ -125,6 +141,14 @@ func TestSchema2AuthFileUsesStrictOAuthRegistryAndPreservesSchema1Defaults(t *te
 	if len(decoded.OAuthResources) != 2 || decoded.OAuthResources[1].Enabled {
 		t.Fatalf("schema-2 resources = %#v", decoded.OAuthResources)
 	}
+	project := decoded.OAuthResources[0]
+	if !equalStringSlices(project.ScopesNames(), []string{"mcp:query", "mcp:content:read", "mcp:raw:write"}) ||
+		!equalStringSetSlices(project.AllowedScopeSets, [][]string{
+			{"mcp:query"}, {"mcp:query", "mcp:raw:write"}, {"mcp:query", "mcp:content:read"},
+			{"mcp:query", "mcp:content:read", "mcp:raw:write"},
+		}) || !equalStringSlices(project.DefaultScopeSet, []string{"mcp:query"}) {
+		t.Fatalf("schema-2 project scope policy = %#v", project)
+	}
 	loaded, err := LoadAuthFile(writeAuthFileForTest(t, file))
 	if err != nil {
 		t.Fatalf("LoadAuthFile(schema 2): %v", err)
@@ -164,6 +188,78 @@ func TestSchema2AuthFileUsesStrictOAuthRegistryAndPreservesSchema1Defaults(t *te
 	unknown := strings.Replace(string(data), `"id":"daily-brief"`, `"id":"daily-brief","unknown":true`, 1)
 	if _, err := DecodeAuthFile([]byte(unknown)); err == nil {
 		t.Fatal("DecodeAuthFile accepted unknown nested OAuth registry field")
+	}
+}
+
+func TestSchema2AuthFileRetainsLegacyProjectScopeCatalog(t *testing.T) {
+	file := validAuthFileForTest()
+	file.SchemaVersion = 2
+	file.OAuthResources = authOAuthResourcesForTest(file.SyncServiceURL, file.Environment)
+	project := &file.OAuthResources[0]
+	project.Scopes = []AuthOAuthScope{
+		{Name: "mcp:query", Description: "Query project knowledge."},
+		{Name: "mcp:raw:write", Description: "Add permitted raw sources."},
+	}
+	project.AllowedScopeSets = [][]string{{"mcp:query"}, {"mcp:query", "mcp:raw:write"}}
+	project.DefaultScopeSet = []string{"mcp:query"}
+
+	encoded, err := json.Marshal(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadAuthFile(writeAuthFileForTest(t, file))
+	if err != nil {
+		t.Fatalf("load retained schema-2 project scope catalog: %v", err)
+	}
+	if len(loaded.AuthOAuthResources) != 2 ||
+		!equalStringSlices(loaded.AuthOAuthResources[0].ScopesNames(), []string{"mcp:query", "mcp:raw:write"}) ||
+		!equalStringSetSlices(loaded.AuthOAuthResources[0].AllowedScopeSets, [][]string{{"mcp:query"}, {"mcp:query", "mcp:raw:write"}}) ||
+		!equalStringSlices(loaded.AuthOAuthResources[0].DefaultScopeSet, []string{"mcp:query"}) {
+		t.Fatalf("retained project scope policy changed during load: %#v", loaded.AuthOAuthResources)
+	}
+	if _, err := DecodeAuthFile(encoded); err != nil {
+		t.Fatalf("decode retained schema-2 project scope catalog: %v", err)
+	}
+}
+
+func TestSchema4AuthFileStrictlyLoadsPortalAndScopeCatalog(t *testing.T) {
+	file := schema4AuthFileForTest()
+	encoded, err := json.Marshal(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := DecodeAuthFile(encoded)
+	if err != nil || decoded.Portal == nil || decoded.Portal.LWCBFFOrigin != file.SyncServiceURL {
+		t.Fatalf("DecodeAuthFile(schema 4) portal=%+v err=%v", decoded.Portal, err)
+	}
+	loaded, err := LoadAuthFile(writeAuthFileForTest(t, file))
+	if err != nil || loaded.PortalLWCBFFOrigin != file.SyncServiceURL || loaded.ConfigSchemaVersion != 4 {
+		t.Fatalf("LoadAuthFile(schema 4) portal=%q schema=%d err=%v", loaded.PortalLWCBFFOrigin, loaded.ConfigSchemaVersion, err)
+	}
+	if got := loaded.AuthOAuthResources[0].ScopesNames(); !equalStringSlices(got, []string{"mcp:query", "mcp:content:read", "mcp:raw:write"}) {
+		t.Fatalf("schema-4 content scope catalog=%v", got)
+	}
+
+	for name, mutate := range map[string]func(map[string]json.RawMessage){
+		"missing portal": func(fields map[string]json.RawMessage) { delete(fields, "portal") },
+		"unknown portal field": func(fields map[string]json.RawMessage) {
+			fields["portal"] = json.RawMessage(`{"lwc_bff_origin":"https://bff.dev.example.test","extra":true}`)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(encoded, &fields); err != nil {
+				t.Fatal(err)
+			}
+			mutate(fields)
+			bad, err := json.Marshal(fields)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := DecodeAuthFile(bad); err == nil {
+				t.Fatal("DecodeAuthFile() accepted an incomplete or unknown schema-4 portal")
+			}
+		})
 	}
 }
 

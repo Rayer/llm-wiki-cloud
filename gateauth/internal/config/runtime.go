@@ -33,6 +33,7 @@ type Config struct {
 	ManagementScopes             []AuthManagementScope
 	AuthConsumerVerifiers        []AuthConsumerVerifier
 	AuthConsumerPublicProjection AuthConsumerPublicProjection
+	PortalLWCBFFOrigin           string
 }
 
 func (c Config) AllowedHostsFor(local bool) []string {

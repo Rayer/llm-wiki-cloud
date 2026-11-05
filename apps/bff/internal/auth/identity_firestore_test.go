@@ -3,6 +3,7 @@ package auth
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -570,7 +571,9 @@ func newIdentityEmulatorRepository(t *testing.T) (*IdentityRepository, *firestor
 	}
 	_ = probe.Close()
 	ctx := context.Background()
-	client, err := firestore.NewClient(ctx, "lwc-315-test", option.WithEndpoint(endpoint), option.WithoutAuthentication())
+	// Audit tests scan the full users collection, so each test gets an isolated emulator namespace.
+	projectHash := sha256.Sum256([]byte(t.Name()))
+	client, err := firestore.NewClient(ctx, fmt.Sprintf("lwc315-%x", projectHash[:8]), option.WithEndpoint(endpoint), option.WithoutAuthentication())
 	if err != nil {
 		t.Fatalf("create Firestore emulator client: %v", err)
 	}
