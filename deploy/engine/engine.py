@@ -31,6 +31,45 @@ CHECKPOINT_STATUSES = frozenset({
 RESOLVED_TARGET_STATUSES = frozenset({
     'success', 'rolled_back', 'failed_rolled_back', 'ready', 'prepared',
 })
+_AUTH_INPUT_ID_CACHE = {}
+GO_BINARY = shutil.which('go') or 'go'
+
+
+def auth_input_config_id_valid(inputs):
+    if (not isinstance(inputs, dict) or type(inputs.get('schema_version')) is not int or
+            inputs.get('schema_version') != 3 or inputs.get('environment') not in ('dev', 'prod')):
+        return False
+    try:
+        cache_key = digest(inputs)
+    except (TypeError, ValueError):
+        return False
+    if cache_key in _AUTH_INPUT_ID_CACHE:
+        return _AUTH_INPUT_ID_CACHE[cache_key]
+
+    environment = {'dev': 'development', 'prod': 'production'}[inputs['environment']]
+    try:
+        with tempfile.TemporaryDirectory(prefix='lwc-auth-input-identity-') as temporary:
+            descriptor = Path(temporary) / 'auth-inputs.json'
+            write(descriptor, inputs)
+            if descriptor.stat().st_size > 64 * 1024:
+                raise ValueError('Auth input snapshot is oversized')
+            env = dict(os.environ, LWC_REPOSITORY_ROOT=str(ROOT), GOWORK='off',
+                       GOFLAGS='-mod=readonly', GOTOOLCHAIN='local', GOPROXY='off',
+                       GOOGLE_APPLICATION_CREDENTIALS='/dev/null',
+                       GCE_METADATA_HOST='127.0.0.1:9', GCE_METADATA_IP='127.0.0.1',
+                       CLOUDSDK_CONFIG='/dev/null')
+            run([
+                GO_BINARY, 'run', './cmd/deploy_config', '--environment', environment,
+                '--config', ROOT / 'deploy/environments' / (environment + '.yaml'),
+                '--components', 'auth', '--auth-inputs', descriptor,
+            ], cwd=ROOT / 'apps/bff', env=env, timeout=180)
+            valid = True
+    except (Breakpoint, OSError, TypeError, ValueError):
+        valid = False
+    _AUTH_INPUT_ID_CACHE[cache_key] = valid
+    return valid
+
+
 def release_identity(plan):
     identity = {key: plan[key] for key in RELEASE_IDENTITY_FIELDS}
     if 'release_source_mode' in plan:
@@ -143,22 +182,17 @@ def auth_source_from_receipt(path):
 def runtime3_auth_inputs_match(actual, expected):
     if (not isinstance(actual, dict) or not isinstance(expected, dict) or
             type(actual.get('schema_version')) is not int or actual.get('schema_version') != 3 or
-            type(expected.get('schema_version')) is not int or expected.get('schema_version') != 3):
+            type(expected.get('schema_version')) is not int or expected.get('schema_version') != 3 or
+            not auth_input_config_id_valid(actual) or not auth_input_config_id_valid(expected)):
         return False
     actual_compatible = copy.deepcopy(actual)
     expected_compatible = copy.deepcopy(expected)
-    source_changed = actual_compatible.get('source_sha') != expected_compatible.get('source_sha')
     actual_compatible.pop('source_sha', None)
     expected_compatible.pop('source_sha', None)
-    if source_changed:
-        config_id_pattern = r'sha256:[0-9a-f]{64}'
-        if (re.fullmatch(config_id_pattern, actual_compatible.get('config_id', '')) is None or
-                re.fullmatch(config_id_pattern, expected_compatible.get('config_id', '')) is None):
-            return False
-        # ConfigID hashes the source trace as well as runtime inputs, so a
-        # changed LWC release gets a new ID while retaining the same runtime.
-        actual_compatible.pop('config_id', None)
-        expected_compatible.pop('config_id', None)
+    # The native Go consumer verifies each source-bound ConfigID before the
+    # release trace and its derived ID are omitted from runtime equality.
+    actual_compatible.pop('config_id', None)
+    expected_compatible.pop('config_id', None)
     return actual_compatible == expected_compatible
 
 
@@ -502,10 +536,16 @@ class Engine:
             return True
         if not self.auth_receipt_supports_schema(candidate, self.auth_input_snapshot()['schema_version']):
             return True
-        if (self.auth_input_snapshot()['schema_version'] == 3 and
-                not runtime3_auth_inputs_match(candidate.get('auth_config_inputs'),
-                                               self.auth_input_snapshot())):
-            return True
+        destination_inputs = self.auth_input_snapshot()
+        if destination_inputs['schema_version'] == 3:
+            candidate_inputs = candidate.get('auth_config_inputs')
+            if destination_inputs['environment'] == 'dev':
+                if not runtime3_auth_inputs_match(candidate_inputs, destination_inputs):
+                    return True
+            elif (not dev or not isinstance(candidate_inputs, dict) or
+                  candidate_inputs.get('environment') != 'dev' or
+                  not auth_input_config_id_valid(candidate_inputs)):
+                return True
         try:
             self.provider.usable('auth', candidate['artifact'])
         except Breakpoint as exc:
@@ -564,6 +604,8 @@ class Engine:
                     all(isinstance(value, dict) for value in inputs['consumer_verifiers']) and
                     isinstance(inputs['consumer_public_projection'], dict),
                     'auth-input-snapshot-invalid')
+        if schema_version == 3:
+            require(auth_input_config_id_valid(inputs), 'auth-input-snapshot-invalid')
         if schema_version == 4:
             portal = inputs['portal']
             origin = portal.get('lwc_bff_origin') if isinstance(portal, dict) else None
@@ -884,10 +926,16 @@ class Engine:
                         if not self.auth_receipt_supports_schema(
                                 candidate, self.auth_input_snapshot()['schema_version']):
                             applicable = False
-                        if (applicable and self.auth_input_snapshot()['schema_version'] == 3 and
-                                not runtime3_auth_inputs_match(candidate.get('auth_config_inputs'),
-                                                               self.auth_input_snapshot())):
-                            applicable = False
+                        if applicable and self.auth_input_snapshot()['schema_version'] == 3:
+                            candidate_inputs = candidate.get('auth_config_inputs')
+                            destination_inputs = self.auth_input_snapshot()
+                            if destination_inputs['environment'] == 'dev':
+                                if not runtime3_auth_inputs_match(candidate_inputs, destination_inputs):
+                                    applicable = False
+                            elif (not provenance or not isinstance(candidate_inputs, dict) or
+                                  candidate_inputs.get('environment') != 'dev' or
+                                  not auth_input_config_id_valid(candidate_inputs)):
+                                applicable = False
                     if applicable:
                         receipt = candidate
                         if c == 'frontend':

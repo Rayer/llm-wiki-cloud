@@ -12,6 +12,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from functools import lru_cache
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -28,9 +29,16 @@ import test_auth_config_contract as auth_contract_fixtures
 RUNTIME_AUTH_IDENTITY = 'sha256:' + 'd' * 64
 
 
-def _runtime_inputs(source_sha, schema_version=3):
+@lru_cache(maxsize=16)
+def _cached_runtime_inputs(source_sha, schema_version=3, environment='dev'):
+    if schema_version == 3:
+        target_environment = {'dev': 'development', 'prod': 'production'}[environment]
+        with tempfile.TemporaryDirectory(prefix='lwc-runtime3-auth-inputs-') as temporary:
+            path = write_auth_input_fixture(
+                Path(temporary) / 'auth', target_environment, source_sha, schema_version=3)
+            return json.loads(path.read_text())
     inputs = {
-        'schema_version': schema_version, 'environment': 'dev', 'target': 'auth',
+        'schema_version': schema_version, 'environment': environment, 'target': 'auth',
         'source_sha': source_sha, 'config_id': 'sha256:' + 'e' * 64,
         'jwt_secret_version': 'projects/test/secrets/jwt/versions/1',
     }
@@ -40,6 +48,10 @@ def _runtime_inputs(source_sha, schema_version=3):
                       consumer_public_projection={'resource': origin},
                       portal={'lwc_bff_origin': origin})
     return inputs
+
+
+def _runtime_inputs(source_sha, schema_version=3, environment='dev'):
+    return copy.deepcopy(_cached_runtime_inputs(source_sha, schema_version, environment))
 
 
 def _write_runtime_pair(directory, *, envelope=4, runtime=3, source_sha='c' * 40,
@@ -242,15 +254,21 @@ class Acceptance(unittest.TestCase):
             self.assertEqual(plan['normalized']['auth']['runtime_inputs']['schema_version'], 3)
 
             changed_source = copy.deepcopy(_runtime_inputs('a' * 40))
-            changed_source['config_id'] = 'sha256:' + '0' * 64
+            self.assertNotEqual(changed_source['config_id'], _runtime_inputs('c' * 40)['config_id'])
             self.assertTrue(engine.runtime3_auth_inputs_match(
                 _runtime_inputs('c' * 40), changed_source),
                 'ConfigID may change with the LWC source trace when runtime inputs stay the same')
             same_source_mismatch = _runtime_inputs('c' * 40)
             same_source_mismatch['config_id'] = 'sha256:' + '0' * 64
+            self.assertFalse(engine.auth_input_config_id_valid(same_source_mismatch))
             self.assertFalse(engine.runtime3_auth_inputs_match(
                 _runtime_inputs('c' * 40), same_source_mismatch),
-                'ConfigID must still match when the source trace is unchanged')
+                'a correctly shaped but source-invalid ConfigID must be rejected')
+            changed_source_bad_id = copy.deepcopy(changed_source)
+            changed_source_bad_id['config_id'] = 'sha256:' + '0' * 64
+            self.assertFalse(engine.runtime3_auth_inputs_match(
+                _runtime_inputs('c' * 40), changed_source_bad_id),
+                'a changed source does not allow an arbitrary well-formed ConfigID')
             malformed_config_id = copy.deepcopy(changed_source)
             malformed_config_id['config_id'] = 'invalid'
             self.assertFalse(engine.runtime3_auth_inputs_match(
@@ -335,6 +353,56 @@ class Acceptance(unittest.TestCase):
             write(reuse / 'receipts/auth.json', auth3)
             self.assertTrue(release.auth_package_preflight(reuse=reuse),
                             'a schema-3 runtime with changed configuration inputs needs a new package')
+
+    def test_schema_three_dev_auth_image_promotes_with_production_snapshot(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            auth_source = {
+                'repository_id': 'github:200', 'revision': 'b' * 40,
+                'tree_sha256': 'sha256:' + 'f' * 64, 'artifact_id': '456',
+                'run_id': 789, 'run_attempt': 1,
+            }
+            dev_sha, prod_sha = 'c' * 40, 'd' * 40
+            dev_normalized = copy.deepcopy(self.normalized)
+            dev_normalized['auth']['runtime_inputs'] = _runtime_inputs(dev_sha)
+            dev = self.make(('auth',), name='runtime3-promotion-dev',
+                            normalized=dev_normalized, source_sha=dev_sha)
+            dev.plan['release_source_mode'] = 'independent'
+            dev.plan['auth_source'] = auth_source
+            dev.plan['identities']['auth'] = engine.source_identity('auth', dev_sha, auth_source)
+            dev.plan['id'] = engine.plan_id(dev.plan)
+            dev.state.update(plan=dev.plan['id'], status='success',
+                             components={'auth': {'status': 'verified'}}, sequence=1)
+            write(dev.directory / 'plan.json', dev.plan)
+            write(dev.state_path, dev.state)
+            _write_runtime_pair(dev.directory, envelope=4, runtime=3, source_sha=dev_sha,
+                                auth_identity=dev.plan['identities']['auth'])
+            dev_receipt = read(dev.directory / 'receipts/auth.json')
+
+            prod_normalized = copy.deepcopy(self.production_auth_normalized)
+            prod_normalized['auth']['runtime_inputs'] = _runtime_inputs(
+                prod_sha, environment='prod')
+            prod = self.make(('auth',), name='runtime3-promotion-prod', production=True,
+                             normalized=prod_normalized, source_sha=prod_sha)
+            prod.plan['release_source_mode'] = 'independent'
+            prod.plan['auth_source'] = auth_source
+            prod.plan['identities']['auth'] = engine.source_identity('auth', prod_sha, auth_source)
+            prod.plan['id'] = engine.plan_id(prod.plan)
+            write(prod.directory / 'plan.json', prod.plan)
+            prod = engine.Engine(prod.directory)
+            provider_calls = []
+            prod.provider.usable = lambda component, artifact: provider_calls.append(component)
+
+            self.assertFalse(prod.auth_package_preflight(dev=dev.directory),
+                             'the verified schema-3 DEV image remains reusable for Prod')
+            prod.prepare(dev=dev.directory)
+            promoted = read(prod.directory / 'receipts/auth.json')
+            self.assertEqual(prod.state['status'], 'ready')
+            self.assertEqual(promoted['artifact'], dev_receipt['artifact'])
+            self.assertEqual(promoted['auth_config_inputs'], prod.auth_input_snapshot())
+            self.assertEqual(promoted['auth_config_inputs']['environment'], 'prod')
+            self.assertNotEqual(promoted['auth_config_inputs']['config_id'],
+                                dev_receipt['auth_config_inputs']['config_id'])
+            self.assertEqual(provider_calls, ['auth', 'auth', 'auth'])
 
     def admit_schema_three_auth_only(self, environment):
         source = 'a' * 40
@@ -1422,10 +1490,7 @@ class Acceptance(unittest.TestCase):
         self.assertEqual(old_receipt['auth_config_inputs'],legacy)
         self.assertEqual(old_receipt['auth_materialization_schema'],1)
 
-        current=copy.deepcopy(inputs)
-        current.update(schema_version=3, management_scopes=[{'id':'auth:admin'}, {'id':'lwc:admin'}],
-                       consumer_verifiers=[{'id':'lwc'}],
-                       consumer_public_projection={'issuer':'https://auth.example','resource':'https://lwc.example'})
+        current=_runtime_inputs(e.plan['source'])
         e.plan['normalized']['auth']['runtime_inputs']=current
         self.assertEqual(e.auth_input_snapshot(),current)
         current_receipt={}
