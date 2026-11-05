@@ -120,6 +120,17 @@ func (s *mcpContentSnapshot) close() {
 	if s == nil {
 		return
 	}
+	s.client = nil
+	s.generation = ""
+	s.manifestSHA = ""
+	s.manifest = generation.Manifest{}
+	s.identity = storage.QueryGenerationIdentity{}
+	s.refs = nil
+	s.slugIndex = nil
+	s.routeIndex = nil
+	s.concepts = nil
+	s.sourceMeta = nil
+	s.idRedirects = nil
 	for i := len(s.releases) - 1; i >= 0; i-- {
 		s.releases[i]()
 	}
@@ -230,6 +241,7 @@ func (h *Handler) callMCPListContent(ctx context.Context, _ *mcp.CallToolRequest
 	if err != nil {
 		return mcpContentErrorFor(err), nil, nil
 	}
+	defer snapshot.close()
 	if snapshot == nil {
 		return mcpContentSuccess(map[string]any{"schema_version": 1, "kind": input.Kind, "generation": nil, "knowledge_status": "no_published_generation", "items": []mcpContentRef{}, "next_cursor": nil}), nil, nil
 	}
@@ -268,6 +280,7 @@ func (h *Handler) callMCPFindContent(ctx context.Context, _ *mcp.CallToolRequest
 	if err != nil {
 		return mcpContentErrorFor(err), nil, nil
 	}
+	defer snapshot.close()
 	if snapshot == nil {
 		return mcpContentSuccess(map[string]any{"schema_version": 1, "kind": input.Kind, "generation": nil, "knowledge_status": "no_published_generation", "status": "not_found", "candidates": []mcpContentRef{}, "next_cursor": nil}), nil, nil
 	}
@@ -326,6 +339,7 @@ func (h *Handler) callMCPReadContent(ctx context.Context, _ *mcp.CallToolRequest
 	if err != nil {
 		return mcpContentErrorFor(err), nil, nil
 	}
+	defer snapshot.close()
 	if snapshot == nil {
 		return mcpContentToolError("knowledge_unavailable", false, 0), nil, nil
 	}
@@ -433,6 +447,7 @@ func (h *Handler) callMCPReadSourceRaw(ctx context.Context, _ *mcp.CallToolReque
 	if err != nil {
 		return mcpContentErrorFor(err), nil, nil
 	}
+	defer snapshot.close()
 	if snapshot == nil {
 		return mcpContentToolError("knowledge_unavailable", false, 0), nil, nil
 	}

@@ -553,6 +553,7 @@ func uniqueMCPReferencesStable(values []string) []string {
 	for i, index := range order {
 		values[i] = values[index]
 	}
+	clear(values[unique:])
 	return values[:unique]
 }
 
@@ -581,21 +582,25 @@ func mcpIDMapDecodeReservation(size int64, shape mcpIDMapShape) int64 {
 	pairs := int64(shape.ConceptEntries + shape.SourceEntries + shape.IDRedirectEntries)
 	meta := int64(shape.SourceMetaEntries)
 	stringsCount := pairs*2 + meta*4
-	// String payload bytes are bounded by the encoded body. Exact slices hold
-	// the structs; 16 bytes per retained string covers allocator size-class
-	// slack, while 64 KiB covers parser stacks and sort/runtime headers.
-	return size + pairs*int64(unsafe.Sizeof(mcpIDPair{})) + meta*int64(unsafe.Sizeof(mcpSourceMetadata{})) + stringsCount*16 + 4*24 + (64 << 10)
+	// The encoded body bounds decoded string bytes. Add allocator slack using
+	// the installed Go size classes: rounding is at most 25% for larger small
+	// objects and page-rounded objects, while 8 bytes per string covers the
+	// tiny classes. Struct arrays are reserved at their exact capacities.
+	return size + mcpStringAllocatorSlack(size, stringsCount) + pairs*int64(unsafe.Sizeof(mcpIDPair{})) + meta*int64(unsafe.Sizeof(mcpSourceMetadata{})) + 4*24 + (64 << 10)
 }
 
 func mcpConceptDecodeReservation(size int64, shape mcpConceptsShape) int64 {
 	rows := int64(shape.IncludedRows)
 	items := int64(shape.SourceItems)
-	// The body bounds decoded string payloads. Each raw string item reserves a
-	// 16-byte slice header plus allocator slack; the largest per-row 8-byte
-	// index array is the stable-order dedup scratch. Row and slice capacities
-	// are set from the first-pass counts, so no map or geometric table growth is
-	// involved.
-	return size + rows*int64(unsafe.Sizeof(mcpConceptPage{})) + items*24 + rows*24 + int64(shape.MaxSourcesPerRow)*8 + (64 << 10)
+	// The body bounds decoded string payloads. Reserve one source slice header
+	// plus allocator slack per raw item; the largest per-row 8-byte index array
+	// is the stable-order dedup scratch. Row and slice capacities follow the
+	// first-pass counts, so no map or geometric table growth is involved.
+	return size + mcpStringAllocatorSlack(size, items) + rows*int64(unsafe.Sizeof(mcpConceptPage{})) + items*16 + rows*24 + int64(shape.MaxSourcesPerRow)*8 + (64 << 10)
+}
+
+func mcpStringAllocatorSlack(encodedBytes, stringsCount int64) int64 {
+	return encodedBytes/4 + stringsCount*8
 }
 
 func mcpSnapshotWorkingSetReservation(idMapSize, conceptsSize int64, ids mcpIDMapShape, concepts mcpConceptsShape) int64 {
@@ -605,7 +610,7 @@ func mcpSnapshotWorkingSetReservation(idMapSize, conceptsSize int64, ids mcpIDMa
 	// simultaneous copies of a worst-case 3x escaped slug (PathEscape and final
 	// path). Titles clipped to 512 bytes are separately count-bounded. All
 	// lookup indexes are flat slices whose capacities follow exact counts.
-	return 8*idMapSize + conceptsSize + refs*int64(unsafe.Sizeof(mcpContentRef{})) + refs*int64(unsafe.Sizeof(mcpSlugIndex{})) + routes*int64(unsafe.Sizeof(mcpRouteIndex{})) + int64(ids.SourceMetaEntries)*int64(unsafe.Sizeof(mcpSourceMetadata{})) + int64(ids.IDRedirectEntries)*int64(unsafe.Sizeof(mcpIDPair{})) + int64(concepts.IncludedRows)*int64(unsafe.Sizeof(mcpConceptPage{})) + int64(concepts.SourceItems)*16 + refs*512 + (128 << 10)
+	return 8*idMapSize + conceptsSize + mcpStringAllocatorSlack(conceptsSize, int64(concepts.SourceItems)) + refs*int64(unsafe.Sizeof(mcpContentRef{})) + refs*int64(unsafe.Sizeof(mcpSlugIndex{})) + routes*int64(unsafe.Sizeof(mcpRouteIndex{})) + int64(ids.SourceMetaEntries)*int64(unsafe.Sizeof(mcpSourceMetadata{})) + int64(ids.IDRedirectEntries)*int64(unsafe.Sizeof(mcpIDPair{})) + int64(concepts.IncludedRows)*int64(unsafe.Sizeof(mcpConceptPage{})) + int64(concepts.SourceItems)*16 + refs*512 + (128 << 10)
 }
 
 func sortUniqueMCPIDPairs(values []mcpIDPair) error {

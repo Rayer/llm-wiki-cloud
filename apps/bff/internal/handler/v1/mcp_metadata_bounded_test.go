@@ -332,3 +332,119 @@ func sameMCPStrings(left, right []string) bool {
 	}
 	return true
 }
+
+func TestMCPConceptSnapshotReservationCoversDenseSourceStrings(t *testing.T) {
+	idMapBytes := []byte(`{"concept":{"c":"x"}}`)
+	idShape, err := inspectMCPIDMap(idMapBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, test := range []struct {
+		name      string
+		duplicate bool
+	}{
+		{name: "distinct"},
+		{name: "duplicate", duplicate: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			data := denseMCPConceptSourceFixture(test.duplicate, 200_000)
+			shape, err := inspectMCPConcepts(data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if shape.SourceItems != 200_000 {
+				t.Fatalf("source items = %d, want 200000", shape.SourceItems)
+			}
+
+			runtime.GC()
+			var before, after runtime.MemStats
+			runtime.ReadMemStats(&before)
+			ids, err := decodeMCPIDMap(idMapBytes, idShape)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pages, err := decodeMCPConcepts(data, shape)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pinned := gcs.GenerationSnapshot{ManifestSHA256: strings.Repeat("a", 64)}
+			pinned.Manifest.GenerationID = "dense-source-memory"
+			snapshot := buildMCPContentSnapshot(nil, pinned, storage.QueryGenerationIdentity{}, ids, pages)
+			ids, pages = mcpContentIDs{}, nil
+			runtime.GC()
+			runtime.ReadMemStats(&after)
+			reserve := mcpSnapshotWorkingSetReservation(int64(len(idMapBytes)), int64(len(data)), idShape, shape)
+			retained := int64(after.HeapAlloc) - int64(before.HeapAlloc)
+			t.Logf("dense_source duplicate=%t input_bytes=%d source_items=%d retained_len=%d retained_cap=%d snapshot_reserve=%d retained_heap_delta=%d", test.duplicate, len(data), shape.SourceItems, len(snapshot.concepts[0].Sources), cap(snapshot.concepts[0].Sources), reserve, retained)
+			if retained > reserve {
+				t.Fatalf("retained snapshot exceeds reservation: retained=%d reserve=%d", retained, reserve)
+			}
+			if test.duplicate {
+				sources := snapshot.concepts[0].Sources
+				if len(sources) != 1 || cap(sources) != shape.SourceItems {
+					t.Fatalf("deduplicated sources len=%d cap=%d, want 1 and %d", len(sources), cap(sources), shape.SourceItems)
+				}
+				retainedSources := sources[:cap(sources)]
+				for i, source := range retainedSources[1:] {
+					if source != "" {
+						t.Fatalf("duplicate tail retained source at index %d", i+1)
+					}
+				}
+			} else if len(snapshot.concepts[0].Sources) != shape.SourceItems {
+				t.Fatalf("distinct source count = %d, want %d", len(snapshot.concepts[0].Sources), shape.SourceItems)
+			}
+			runtime.KeepAlive(data)
+			runtime.KeepAlive(shape)
+			snapshot.close()
+		})
+	}
+}
+
+func denseMCPConceptSourceFixture(duplicate bool, count int) []byte {
+	var data bytes.Buffer
+	data.Grow(20*count + 64)
+	data.WriteString(`{"slug":"x","frontmatter":{"sources":[`)
+	for i := 0; i < count; i++ {
+		if i > 0 {
+			data.WriteByte(',')
+		}
+		if duplicate {
+			data.WriteString(`"abcdefghijklmnopq"`)
+		} else {
+			fmt.Fprintf(&data, `"source-%010d"`, i)
+		}
+	}
+	data.WriteString(`]}}`)
+	return data.Bytes()
+}
+
+func TestMCPContentSnapshotCloseRefundsOnceAndDropsRetainedMetadata(t *testing.T) {
+	releases := 0
+	snapshot := &mcpContentSnapshot{
+		client:      new(gcs.Client),
+		generation:  "generation",
+		manifestSHA: strings.Repeat("a", 64),
+		manifest:    generation.Manifest{GenerationID: "generation", Files: []generation.File{{Path: "wiki/x.md"}}},
+		identity:    storage.QueryGenerationIdentity{ProjectID: "project", GenerationID: "generation"},
+		refs:        []mcpContentRef{{ID: "id"}},
+		slugIndex:   []mcpSlugIndex{{slug: "slug"}},
+		routeIndex:  []mcpRouteIndex{{id: "id"}},
+		concepts:    []mcpConceptPage{{Slug: "slug", Sources: []string{"source"}}},
+		sourceMeta:  []mcpSourceMetadata{{ID: "source"}},
+		idRedirects: []mcpIDPair{{Key: "old", Value: "new"}},
+		releases: []func(){
+			func() { releases++ },
+			func() { releases++ },
+		},
+	}
+
+	snapshot.close()
+	snapshot.close()
+	if releases != 2 {
+		t.Fatalf("release callbacks = %d, want 2 exactly once", releases)
+	}
+	if snapshot.client != nil || snapshot.generation != "" || snapshot.manifestSHA != "" || snapshot.manifest.Files != nil || snapshot.identity != (storage.QueryGenerationIdentity{}) || snapshot.refs != nil || snapshot.slugIndex != nil || snapshot.routeIndex != nil || snapshot.concepts != nil || snapshot.sourceMeta != nil || snapshot.idRedirects != nil || snapshot.releases != nil {
+		t.Fatalf("snapshot close retained metadata: %+v", snapshot)
+	}
+}
