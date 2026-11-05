@@ -1042,107 +1042,7 @@ export function HomeClient() {
         </form>
       </section>
 
-      {token && currentProject && user?.id && !isDemoSession ? (
-        <SharedServiceOnboardingNotice
-          projectId={currentProject.id}
-          ownerId={user.id}
-          sessionEpoch={sessionEpoch}
-          isDemoSession={isDemoSession}
-        />
-      ) : null}
-
-      {currentProject ? (
-        <section className="space-y-4" aria-labelledby="current-wiki-heading">
-          <div className="flex flex-wrap items-end justify-between gap-4">
-            <div>
-              <p className="text-xs font-medium uppercase tracking-[0.16em] text-zinc-500">{t('Home.currentWiki')}</p>
-              <h2 id="current-wiki-heading" className="mt-1 text-xl font-medium text-[#F0F3F1]">{currentProject.name}</h2>
-            </div>
-            <NavigationLink href="/concepts" className="inline-flex min-h-11 items-center text-sm text-zinc-300 transition hover:text-white">{t('Demo.allConcepts')}</NavigationLink>
-          </div>
-          {token && !isDemoSession ? <ProjectContentContextPanel key={`content-context:${homeScopeKey}`} projectId={currentProject.id} /> : null}
-          {recentConcepts.status === 'loading' ? (
-            <p className="text-sm text-zinc-500" role="status">{t('Shell.loading')}</p>
-          ) : recentConcepts.status === 'error' ? (
-            <div className="flex flex-wrap items-center gap-3 text-sm text-amber-200" role="status">
-              <p>{t('QueryErrors.storageUnavailable')}</p>
-              <button type="button" className="min-h-11 rounded border border-white/15 px-3 hover:bg-white/10" onClick={() => { void reloadRecentConcepts(); }}>
-                {t('Shell.retry')}
-              </button>
-            </div>
-          ) : recentConcepts.entries.length > 0 ? (
-        <section className="space-y-4" aria-labelledby="latest-concepts-heading">
-          <h3 id="latest-concepts-heading" className="font-sans text-lg font-medium text-[#F0F3F1]">{t('Home.recentKnowledge')}</h3>
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-            {recentConcepts.entries.map((concept) => {
-              const href = conceptHref(concept);
-              if (!href) return null;
-              return (
-                <NavigationLink key={concept.slug} href={href} className="group block focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-emerald-400">
-                <Surface
-                  variant="default"
-                  className="lwc-entry p-5"
-
-                >
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Badge variant="concept">{t('Entry.singular')}</Badge>
-                    <h3 className="font-sans text-lg font-medium text-[#F0F3F1] group-hover:text-white">
-                      {concept.title}
-                    </h3>
-                  </div>
-                  {concept.description ? (
-                    <p className="mt-3 line-clamp-3 text-sm leading-6 text-zinc-400">
-                      {concept.description}
-                    </p>
-                  ) : null}
-                </Surface>
-                </NavigationLink>
-              );
-            })}
-          </div>
-        </section>
-          ) : <p className="text-sm text-zinc-500">{t('Home.noRecentKnowledge')}</p>}
-        </section>
-      ) : null}
-
-      {!isDemoSession && projects.length > 1 ? (
-        <section className="space-y-4" aria-labelledby="other-wikis-heading">
-          <div className="flex flex-wrap items-end justify-between gap-4">
-            <div>
-              <h2 id="other-wikis-heading" className="text-lg font-medium text-[#F0F3F1]">{t('Home.otherWikis')}</h2>
-              <p className="mt-1 text-sm text-zinc-500">{t('Home.otherWikisHint')}</p>
-            </div>
-            <div className="w-full max-w-sm">
-              <ProjectSelect
-                projects={projects.filter((project) => project.id !== currentProject?.id)}
-                value=""
-                onChange={(projectId) => selectProject(projectId)}
-                placeholder={t('Home.findWiki')}
-                searchPlaceholder={t('Shell.searchProjects')}
-                noMatches={t('Shell.noProjectMatches')}
-                onOpen={() => { void refreshProjects(true); }}
-                open={otherWikiPickerOpen}
-                onOpenChange={setOtherWikiPickerOpen}
-              />
-              {projects.filter((project) => project.id !== currentProject?.id).length > 4 ? (
-                <button type="button" onClick={() => { void refreshProjects(true); setOtherWikiPickerOpen(true); }} className="mt-2 min-h-11 text-xs font-medium text-emerald-200 underline underline-offset-4 hover:text-emerald-100">
-                  {t('Home.viewAllWikis')}
-                </button>
-              ) : null}
-            </div>
-          </div>
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            {projects.filter((project) => project.id !== currentProject?.id).slice(0, 4).map((project) => (
-              <button key={project.id} type="button" onClick={() => selectProject(project.id)} className="min-h-20 rounded border border-white/10 bg-white/[0.025] p-4 text-left transition hover:border-white/20 hover:bg-white/[0.05] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300">
-                <span className="block truncate text-sm font-medium text-zinc-100">{project.name}</span>
-                <span className="mt-1 block text-xs text-zinc-500">{t('Home.openWiki')}</span>
-              </button>
-            ))}
-          </div>
-        </section>
-      ) : null}
-
-      <section className="space-y-4">
+      <section data-testid="home-query-results" className="space-y-4">
         {searched ? (
           <div className="flex items-center justify-between gap-4">
             <h2 className="text-lg font-semibold text-white">{t('Demo.results')}</h2>
@@ -1318,6 +1218,106 @@ export function HomeClient() {
           </div>
         ) : null}
       </section>
+
+      {token && currentProject && user?.id && !isDemoSession ? (
+        <SharedServiceOnboardingNotice
+          projectId={currentProject.id}
+          ownerId={user.id}
+          sessionEpoch={sessionEpoch}
+          isDemoSession={isDemoSession}
+        />
+      ) : null}
+
+      {currentProject ? (
+        <section className="space-y-4" aria-labelledby="current-wiki-heading">
+          <div className="flex flex-wrap items-end justify-between gap-4">
+            <div>
+              <p className="text-xs font-medium uppercase tracking-[0.16em] text-zinc-500">{t('Home.currentWiki')}</p>
+              <h2 id="current-wiki-heading" className="mt-1 text-xl font-medium text-[#F0F3F1]">{currentProject.name}</h2>
+            </div>
+            <NavigationLink href="/concepts" className="inline-flex min-h-11 items-center text-sm text-zinc-300 transition hover:text-white">{t('Demo.allConcepts')}</NavigationLink>
+          </div>
+          {token && !isDemoSession ? <ProjectContentContextPanel key={`content-context:${homeScopeKey}`} projectId={currentProject.id} /> : null}
+          {recentConcepts.status === 'loading' ? (
+            <p className="text-sm text-zinc-500" role="status">{t('Shell.loading')}</p>
+          ) : recentConcepts.status === 'error' ? (
+            <div className="flex flex-wrap items-center gap-3 text-sm text-amber-200" role="status">
+              <p>{t('QueryErrors.storageUnavailable')}</p>
+              <button type="button" className="min-h-11 rounded border border-white/15 px-3 hover:bg-white/10" onClick={() => { void reloadRecentConcepts(); }}>
+                {t('Shell.retry')}
+              </button>
+            </div>
+          ) : recentConcepts.entries.length > 0 ? (
+        <section className="space-y-4" aria-labelledby="latest-concepts-heading">
+          <h3 id="latest-concepts-heading" className="font-sans text-lg font-medium text-[#F0F3F1]">{t('Home.recentKnowledge')}</h3>
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {recentConcepts.entries.map((concept) => {
+              const href = conceptHref(concept);
+              if (!href) return null;
+              return (
+                <NavigationLink key={concept.slug} href={href} className="group block focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-emerald-400">
+                <Surface
+                  variant="default"
+                  className="lwc-entry p-5"
+
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant="concept">{t('Entry.singular')}</Badge>
+                    <h3 className="font-sans text-lg font-medium text-[#F0F3F1] group-hover:text-white">
+                      {concept.title}
+                    </h3>
+                  </div>
+                  {concept.description ? (
+                    <p className="mt-3 line-clamp-3 text-sm leading-6 text-zinc-400">
+                      {concept.description}
+                    </p>
+                  ) : null}
+                </Surface>
+                </NavigationLink>
+              );
+            })}
+          </div>
+        </section>
+          ) : <p className="text-sm text-zinc-500">{t('Home.noRecentKnowledge')}</p>}
+        </section>
+      ) : null}
+
+      {!isDemoSession && projects.length > 1 ? (
+        <section className="space-y-4" aria-labelledby="other-wikis-heading">
+          <div className="flex flex-wrap items-end justify-between gap-4">
+            <div>
+              <h2 id="other-wikis-heading" className="text-lg font-medium text-[#F0F3F1]">{t('Home.otherWikis')}</h2>
+              <p className="mt-1 text-sm text-zinc-500">{t('Home.otherWikisHint')}</p>
+            </div>
+            <div className="w-full max-w-sm">
+              <ProjectSelect
+                projects={projects.filter((project) => project.id !== currentProject?.id)}
+                value=""
+                onChange={(projectId) => selectProject(projectId)}
+                placeholder={t('Home.findWiki')}
+                searchPlaceholder={t('Shell.searchProjects')}
+                noMatches={t('Shell.noProjectMatches')}
+                onOpen={() => { void refreshProjects(true); }}
+                open={otherWikiPickerOpen}
+                onOpenChange={setOtherWikiPickerOpen}
+              />
+              {projects.filter((project) => project.id !== currentProject?.id).length > 4 ? (
+                <button type="button" onClick={() => { void refreshProjects(true); setOtherWikiPickerOpen(true); }} className="mt-2 min-h-11 text-xs font-medium text-emerald-200 underline underline-offset-4 hover:text-emerald-100">
+                  {t('Home.viewAllWikis')}
+                </button>
+              ) : null}
+            </div>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            {projects.filter((project) => project.id !== currentProject?.id).slice(0, 4).map((project) => (
+              <button key={project.id} type="button" onClick={() => selectProject(project.id)} className="min-h-20 rounded border border-white/10 bg-white/[0.025] p-4 text-left transition hover:border-white/20 hover:bg-white/[0.05] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300">
+                <span className="block truncate text-sm font-medium text-zinc-100">{project.name}</span>
+                <span className="mt-1 block text-xs text-zinc-500">{t('Home.openWiki')}</span>
+              </button>
+            ))}
+          </div>
+        </section>
+      ) : null}
 
       {/* Citation Preview Modal */}
       {modal ? (

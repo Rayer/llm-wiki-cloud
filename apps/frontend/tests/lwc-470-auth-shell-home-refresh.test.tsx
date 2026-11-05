@@ -127,14 +127,25 @@ function renderPage() {
 }
 
 function homeSections() {
+  const search = document.querySelector<HTMLElement>('.lwc-home > .lwc-search-section');
+  const results = document.querySelector<HTMLElement>('[data-testid="home-query-results"]');
   const current = document.querySelector<HTMLElement>('section[aria-labelledby="current-wiki-heading"]');
   const other = document.querySelector<HTMLElement>('section[aria-labelledby="other-wikis-heading"]');
   const addMaterial = screen.getByRole('button', { name: translate('en', 'AddMaterial.open') });
-  if (!current || !other) throw new Error('Expected both Home Wiki sections to be mounted.');
-  return { current, other, addMaterial };
+  if (!search || !results || !current || !other) throw new Error('Expected the Home search, result, and Wiki sections to be mounted.');
+  return { search, results, current, other, addMaterial };
+}
+
+function expectHomeQueryPlacement(sections: ReturnType<typeof homeSections>) {
+  expect(document.querySelector('[data-testid="home-query-results"]')).toBe(sections.results);
+  expect(sections.search.nextElementSibling).toBe(sections.results);
+  expect(sections.results.parentElement).toBe(sections.search.parentElement);
+  expect(sections.results.compareDocumentPosition(sections.current) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(sections.current.compareDocumentPosition(sections.other) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 }
 
 function expectHomeSectionsToRemain(sections: ReturnType<typeof homeSections>) {
+  expectHomeQueryPlacement(sections);
   expect(document.querySelector('section[aria-labelledby="current-wiki-heading"]')).toBe(sections.current);
   expect(document.querySelector('section[aria-labelledby="other-wikis-heading"]')).toBe(sections.other);
   expect(screen.getByRole('button', { name: translate('en', 'AddMaterial.open') })).toBeTruthy();
@@ -286,7 +297,7 @@ afterEach(() => {
 });
 
 describe('LWC-476 Home Query section retention', () => {
-  it.each(['success', 'empty', 'failure'] as const)('keeps mounted Home sections and child state through a %s Query', async (outcome) => {
+  it.each(['success', 'empty', 'insufficient evidence', 'failure'] as const)('keeps mounted Home sections and child state through a %s Query', async (outcome) => {
     const pendingQuery = deferred<SearchResponse>();
     const initialConcept = conceptEntry('Project Alpha concept', 'project-alpha-concept');
     mocks.getProjects.mockResolvedValue([projectA, projectB]);
@@ -298,6 +309,9 @@ describe('LWC-476 Home Query section retention', () => {
     await waitFor(() => expect(mocks.getProjectContentContext).toHaveBeenCalledTimes(1));
 
     const sections = homeSections();
+    expectHomeSectionsToRemain(sections);
+    expect(sections.results.textContent).toBe('');
+    expect(sections.results.querySelector('h2')).toBeNull();
     const contentContext = sections.current.querySelector('section[aria-labelledby="content-context-project-a"]');
     expect(contentContext).not.toBeNull();
     const pickerTrigger = within(sections.other).getByRole('button', { name: translate('en', 'Home.findWiki') });
@@ -314,7 +328,7 @@ describe('LWC-476 Home Query section retention', () => {
     expect(screen.getByRole('button', { name: translate('en', 'AddMaterial.open') })).toBe(sections.addMaterial);
     expect(sections.current.querySelector('section[aria-labelledby="content-context-project-a"]')).toBe(contentContext);
     expect((pickerSearch as HTMLInputElement).value).toBe('Beta');
-    expect(await screen.findByText(`${translate('en', 'QueryResults.searching')}...`)).toBeTruthy();
+    expect(await within(sections.results).findByText(`${translate('en', 'QueryResults.searching')}...`)).toBeTruthy();
 
     await act(async () => {
       if (outcome === 'failure') {
@@ -323,24 +337,44 @@ describe('LWC-476 Home Query section retention', () => {
       } else {
         pendingQuery.resolve(outcome === 'success'
           ? { results: [{ id: 'query-result', slug: 'query-result', title: 'Mounted Query result', type: 'concept', content: '', raw: {} }], aiAnswer: '', citations: [] }
-          : { results: [], aiAnswer: '', citations: [] });
+          : outcome === 'empty'
+            ? { results: [], aiAnswer: '', citations: [] }
+            : {
+                status: 'insufficient_evidence', reason: 'no_qualified_evidence', wiki_evidence_status: 'insufficient_evidence',
+                results: [], aiAnswer: '', citations: [],
+              });
         await pendingQuery.promise;
       }
     });
 
     expectHomeSectionsToRemain(sections);
+    expect(screen.getByRole('button', { name: translate('en', 'AddMaterial.open') })).toBe(sections.addMaterial);
     expect(sections.current.querySelector('section[aria-labelledby="content-context-project-a"]')).toBe(contentContext);
     expect((pickerSearch as HTMLInputElement).value).toBe('Beta');
     expect(mocks.getProjectContentContext).toHaveBeenCalledTimes(1);
     if (outcome === 'success') {
-      expect(await screen.findByText('Mounted Query result')).toBeTruthy();
+      expect(await within(sections.results).findByText('Mounted Query result')).toBeTruthy();
       expect(screen.queryByText(translate('en', 'QueryResults.noResults'))).toBeNull();
     } else if (outcome === 'empty') {
-      expect(await screen.findByText(translate('en', 'QueryResults.noResults'))).toBeTruthy();
+      expect(await within(sections.results).findByText(translate('en', 'QueryResults.noResults'))).toBeTruthy();
+    } else if (outcome === 'insufficient evidence') {
+      expect(await within(sections.results).findByText(translate('en', 'QueryResults.insufficientEvidence'))).toBeTruthy();
+      expect(screen.queryByText(translate('en', 'QueryResults.noResults'))).toBeNull();
     } else {
-      expect(screen.getByText(translate('en', 'QueryErrors.queryFailure'))).toBeTruthy();
+      expect(within(sections.results).getByText(translate('en', 'QueryErrors.queryFailure'))).toBeTruthy();
       expect(screen.queryByText(translate('en', 'QueryResults.noResults'))).toBeNull();
     }
+  });
+
+  it('detects the old results-after-Wiki order in an isolated DOM overlay', async () => {
+    mocks.getProjects.mockResolvedValue([projectA, projectB]);
+    renderPage();
+    await waitFor(() => expect(mocks.workspace?.currentProject?.id).toBe('project-a'));
+    const sections = homeSections();
+
+    sections.other.after(sections.results);
+
+    expect(() => expectHomeQueryPlacement(sections)).toThrow();
   });
 
   it('keeps the sections through same-Wiki token rotation while Query is pending', async () => {
