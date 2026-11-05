@@ -1051,7 +1051,7 @@ export function HomeClient() {
         />
       ) : null}
 
-      {!searched && currentProject ? (
+      {currentProject ? (
         <section className="space-y-4" aria-labelledby="current-wiki-heading">
           <div className="flex flex-wrap items-end justify-between gap-4">
             <div>
@@ -1105,7 +1105,7 @@ export function HomeClient() {
         </section>
       ) : null}
 
-      {!searched && !isDemoSession && projects.length > 1 ? (
+      {!isDemoSession && projects.length > 1 ? (
         <section className="space-y-4" aria-labelledby="other-wikis-heading">
           <div className="flex flex-wrap items-end justify-between gap-4">
             <div>
