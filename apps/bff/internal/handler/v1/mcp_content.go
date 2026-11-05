@@ -726,10 +726,16 @@ func mcpMetadataWorkingSetReservation(path string, size int64) int64 {
 		// DecodeIDMap has seven collections, each limited to MaxFiles entries.
 		// Five encoded bytes is a lower bound per string-map pair; size/5 and
 		// seven MaxFiles caps therefore bound the total result and duplicate-key
-		// map entries. On 64-bit Go, a string header is 16 bytes, SourceMeta is
-		// 48 bytes, and []string is 24 bytes. For each entry, 256 bytes covers
-		// those value/key slots in the result and seen maps, 8-slot bucket
-		// tophash/overflow, and old plus new buckets during map growth.
+		// map entries. In the qualified Go 1.26.5 64-bit runtime, a string
+		// header is 16 bytes, SourceMeta is 48 bytes, and []string is 24 bytes.
+		// Swiss Table groups have eight slots and an 8-byte control word. The
+		// largest retained slot here is string key + SourceMeta (64 bytes), so
+		// one group is 520 bytes before allocator rounding. Tables grow at 7/8
+		// load by replacing the old group array with a doubled array; the
+		// transition briefly holds at most 3x the old group bytes, plus table
+		// and directory headers. 256 bytes per entry covers that overlap for
+		// populated maps; the fixed reserve covers the seven empty/small maps,
+		// their descriptors, directory pointers, and allocator size classes.
 		mapEntries := min(int64(7*generation.MaxFiles), size/5)
 		activeRefs := min(int64(2*generation.MaxFiles), size/5)
 		redirectItems := size / 2 // the shortest JSON string item is "" (2 bytes)
@@ -737,8 +743,8 @@ func mcpMetadataWorkingSetReservation(path string, size int64) int64 {
 		// refs, byID and byCanonicalRoute; a second compound key in indexByID;
 		// a slice copy in bySlugAndKind; the source WikiPage in titles; and a
 		// copied Sources slice in sourcesByConceptSlug. 1,536 bytes per active
-		// row covers those value structs, key/slice headers, map bucket slots,
-		// and slice growth overlap. Up to four compound keys per active row and
+		// row covers those value structs, key/slice headers, Swiss Table group
+		// slots and growth overlap. Up to four compound keys per active row and
 		// one alias route per IDRedirect are copied strings; the encoded size
 		// bounds their total payload. 8x size covers input bytes, decoded string
 		// bytes, those derived key payloads, and string/map growth overlap.
@@ -751,14 +757,23 @@ func mcpMetadataWorkingSetReservation(path string, size int64) int64 {
 		// json.Unmarshal builds Frontmatter as nested map[string]any/[]any and
 		// strings before retaining selected WikiPage fields. Four input copies
 		// cover the file body, scanner line, []byte(line), and decoded strings.
-		// Every JSON value node consumes at least two compact bytes (a quoted
-		// empty string or a one-byte array value plus separator); 128 bytes per
-		// possible node covers interface/float slots, map bucket keys/values,
-		// array growth overlap, and sources conversion through []any, temporary
-		// []string, dedup map, normalized slice, and snapshot copy. Rows are
-		// capped at MaxFiles and size/12 bounds their shortest slug records;
-		// 1,024 bytes per row covers WikiPage values, title/source maps, and
-		// their buckets/growth while source string payload is counted above.
+		// Every JSON value/container node consumes at least two compact bytes
+		// once delimiters and separators are counted; 128 bytes per possible
+		// node covers interface slots, map keys/values, arrays and sources
+		// conversion through []any, temporary []string, dedup map, normalized
+		// slice, and snapshot copy. In Go 1.26.5, map[string]any has eight
+		// slots per group with an 8-byte control word and 16-byte string and
+		// interface slots (264 bytes before allocator rounding). Small maps keep
+		// one group through eight entries; larger tables grow at 7/8 load and
+		// double up to 1024 slots before splitting through a directory. A grow
+		// briefly keeps the old table and a replacement with twice its slots
+		// (3x old group bytes) until the old table becomes unreachable. The
+		// per-node allowance covers the amortized group and growth overlap for
+		// dense nested maps and slices. Rows are capped at MaxFiles and size/12
+		// bounds their shortest slug records; 1,024 bytes per row covers
+		// WikiPage values, title/source maps, and their group/growth slack while
+		// source string payload is counted above. The 64 KiB fixed reserve covers
+		// small-map headers, tables, directory pointers, and size-class rounding.
 		rows := min(int64(generation.MaxFiles), size/12) // shortest nonempty slug row: {"slug":"x"}
 		jsonNodes := size / 2
 		return size*4 + jsonNodes*128 + rows*1024 + 64<<10

@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -879,6 +880,136 @@ func TestDailyBriefFixedResourceGrantIsAccountOwnedWithoutProject(t *testing.T) 
 	unavailableRouter.ServeHTTP(response, request)
 	if response.Code != http.StatusServiceUnavailable {
 		t.Fatalf("unavailable Firestore verifier HTTP status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestMCPOAuthLoadedRuntimeFileIssuesAndVerifiesContentRead(t *testing.T) {
+	configPath := strings.TrimSpace(os.Getenv("LWC_TEST_AUTH_RUNTIME_PATH"))
+	if configPath == "" {
+		t.Skip("LWC_TEST_AUTH_RUNTIME_PATH is not set")
+	}
+	loaded, err := config.LoadAuthFile(configPath)
+	if err != nil {
+		t.Fatalf("load pipeline-produced Auth runtime file: %v", err)
+	}
+	if loaded.ConfigSchemaVersion < 2 || len(loaded.AuthOAuthResources) == 0 {
+		t.Fatalf("runtime Auth file did not select schema-2 OAuth resources: schema=%d resources=%d", loaded.ConfigSchemaVersion, len(loaded.AuthOAuthResources))
+	}
+	projectPolicy := loaded.AuthOAuthResources[0]
+	wantScopes := []string{"mcp:query", "mcp:content:read", "mcp:raw:write"}
+	wantSets := [][]string{
+		{"mcp:query"},
+		{"mcp:query", "mcp:raw:write"},
+		{"mcp:query", "mcp:content:read"},
+		{"mcp:query", "mcp:content:read", "mcp:raw:write"},
+	}
+	if !reflect.DeepEqual(projectPolicy.ScopesNames(), wantScopes) ||
+		!reflect.DeepEqual(projectPolicy.AllowedScopeSets, wantSets) ||
+		!reflect.DeepEqual(projectPolicy.DefaultScopeSet, []string{"mcp:query"}) {
+		t.Fatalf("loaded runtime project policy = %#v", projectPolicy)
+	}
+
+	_, fs := newIdentityEmulatorRepository(t)
+	defer fs.Close()
+	ctx := context.Background()
+	databaseEnvironment := strings.TrimSpace(loaded.AuthSessionEnvironment)
+	if databaseEnvironment == "" {
+		databaseEnvironment = strings.TrimSpace(loaded.FirestoreDatabaseID)
+	}
+	if databaseEnvironment == "" {
+		databaseEnvironment = "default"
+	}
+	frontendOrigin := ""
+	if len(loaded.AllowedOrigins) > 0 {
+		frontendOrigin = loaded.AllowedOrigins[0]
+		if parsed, parseErr := url.Parse(frontendOrigin); parseErr == nil && parsed.Host != "" {
+			frontendOrigin = parsed.Scheme + "://" + parsed.Host
+		}
+	}
+	service := NewMCPOAuthServiceWithPolicy(fs, databaseEnvironment, loaded.AuthEnvironment,
+		loaded.AuthServiceURL, loaded.SyncServiceURL, frontendOrigin, loaded.JWTSecret, loaded.AuthOAuthResources)
+	clock := time.Now().UTC()
+	service.SetClock(func() time.Time { return clock })
+	if scope, ok := service.normalizeRegistrationScope(""); !ok || scope != "mcp:query" {
+		t.Fatalf("runtime registration default=%q accepted=%t, want query-only", scope, ok)
+	}
+	if scope, ok := service.normalizeRegistrationScope("mcp:query mcp:content:read"); !ok || scope != "mcp:query mcp:content:read" {
+		t.Fatalf("runtime explicit content-read registration scope=%q accepted=%t", scope, ok)
+	}
+
+	userID := fmt.Sprintf("mcp-content-read-user-%d", time.Now().UnixNano())
+	projectID := fmt.Sprintf("mcp-content-read-project-%d", time.Now().UnixNano())
+	userRef := scopedfirestore.Collection(fs, "users").Doc(userID)
+	if _, err := userRef.Set(ctx, UserRecord{Email: "content-read@example.test", Status: AccountActive, AuthVersion: 0}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = userRef.Delete(ctx)
+		for _, name := range []string{"clients", "transactions", "codes", "grants", "access", "refresh"} {
+			iter := mcpOAuthCollection(fs, databaseEnvironment, name).Documents(ctx)
+			for {
+				doc, iterErr := iter.Next()
+				if errors.Is(iterErr, iterator.Done) {
+					break
+				}
+				if iterErr != nil {
+					break
+				}
+				_, _ = doc.Ref.Delete(ctx)
+			}
+			iter.Stop()
+		}
+	})
+
+	client, err := service.RegisterClient(ctx, "Loaded runtime content reader", []string{"http://127.0.0.1:43123/callback"})
+	if err != nil {
+		t.Fatalf("register runtime OAuth client: %v", err)
+	}
+	verifier := strings.Repeat("b", 43)
+	challengeBytes := sha256.Sum256([]byte(verifier))
+	challenge := base64.RawURLEncoding.EncodeToString(challengeBytes[:])
+	resource := service.ResourceURL(projectID)
+	requestedScope := "mcp:query mcp:content:read"
+	consentURL, err := service.BeginAuthorization(ctx, client.ClientID, client.RedirectURIs[0], "code", challenge, "S256", "runtime-state", resource, requestedScope)
+	if err != nil {
+		t.Fatalf("begin runtime content-read authorization: %v", err)
+	}
+	parsedConsent, err := url.Parse(consentURL)
+	if err != nil {
+		t.Fatalf("parse runtime consent URL: %v", err)
+	}
+	transactionID := parsedConsent.Query().Get("transaction_id")
+	lookup, err := service.LookupConsentTransaction(ctx, userID, 0, transactionID)
+	if err != nil || lookup.ProjectID != projectID || strings.Join(lookup.RequestedScopes, " ") != requestedScope {
+		t.Fatalf("runtime trusted consent lookup=%+v err=%v", lookup, err)
+	}
+	decision, err := service.DecideConsentTrusted(ctx, MCPOAuthTrustedDecision{
+		SchemaVersion: 1, TransactionID: transactionID, Subject: userID, AuthVersion: 0,
+		Decision: "allow", ApprovedScopes: append([]string(nil), lookup.RequestedScopes...),
+	})
+	if err != nil {
+		t.Fatalf("approve runtime content-read consent: %v", err)
+	}
+	callback, err := url.Parse(decision.RedirectURL)
+	if err != nil || callback.Query().Get("state") != "runtime-state" || callback.Query().Get("code") == "" {
+		t.Fatalf("runtime OAuth callback=%q err=%v", decision.RedirectURL, err)
+	}
+	tokens, err := service.ExchangeCode(ctx, client.ClientID, callback.Query().Get("code"), client.RedirectURIs[0], verifier, resource)
+	if err != nil || tokens.AccessToken == "" || tokens.RefreshToken == "" || tokens.Scope != requestedScope {
+		t.Fatalf("exchange runtime content-read authorization: scope=%q err=%v", tokens.Scope, err)
+	}
+	verified, err := service.VerifyAccessToken(ctx, tokens.AccessToken)
+	if err != nil || verified.UserID != userID || verified.ProjectID != projectID ||
+		strings.Join(verified.Scopes, " ") != requestedScope || strings.Contains(tokens.Scope, "mcp:raw:write") {
+		t.Fatalf("verify runtime content-read access token=%+v err=%v", verified, err)
+	}
+	rotated, err := service.Refresh(ctx, client.ClientID, tokens.RefreshToken, resource)
+	if err != nil || rotated.Scope != requestedScope || rotated.AccessToken == "" || rotated.RefreshToken == "" {
+		t.Fatalf("refresh runtime content-read grant: scope=%q err=%v", rotated.Scope, err)
+	}
+	if verified, err := service.VerifyAccessToken(ctx, rotated.AccessToken); err != nil ||
+		strings.Join(verified.Scopes, " ") != requestedScope || verified.ProjectID != projectID {
+		t.Fatalf("verify refreshed runtime content-read token=%+v err=%v", verified, err)
 	}
 }
 

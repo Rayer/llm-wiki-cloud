@@ -1004,8 +1004,17 @@ func TestMCPContentReadScopesAndAdmissionThroughProjectKeyAndOAuthSDKEndpoints(t
 	}
 
 	probe.reset()
+	// Switch to a fresh, near-zero refill policy after the successful content
+	// workload so the negative case is deterministic under -race as well.
+	quotaConfig := mcpContentEndpointTestConfig()
+	quotaConfig.Protection.PolicyRevision = "mcp-endpoint-test-quota-v1"
+	quotaConfig.Protection.Content.Project.RefillMicrounitsPerSecond = 1
+	quotaConfig.Protection.Content.Account.RefillMicrounitsPerSecond = 1
+	handler.SetMCPConfig(quotaConfig)
 	var limited *mcp.CallToolResult
+	quotaAttempts := 0
 	for i := 0; i < 40; i++ {
+		quotaAttempts = i + 1
 		observationsBefore := len(probe.observations())
 		result, callErr := readSession.CallTool(ctx, &mcp.CallToolParams{Name: "list_content", Arguments: map[string]any{"kind": "concept"}})
 		if callErr != nil || result == nil {
@@ -1024,8 +1033,9 @@ func TestMCPContentReadScopesAndAdmissionThroughProjectKeyAndOAuthSDKEndpoints(t
 		}
 	}
 	if limited == nil {
-		t.Fatal("content quota did not deny after exhausting its 32-token test bucket")
+		t.Fatal("content quota did not deny under the deterministic 32-token test bucket")
 	}
+	t.Logf("content_quota_exhaustion attempts=%d capacity_tokens=32 refill_microunits_per_second=1 denied_before_storage=true", quotaAttempts)
 	for _, endpoint := range wireEndpoints {
 		for _, wireID := range wireIDs {
 			limitedBoundaryID := false
@@ -1145,10 +1155,22 @@ func TestMCPMetadataHeavySDKReadMeasuresReservedWorkingSet(t *testing.T) {
 	frontmatter, _ := firstConcept["frontmatter"].(map[string]any)
 	nested, _ := frontmatter["nested"].(map[string]any)
 	longNote, _ := frontmatter["long_note"].(string)
-	if len(longNote) < 8192 || len(nested) < 2 || len(modelIDs.Concept) != metadataRows || len(modelIDs.Source) != metadataRows || len(modelIDs.IDRedirects) != metadataRows || len(modelIDs.Redirects) != metadataRows {
-		t.Fatalf("metadata model fixture did not exercise nested containers, long strings, multiple sources, and redirects: concepts=%d sources=%d id_redirects=%d redirects=%d source_refs=%d nested=%d long_note_bytes=%d", len(modelIDs.Concept), len(modelIDs.Source), len(modelIDs.IDRedirects), len(modelIDs.Redirects), len(modelPages[0].Sources), len(nested), len(longNote))
+	growthBoundaries, _ := frontmatter["map_growth_boundaries"].([]any)
+	wantGrowthMapSizes := []int{0, 1, 7, 8, 9, 14, 15, 28, 29, 56, 57}
+	var growthMapEntries int
+	for i, raw := range growthBoundaries {
+		value, _ := raw.(map[string]any)
+		if i >= len(wantGrowthMapSizes) || len(value) != wantGrowthMapSizes[i] {
+			t.Fatalf("metadata map growth fixture index=%d map_size=%d, want %v", i, len(value), wantGrowthMapSizes)
+		}
+		growthMapEntries += len(value)
 	}
-	t.Logf("metadata_model_inputs concepts=%d sources=%d sources_per_concept_after_dedup=%d id_redirects=%d redirect_lists=%d nested_frontmatter_fields=%d long_title_bytes=%d long_frontmatter_bytes=%d", len(modelIDs.Concept), len(modelIDs.Source), len(firstPage.Sources), len(modelIDs.IDRedirects), len(modelIDs.Redirects), len(nested), len(firstPage.Title), len(longNote))
+	if len(growthBoundaries) != len(wantGrowthMapSizes) || len(longNote) < 8192 || len(nested) < 2 ||
+		len(modelIDs.Concept) != metadataRows || len(modelIDs.Source) != metadataRows ||
+		len(modelIDs.IDRedirects) != metadataRows || len(modelIDs.Redirects) != metadataRows {
+		t.Fatalf("metadata model fixture did not exercise nested containers, map growth boundaries, long strings, multiple sources, and redirects: concepts=%d sources=%d id_redirects=%d redirects=%d source_refs=%d nested=%d long_note_bytes=%d growth_maps=%d growth_map_entries=%d", len(modelIDs.Concept), len(modelIDs.Source), len(modelIDs.IDRedirects), len(modelIDs.Redirects), len(modelPages[0].Sources), len(nested), len(longNote), len(growthBoundaries), growthMapEntries)
+	}
+	t.Logf("metadata_model_inputs concepts=%d sources=%d sources_per_concept_after_dedup=%d id_redirects=%d redirect_lists=%d nested_frontmatter_fields=%d long_title_bytes=%d long_frontmatter_bytes=%d nested_growth_maps=%d growth_map_entries=%d growth_map_sizes=%v", len(modelIDs.Concept), len(modelIDs.Source), len(firstPage.Sources), len(modelIDs.IDRedirects), len(modelIDs.Redirects), len(nested), len(firstPage.Title), len(longNote), len(growthBoundaries), growthMapEntries, wantGrowthMapSizes)
 	contentClient, readsMu, reads := newTaggingGCSClient(t, objects)
 	probe := &mcpContentAdmissionProbeRoot{RootStore: localfs.New(t.TempDir()), fs: fs.Raw(), content: contentClient}
 	handler := New(probe, fs, nil, nil, nil, nil)
@@ -1223,6 +1245,11 @@ func TestMCPMetadataHeavySDKReadMeasuresReservedWorkingSet(t *testing.T) {
 	sampleMu.Unlock()
 	reservedIDMap := mcpMetadataWorkingSetReservation(wikiindex.IDMapPath, int64(len(idMapBytes)))
 	reservedConcepts := mcpMetadataWorkingSetReservation(wikiindex.ConceptsJSONLPath, int64(len(conceptsBytes)))
+	reservedMetadata := reservedIDMap + reservedConcepts
+	transientPeakDelta := int64(peak) - int64(before.HeapAlloc)
+	if after.TotalAlloc-before.TotalAlloc > uint64(reservedMetadata) || transientPeakDelta > reservedMetadata {
+		t.Fatalf("metadata allocation exceeded source-derived reservation: reserved=%d total_alloc_delta=%d sampled_heap_peak_delta=%d", reservedMetadata, after.TotalAlloc-before.TotalAlloc, transientPeakDelta)
+	}
 	t.Logf("metadata_heavy_sdk generation=%s concepts=%d sources=%d id_map_bytes=%d concepts_bytes=%d id_map_reserved_bytes=%d concepts_reserved_bytes=%d total_alloc_delta=%d live_heap_delta=%d sampled_heap_peak_delta=%d rss_peak_before=%d rss_peak_after=%d storage_id_map_reads=%d storage_concepts_reads=%d", payload["generation"], metadataRows, metadataRows, len(idMapBytes), len(conceptsBytes), reservedIDMap, reservedConcepts, after.TotalAlloc-before.TotalAlloc, int64(after.HeapAlloc)-int64(before.HeapAlloc), int64(peak)-int64(before.HeapAlloc), rssBefore, rssAfter, idMapReads, conceptsReads)
 }
 
@@ -1253,6 +1280,20 @@ func mcpMetadataHeavyPublishedFixture(t *testing.T, userID, projectID string, co
 				"groups": []any{map[string]any{"label": "metadata fixture", "values": []any{true, false, map[string]any{"rank": i, "note": "nested-value"}}}},
 				"flags":  map[string]any{"enabled": true, "quality": "fixture"},
 			},
+		}
+		if i == 0 {
+			growthMapSizes := []int{0, 1, 7, 8, 9, 14, 15, 28, 29, 56, 57}
+			growthMaps := make([]any, 0, len(growthMapSizes))
+			for _, size := range growthMapSizes {
+				growthMap := make(map[string]any, size)
+				for entry := 0; entry < size; entry++ {
+					growthMap[fmt.Sprintf("entry-%02d", entry)] = map[string]any{
+						"nested": []any{entry, fmt.Sprintf("value-%02d", entry)},
+					}
+				}
+				growthMaps = append(growthMaps, growthMap)
+			}
+			frontmatter["map_growth_boundaries"] = growthMaps
 		}
 		title := "Concept " + conceptID
 		if i == 0 {

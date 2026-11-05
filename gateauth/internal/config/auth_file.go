@@ -66,6 +66,11 @@ type AuthFile struct {
 	ManagementScopes         []AuthManagementScope         `json:"management_scopes,omitempty"`
 	ConsumerVerifiers        *[]AuthConsumerVerifier       `json:"consumer_verifiers,omitempty"`
 	ConsumerPublicProjection *AuthConsumerPublicProjection `json:"consumer_public_projection,omitempty"`
+	Portal                   *AuthFilePortal               `json:"portal,omitempty"`
+}
+
+type AuthFilePortal struct {
+	LWCBFFOrigin string `json:"lwc_bff_origin"`
 }
 
 type AuthLocalizedText struct {
@@ -159,6 +164,11 @@ type AuthInputSnapshot struct {
 	ManagementScopes         []AuthManagementScope         `json:"management_scopes,omitempty"`
 	ConsumerVerifiers        *[]AuthConsumerVerifier       `json:"consumer_verifiers,omitempty"`
 	ConsumerPublicProjection *AuthConsumerPublicProjection `json:"consumer_public_projection,omitempty"`
+	Portal                   *AuthInputPortal              `json:"portal,omitempty"`
+}
+
+type AuthInputPortal struct {
+	LWCBFFOrigin string `json:"lwc_bff_origin"`
 }
 
 type AuthInputGoogle struct {
@@ -205,6 +215,8 @@ func DecodeAuthInputSnapshot(data []byte) (AuthInputSnapshot, error) {
 		keys = append(append([]string(nil), authInputSnapshotKeys...), "oauth_resources")
 	} else if version == 3 {
 		keys = append(append([]string(nil), authInputSnapshotKeys...), "oauth_resources", "management_scopes", "consumer_verifiers", "consumer_public_projection")
+	} else if version == 4 {
+		keys = append(append([]string(nil), authInputSnapshotKeys...), "oauth_resources", "management_scopes", "consumer_verifiers", "consumer_public_projection", "portal")
 	}
 	if err := requireJSONKeys(fields, keys); err != nil {
 		return AuthInputSnapshot{}, errors.New("Auth input snapshot has missing or unknown keys")
@@ -230,11 +242,16 @@ func DecodeAuthInputSnapshot(data []byte) (AuthInputSnapshot, error) {
 		if err := validateOAuthResourcesJSON("inputs.oauth_resources", fields["oauth_resources"]); err != nil {
 			return AuthInputSnapshot{}, err
 		}
-	} else if version == 3 {
+	} else if version == 3 || version == 4 {
 		if err := validateOAuthResourcesJSON("inputs.oauth_resources", fields["oauth_resources"]); err != nil {
 			return AuthInputSnapshot{}, err
 		}
 		if err := validateAuthPublicPolicyJSON(fields); err != nil {
+			return AuthInputSnapshot{}, err
+		}
+	}
+	if version == 4 {
+		if err := validatePortalJSON("inputs.portal", fields["portal"]); err != nil {
 			return AuthInputSnapshot{}, err
 		}
 	}
@@ -332,6 +349,17 @@ func validateAuthPublicPolicyJSON(fields map[string]json.RawMessage) error {
 		return errors.New("Auth consumer_public_projection management scopes are invalid")
 	}
 	return nil
+}
+
+func validatePortalJSON(name string, raw json.RawMessage) error {
+	if err := requireAuthJSONType(name, raw, "object"); err != nil {
+		return err
+	}
+	var portal map[string]json.RawMessage
+	if json.Unmarshal(raw, &portal) != nil || portal == nil || requireJSONKeys(portal, []string{"lwc_bff_origin"}) != nil {
+		return errors.New("Auth portal object has missing or unknown keys")
+	}
+	return requireAuthJSONType(name+".lwc_bff_origin", portal["lwc_bff_origin"], "string")
 }
 
 var authInputGoogleKeys = []string{
@@ -482,9 +510,18 @@ func validateAuthOAuthResources(file AuthFile) error {
 			brief = resource
 		}
 	}
-	if project == nil || brief == nil || !project.Enabled ||
-		!equalStringSlices(project.ScopesNames(), []string{"mcp:query", "mcp:raw:write"}) ||
-		!equalStringSetSlices(project.AllowedScopeSets, [][]string{{"mcp:query"}, {"mcp:query", "mcp:raw:write"}}) ||
+	legacyProjectScopes := []string{"mcp:query", "mcp:raw:write"}
+	legacyProjectScopeSets := [][]string{{"mcp:query"}, {"mcp:query", "mcp:raw:write"}}
+	contentReadProjectScopes := []string{"mcp:query", "mcp:content:read", "mcp:raw:write"}
+	contentReadProjectScopeSets := [][]string{
+		{"mcp:query"},
+		{"mcp:query", "mcp:raw:write"},
+		{"mcp:query", "mcp:content:read"},
+		{"mcp:query", "mcp:content:read", "mcp:raw:write"},
+	}
+	legacyOrContentReadProjectScopes := project != nil && (equalStringSlices(project.ScopesNames(), legacyProjectScopes) && equalStringSetSlices(project.AllowedScopeSets, legacyProjectScopeSets) ||
+		equalStringSlices(project.ScopesNames(), contentReadProjectScopes) && equalStringSetSlices(project.AllowedScopeSets, contentReadProjectScopeSets))
+	if project == nil || brief == nil || !project.Enabled || !legacyOrContentReadProjectScopes ||
 		!equalStringSlices(project.DefaultScopeSet, []string{"mcp:query"}) ||
 		!equalStringSlices(brief.ScopesNames(), []string{"brief:manage"}) ||
 		!equalStringSetSlices(brief.AllowedScopeSets, [][]string{{"brief:manage"}}) || len(brief.DefaultScopeSet) != 0 {
@@ -633,7 +670,7 @@ func equalStringSetSlices(a, b [][]string) bool {
 // ValidateAuthInputSnapshot ensures Stage 2 receives a complete immutable
 // nonsecret snapshot and exact numeric credential versions.
 func ValidateAuthInputSnapshot(inputs AuthInputSnapshot) error {
-	if (inputs.SchemaVersion != 1 && inputs.SchemaVersion != 2 && inputs.SchemaVersion != 3) || inputs.Target != "auth" ||
+	if (inputs.SchemaVersion != 1 && inputs.SchemaVersion != 2 && inputs.SchemaVersion != 3 && inputs.SchemaVersion != 4) || inputs.Target != "auth" ||
 		(inputs.Environment != "dev" && inputs.Environment != "prod") ||
 		!authSourceSHAPattern.MatchString(inputs.SourceSHA) || !authConfigIDPattern.MatchString(inputs.ConfigID) ||
 		inputs.GCPProject != "llm-wiki-cloud" || inputs.LocalCloudScope != "" ||
@@ -681,8 +718,16 @@ func ValidateAuthInputSnapshot(inputs AuthInputSnapshot) error {
 		OAuthResources:   inputs.OAuthResources,
 		ManagementScopes: inputs.ManagementScopes, ConsumerVerifiers: inputs.ConsumerVerifiers,
 		ConsumerPublicProjection: inputs.ConsumerPublicProjection,
+		Portal:                   authInputPortalToFile(inputs.Portal),
 	}
 	return validateAuthFile(file)
+}
+
+func authInputPortalToFile(portal *AuthInputPortal) *AuthFilePortal {
+	if portal == nil {
+		return nil
+	}
+	return &AuthFilePortal{LWCBFFOrigin: portal.LWCBFFOrigin}
 }
 
 func valueWhen(enabled bool, value string) string {
@@ -718,6 +763,8 @@ func authFileKeysForVersion(version int) []string {
 		return append(append([]string(nil), authFileKeys...), "oauth_resources")
 	} else if version == 3 {
 		return append(append([]string(nil), authFileKeys...), "oauth_resources", "management_scopes", "consumer_verifiers", "consumer_public_projection")
+	} else if version == 4 {
+		return append(append([]string(nil), authFileKeys...), "oauth_resources", "management_scopes", "consumer_verifiers", "consumer_public_projection", "portal")
 	}
 	return authFileKeys
 }
@@ -782,7 +829,15 @@ func LoadAuthFile(path string) (Config, error) {
 		AuthOAuthResources:  runtimeAuthOAuthResources(file),
 		ManagementScopes:    file.ManagementScopes, AuthConsumerVerifiers: authConsumerVerifiersOrEmpty(file.ConsumerVerifiers),
 		AuthConsumerPublicProjection: authConsumerProjectionOrZero(file.ConsumerPublicProjection),
+		PortalLWCBFFOrigin:           authPortalOrigin(file),
 	}, nil
+}
+
+func authPortalOrigin(file AuthFile) string {
+	if file.Portal == nil {
+		return ""
+	}
+	return file.Portal.LWCBFFOrigin
 }
 
 func runtimeAuthOAuthResources(file AuthFile) []AuthOAuthResource {
@@ -866,8 +921,13 @@ func validateAuthFileTypes(fields map[string]json.RawMessage) error {
 			return err
 		}
 	}
-	if version == 3 {
+	if version == 3 || version == 4 {
 		if err := validateAuthPublicPolicyJSON(fields); err != nil {
+			return err
+		}
+	}
+	if version == 4 {
+		if err := validatePortalJSON("auth.portal", fields["portal"]); err != nil {
 			return err
 		}
 	}
@@ -894,7 +954,7 @@ func validateAuthFileTypes(fields map[string]json.RawMessage) error {
 }
 
 func validateAuthFile(file AuthFile) error {
-	if (file.SchemaVersion != 1 && file.SchemaVersion != 2 && file.SchemaVersion != 3) || file.Target != "auth" ||
+	if (file.SchemaVersion != 1 && file.SchemaVersion != 2 && file.SchemaVersion != 3 && file.SchemaVersion != 4) || file.Target != "auth" ||
 		(file.Environment != "local" && file.Environment != "dev" && file.Environment != "prod") ||
 		!authConfigIDPattern.MatchString(file.ConfigID) {
 		return errors.New("Auth config identity is invalid")
@@ -946,6 +1006,14 @@ func validateAuthFile(file AuthFile) error {
 	} else if err := validateAuthPublicPolicy(file.ManagementScopes, *file.ConsumerVerifiers,
 		*file.ConsumerPublicProjection, file.Environment, file.AuthServiceURL, trimAuthOrigin(file.SyncServiceURL)); err != nil {
 		return err
+	}
+	if file.SchemaVersion == 4 {
+		if file.Portal == nil || file.Portal.LWCBFFOrigin != file.ConsumerPublicProjection.Resource ||
+			validateRuntimeOrigin(file.Portal.LWCBFFOrigin, localMode) != nil {
+			return errors.New("Auth config portal.lwc_bff_origin is invalid")
+		}
+	} else if file.Portal != nil {
+		return errors.New("Auth config portal settings require schema 4")
 	}
 	for _, host := range file.AllowedHosts {
 		if strings.TrimSpace(host) == "" || strings.Contains(host, "*") || strings.ContainsAny(host, " /\\\r\n\t") ||

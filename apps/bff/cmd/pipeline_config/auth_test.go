@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -286,6 +287,26 @@ func TestRealPklAuthPrepareProducesLocalFileAndCloudInputStages(t *testing.T) {
 		localConfig.AuthOAuthResources[1].URI != "https://brief.rayer.idv.tw/mcp" ||
 		len(localConfig.AuthOAuthResources[1].AccountSelectionClientIDs) != 0 {
 		t.Fatalf("local disabled Brief policy changed: %#v", localConfig.AuthOAuthResources)
+	}
+	projectOAuth := localConfig.AuthOAuthResources[0]
+	if !reflect.DeepEqual(projectOAuth.ScopesNames(), []string{"mcp:query", "mcp:content:read", "mcp:raw:write"}) ||
+		!reflect.DeepEqual(projectOAuth.AllowedScopeSets, [][]string{
+			{"mcp:query"}, {"mcp:query", "mcp:raw:write"}, {"mcp:query", "mcp:content:read"},
+			{"mcp:query", "mcp:content:read", "mcp:raw:write"},
+		}) || !reflect.DeepEqual(projectOAuth.DefaultScopeSet, []string{"mcp:query"}) {
+		t.Fatalf("local Auth Pkl producer did not materialize the exact query-default four-set scope catalog: %#v", projectOAuth)
+	}
+	if runtimeOutput := strings.TrimSpace(os.Getenv("LWC_TEST_AUTH_RUNTIME_OUTPUT")); runtimeOutput != "" {
+		if err := os.MkdirAll(filepath.Dir(runtimeOutput), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(localPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(runtimeOutput, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	manifest, err := os.ReadFile(filepath.Join(localOutput, "auth", "success.json"))
 	if err != nil {
