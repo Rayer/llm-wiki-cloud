@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -169,13 +170,13 @@ func TestSchema4AuthSSOTProducerCarriesPortalOriginThroughPrepareAndMaterialize(
 	}
 }
 
-func TestRealPklAuthDescriptorPinsSchemaThreeForBFFStaging(t *testing.T) {
+func TestRealPklAuthDescriptorPinsSchemaThreeForDevAndProduction(t *testing.T) {
 	realPKL := strings.TrimSpace(os.Getenv("PKL_BIN"))
 	if realPKL == "" {
 		var err error
 		realPKL, err = exec.LookPath("pkl")
 		if err != nil {
-			t.Fatalf("Pkl is required for schema-3 staging: %v", err)
+			t.Fatalf("Pkl is required for schema-3 Auth descriptors: %v", err)
 		}
 	}
 	if _, err := os.Stat(realPKL); err != nil {
@@ -188,25 +189,91 @@ func TestRealPklAuthDescriptorPinsSchemaThreeForBFFStaging(t *testing.T) {
 	t.Setenv("LWC_REPOSITORY_ROOT", repoRoot)
 	t.Setenv("PKL_BIN", realPKL)
 	t.Setenv("PKL_CACHE_DIR", "")
-	reader := &fakeAuthReader{}
-	output := t.TempDir()
-	err = runPrepareTargetModeAtSourceWithAuthSchema(context.Background(), "auth", "dev", output, true,
-		strings.Repeat("c", 40), 3, func(context.Context) (secretReader, error) { return reader, nil })
-	if err != nil {
-		t.Fatalf("prepare pinned schema-3 Auth descriptor: %v", err)
+	sourceSHA := strings.TrimSpace(os.Getenv("GAT44_AUTH3_SOURCE_SHA"))
+	if sourceSHA == "" {
+		sourceSHA = strings.Repeat("c", 40)
 	}
-	data, err := os.ReadFile(filepath.Join(output, "auth-inputs.json"))
-	if err != nil {
-		t.Fatal(err)
+	if !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(sourceSHA) {
+		t.Fatalf("schema-3 fixture source SHA is invalid")
 	}
-	inputs, err := config.DecodeAuthInputSnapshot(data)
-	if err != nil {
-		t.Fatalf("decode pinned schema-3 Auth snapshot: %v", err)
-	}
-	if inputs.SchemaVersion != 3 || inputs.Portal != nil || inputs.ConsumerPublicProjection == nil ||
-		len(inputs.ManagementScopes) == 0 || inputs.ConsumerVerifiers == nil || len(*inputs.ConsumerVerifiers) == 0 ||
-		inputs.SourceSHA != strings.Repeat("c", 40) {
-		t.Fatalf("pinned Auth snapshot lost schema-3 identity or consumer policy: %+v", inputs)
+	fixtureRoot := strings.TrimSpace(os.Getenv("GAT44_AUTH3_FIXTURE_OUTPUT_DIR"))
+	for _, environment := range []string{"dev", "prod"} {
+		t.Run(environment, func(t *testing.T) {
+			reader := &fakeAuthReader{}
+			output := t.TempDir()
+			if fixtureRoot != "" {
+				output = filepath.Join(fixtureRoot, environment)
+				if err := os.MkdirAll(output, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := runPrepareTargetModeAtSourceWithAuthSchema(context.Background(), "auth", environment, output, true,
+				sourceSHA, 3, func(context.Context) (secretReader, error) { return reader, nil }); err != nil {
+				t.Fatalf("prepare pinned schema-3 Auth descriptor: %v", err)
+			}
+			data, err := os.ReadFile(filepath.Join(output, "auth-inputs.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			inputs, err := config.DecodeAuthInputSnapshot(data)
+			if err != nil {
+				t.Fatalf("decode pinned schema-3 Auth snapshot: %v", err)
+			}
+			if inputs.SchemaVersion != 3 || inputs.Environment != environment || inputs.Portal != nil ||
+				inputs.ConsumerPublicProjection == nil || len(inputs.ManagementScopes) == 0 ||
+				inputs.ConsumerVerifiers == nil || len(*inputs.ConsumerVerifiers) == 0 || inputs.SourceSHA != sourceSHA ||
+				len(inputs.OAuthResources) != 2 {
+				t.Fatalf("pinned Auth snapshot lost schema-3 identity or consumer policy: %+v", inputs)
+			}
+			project := inputs.OAuthResources[0]
+			wantNames := []string{"mcp:query", "mcp:content:read", "mcp:raw:write"}
+			if len(project.Scopes) != len(wantNames) {
+				t.Fatalf("schema-3 Project scope catalog = %+v", project.Scopes)
+			}
+			for i, name := range wantNames {
+				if project.Scopes[i].Name != name {
+					t.Fatalf("schema-3 Project scope[%d] = %q, want %q", i, project.Scopes[i].Name, name)
+				}
+			}
+			if len(project.AllowedScopeSets) != 4 || len(project.DefaultScopeSet) != 1 || project.DefaultScopeSet[0] != "mcp:query" {
+				t.Fatalf("schema-3 Project accepted/default scope sets = %v/%v", project.AllowedScopeSets, project.DefaultScopeSet)
+			}
+			wantSets := [][]string{
+				{"mcp:query"},
+				{"mcp:query", "mcp:raw:write"},
+				{"mcp:query", "mcp:content:read"},
+				{"mcp:query", "mcp:content:read", "mcp:raw:write"},
+			}
+			for i, want := range wantSets {
+				got := project.AllowedScopeSets[i]
+				if len(got) != len(want) {
+					t.Fatalf("schema-3 Project accepted set[%d] = %v, want %v", i, got, want)
+				}
+				for j, name := range want {
+					if got[j] != name {
+						t.Fatalf("schema-3 Project accepted set[%d] = %v, want %v", i, got, want)
+					}
+				}
+			}
+			runtimeConfigPath := filepath.Join(output, "auth.json")
+			materializer := &fakeAuthReader{data: []byte("GAT44_SYNTHETIC_TEST_ONLY_AUTH_SECRET")}
+			if err := materializeAuthSnapshot(context.Background(), inputs, runtimeConfigPath, func(context.Context) (secretReader, error) {
+				return materializer, nil
+			}); err != nil {
+				t.Fatalf("materialize synthetic schema-3 Auth config: %v", err)
+			}
+			loaded, err := config.LoadAuthFile(runtimeConfigPath)
+			if err != nil || loaded.ConfigSchemaVersion != 3 || loaded.AuthEnvironment != environment ||
+				loaded.PortalLWCBFFOrigin != "" || len(materializer.accesses) != 2 {
+				t.Fatalf("load materialized schema-3 Auth config schema=%d environment=%q portal=%q err=%v",
+					loaded.ConfigSchemaVersion, loaded.AuthEnvironment, loaded.PortalLWCBFFOrigin, err)
+			}
+			if fixtureRoot != "" {
+				if err := os.Chmod(runtimeConfigPath, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
 	}
 	for _, invalid := range []struct {
 		target, environment string
@@ -214,13 +281,14 @@ func TestRealPklAuthDescriptorPinsSchemaThreeForBFFStaging(t *testing.T) {
 		schemaVersion       int
 	}{
 		{target: "bff", environment: "dev", descriptor: true, schemaVersion: 3},
-		{target: "auth", environment: "prod", descriptor: true, schemaVersion: 3},
+		{target: "auth", environment: "local", descriptor: true, schemaVersion: 3},
+		{target: "auth", environment: "staging", descriptor: true, schemaVersion: 3},
 		{target: "auth", environment: "dev", descriptor: false, schemaVersion: 3},
 		{target: "auth", environment: "dev", descriptor: true, schemaVersion: 5},
 	} {
 		if err := runPrepareTargetModeAtSourceWithAuthSchema(context.Background(), invalid.target, invalid.environment,
-			t.TempDir(), invalid.descriptor, strings.Repeat("c", 40), invalid.schemaVersion, nil); err == nil {
-			t.Fatalf("accepted schema-3 pin outside dev Auth descriptor: %+v", invalid)
+			t.TempDir(), invalid.descriptor, sourceSHA, invalid.schemaVersion, nil); err == nil {
+			t.Fatalf("accepted schema-3 pin outside dev/production Auth descriptor: %+v", invalid)
 		}
 	}
 }

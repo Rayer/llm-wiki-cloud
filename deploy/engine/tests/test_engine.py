@@ -123,10 +123,10 @@ class Acceptance(unittest.TestCase):
     def test_schema_three_staging_pin_requires_dev_bff_only_and_v3_reuse_receipt(self):
         with tempfile.TemporaryDirectory() as temporary:
             reuse = Path(temporary)
-            base = dict(environment='development', source='a' * 40, components='auth',
+            base = dict(environment='development', source='a' * 40, components='auth,bff',
                         tag='schema-three-staging', release_source_mode='independent',
                         auth_schema_version=3, reuse=str(reuse))
-            with self.assertRaisesRegex(Breakpoint, 'auth-schema3-staging-requires-independent-bff-reuse'):
+            with self.assertRaisesRegex(Breakpoint, 'auth-schema3-selection-not-supported'):
                 engine.admit(SimpleNamespace(**base))
             base['components'] = 'bff'
             with self.assertRaisesRegex(Breakpoint, 'auth-schema3-staging-requires-v3-receipt'):
@@ -135,6 +135,115 @@ class Acceptance(unittest.TestCase):
             write(reuse / 'receipts/auth.json', {'component': 'auth', 'schema': 4, 'auth_source': {}})
             with self.assertRaisesRegex(Breakpoint, 'auth-schema3-staging-requires-v3-receipt'):
                 engine.admit(SimpleNamespace(**base))
+
+    def admit_schema_three_auth_only(self, environment):
+        source = 'a' * 40
+        executor = 'b' * 40
+        gateauth_source = {
+            'repository_id': 'github:999999', 'revision': 'c' * 40,
+            'tree_sha256': 'sha256:' + 'd' * 64, 'artifact_id': '456',
+            'run_id': 789, 'run_attempt': 1,
+        }
+        normalized = json.dumps({'environment': environment, 'auth': {'runtime_inputs': {
+            'schema_version': 3, 'portal': None,
+        }}})
+        calls = []
+
+        def fake_run(command, **kwargs):
+            command = [str(value) for value in command]
+            calls.append(command)
+            if command[:2] == ['git', 'rev-parse']:
+                if command[2] == 'HEAD':
+                    return executor
+                if command[2] == source + '^{commit}':
+                    return source
+                if command[2].endswith(':deploy/environments/' +
+                                       ('development.yaml' if environment == 'development' else 'production.yaml')):
+                    return 'config-blob'
+                if command[2] == source + ':deploy/cac/ssot.pkl':
+                    return 'ssot-blob'
+            if command[:2] == ['git', 'hash-object']:
+                if command[2] == 'deploy/environments/' + (
+                        'development.yaml' if environment == 'development' else 'production.yaml'):
+                    return 'config-blob'
+                if command[2] == 'deploy/cac/ssot.pkl':
+                    return 'ssot-blob'
+            if command[:2] == ['git', 'check-ref-format']:
+                return ''
+            if command[:4] == ['go', 'run', './cmd/pipeline_config', 'prepare']:
+                return ''
+            if command[:3] == ['go', 'run', './cmd/deploy_config']:
+                return normalized
+            self.fail('unexpected command: ' + ' '.join(command))
+
+        def admit(args):
+            with patch.dict(os.environ, {'GITHUB_REPOSITORY_ID': '42'}), \
+                    patch.object(engine, 'run', side_effect=fake_run), \
+                    patch.object(engine, 'source_identity', return_value={'profile': 'p', 'inputs': 'i'}):
+                return engine.admit(args)
+
+        args = SimpleNamespace(
+            environment=environment, source=source, executor_sha=executor,
+            components='auth', tag='schema-three-auth-only',
+            release_source_mode='independent', auth_schema_version=3,
+            auth_repository_id='999999', auth_revision='c' * 40,
+            auth_tree_sha256='sha256:' + 'd' * 64, auth_artifact_id='456',
+            auth_run_id='789', auth_run_attempt='1', dev=None, dev_reference=None,
+        )
+        if environment == 'production':
+            with tempfile.TemporaryDirectory() as temporary:
+                dev = Path(temporary)
+                (dev / 'receipts').mkdir()
+                write(dev / 'receipts/auth.json', {
+                    'component': 'auth', 'schema': 3, 'auth_source': {
+                        'repository_id': gateauth_source['repository_id'],
+                        'revision': gateauth_source['revision'],
+                        'tree_sha256': gateauth_source['tree_sha256'],
+                        'artifact_id': gateauth_source['artifact_id'],
+                        'build_run_id': gateauth_source['run_id'],
+                        'build_run_attempt': gateauth_source['run_attempt'],
+                    },
+                })
+                args.auth_repository_id = None
+                args.auth_revision = None
+                args.auth_tree_sha256 = None
+                args.auth_artifact_id = None
+                args.auth_run_id = None
+                args.auth_run_attempt = None
+                args.dev = str(dev)
+                args.dev_reference = 'dev-result-456'
+                plan = admit(args)
+        else:
+            plan = admit(args)
+        return plan, calls, gateauth_source
+
+    def test_schema_three_admits_only_independent_auth_for_dev_and_production(self):
+        for environment, expected_branch in (('development', 'develop'), ('production', 'main')):
+            with self.subTest(environment=environment):
+                plan, calls, gateauth_source = self.admit_schema_three_auth_only(environment)
+                self.assertEqual(plan['selected'], ['auth'])
+                self.assertEqual(plan['branch'], expected_branch)
+                self.assertEqual(plan['normalized']['auth']['runtime_inputs']['schema_version'], 3)
+                self.assertIsNone(plan['normalized']['auth']['runtime_inputs']['portal'])
+                self.assertEqual(plan['auth_source'], gateauth_source)
+                producer_call = next(call for call in calls
+                                     if call[:4] == ['go', 'run', './cmd/pipeline_config', 'prepare'])
+                self.assertEqual(producer_call[producer_call.index('--environment') + 1],
+                                 'dev' if environment == 'development' else 'prod')
+                self.assertEqual(producer_call[producer_call.index('--auth-schema-version') + 1], '3')
+
+    def test_schema_three_rejects_legacy_non_auth_multi_component_and_unknown_environment(self):
+        for mode, environment, components in (
+                ('legacy_monorepo', 'development', 'auth'),
+                ('independent', 'development', 'auth,bff'),
+                ('independent', 'production', 'bff'),
+                ('independent', 'staging', 'auth')):
+            with self.subTest(mode=mode, environment=environment, components=components):
+                with self.assertRaisesRegex(Breakpoint, 'auth-schema3-selection-not-supported'):
+                    engine.admit(SimpleNamespace(
+                        release_source_mode=mode, auth_schema_version=3,
+                        environment=environment, components=components, reuse=None,
+                    ))
 
     def test_prepare_cli_uses_persisted_auth_schema_when_flag_is_omitted(self):
         class ExistingSchemaThreePlan:

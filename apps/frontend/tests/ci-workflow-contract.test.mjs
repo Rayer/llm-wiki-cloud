@@ -38,6 +38,8 @@ test('r2 registered release and recovery workflows use explicit artifact inputs'
       expectedInputs.push('auth_schema_version');
       expectedInputs.push('auth_repository_id', 'auth_revision', 'auth_tree_sha256',
         'auth_artifact_id', 'auth_run_id', 'auth_run_attempt');
+    } else {
+      expectedInputs.push('auth_schema_version');
     }
     assert.deepEqual(Object.keys(parsed.on.workflow_dispatch.inputs), expectedInputs);
     assert.equal(parsed.jobs.release.with.environment, environment);
@@ -51,18 +53,18 @@ test('r2 registered release and recovery workflows use explicit artifact inputs'
     assert.equal(parsed.jobs.release.secrets, 'inherit');
     assert.equal(parsed.jobs.release.with.frontend_config_artifact_id, '${{ inputs.frontend_config_artifact_id }}');
     assert.equal(parsed.jobs.release.with.release_source_mode, '${{ inputs.release_source_mode }}');
+    assert.equal(parsed.jobs.release.with.auth_schema_version, '${{ inputs.auth_schema_version }}');
     assert.equal(parsed.on.workflow_dispatch.inputs.release_source_mode.type, 'choice');
     assert.deepEqual(parsed.on.workflow_dispatch.inputs.release_source_mode.options,
       ['independent', 'legacy_monorepo']);
     if (file === 'deploy-dev.yml') {
       assert.deepEqual(parsed.on.workflow_dispatch.inputs.auth_schema_version, {
-        description: 'Auth runtime input schema for DEV; schema 3 is limited to independent BFF-only staging with a retained schema-3 Auth receipt',
+        description: 'Auth runtime input schema for DEV; schema 3 is limited to independent Auth-only DEV or BFF-only staging with a retained schema-3 Auth receipt',
         required: true,
         type: 'choice',
         options: ['4', '3'],
         default: '4',
       });
-      assert.equal(parsed.jobs.release.with.auth_schema_version, '${{ inputs.auth_schema_version }}');
       for (const [name, type] of Object.entries({
         auth_repository_id: 'number', auth_revision: 'string', auth_tree_sha256: 'string',
         auth_artifact_id: 'number', auth_run_id: 'number', auth_run_attempt: 'number',
@@ -73,6 +75,13 @@ test('r2 registered release and recovery workflows use explicit artifact inputs'
           : `\${{ inputs.${name} }}`;
         assert.equal(parsed.jobs.release.with[name], forwarding);
       }
+    } else {
+      assert.deepEqual(parsed.on.workflow_dispatch.inputs.auth_schema_version, {
+        description: 'Auth runtime input schema for Production; schema 3 is limited to independent Auth-only releases',
+        required: false,
+        type: 'string',
+        default: '4',
+      });
     }
     if (file === 'deploy-dev.yml') assert.equal(parsed.jobs.release.with.operation, '${{ inputs.operation }}');
     const generation = parsed.jobs['frontend-config-generate'];

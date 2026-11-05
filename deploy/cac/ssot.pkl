@@ -800,11 +800,14 @@ local localAuth = new AuthConfig {
       name = "LWC Project"
       scopes = new Listing {
         new AuthOAuthScope { name = "mcp:query"; description = "Query project knowledge." }
+        new AuthOAuthScope { name = "mcp:content:read"; description = "List and read published Concepts, Sources, and retained Source text in this Project." }
         new AuthOAuthScope { name = "mcp:raw:write"; description = "Add permitted raw sources." }
       }
       allowed_scope_sets = new Listing {
         new Listing { "mcp:query" }
         new Listing { "mcp:query"; "mcp:raw:write" }
+        new Listing { "mcp:query"; "mcp:content:read" }
+        new Listing { "mcp:query"; "mcp:content:read"; "mcp:raw:write" }
       }
       default_scope_set = new Listing { "mcp:query" }
       verifier_caller_service_account = ""
@@ -878,11 +881,14 @@ local devAuth = new AuthConfig {
       name = "LWC Project"
       scopes = new Listing {
         new AuthOAuthScope { name = "mcp:query"; description = "Query project knowledge." }
+        new AuthOAuthScope { name = "mcp:content:read"; description = "List and read published Concepts, Sources, and retained Source text in this Project." }
         new AuthOAuthScope { name = "mcp:raw:write"; description = "Add permitted raw sources." }
       }
       allowed_scope_sets = new Listing {
         new Listing { "mcp:query" }
         new Listing { "mcp:query"; "mcp:raw:write" }
+        new Listing { "mcp:query"; "mcp:content:read" }
+        new Listing { "mcp:query"; "mcp:content:read"; "mcp:raw:write" }
       }
       default_scope_set = new Listing { "mcp:query" }
       verifier_caller_service_account = ""
@@ -956,11 +962,14 @@ local prodAuth = new AuthConfig {
       name = "LWC Project"
       scopes = new Listing {
         new AuthOAuthScope { name = "mcp:query"; description = "Query project knowledge." }
+        new AuthOAuthScope { name = "mcp:content:read"; description = "List and read published Concepts, Sources, and retained Source text in this Project." }
         new AuthOAuthScope { name = "mcp:raw:write"; description = "Add permitted raw sources." }
       }
       allowed_scope_sets = new Listing {
         new Listing { "mcp:query" }
         new Listing { "mcp:query"; "mcp:raw:write" }
+        new Listing { "mcp:query"; "mcp:content:read" }
+        new Listing { "mcp:query"; "mcp:content:read"; "mcp:raw:write" }
       }
       default_scope_set = new Listing { "mcp:query" }
       verifier_caller_service_account = ""

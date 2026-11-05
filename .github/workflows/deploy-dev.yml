@@ -47,7 +47,7 @@ on:
         options: [independent, legacy_monorepo]
         default: independent
       auth_schema_version:
-        description: Auth runtime input schema for DEV; schema 3 is limited to independent BFF-only staging with a retained schema-3 Auth receipt
+        description: Auth runtime input schema for DEV; schema 3 is limited to independent Auth-only DEV or BFF-only staging with a retained schema-3 Auth receipt
         required: true
         type: choice
         options: ['4', '3']

@@ -38,6 +38,11 @@ on:
         type: choice
         options: [independent, legacy_monorepo]
         default: independent
+      auth_schema_version:
+        description: Auth runtime input schema for Production; schema 3 is limited to independent Auth-only releases
+        required: false
+        type: string
+        default: '4'
 permissions:
   contents: write
   actions: read
@@ -54,6 +59,7 @@ jobs:
       components: ${{ inputs.components }}
       release_tag: ${{ inputs.release_tag }}
       release_source_mode: ${{ inputs.release_source_mode }}
+      auth_schema_version: ${{ inputs.auth_schema_version }}
       artifact_id: ${{ inputs.artifact_id }}
       dev_artifact_id: ${{ inputs.dev_artifact_id }}
       frontend_config_artifact_id: ${{ inputs.frontend_config_artifact_id }}
