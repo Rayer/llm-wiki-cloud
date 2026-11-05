@@ -88,19 +88,32 @@ type mcpContentCursor struct {
 }
 
 type mcpContentSnapshot struct {
-	client               *gcs.Client
-	generation           string
-	manifestSHA          string
-	manifest             generation.Manifest
-	identity             storage.QueryGenerationIdentity
-	ids                  wikiindex.IDMap
-	refs                 []mcpContentRef
-	byID                 map[string]mcpContentRef
-	indexByID            map[string]int
-	bySlugAndKind        map[string][]mcpContentRef
-	byCanonicalRoute     map[string]mcpContentRef
-	sourcesByConceptSlug map[string][]string
-	releases             []func()
+	client      *gcs.Client
+	generation  string
+	manifestSHA string
+	manifest    generation.Manifest
+	identity    storage.QueryGenerationIdentity
+	refs        []mcpContentRef
+	slugIndex   []mcpSlugIndex
+	routeIndex  []mcpRouteIndex
+	concepts    []mcpConceptPage
+	sourceMeta  []mcpSourceMetadata
+	idRedirects []mcpIDPair
+	releases    []func()
+}
+
+type mcpSlugIndex struct {
+	kind  string
+	slug  string
+	index int
+}
+
+type mcpRouteIndex struct {
+	kind  string
+	id    string
+	slug  string
+	index int
+	alias bool
 }
 
 func (s *mcpContentSnapshot) close() {
@@ -318,16 +331,12 @@ func (h *Handler) callMCPReadContent(ctx context.Context, _ *mcp.CallToolRequest
 	}
 	requestedID := input.ID
 	id := input.ID
-	if redirected, exists := snapshot.ids.IDRedirects[id]; exists {
-		if input.Kind == mcpContentKindConcept {
-			if _, active := snapshot.ids.Concept[redirected]; active {
-				id = redirected
-			}
-		} else if _, active := snapshot.ids.Source[redirected]; active {
+	if redirected, exists := snapshot.redirectTarget(id); exists {
+		if _, active := snapshot.refIndex(input.Kind, redirected); active {
 			id = redirected
 		}
 	}
-	ref, exists := snapshot.byID[input.Kind+"\x00"+id]
+	ref, exists := snapshot.refByID(input.Kind, id)
 	if !exists {
 		return mcpContentToolError("not_found", false, 0), nil, nil
 	}
@@ -375,7 +384,8 @@ func (h *Handler) callMCPReadContent(ctx context.Context, _ *mcp.CallToolRequest
 		result["synthesis_sources"] = []mcpResolvedRef{}
 		result["provenance_status"] = "available"
 	}
-	if input.RefsCursor != "" && (refsCursor.Generation != snapshot.generation || refsCursor.ManifestSHA != snapshot.manifestSHA || refsCursor.Revision != revision || refsCursor.ID != id && snapshot.ids.IDRedirects[input.ID] != refsCursor.ID) {
+	redirectedCursorID, _ := snapshot.redirectTarget(input.ID)
+	if input.RefsCursor != "" && (refsCursor.Generation != snapshot.generation || refsCursor.ManifestSHA != snapshot.manifestSHA || refsCursor.Revision != revision || refsCursor.ID != id && redirectedCursorID != refsCursor.ID) {
 		return mcpContentToolError("invalid_cursor", false, 0), nil, nil
 	}
 	frontmatter := parseMCPContentFrontmatter(data)
@@ -386,7 +396,7 @@ func (h *Handler) callMCPReadContent(ctx context.Context, _ *mcp.CallToolRequest
 	} else if input.Kind == mcpContentKindConcept {
 		if frontmatter.HasSources {
 			synthesisSources = frontmatter.Sources
-		} else if values, exists := snapshot.sourcesByConceptSlug[ref.Slug]; exists {
+		} else if values, exists := snapshot.conceptSources(ref.Slug); exists {
 			synthesisSources = values
 		} else {
 			provenanceStatus = "unavailable"
@@ -426,7 +436,7 @@ func (h *Handler) callMCPReadSourceRaw(ctx context.Context, _ *mcp.CallToolReque
 	if snapshot == nil {
 		return mcpContentToolError("knowledge_unavailable", false, 0), nil, nil
 	}
-	ref, exists := snapshot.byID[mcpContentKindSource+"\x00"+input.SourceID]
+	ref, exists := snapshot.refByID(mcpContentKindSource, input.SourceID)
 	if !exists {
 		return mcpContentToolError("not_found", false, 0), nil, nil
 	}
@@ -462,7 +472,7 @@ func (h *Handler) callMCPReadSourceRaw(ctx context.Context, _ *mcp.CallToolReque
 	if sourceRow == nil {
 		return mcpContentToolError("raw_mapping_unavailable", false, 0), nil, nil
 	}
-	meta := snapshot.ids.SourceMeta[input.SourceID]
+	meta, _ := snapshot.sourceMetadata(input.SourceID)
 	if meta.SourceFile != "" && meta.SourceFile != sourceRow.RawPath {
 		return mcpContentToolError("raw_mapping_unavailable", false, 0), nil, nil
 	}
@@ -576,77 +586,122 @@ func (h *Handler) loadMCPContentSnapshot(ctx context.Context, identity mcpProjec
 	if cursor.SchemaVersion != 0 && cursor.SchemaVersion != 1 {
 		return nil, mcpContentCursor{}, errors.New("invalid_cursor")
 	}
-	idMapRelease := reserveMCPMetadata(ctx, pinned.Manifest, wikiindex.IDMapPath)
-	if idMapRelease == nil {
+	idMapSize, idMapInputRelease, idMapValid := reserveMCPMetadata(ctx, pinned.Manifest, wikiindex.IDMapPath)
+	if !idMapValid {
+		return nil, mcpContentCursor{}, errors.New("metadata_unavailable")
+	}
+	if idMapInputRelease == nil {
 		return nil, mcpContentCursor{}, errors.New("capacity_limited")
 	}
-	held = append(held, idMapRelease)
+	staged := []func(){idMapInputRelease}
+	defer func() {
+		for i := len(staged) - 1; i >= 0; i-- {
+			if staged[i] != nil {
+				staged[i]()
+			}
+		}
+	}()
 	idBytes, err := client.ReadFileBounded(ctx, wikiindex.IDMapPath, generation.MaxFileBytes)
 	if err != nil {
 		return nil, mcpContentCursor{}, errors.New("metadata_unavailable")
 	}
-	ids, err := wikiindex.DecodeIDMap(idBytes)
+	idShape, err := inspectMCPIDMap(idBytes)
 	if err != nil {
 		return nil, mcpContentCursor{}, errors.New("metadata_unavailable")
 	}
-	conceptsRelease := reserveMCPMetadata(ctx, pinned.Manifest, wikiindex.ConceptsJSONLPath)
-	if conceptsRelease == nil {
+	idDecodeRelease := reserveMCPMetadataBytes(ctx, mcpIDMapDecodeReservation(idMapSize, idShape))
+	if idDecodeRelease == nil {
 		return nil, mcpContentCursor{}, errors.New("capacity_limited")
 	}
-	held = append(held, conceptsRelease)
+	staged = append(staged, idDecodeRelease)
+	ids, err := decodeMCPIDMap(idBytes, idShape)
+	if err != nil {
+		return nil, mcpContentCursor{}, errors.New("metadata_unavailable")
+	}
+	idBytes = nil
+	staged[0]()
+	staged[0] = nil
+	conceptsSize, conceptsInputRelease, conceptsValid := reserveMCPMetadata(ctx, pinned.Manifest, wikiindex.ConceptsJSONLPath)
+	if !conceptsValid {
+		return nil, mcpContentCursor{}, errors.New("metadata_unavailable")
+	}
+	if conceptsInputRelease == nil {
+		return nil, mcpContentCursor{}, errors.New("capacity_limited")
+	}
+	staged = append(staged, conceptsInputRelease)
 	conceptsBytes, err := client.ReadFileBounded(ctx, wikiindex.ConceptsJSONLPath, generation.MaxFileBytes)
 	if err != nil {
 		return nil, mcpContentCursor{}, errors.New("metadata_unavailable")
 	}
-	conceptPages, err := gcs.WikiPagesFromConceptsJSONL(conceptsBytes)
+	conceptsShape, err := inspectMCPConcepts(conceptsBytes)
 	if err != nil {
 		return nil, mcpContentCursor{}, errors.New("metadata_unavailable")
 	}
+	conceptsDecodeRelease := reserveMCPMetadataBytes(ctx, mcpConceptDecodeReservation(conceptsSize, conceptsShape))
+	if conceptsDecodeRelease == nil {
+		return nil, mcpContentCursor{}, errors.New("capacity_limited")
+	}
+	staged = append(staged, conceptsDecodeRelease)
+	conceptPages, err := decodeMCPConcepts(conceptsBytes, conceptsShape)
+	if err != nil {
+		return nil, mcpContentCursor{}, errors.New("metadata_unavailable")
+	}
+	conceptsBytes = nil
+	snapshotRelease := reserveMCPMetadataBytes(ctx, mcpSnapshotWorkingSetReservation(idMapSize, conceptsSize, idShape, conceptsShape))
+	if snapshotRelease == nil {
+		return nil, mcpContentCursor{}, errors.New("capacity_limited")
+	}
+	held = append(held, snapshotRelease)
 	snapshot := buildMCPContentSnapshot(client, pinned, genIdentity, ids, conceptPages)
+	ids, conceptPages = mcpContentIDs{}, nil
+	staged[1]()
+	staged[1] = nil
+	staged[2]()
+	staged[2] = nil
+	staged[3]()
+	staged[3] = nil
 	snapshot.releases = held
 	held = nil
 	loaded = true
 	return snapshot, cursor, nil
 }
 
-func buildMCPContentSnapshot(client *gcs.Client, pinned gcs.GenerationSnapshot, identity storage.QueryGenerationIdentity, ids wikiindex.IDMap, concepts []gcs.WikiPage) *mcpContentSnapshot {
-	snapshot := &mcpContentSnapshot{client: client, generation: pinned.Manifest.GenerationID, manifestSHA: pinned.ManifestSHA256, manifest: pinned.Manifest, identity: identity, ids: ids, byID: map[string]mcpContentRef{}, indexByID: map[string]int{}, bySlugAndKind: map[string][]mcpContentRef{}, byCanonicalRoute: map[string]mcpContentRef{}, sourcesByConceptSlug: map[string][]string{}}
-	titles := make(map[string]gcs.WikiPage, len(concepts))
-	for _, page := range concepts {
-		titles[page.Slug] = page
-		snapshot.sourcesByConceptSlug[page.Slug] = append([]string(nil), page.Sources...)
+func buildMCPContentSnapshot(client *gcs.Client, pinned gcs.GenerationSnapshot, identity storage.QueryGenerationIdentity, ids mcpContentIDs, concepts []mcpConceptPage) *mcpContentSnapshot {
+	sort.Slice(concepts, func(i, j int) bool {
+		if concepts[i].Slug == concepts[j].Slug {
+			return concepts[i].Ordinal < concepts[j].Ordinal
+		}
+		return concepts[i].Slug < concepts[j].Slug
+	})
+	snapshot := &mcpContentSnapshot{
+		client: client, generation: pinned.Manifest.GenerationID, manifestSHA: pinned.ManifestSHA256,
+		manifest: pinned.Manifest, identity: identity, concepts: concepts,
+		sourceMeta:  append([]mcpSourceMetadata(nil), ids.SourceMeta...),
+		idRedirects: append([]mcpIDPair(nil), ids.IDRedirects...),
 	}
-	for id, slug := range ids.Concept {
-		page, exists := titles[slug]
-		title, source := slug, "slug"
+	pageForSlug := func(slug string) (mcpConceptPage, bool) {
+		end := sort.Search(len(snapshot.concepts), func(i int) bool { return snapshot.concepts[i].Slug > slug })
+		if end > 0 && snapshot.concepts[end-1].Slug == slug {
+			return snapshot.concepts[end-1], true
+		}
+		return mcpConceptPage{}, false
+	}
+	snapshot.refs = make([]mcpContentRef, 0, len(ids.Concept)+len(ids.Source))
+	for _, pair := range ids.Concept {
+		page, exists := pageForSlug(pair.Value)
+		title, source := pair.Value, "slug"
 		if exists && strings.TrimSpace(page.Title) != "" {
 			title, source = page.Title, "metadata"
 		}
-		ref := makeMCPContentRef(id, mcpContentKindConcept, title, slug, source)
-		snapshot.refs = append(snapshot.refs, ref)
-		snapshot.byID[ref.Kind+"\x00"+ref.ID] = ref
-		snapshot.bySlugAndKind[ref.Kind+"\x00"+ref.Slug] = append(snapshot.bySlugAndKind[ref.Kind+"\x00"+ref.Slug], ref)
-		snapshot.byCanonicalRoute[ref.Kind+"\x00"+ref.ID+"-"+ref.Slug] = ref
+		snapshot.refs = append(snapshot.refs, makeMCPContentRef(pair.Key, mcpContentKindConcept, title, pair.Value, source))
 	}
-	for id, slug := range ids.Source {
-		meta := ids.SourceMeta[id]
+	for _, pair := range ids.Source {
+		meta, _ := findMCPSourceMeta(ids.SourceMeta, pair.Key)
 		title, source := strings.TrimSpace(meta.Title), "metadata"
 		if title == "" {
-			title, source = slug, "slug"
+			title, source = pair.Value, "slug"
 		}
-		ref := makeMCPContentRef(id, mcpContentKindSource, title, slug, source)
-		snapshot.refs = append(snapshot.refs, ref)
-		snapshot.byID[ref.Kind+"\x00"+ref.ID] = ref
-		snapshot.bySlugAndKind[ref.Kind+"\x00"+ref.Slug] = append(snapshot.bySlugAndKind[ref.Kind+"\x00"+ref.Slug], ref)
-		snapshot.byCanonicalRoute[ref.Kind+"\x00"+ref.ID+"-"+ref.Slug] = ref
-	}
-	for redirect, target := range ids.IDRedirects {
-		if ref, ok := snapshot.byID[mcpContentKindConcept+"\x00"+target]; ok {
-			snapshot.byCanonicalRoute[mcpContentKindConcept+"\x00"+redirect+"-"+ref.Slug] = ref
-		}
-		if ref, ok := snapshot.byID[mcpContentKindSource+"\x00"+target]; ok {
-			snapshot.byCanonicalRoute[mcpContentKindSource+"\x00"+redirect+"-"+ref.Slug] = ref
-		}
+		snapshot.refs = append(snapshot.refs, makeMCPContentRef(pair.Key, mcpContentKindSource, title, pair.Value, source))
 	}
 	sort.Slice(snapshot.refs, func(i, j int) bool {
 		if snapshot.refs[i].Kind == snapshot.refs[j].Kind {
@@ -654,10 +709,49 @@ func buildMCPContentSnapshot(client *gcs.Client, pinned gcs.GenerationSnapshot, 
 		}
 		return snapshot.refs[i].Kind < snapshot.refs[j].Kind
 	})
+	snapshot.slugIndex = make([]mcpSlugIndex, 0, len(snapshot.refs))
+	snapshot.routeIndex = make([]mcpRouteIndex, 0, len(snapshot.refs)+2*len(snapshot.idRedirects))
 	for index, ref := range snapshot.refs {
-		snapshot.indexByID[ref.Kind+"\x00"+ref.ID] = index
+		snapshot.slugIndex = append(snapshot.slugIndex, mcpSlugIndex{kind: ref.Kind, slug: ref.Slug, index: index})
+		snapshot.routeIndex = append(snapshot.routeIndex, mcpRouteIndex{kind: ref.Kind, id: ref.ID, slug: ref.Slug, index: index})
 	}
+	for _, redirect := range snapshot.idRedirects {
+		for _, kind := range []string{mcpContentKindConcept, mcpContentKindSource} {
+			if index, ok := snapshot.refIndex(kind, redirect.Value); ok {
+				ref := snapshot.refs[index]
+				snapshot.routeIndex = append(snapshot.routeIndex, mcpRouteIndex{kind: kind, id: redirect.Key, slug: ref.Slug, index: index, alias: true})
+			}
+		}
+	}
+	sort.Slice(snapshot.slugIndex, func(i, j int) bool {
+		left, right := snapshot.slugIndex[i], snapshot.slugIndex[j]
+		if left.kind != right.kind {
+			return left.kind < right.kind
+		}
+		if left.slug != right.slug {
+			return left.slug < right.slug
+		}
+		return left.index < right.index
+	})
+	sort.Slice(snapshot.routeIndex, func(i, j int) bool { return compareMCPRouteIndex(snapshot.routeIndex[i], snapshot.routeIndex[j]) < 0 })
+	// Direct canonical routes win collisions with historical aliases.
+	out := snapshot.routeIndex[:0]
+	for _, route := range snapshot.routeIndex {
+		if len(out) > 0 && compareMCPRouteIndexKey(out[len(out)-1], route) == 0 {
+			continue
+		}
+		out = append(out, route)
+	}
+	snapshot.routeIndex = out
 	return snapshot
+}
+
+func findMCPSourceMeta(values []mcpSourceMetadata, id string) (mcpSourceMetadata, bool) {
+	index := sort.Search(len(values), func(i int) bool { return values[i].ID >= id })
+	if index < len(values) && values[index].ID == id {
+		return values[index], true
+	}
+	return mcpSourceMetadata{}, false
 }
 
 func makeMCPContentRef(id, kind, title, slug, titleSource string) mcpContentRef {
@@ -693,17 +787,24 @@ func reserveMCPContentRead(ctx context.Context, manifest generation.Manifest, pa
 	return nil, release, reserved
 }
 
-func reserveMCPMetadata(ctx context.Context, manifest generation.Manifest, path string) func() {
+func reserveMCPMetadata(ctx context.Context, manifest generation.Manifest, path string) (int64, func(), bool) {
 	file, ok := manifest.File(path)
 	if !ok || file.Size < 0 || file.Size > generation.MaxFileBytes {
+		return 0, nil, false
+	}
+	reservation := mcpMetadataInputReservation(path, file.Size)
+	if reservation <= 0 {
+		return 0, nil, false
+	}
+	return file.Size, reserveMCPMetadataBytes(ctx, reservation), true
+}
+
+func reserveMCPMetadataBytes(ctx context.Context, reservation int64) func() {
+	if reservation <= 0 {
 		return nil
 	}
 	lease := mcpAdmissionLeaseFrom(ctx)
 	if lease == nil {
-		return nil
-	}
-	reservation := mcpMetadataWorkingSetReservation(path, file.Size)
-	if reservation <= 0 {
 		return nil
 	}
 	release, reserved := lease.ReserveBytes(reservation)
@@ -713,87 +814,180 @@ func reserveMCPMetadata(ctx context.Context, manifest generation.Manifest, path 
 	return release
 }
 
-// mcpMetadataWorkingSetReservation bounds the known simultaneous materialized
-// forms of each metadata object. The coefficients are for 64-bit Go working
-// memory, not RSS or object-size equality; limits stay tied to the decoder and
-// publisher rather than to this estimator.
-func mcpMetadataWorkingSetReservation(path string, size int64) int64 {
-	if size < 0 || size > generation.MaxFileBytes {
-		return 0
-	}
-	switch path {
-	case wikiindex.IDMapPath:
-		// DecodeIDMap has seven collections, each limited to MaxFiles entries.
-		// Five encoded bytes is a lower bound per string-map pair; size/5 and
-		// seven MaxFiles caps therefore bound the total result and duplicate-key
-		// map entries. In the qualified Go 1.26.5 64-bit runtime, a string
-		// header is 16 bytes, SourceMeta is 48 bytes, and []string is 24 bytes.
-		// Swiss Table groups have eight slots and an 8-byte control word. The
-		// largest retained slot here is string key + SourceMeta (64 bytes), so
-		// one group is 520 bytes before allocator rounding. Tables grow at 7/8
-		// load by replacing the old group array with a doubled array; the
-		// transition briefly holds at most 3x the old group bytes, plus table
-		// and directory headers. 256 bytes per entry covers that overlap for
-		// populated maps; the fixed reserve covers the seven empty/small maps,
-		// their descriptors, directory pointers, and allocator size classes.
-		mapEntries := min(int64(7*generation.MaxFiles), size/5)
-		activeRefs := min(int64(2*generation.MaxFiles), size/5)
-		redirectItems := size / 2 // the shortest JSON string item is "" (2 bytes)
-		// Per active Concept/Source, buildMCPContentSnapshot holds the ref in
-		// refs, byID and byCanonicalRoute; a second compound key in indexByID;
-		// a slice copy in bySlugAndKind; the source WikiPage in titles; and a
-		// copied Sources slice in sourcesByConceptSlug. 1,536 bytes per active
-		// row covers those value structs, key/slice headers, Swiss Table group
-		// slots and growth overlap. Up to four compound keys per active row and
-		// one alias route per IDRedirect are copied strings; the encoded size
-		// bounds their total payload. 8x size covers input bytes, decoded string
-		// bytes, those derived key payloads, and string/map growth overlap.
-		// DecodeBoundedStrings retains each Redirects item in []string; 64 bytes
-		// per possible item covers its string header plus current/growing slice
-		// backing arrays. MaxFiles bounds each list and size/2 bounds all items.
-		return size*8 + mapEntries*256 + activeRefs*1536 + redirectItems*64 + 64<<10
-	case wikiindex.ConceptsJSONLPath:
-		// WikiPagesFromConceptsJSONL scans a line, converts it to []byte, then
-		// json.Unmarshal builds Frontmatter as nested map[string]any/[]any and
-		// strings before retaining selected WikiPage fields. Four input copies
-		// cover the file body, scanner line, []byte(line), and decoded strings.
-		// Every JSON value/container node consumes at least two compact bytes
-		// once delimiters and separators are counted; 128 bytes per possible
-		// node covers interface slots, map keys/values, arrays and sources
-		// conversion through []any, temporary []string, dedup map, normalized
-		// slice, and snapshot copy. In Go 1.26.5, map[string]any has eight
-		// slots per group with an 8-byte control word and 16-byte string and
-		// interface slots (264 bytes before allocator rounding). Small maps keep
-		// one group through eight entries; larger tables grow at 7/8 load and
-		// double up to 1024 slots before splitting through a directory. A grow
-		// briefly keeps the old table and a replacement with twice its slots
-		// (3x old group bytes) until the old table becomes unreachable. The
-		// per-node allowance covers the amortized group and growth overlap for
-		// dense nested maps and slices. Rows are capped at MaxFiles and size/12
-		// bounds their shortest slug records; 1,024 bytes per row covers
-		// WikiPage values, title/source maps, and their group/growth slack while
-		// source string payload is counted above. The 64 KiB fixed reserve covers
-		// small-map headers, tables, directory pointers, and size-class rounding.
-		rows := min(int64(generation.MaxFiles), size/12) // shortest nonempty slug row: {"slug":"x"}
-		jsonNodes := size / 2
-		return size*4 + jsonNodes*128 + rows*1024 + 64<<10
-	default:
-		return 0
-	}
-}
-
 func (s *mcpContentSnapshot) resolveID(kind, id string) (mcpContentRef, string, bool) {
-	if ref, ok := s.byID[kind+"\x00"+id]; ok {
+	if ref, ok := s.refByID(kind, id); ok {
 		return ref, id, true
 	}
-	target, ok := s.ids.IDRedirects[id]
+	target, ok := s.redirectTarget(id)
 	if !ok {
 		return mcpContentRef{}, "", false
 	}
-	if ref, ok := s.byID[kind+"\x00"+target]; ok {
+	if ref, ok := s.refByID(kind, target); ok {
 		return ref, target, true
 	}
 	return mcpContentRef{}, "", false
+}
+
+func (s *mcpContentSnapshot) refIndex(kind, id string) (int, bool) {
+	index := sort.Search(len(s.refs), func(i int) bool {
+		return s.refs[i].Kind > kind || s.refs[i].Kind == kind && s.refs[i].ID >= id
+	})
+	return index, index < len(s.refs) && s.refs[index].Kind == kind && s.refs[index].ID == id
+}
+
+func (s *mcpContentSnapshot) refByID(kind, id string) (mcpContentRef, bool) {
+	index, ok := s.refIndex(kind, id)
+	if !ok {
+		return mcpContentRef{}, false
+	}
+	return s.refs[index], true
+}
+
+func (s *mcpContentSnapshot) redirectTarget(id string) (string, bool) {
+	index := sort.Search(len(s.idRedirects), func(i int) bool { return s.idRedirects[i].Key >= id })
+	if index < len(s.idRedirects) && s.idRedirects[index].Key == id {
+		return s.idRedirects[index].Value, true
+	}
+	return "", false
+}
+
+func (s *mcpContentSnapshot) sourceMetadata(id string) (mcpSourceMetadata, bool) {
+	return findMCPSourceMeta(s.sourceMeta, id)
+}
+
+func (s *mcpContentSnapshot) conceptSources(slug string) ([]string, bool) {
+	end := sort.Search(len(s.concepts), func(i int) bool { return s.concepts[i].Slug > slug })
+	if end > 0 && s.concepts[end-1].Slug == slug {
+		return s.concepts[end-1].Sources, true
+	}
+	return nil, false
+}
+
+func (s *mcpContentSnapshot) routeRefIndex(kind, route string) (int, bool) {
+	index := sort.Search(len(s.routeIndex), func(i int) bool {
+		entry := s.routeIndex[i]
+		if entry.kind != kind {
+			return entry.kind >= kind
+		}
+		return compareMCPRouteToKey(entry.id, entry.slug, route) >= 0
+	})
+	if index >= len(s.routeIndex) {
+		return 0, false
+	}
+	entry := s.routeIndex[index]
+	return entry.index, entry.kind == kind && compareMCPRouteToKey(entry.id, entry.slug, route) == 0
+}
+
+func (s *mcpContentSnapshot) slugRefIndexes(kind, slug string) []int {
+	start := sort.Search(len(s.slugIndex), func(i int) bool {
+		entry := s.slugIndex[i]
+		return entry.kind > kind || entry.kind == kind && entry.slug >= slug
+	})
+	end := start
+	for end < len(s.slugIndex) && s.slugIndex[end].kind == kind && s.slugIndex[end].slug == slug {
+		end++
+	}
+	indexes := make([]int, end-start)
+	for i := start; i < end; i++ {
+		indexes[i-start] = s.slugIndex[i].index
+	}
+	return indexes
+}
+
+func compareMCPRouteToKey(id, slug, key string) int {
+	for i := 0; i < len(key); i++ {
+		var current byte
+		switch {
+		case i < len(id):
+			current = id[i]
+		case i == len(id):
+			current = '-'
+		case i-len(id)-1 < len(slug):
+			current = slug[i-len(id)-1]
+		default:
+			return -1
+		}
+		if current < key[i] {
+			return -1
+		}
+		if current > key[i] {
+			return 1
+		}
+	}
+	if len(key) < len(id)+1+len(slug) {
+		return 1
+	}
+	return 0
+}
+
+func compareMCPRouteParts(leftID, leftSlug, rightID, rightSlug string) int {
+	leftLen, rightLen := len(leftID)+1+len(leftSlug), len(rightID)+1+len(rightSlug)
+	limit := min(leftLen, rightLen)
+	for i := 0; i < limit; i++ {
+		var left, right byte
+		if i < len(leftID) {
+			left = leftID[i]
+		} else if i == len(leftID) {
+			left = '-'
+		} else {
+			left = leftSlug[i-len(leftID)-1]
+		}
+		if i < len(rightID) {
+			right = rightID[i]
+		} else if i == len(rightID) {
+			right = '-'
+		} else {
+			right = rightSlug[i-len(rightID)-1]
+		}
+		if left < right {
+			return -1
+		}
+		if left > right {
+			return 1
+		}
+	}
+	if leftLen < rightLen {
+		return -1
+	}
+	if leftLen > rightLen {
+		return 1
+	}
+	return 0
+}
+
+func compareMCPRouteIndex(left, right mcpRouteIndex) int {
+	if left.kind < right.kind {
+		return -1
+	}
+	if left.kind > right.kind {
+		return 1
+	}
+	if order := compareMCPRouteParts(left.id, left.slug, right.id, right.slug); order != 0 {
+		return order
+	}
+	if left.alias != right.alias {
+		if !left.alias {
+			return -1
+		}
+		return 1
+	}
+	if left.index < right.index {
+		return -1
+	}
+	if left.index > right.index {
+		return 1
+	}
+	return 0
+}
+
+func compareMCPRouteIndexKey(left, right mcpRouteIndex) int {
+	if left.kind < right.kind {
+		return -1
+	}
+	if left.kind > right.kind {
+		return 1
+	}
+	return compareMCPRouteParts(left.id, left.slug, right.id, right.slug)
 }
 
 func validMCPContentKind(kind string) bool {

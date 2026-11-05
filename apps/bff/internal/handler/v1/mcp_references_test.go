@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -71,9 +72,12 @@ func TestPageMCPReadReferencesFragmentsAmbiguousCandidatesAcrossPages(t *testing
 	concepts = append(concepts, gcs.WikiPage{ID: "after", Slug: "after", Title: "After"})
 	pinned := gcs.GenerationSnapshot{ManifestSHA256: strings.Repeat("a", 64)}
 	pinned.Manifest.GenerationID = "generation-1"
-	snapshot := buildMCPContentSnapshot(nil, pinned, storage.QueryGenerationIdentity{}, ids, concepts)
+	snapshot := buildTestMCPContentSnapshot(pinned, ids, concepts)
 	identity := mcpProjectKeyIdentity{userID: "user-1", projectID: "project-1"}
-	document := snapshot.byID[mcpContentKindConcept+"\x00after"]
+	document, exists := snapshot.refByID(mcpContentKindConcept, "after")
+	if !exists {
+		t.Fatal("after concept missing from snapshot")
+	}
 	data := []byte("[[Duplicate]] then [[After]]")
 
 	_, first, next, complete, err := pageMCPReadReferences(context.Background(), snapshot, identity, document, "sha256:"+strings.Repeat("b", 64), data, 0, nil, mcpContentCursor{}, false, 50, map[string]any{})
@@ -266,9 +270,13 @@ func TestMCPReferencePagesShrinkToWireSizeAndResolveCanonicalIDRoutes(t *testing
 	ids.IDRedirects["old-canonical"] = "canonical"
 	pinned := gcs.GenerationSnapshot{ManifestSHA256: strings.Repeat("a", 64)}
 	pinned.Manifest.GenerationID = "generation-wire"
-	snapshot := buildMCPContentSnapshot(nil, pinned, storage.QueryGenerationIdentity{}, ids, concepts)
+	snapshot := buildTestMCPContentSnapshot(pinned, ids, concepts)
 	identity := mcpProjectKeyIdentity{userID: "wire-user", projectID: "wire-project"}
-	canonicalTarget := snapshot.byCanonicalRoute[mcpContentKindConcept+"\x00canonical-local-development"]
+	canonicalIndex, exists := snapshot.routeRefIndex(mcpContentKindConcept, "canonical-local-development")
+	if !exists {
+		t.Fatal("canonical route missing from snapshot")
+	}
+	canonicalTarget := snapshot.refs[canonicalIndex]
 	if canonicalTarget.CitationPath != "/concepts/canonical-local-development" {
 		t.Fatalf("canonical citation path = %q", canonicalTarget.CitationPath)
 	}
@@ -289,7 +297,10 @@ func TestMCPReferencePagesShrinkToWireSizeAndResolveCanonicalIDRoutes(t *testing
 		}
 	}
 
-	document := snapshot.byID[mcpContentKindConcept+"\x00after"]
+	document, exists := snapshot.refByID(mcpContentKindConcept, "after")
+	if !exists {
+		t.Fatal("after concept missing from snapshot")
+	}
 	target := strings.Repeat("\"", 512)
 	label := strings.Repeat(`\"`, 1020)
 	data := []byte("[[" + target + "|" + label + "]] and [[After]]")
@@ -329,6 +340,29 @@ func TestMCPReferencePagesShrinkToWireSizeAndResolveCanonicalIDRoutes(t *testing
 	if len(seen) != 51 || second[1].ReferenceIndex != 1 || second[1].TargetText != "After" {
 		t.Fatalf("candidate or next-mention coverage = %d candidates, refs=%+v", len(seen), second)
 	}
+}
+
+func buildTestMCPContentSnapshot(pinned gcs.GenerationSnapshot, source wikiindex.IDMap, sourcePages []gcs.WikiPage) *mcpContentSnapshot {
+	ids := mcpContentIDs{}
+	for id, slug := range source.Concept {
+		ids.Concept = append(ids.Concept, mcpIDPair{Key: id, Value: slug})
+	}
+	for id, slug := range source.Source {
+		ids.Source = append(ids.Source, mcpIDPair{Key: id, Value: slug})
+	}
+	for id, meta := range source.SourceMeta {
+		ids.SourceMeta = append(ids.SourceMeta, mcpSourceMetadata{ID: id, Slug: meta.Slug, Title: meta.Title, SourceFile: meta.SourceFile})
+	}
+	for id, target := range source.IDRedirects {
+		ids.IDRedirects = append(ids.IDRedirects, mcpIDPair{Key: id, Value: target})
+	}
+	pages := make([]mcpConceptPage, 0, len(sourcePages))
+	for ordinal, page := range sourcePages {
+		pages = append(pages, mcpConceptPage{Slug: page.Slug, Title: page.Title, Sources: page.Sources, Ordinal: ordinal})
+	}
+	sort.Slice(ids.SourceMeta, func(i, j int) bool { return ids.SourceMeta[i].ID < ids.SourceMeta[j].ID })
+	sort.Slice(ids.IDRedirects, func(i, j int) bool { return ids.IDRedirects[i].Key < ids.IDRedirects[j].Key })
+	return buildMCPContentSnapshot(nil, pinned, storage.QueryGenerationIdentity{}, ids, pages)
 }
 
 func twoDigits(value int) string {

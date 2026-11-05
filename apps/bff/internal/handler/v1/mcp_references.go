@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -138,7 +137,7 @@ func mcpReferenceID(scopeBinding, generationID, manifestDigest, kind, id, revisi
 }
 
 func (s *mcpContentSnapshot) synthesisCandidates(target string) mcpCandidateSet {
-	if index, ok := s.indexByID[mcpContentKindSource+"\x00"+target]; ok {
+	if index, ok := s.refIndex(mcpContentKindSource, target); ok {
 		return s.candidateSet([]int{index}, mcpContentKindSource)
 	}
 	indexes := make([]int, 0, 2)
@@ -146,7 +145,7 @@ func (s *mcpContentSnapshot) synthesisCandidates(target string) mcpCandidateSet 
 		if ref.Kind != mcpContentKindSource {
 			continue
 		}
-		meta := s.ids.SourceMeta[ref.ID]
+		meta, _ := s.sourceMetadata(ref.ID)
 		if target == ref.Slug || target == ref.exactTitle || target == meta.SourceFile || target == "wiki/sources/"+ref.Slug+".md" || target == "sources/"+ref.Slug+".md" {
 			indexes = append(indexes, index)
 		}
@@ -175,25 +174,17 @@ func (s *mcpContentSnapshot) mentionCandidates(target string) (bool, mcpCandidat
 		if decodeErr != nil || strings.ContainsAny(decoded, "/\\\x00") || strings.Contains(decoded, "..") || decoded == "" {
 			return false, s.candidateSet(nil, kind)
 		}
-		if ref, exists := s.byCanonicalRoute[kind+"\x00"+decoded]; exists {
-			if index, ok := s.indexByID[kind+"\x00"+ref.ID]; ok {
-				return false, s.candidateSet([]int{index}, kind)
-			}
+		if index, exists := s.routeRefIndex(kind, decoded); exists {
+			return false, s.candidateSet([]int{index}, kind)
 		}
-		indexes := make([]int, 0, len(s.bySlugAndKind[kind+"\x00"+decoded]))
-		for _, ref := range s.bySlugAndKind[kind+"\x00"+decoded] {
-			if index, exists := s.indexByID[kind+"\x00"+ref.ID]; exists {
-				indexes = append(indexes, index)
-			}
-		}
-		sort.Ints(indexes)
+		indexes := s.slugRefIndexes(kind, decoded)
 		return false, s.candidateSet(indexes, kind)
 	}
 	if !strings.ContainsAny(target, "/\\\x00") {
-		if index, exists := s.indexByID[mcpContentKindConcept+"\x00"+target]; exists {
+		if index, exists := s.refIndex(mcpContentKindConcept, target); exists {
 			return false, s.candidateSet([]int{index}, mcpContentKindConcept)
 		}
-		if index, exists := s.indexByID[mcpContentKindSource+"\x00"+target]; exists {
+		if index, exists := s.refIndex(mcpContentKindSource, target); exists {
 			return false, s.candidateSet([]int{index}, mcpContentKindSource)
 		}
 	}
