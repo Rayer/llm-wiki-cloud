@@ -664,10 +664,20 @@ func TestMCPContentReadScopesAndAdmissionThroughProjectKeyAndOAuthSDKEndpoints(t
 	}
 	keyPayload, ok := keyResult.StructuredContent.(map[string]any)
 	items, _ := keyPayload["items"].([]any)
-	if !ok || keyPayload["generation"] != "g_mcp_content_fixture" || len(items) != 4 {
+	listCursor, cursorOK := keyPayload["next_cursor"].(string)
+	if !ok || keyPayload["generation"] != "g_mcp_content_fixture" || len(items) != 20 || !cursorOK || listCursor == "" {
 		t.Fatalf("read key list did not return published fixture: %#v", keyResult.StructuredContent)
 	}
-	if observations := probe.observations(); len(observations) != 1 || !observations[0].active || observations[0].projectTokens <= 0 || observations[0].projectTokens >= 31_000_000 {
+	secondListPage, err := readSession.CallTool(ctx, &mcp.CallToolParams{Name: "list_content", Arguments: map[string]any{"kind": "concept", "cursor": listCursor}})
+	if err != nil || secondListPage == nil || secondListPage.IsError {
+		t.Fatalf("read key second list_content page=%+v err=%v", secondListPage, err)
+	}
+	secondListPayload, _ := secondListPage.StructuredContent.(map[string]any)
+	secondListItems, _ := secondListPayload["items"].([]any)
+	if len(secondListItems) != 15 || secondListPayload["next_cursor"] != nil {
+		t.Fatalf("published concept list pagination was incomplete: %#v", secondListPage.StructuredContent)
+	}
+	if observations := probe.observations(); len(observations) != 2 || !observations[0].active || !observations[1].active || observations[0].projectTokens <= 0 || observations[0].projectTokens >= 31_000_000 || observations[1].projectTokens <= 0 || observations[1].projectTokens >= 31_000_000 {
 		t.Fatalf("Project-key storage scope was not reached under its active admission lease: %+v", observations)
 	}
 
@@ -838,6 +848,52 @@ func TestMCPContentReadScopesAndAdmissionThroughProjectKeyAndOAuthSDKEndpoints(t
 	if err := json.Unmarshal([]byte(readText), &textPayload); err != nil {
 		t.Fatalf("decode SDK text result: %v", err)
 	}
+	firstCandidatePage, err := readSession.CallTool(ctx, &mcp.CallToolParams{Name: "read_content", Arguments: map[string]any{"kind": "concept", "id": "candidate-driver"}})
+	if err != nil || firstCandidatePage == nil || firstCandidatePage.IsError {
+		t.Fatalf("first SDK candidate page=%+v err=%v", firstCandidatePage, err)
+	}
+	firstCandidatePayload, _ := firstCandidatePage.StructuredContent.(map[string]any)
+	firstMentions, _ := firstCandidatePayload["mentions"].([]any)
+	if len(firstMentions) != 1 {
+		t.Fatalf("first SDK candidate page should stop inside the first mention: %#v", firstCandidatePage.StructuredContent)
+	}
+	firstMention, _ := firstMentions[0].(map[string]any)
+	firstCandidates, _ := firstMention["candidates"].([]any)
+	refsCursor, _ := firstCandidatePayload["next_refs_cursor"].(string)
+	if len(firstMentions) != 1 || firstMention["resolution"] != "ambiguous" || len(firstCandidates) != 50 || firstMention["candidate_offset"] != float64(0) || firstMention["candidates_complete"] != false || firstCandidatePayload["refs_complete"] != false || refsCursor == "" {
+		t.Fatalf("first SDK candidate fragment=%#v", firstCandidatePage.StructuredContent)
+	}
+	secondCandidatePage, err := readSession.CallTool(ctx, &mcp.CallToolParams{Name: "read_content", Arguments: map[string]any{"kind": "concept", "id": "candidate-driver", "refs_cursor": refsCursor}})
+	if err != nil || secondCandidatePage == nil || secondCandidatePage.IsError {
+		t.Fatalf("second SDK candidate page=%+v err=%v", secondCandidatePage, err)
+	}
+	secondCandidatePayload, _ := secondCandidatePage.StructuredContent.(map[string]any)
+	secondMentions, _ := secondCandidatePayload["mentions"].([]any)
+	if len(secondMentions) != 2 {
+		t.Fatalf("second SDK candidate page should include the completed first mention and its successor: %#v", secondCandidatePage.StructuredContent)
+	}
+	secondMention, _ := secondMentions[0].(map[string]any)
+	lastCandidates, _ := secondMention["candidates"].([]any)
+	followingMention, _ := secondMentions[1].(map[string]any)
+	seenCandidateIDs := make(map[string]struct{}, 51)
+	candidateKinds := map[string]int{"concept": 0, "source": 0}
+	for _, candidate := range append(firstCandidates, lastCandidates...) {
+		candidateMap, _ := candidate.(map[string]any)
+		candidateID, _ := candidateMap["id"].(string)
+		candidateKind, _ := candidateMap["kind"].(string)
+		if candidateID == "" {
+			t.Fatalf("candidate page included an invalid candidate: %#v", candidate)
+		}
+		candidateKinds[candidateKind]++
+		if _, exists := seenCandidateIDs[candidateID]; exists {
+			t.Fatalf("candidate was repeated across SDK pages: %s", candidateID)
+		}
+		seenCandidateIDs[candidateID] = struct{}{}
+	}
+	if secondMention["reference_id"] != firstMention["reference_id"] || secondMention["resolution"] != "ambiguous" || secondMention["candidate_offset"] != float64(50) || len(lastCandidates) != 1 || secondMention["candidates_complete"] != true || followingMention["id"] != "concept-two" || followingMention["resolution"] != "resolved" || secondCandidatePayload["refs_complete"] != true || len(seenCandidateIDs) != 51 || candidateKinds["concept"] != 30 || candidateKinds["source"] != 21 {
+		t.Fatalf("second SDK candidate fragment lost ambiguity or following mention: %#v", secondCandidatePage.StructuredContent)
+	}
+	t.Logf("sdk_reference_candidate_pages first=50 second=1 total=51 unique=true ambiguity_preserved=true following_mention=concept-two complete=true")
 	emptyResult, err := readSession.CallTool(ctx, &mcp.CallToolParams{Name: "read_content", Arguments: map[string]any{"kind": "concept", "id": "concept-two"}})
 	if err != nil || emptyResult == nil || emptyResult.IsError {
 		t.Fatalf("read empty provenance/mentions response=%+v err=%v", emptyResult, err)
@@ -978,7 +1034,7 @@ func TestMCPContentReadScopesAndAdmissionThroughProjectKeyAndOAuthSDKEndpoints(t
 	}
 	oauthPayload, ok := oauthResult.StructuredContent.(map[string]any)
 	oauthItems, _ := oauthPayload["items"].([]any)
-	if !ok || oauthPayload["generation"] != "g_mcp_content_fixture" || len(oauthItems) != 4 {
+	if !ok || oauthPayload["generation"] != "g_mcp_content_fixture" || len(oauthItems) != 20 || oauthPayload["next_cursor"] == nil {
 		t.Fatalf("OAuth content success did not return published fixture: %#v", oauthResult.StructuredContent)
 	}
 	if observations := probe.observations(); len(observations) != 1 || !observations[0].active || observations[0].projectTokens <= 0 || observations[0].projectTokens >= 32_000_000 {
@@ -1347,34 +1403,52 @@ func mcpPublishedContentFixture(t *testing.T, userID, projectID string) map[stri
 	const contentGeneration = "g_mcp_content_fixture"
 	conceptOne := []byte("---\nid: concept-one\ntitle: Alpha\nsources:\n  - source-one\n---\n# Alpha\n\nSee [[concept-two]] for comparison.\n")
 	conceptTwo := []byte("---\nid: concept-two\ntitle: Alpha\n---\n# Alpha\n")
+	candidateDriver := []byte("---\nid: candidate-driver\ntitle: Candidate Driver\n---\n# Candidate Driver\n\n[[Duplicate]] then [[concept-two]]\n")
 	largeBytes := bytes.Repeat([]byte("x"), int(generation.MaxFileBytes))
 	sourcePage := []byte("---\nid: source-one\ntitle: Source One\n---\n# Source One\n")
 	rawBytes := []byte("Retained source text from the publisher.\n")
 	rawBytesTwo := []byte("Retained mismatch control text.\n")
-	idMap, err := json.Marshal(wikiindex.IDMap{
+	idMap := wikiindex.IDMap{
 		Concept:    map[string]string{"concept-one": "alpha", "concept-two": "beta", "big-one": "big-one", "big-two": "big-two"},
 		Source:     map[string]string{"source-one": "source-one", "source-two": "source-two"},
 		SourceMeta: map[string]wikiindex.SourceMeta{"source-one": {Slug: "source-one", Title: "Source One"}, "source-two": {Slug: "source-two", Title: "Source Two", SourceFile: "raw/declared-other.md"}},
 		Redirects:  map[string][]string{},
-	})
+	}
+	idMap.Concept["candidate-driver"] = "candidate-driver"
+	conceptRows := []string{
+		"{\"slug\":\"alpha\",\"title\":\"Alpha\",\"frontmatter\":{\"id\":\"concept-one\",\"sources\":[\"source-one\"]}}",
+		"{\"slug\":\"beta\",\"title\":\"Alpha\",\"frontmatter\":{\"id\":\"concept-two\"}}",
+		"{\"slug\":\"candidate-driver\",\"title\":\"Candidate Driver\",\"frontmatter\":{\"id\":\"candidate-driver\"}}",
+		"{\"slug\":\"big-one\",\"title\":\"Big One\",\"frontmatter\":{\"id\":\"big-one\"}}",
+		"{\"slug\":\"big-two\",\"title\":\"Big Two\",\"frontmatter\":{\"id\":\"big-two\"}}",
+	}
+	for i := 0; i < 30; i++ {
+		id, slug := fmt.Sprintf("duplicate-concept-%02d", i), fmt.Sprintf("duplicate-concept-%02d", i)
+		idMap.Concept[id] = slug
+		conceptRows = append(conceptRows, fmt.Sprintf("{\"slug\":%q,\"title\":\"Duplicate\",\"frontmatter\":{\"id\":%q}}", slug, id))
+	}
+	for i := 0; i < 21; i++ {
+		id, slug := fmt.Sprintf("duplicate-source-%02d", i), fmt.Sprintf("duplicate-source-%02d", i)
+		idMap.Source[id] = slug
+		idMap.SourceMeta[id] = wikiindex.SourceMeta{Slug: slug, Title: "Duplicate"}
+	}
+	idMapBytes, err := json.Marshal(idMap)
 	if err != nil {
 		t.Fatal(err)
 	}
-	concepts := []byte("{\"slug\":\"alpha\",\"title\":\"Alpha\",\"frontmatter\":{\"id\":\"concept-one\",\"sources\":[\"source-one\"]}}\n" +
-		"{\"slug\":\"beta\",\"title\":\"Alpha\",\"frontmatter\":{\"id\":\"concept-two\"}}\n" +
-		"{\"slug\":\"big-one\",\"title\":\"Big One\",\"frontmatter\":{\"id\":\"big-one\"}}\n" +
-		"{\"slug\":\"big-two\",\"title\":\"Big Two\",\"frontmatter\":{\"id\":\"big-two\"}}\n")
+	concepts := []byte(strings.Join(conceptRows, "\n") + "\n")
 	fileData := map[string][]byte{
 		"cache/concepts.jsonl":       concepts,
-		"cache/id_map.json":          idMap,
+		"cache/id_map.json":          idMapBytes,
 		"wiki/alpha.md":              conceptOne,
 		"wiki/beta.md":               conceptTwo,
+		"wiki/candidate-driver.md":   candidateDriver,
 		"wiki/big-one.md":            largeBytes,
 		"wiki/big-two.md":            largeBytes,
 		"wiki/sources/source-one.md": sourcePage,
 		"wiki/sources/source-two.md": []byte("---\nid: source-two\ntitle: Source Two\n---\n# Source Two\n"),
 	}
-	paths := []string{"cache/concepts.jsonl", "cache/id_map.json", "wiki/alpha.md", "wiki/beta.md", "wiki/big-one.md", "wiki/big-two.md", "wiki/sources/source-one.md", "wiki/sources/source-two.md"}
+	paths := []string{"cache/concepts.jsonl", "cache/id_map.json", "wiki/alpha.md", "wiki/beta.md", "wiki/big-one.md", "wiki/big-two.md", "wiki/candidate-driver.md", "wiki/sources/source-one.md", "wiki/sources/source-two.md"}
 	manifest := generation.Manifest{
 		Version: generation.Version, GenerationID: contentGeneration, CreatedAt: "2026-11-05T00:00:00Z", InputFingerprint: "local-mcp-content-fixture",
 		Files: make([]generation.File, 0, len(paths)),
@@ -1388,9 +1462,12 @@ func mcpPublishedContentFixture(t *testing.T, userID, projectID string) map[stri
 		}
 		manifest.Files = append(manifest.Files, file)
 	}
+	if err := manifest.Validate(); err != nil {
+		t.Fatalf("validate published test manifest: %v", err)
+	}
 	sourceSnapshot := generation.SourceSnapshotManifest{
 		SchemaVersion: generation.SourceSnapshotSchema, ContentGeneration: contentGeneration,
-		IDMapDigest: generation.Digest(idMap), SourceStatusDigest: generation.Digest([]byte("publisher-attested-status")),
+		IDMapDigest: generation.Digest(idMapBytes), SourceStatusDigest: generation.Digest([]byte("publisher-attested-status")),
 		Rows: []generation.SourceSnapshotRow{
 			{StableID: "source-one", RawPath: "raw/source.md", ContentDigest: generation.Digest(rawBytes), ObjectGeneration: 501},
 			{StableID: "source-two", RawPath: "raw/source-two.md", ContentDigest: generation.Digest(rawBytesTwo), ObjectGeneration: 502},
