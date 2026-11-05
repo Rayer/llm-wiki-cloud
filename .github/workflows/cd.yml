@@ -135,10 +135,12 @@ jobs:
             exit 1
           }
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
-        if: inputs.operation == 'release'
         with:
           go-version-file: apps/bff/go.mod
           cache-dependency-path: apps/bff/go.sum
+      - name: Prepare native Auth input identity validator modules
+        working-directory: apps/bff
+        run: go mod download
       - name: Install pinned Pkl CLI
         if: inputs.operation == 'release'
         run: |
