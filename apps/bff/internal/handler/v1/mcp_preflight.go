@@ -90,6 +90,13 @@ func (h *Handler) serveAuthenticatedMCPRequest(identity mcpProjectKeyIdentity, w
 			}
 		}
 	}
+	if lease != nil && preflight.class == mcpquota.Content {
+		// The protected writer can retain one maximum-sized wire response. Keep
+		// that budget with the admitted lease; Close runs after final Commit.
+		if _, reserved := lease.ReserveBytes(mcpProtectedResponseWorkingSetReservationBytes); !reserved {
+			outcome = &mcpAdmissionOutcome{decision: mcpquota.Decision{Code: "capacity_limited", RetryAfterMS: 250}}
+		}
+	}
 	requestCtx := r.Context()
 	if preflight.protected {
 		requestCtx = context.WithValue(requestCtx, mcpProtectedRequestContextKey{}, true)

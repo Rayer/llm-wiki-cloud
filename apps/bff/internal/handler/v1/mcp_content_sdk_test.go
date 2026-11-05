@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -31,6 +32,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/gcs"
 	"github.com/rayer/llm-wiki-bff/internal/generation"
 	"github.com/rayer/llm-wiki-bff/internal/localfs"
+	"github.com/rayer/llm-wiki-bff/internal/mcpquota"
 	"github.com/rayer/llm-wiki-bff/internal/query"
 	"github.com/rayer/llm-wiki-bff/internal/search"
 	"github.com/rayer/llm-wiki-bff/internal/storage"
@@ -827,6 +829,83 @@ func TestMCPContentReadScopesAndAdmissionThroughProjectKeyAndOAuthSDKEndpoints(t
 		t.Fatalf("exact-name ambiguity was not returned through SDK: %#v", findResult.StructuredContent)
 	}
 
+	// The content snapshot closes in the tool handler, but its serialized result
+	// and the SDK's final response remain live until the HTTP writer commits.
+	// Capture that interval through a real SDK client and a second lease using
+	// the same process working-set accountant.
+	barrier := &mcpOutputCommitBarrier{next: handler.MCPHandler()}
+	barrierServer := httptest.NewServer(barrier)
+	t.Cleanup(barrierServer.Close)
+	t.Cleanup(func() {
+		barrier.disarm()
+		barrier.release()
+	})
+	limiter, err := handler.mcpAdmissionService()
+	if err != nil || limiter == nil {
+		t.Fatalf("obtain active MCP content limiter: limiter=%v err=%v", limiter != nil, err)
+	}
+	for _, operation := range []string{"list_content", "find_content"} {
+		barrierSession := connectMCPWithBearer(t, ctx, barrierServer.URL+"/mcp", readKeyToken, projectID)
+		t.Cleanup(barrier.release)
+		barrier.arm(operation)
+		callDone := make(chan struct {
+			result *mcp.CallToolResult
+			err    error
+		}, 1)
+		go func(operation string) {
+			arguments := map[string]any{"kind": "concept"}
+			if operation == "find_content" {
+				arguments["name"] = "Alpha"
+			}
+			result, callErr := barrierSession.CallTool(ctx, &mcp.CallToolParams{Name: operation, Arguments: arguments})
+			callDone <- struct {
+				result *mcp.CallToolResult
+				err    error
+			}{result: result, err: callErr}
+		}(operation)
+		select {
+		case <-barrier.started:
+		case <-ctx.Done():
+			t.Fatalf("%s did not reach the final bounded HTTP writer", operation)
+		}
+		probeLease, decision, admitErr := limiter.Admit(ctx, mcpquota.Identity{Environment: "local", Subject: userID, ProjectID: projectID}, mcpquota.Content)
+		if admitErr != nil || probeLease == nil || decision.Code != "admitted" {
+			t.Fatalf("admit working-set capture lease for %s: lease=%v decision=%+v err=%v", operation, probeLease != nil, decision, admitErr)
+		}
+		held := mcpQuotaHeldBytes(t, probeLease, mcpContentEndpointTestConfig().Protection.Content.WorkingBytes)
+		if held < mcpProtectedResponseWorkingSetReservationBytes {
+			_ = probeLease.Close()
+			barrier.release()
+			t.Fatalf("%s output reservation while final Commit was blocked=%d, want at least bounded writer reservation %d", operation, held, mcpProtectedResponseWorkingSetReservationBytes)
+		}
+		barrier.release()
+		select {
+		case call := <-callDone:
+			if call.err != nil || call.result == nil || call.result.IsError {
+				_ = probeLease.Close()
+				t.Fatalf("%s SDK call after final Commit=%+v err=%v", operation, call.result, call.err)
+			}
+		case <-ctx.Done():
+			_ = probeLease.Close()
+			t.Fatalf("%s SDK call did not settle after final Commit", operation)
+		}
+		if settled := mcpQuotaHeldBytes(t, probeLease, mcpContentEndpointTestConfig().Protection.Content.WorkingBytes); settled != 0 {
+			_ = probeLease.Close()
+			t.Fatalf("%s output reservation remained after Commit settled: %d bytes", operation, settled)
+		}
+		if release, ok := probeLease.ReserveBytes(maxMCPProtectedResponseBytes); !ok {
+			_ = probeLease.Close()
+			t.Fatalf("%s writer capacity did not recover after Commit", operation)
+		} else {
+			release()
+		}
+		if err := probeLease.Close(); err != nil {
+			t.Fatalf("close %s working-set capture lease: %v", operation, err)
+		}
+		barrier.disarm()
+		t.Logf("output_commit operation=%s held_before_commit=%d settled_after_commit=0 writer_capacity_recovered=true", operation, held)
+	}
+
 	readResult, err := readSession.CallTool(ctx, &mcp.CallToolParams{Name: "read_content", Arguments: map[string]any{"kind": "concept", "id": "concept-one"}})
 	if err != nil || readResult == nil || readResult.IsError {
 		t.Fatalf("read key read_content response=%+v err=%v", readResult, err)
@@ -1138,6 +1217,96 @@ type mcpCommitBlockingWriter struct {
 	releaseOnce sync.Once
 	body        bytes.Buffer
 	status      int
+}
+
+type mcpOutputCommitBarrier struct {
+	next http.Handler
+
+	mu        sync.Mutex
+	operation string
+	started   chan struct{}
+	unblock   chan struct{}
+	armed     bool
+	relOnce   sync.Once
+}
+
+func (b *mcpOutputCommitBarrier) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		body, err := io.ReadAll(r.Body)
+		if err == nil {
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			var envelope struct {
+				Method string `json:"method"`
+				Params struct {
+					Name string `json:"name"`
+				} `json:"params"`
+			}
+			if json.Unmarshal(body, &envelope) == nil {
+				b.mu.Lock()
+				armed := b.armed && envelope.Method == "tools/call" && envelope.Params.Name == b.operation
+				started, release := b.started, b.unblock
+				b.mu.Unlock()
+				if armed {
+					w = &mcpOutputCommitBarrierWriter{ResponseWriter: w, started: started, release: release}
+				}
+			}
+		}
+	}
+	b.next.ServeHTTP(w, r)
+}
+
+func (b *mcpOutputCommitBarrier) arm(operation string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.operation = operation
+	b.started = make(chan struct{})
+	b.unblock = make(chan struct{})
+	b.relOnce = sync.Once{}
+	b.armed = true
+}
+
+func (b *mcpOutputCommitBarrier) disarm() {
+	b.mu.Lock()
+	b.armed = false
+	b.mu.Unlock()
+}
+
+func (b *mcpOutputCommitBarrier) release() {
+	b.mu.Lock()
+	release := b.unblock
+	b.mu.Unlock()
+	if release != nil {
+		b.relOnce.Do(func() { close(release) })
+	}
+}
+
+type mcpOutputCommitBarrierWriter struct {
+	http.ResponseWriter
+	started chan struct{}
+	release <-chan struct{}
+	once    sync.Once
+}
+
+func (w *mcpOutputCommitBarrierWriter) Write(data []byte) (int, error) {
+	w.once.Do(func() { close(w.started) })
+	<-w.release
+	return w.ResponseWriter.Write(data)
+}
+
+func mcpQuotaHeldBytes(t *testing.T, lease *mcpquota.Lease, limit int64) int64 {
+	t.Helper()
+	low, high := int64(0), limit
+	for low <= high {
+		mid := low + (high-low)/2
+		release, ok := lease.ReserveBytes(mid)
+		if ok {
+			release()
+			low = mid + 1
+		} else {
+			high = mid - 1
+		}
+	}
+	return limit - (low - 1)
 }
 
 func newMCPCommitBlockingWriter() *mcpCommitBlockingWriter {

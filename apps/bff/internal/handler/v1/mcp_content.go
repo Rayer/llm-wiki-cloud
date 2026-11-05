@@ -243,7 +243,7 @@ func (h *Handler) callMCPListContent(ctx context.Context, _ *mcp.CallToolRequest
 	}
 	defer snapshot.close()
 	if snapshot == nil {
-		return mcpContentSuccess(map[string]any{"schema_version": 1, "kind": input.Kind, "generation": nil, "knowledge_status": "no_published_generation", "items": []mcpContentRef{}, "next_cursor": nil}), nil, nil
+		return mcpContentSuccess(ctx, map[string]any{"schema_version": 1, "kind": input.Kind, "generation": nil, "knowledge_status": "no_published_generation", "items": []mcpContentRef{}, "next_cursor": nil}), nil, nil
 	}
 	items := make([]mcpContentRef, 0, limit)
 	for _, ref := range snapshot.refs {
@@ -259,7 +259,7 @@ func (h *Handler) callMCPListContent(ctx context.Context, _ *mcp.CallToolRequest
 	if len(items) > 0 && hasMCPContentAfter(snapshot.refs, input.Kind, items[len(items)-1].ID) {
 		next = encodeMCPContentCursor(mcpContentCursor{SchemaVersion: 1, Operation: "list", Kind: input.Kind, Generation: snapshot.generation, ManifestSHA: snapshot.manifestSHA, ScopeBinding: mcpContentScopeBinding(identity), LastID: items[len(items)-1].ID})
 	}
-	return mcpContentSuccess(map[string]any{"schema_version": 1, "kind": input.Kind, "generation": snapshot.generation, "items": items, "next_cursor": next}), nil, nil
+	return mcpContentSuccess(ctx, map[string]any{"schema_version": 1, "kind": input.Kind, "generation": snapshot.generation, "items": items, "next_cursor": next}), nil, nil
 }
 
 func (h *Handler) callMCPFindContent(ctx context.Context, _ *mcp.CallToolRequest, input findContentInput) (*mcp.CallToolResult, any, error) {
@@ -282,7 +282,7 @@ func (h *Handler) callMCPFindContent(ctx context.Context, _ *mcp.CallToolRequest
 	}
 	defer snapshot.close()
 	if snapshot == nil {
-		return mcpContentSuccess(map[string]any{"schema_version": 1, "kind": input.Kind, "generation": nil, "knowledge_status": "no_published_generation", "status": "not_found", "candidates": []mcpContentRef{}, "next_cursor": nil}), nil, nil
+		return mcpContentSuccess(ctx, map[string]any{"schema_version": 1, "kind": input.Kind, "generation": nil, "knowledge_status": "no_published_generation", "status": "not_found", "candidates": []mcpContentRef{}, "next_cursor": nil}), nil, nil
 	}
 	matches := make([]mcpContentRef, 0)
 	for _, ref := range snapshot.refs {
@@ -309,7 +309,7 @@ func (h *Handler) callMCPFindContent(ctx context.Context, _ *mcp.CallToolRequest
 	if len(page) > 0 && page[len(page)-1].ID < matches[len(matches)-1].ID {
 		next = encodeMCPContentCursor(mcpContentCursor{SchemaVersion: 1, Operation: "find", Kind: input.Kind, Name: name, Generation: snapshot.generation, ManifestSHA: snapshot.manifestSHA, ScopeBinding: mcpContentScopeBinding(identity), LastID: page[len(page)-1].ID})
 	}
-	return mcpContentSuccess(map[string]any{"schema_version": 1, "kind": input.Kind, "generation": snapshot.generation, "status": status, "candidates": page, "next_cursor": next}), nil, nil
+	return mcpContentSuccess(ctx, map[string]any{"schema_version": 1, "kind": input.Kind, "generation": snapshot.generation, "status": status, "candidates": page, "next_cursor": next}), nil, nil
 }
 
 func (h *Handler) callMCPReadContent(ctx context.Context, _ *mcp.CallToolRequest, input readContentInput) (*mcp.CallToolResult, any, error) {
@@ -427,7 +427,7 @@ func (h *Handler) callMCPReadContent(ctx context.Context, _ *mcp.CallToolRequest
 	result["provenance_status"] = provenanceStatus
 	result["refs_complete"] = refsComplete
 	result["next_refs_cursor"] = nextRefsCursor
-	return mcpContentSuccess(result), nil, nil
+	return mcpContentSuccess(ctx, result), nil, nil
 }
 
 func (h *Handler) callMCPReadSourceRaw(ctx context.Context, _ *mcp.CallToolRequest, input readSourceRawInput) (*mcp.CallToolResult, any, error) {
@@ -531,7 +531,7 @@ func (h *Handler) callMCPReadSourceRaw(ctx context.Context, _ *mcp.CallToolReque
 	if !complete {
 		next = encodeMCPContentCursor(mcpContentCursor{SchemaVersion: 1, Operation: "raw", Kind: mcpContentKindSource, ID: input.SourceID, Generation: snapshot.generation, ManifestSHA: snapshot.manifestSHA, ScopeBinding: mcpContentScopeBinding(identity), Revision: revision, Offset: end})
 	}
-	return mcpContentSuccess(map[string]any{"schema_version": 1, "source": ref, "generation": snapshot.generation, "revision": revision, "representation": "retained_source_text", "content": map[string]any{"text": string(data[start:end]), "start_byte": start, "end_byte": end, "total_bytes": len(data), "complete": complete, "next_cursor": next}}), nil, nil
+	return mcpContentSuccess(ctx, map[string]any{"schema_version": 1, "source": ref, "generation": snapshot.generation, "revision": revision, "representation": "retained_source_text", "content": map[string]any{"text": string(data[start:end]), "start_byte": start, "end_byte": end, "total_bytes": len(data), "complete": complete, "next_cursor": next}}), nil, nil
 }
 
 func (h *Handler) loadMCPContentSnapshot(ctx context.Context, identity mcpProjectKeyIdentity, operation, kind, name, encoded, explicitGeneration string) (*mcpContentSnapshot, mcpContentCursor, error) {
@@ -1081,8 +1081,27 @@ func mcpContentToolError(code string, retryable bool, retryAfter int) *mcp.CallT
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(encoded)}}, StructuredContent: value, IsError: true}
 }
 
-func mcpContentSuccess(value any) *mcp.CallToolResult {
+func mcpContentSuccess(ctx context.Context, value any) *mcp.CallToolResult {
 	encoded, _ := json.Marshal(value)
+	if lease := mcpAdmissionLeaseFrom(ctx); lease != nil {
+		// The result retains this JSON backing array plus a string copy. The SDK
+		// then serializes the raw structured value and escaped text copy, whose
+		// encoded size is at most three times this payload. Allow twice that for
+		// allocator growth; the request's base reservation covers final Commit.
+		encodedBytes := int64(len(encoded))
+		retainedBytes := int64(cap(encoded))
+		maxInt64 := int64(^uint64(0) >> 1)
+		const envelopeOverhead = int64(16 << 10)
+		if retainedBytes > maxInt64-envelopeOverhead || encodedBytes > (maxInt64-envelopeOverhead-retainedBytes)/7 {
+			return mcpContentToolError("capacity_limited", true, 250)
+		}
+		// Deliberately retain the release with this request lease. Its outer
+		// Close follows the bounded writer's final Commit, after the SDK drops
+		// the serialized result.
+		if _, reserved := lease.ReserveBytes(retainedBytes + encodedBytes*7 + envelopeOverhead); !reserved {
+			return mcpContentToolError("capacity_limited", true, 250)
+		}
+	}
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(encoded)}}, StructuredContent: json.RawMessage(encoded)}
 }
 

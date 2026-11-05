@@ -7,7 +7,10 @@ import (
 	"net/http"
 )
 
-const maxMCPProtectedResponseBytes = 256 << 10
+const (
+	maxMCPProtectedResponseBytes                   = 256 << 10
+	mcpProtectedResponseWorkingSetReservationBytes = 2*maxMCPProtectedResponseBytes + (16 << 10)
+)
 
 type mcpProtectedRequestContextKey struct{}
 type mcpProtectedRequestIDContextKey struct{}
