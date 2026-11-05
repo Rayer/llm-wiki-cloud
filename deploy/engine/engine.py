@@ -147,8 +147,18 @@ def runtime3_auth_inputs_match(actual, expected):
         return False
     actual_compatible = copy.deepcopy(actual)
     expected_compatible = copy.deepcopy(expected)
+    source_changed = actual_compatible.get('source_sha') != expected_compatible.get('source_sha')
     actual_compatible.pop('source_sha', None)
     expected_compatible.pop('source_sha', None)
+    if source_changed:
+        config_id_pattern = r'sha256:[0-9a-f]{64}'
+        if (re.fullmatch(config_id_pattern, actual_compatible.get('config_id', '')) is None or
+                re.fullmatch(config_id_pattern, expected_compatible.get('config_id', '')) is None):
+            return False
+        # ConfigID hashes the source trace as well as runtime inputs, so a
+        # changed LWC release gets a new ID while retaining the same runtime.
+        actual_compatible.pop('config_id', None)
+        expected_compatible.pop('config_id', None)
     return actual_compatible == expected_compatible
 
 

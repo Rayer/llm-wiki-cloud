@@ -32,6 +32,7 @@ def _runtime_inputs(source_sha, schema_version=3):
     inputs = {
         'schema_version': schema_version, 'environment': 'dev', 'target': 'auth',
         'source_sha': source_sha, 'config_id': 'sha256:' + 'e' * 64,
+        'jwt_secret_version': 'projects/test/secrets/jwt/versions/1',
     }
     if schema_version == 4:
         origin = 'https://bff.example'
@@ -241,7 +242,19 @@ class Acceptance(unittest.TestCase):
             self.assertEqual(plan['normalized']['auth']['runtime_inputs']['schema_version'], 3)
 
             changed_source = copy.deepcopy(_runtime_inputs('a' * 40))
-            changed_source['source_sha'] = 'c' * 40
+            changed_source['config_id'] = 'sha256:' + '0' * 64
+            self.assertTrue(engine.runtime3_auth_inputs_match(
+                _runtime_inputs('c' * 40), changed_source),
+                'ConfigID may change with the LWC source trace when runtime inputs stay the same')
+            same_source_mismatch = _runtime_inputs('c' * 40)
+            same_source_mismatch['config_id'] = 'sha256:' + '0' * 64
+            self.assertFalse(engine.runtime3_auth_inputs_match(
+                _runtime_inputs('c' * 40), same_source_mismatch),
+                'ConfigID must still match when the source trace is unchanged')
+            malformed_config_id = copy.deepcopy(changed_source)
+            malformed_config_id['config_id'] = 'invalid'
+            self.assertFalse(engine.runtime3_auth_inputs_match(
+                _runtime_inputs('c' * 40), malformed_config_id))
             self.assertTrue(engine.retained_runtime3_pair_compatible(
                 reuse, changed_source, plan['auth_source'], RUNTIME_AUTH_IDENTITY),
                 'schema-4 receipt envelope with actual schema-3 inputs must remain reusable')
@@ -250,10 +263,13 @@ class Acceptance(unittest.TestCase):
 
             for invalid, mutate in (
                     ('runtime 4', lambda path: _write_runtime_pair(path, envelope=4, runtime=4)),
+                    ('unsupported runtime 2', lambda path: _write_runtime_pair(path, envelope=4, runtime=2)),
                     ('schema 3 envelope with runtime 4',
                      lambda path: _write_runtime_pair(path, envelope=3, runtime=4)),
                     ('cross-source image', lambda path: _write_runtime_pair(path, envelope=4, runtime=3)),
                     ('cross-source Auth tuple', lambda path: _write_runtime_pair(path, envelope=4, runtime=3)),
+                    ('wrong environment', lambda path: _write_runtime_pair(path, envelope=4, runtime=3)),
+                    ('malformed receipt', lambda path: _write_runtime_pair(path, envelope=4, runtime=3)),
                     ('missing DEV pair', lambda path: _write_runtime_pair(path, envelope=4, runtime=3)),
                     ('input mismatch', lambda path: _write_runtime_pair(path, envelope=4, runtime=3))):
                 with self.subTest(invalid=invalid):
@@ -268,11 +284,19 @@ class Acceptance(unittest.TestCase):
                         auth = json.loads((broken / 'receipts/auth.json').read_text())
                         auth['auth_source']['revision'] = '9' * 40
                         write(broken / 'receipts/auth.json', auth)
+                    elif invalid == 'wrong environment':
+                        auth = json.loads((broken / 'receipts/auth.json').read_text())
+                        auth['auth_config_inputs']['environment'] = 'prod'
+                        write(broken / 'receipts/auth.json', auth)
+                    elif invalid == 'malformed receipt':
+                        auth = json.loads((broken / 'receipts/auth.json').read_text())
+                        auth['unexpected'] = 'forbidden'
+                        write(broken / 'receipts/auth.json', auth)
                     elif invalid == 'missing DEV pair':
                         (broken / 'images/dev-receipt.json').unlink()
                     elif invalid == 'input mismatch':
                         mismatched = copy.deepcopy(changed_source)
-                        mismatched['config_id'] = 'sha256:' + '0' * 64
+                        mismatched['jwt_secret_version'] = 'projects/test/secrets/jwt/versions/2'
                         self.assertFalse(engine.retained_runtime3_pair_compatible(
                             broken, mismatched, plan['auth_source'], RUNTIME_AUTH_IDENTITY))
                         continue
@@ -307,7 +331,7 @@ class Acceptance(unittest.TestCase):
 
             auth3, _, _ = _write_runtime_pair(reuse, envelope=4, runtime=3)
             auth3['identity'] = release.plan['identities']['auth']
-            auth3['auth_config_inputs']['config_id'] = 'sha256:' + '0' * 64
+            auth3['auth_config_inputs']['jwt_secret_version'] = 'projects/test/secrets/jwt/versions/2'
             write(reuse / 'receipts/auth.json', auth3)
             self.assertTrue(release.auth_package_preflight(reuse=reuse),
                             'a schema-3 runtime with changed configuration inputs needs a new package')
