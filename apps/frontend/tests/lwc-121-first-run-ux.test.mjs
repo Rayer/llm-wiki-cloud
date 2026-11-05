@@ -18,7 +18,7 @@ test('home first-run UX avoids generic examples and exposes latest concept previ
   assert.match(homeClient, /objectUpdatedAt/);
   assert.match(homeClient, /left\.title\.localeCompare\(right\.title\) \|\| left\.slug\.localeCompare\(right\.slug\)/);
   assert.match(homeClient, /entries: recent\.slice\(0, 6\)/);
-  assert.match(homeClient, /!searched && currentProject \? \([\s\S]*?recentConcepts\.entries\.length > 0/);
+  assert.match(homeClient, /\{currentProject \? \([\s\S]*?recentConcepts\.entries\.length > 0/);
   assert.match(homeClient, /recentConceptsState\.scopeKey === homeScopeKey/);
   assert.match(homeClient, /Home\.noRecentKnowledge/);
   assert.match(homeClient, /t\('Home\.recentKnowledge'\)/);

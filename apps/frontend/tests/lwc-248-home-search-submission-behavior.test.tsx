@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   locale: 'en' as 'en' | 'zh-TW',
   useRealLocaleCopy: false,
   getConcepts: vi.fn(),
+  getProjectContentContext: vi.fn(),
   getProfile: vi.fn(),
   getStatus: vi.fn(),
   searchWiki: vi.fn(),
@@ -35,6 +36,11 @@ vi.mock('@/lib/api', async () => {
     getStatus: mocks.getStatus,
     searchWiki: mocks.searchWiki,
   };
+});
+
+vi.mock('@/lib/projects', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/projects')>('@/lib/projects');
+  return { ...actual, getProjectContentContext: mocks.getProjectContentContext };
 });
 
 vi.mock('@/lib/i18n', async () => {
@@ -90,7 +96,7 @@ vi.mock('@/components/NavigationBlocker', async () => {
 });
 
 import { HomeClient } from '@/components/HomeClient';
-import { QueryApiError, type ApiStatus } from '@/lib/api';
+import { QueryApiError, type ApiStatus, type SearchResponse } from '@/lib/api';
 import { clearCompletedQueryResults } from '@/lib/query-result-history';
 
 const SEARCH_RESPONSE = {
@@ -129,11 +135,16 @@ beforeEach(() => {
   mocks.user = { id: 'account-a' };
   mocks.hydrated = true;
   mocks.projectsLoading = false;
+  mocks.projects = [{ id: 'project-a', name: 'Project A' }];
   mocks.isDemoSession = false;
   mocks.locale = 'en';
   mocks.useRealLocaleCopy = false;
   mocks.getStatus.mockResolvedValue(status());
   mocks.getConcepts.mockResolvedValue([]);
+  mocks.getProjectContentContext.mockResolvedValue({
+    project_id: 'project-a', status: 'missing', current_generation: null,
+    current_concepts_sha256: null, summary: null, stale: false,
+  });
   mocks.searchWiki.mockResolvedValue(SEARCH_RESPONSE);
   replaceStateSpy = vi.spyOn(window.history, 'replaceState');
 });
@@ -167,7 +178,36 @@ async function getFormFromSearchButton() {
   return { form: form as HTMLFormElement, searchButton };
 }
 
+function expectQuerySections() {
+  expect(document.querySelector('section[aria-labelledby="current-wiki-heading"]')).not.toBeNull();
+  expect(document.querySelector('section[aria-labelledby="other-wikis-heading"]')).not.toBeNull();
+  expect(screen.getByRole('button', { name: 'AddMaterial.open' })).toBeTruthy();
+}
+
 describe('LWC-248 home search submission contract', () => {
+  it.each([
+    { name: 'single Wiki', projects: [{ id: 'project-a', name: 'Project A' }], demo: false, addMaterial: true },
+    { name: 'Demo session', projects: [{ id: 'project-a', name: 'Project A' }, { id: 'project-b', name: 'Project B' }], demo: true, addMaterial: false },
+  ])('preserves the existing Wiki and AddMaterial gates for a $name after Query', async ({ projects, demo, addMaterial }) => {
+    mocks.projects = projects;
+    mocks.isDemoSession = demo;
+    mocks.searchWiki.mockResolvedValueOnce({ results: [], aiAnswer: '', citations: [] });
+    render(<HomeClient />);
+    await waitForInitialSearchState();
+    expect(document.querySelector('section[aria-labelledby="current-wiki-heading"]')).not.toBeNull();
+    expect(document.querySelector('section[aria-labelledby="other-wikis-heading"]')).toBeNull();
+    expect(Boolean(screen.queryByRole('button', { name: 'AddMaterial.open' }))).toBe(addMaterial);
+
+    await act(async () => {
+      fireEvent.change(screen.getByRole('textbox', { name: 'Demo.search' }), { target: { value: `${demo ? 'demo' : 'single'} gate query` } });
+      fireEvent.submit((await getFormFromSearchButton()).form);
+    });
+    expect(await screen.findByText('QueryResults.noResults')).toBeTruthy();
+    expect(document.querySelector('section[aria-labelledby="current-wiki-heading"]')).not.toBeNull();
+    expect(document.querySelector('section[aria-labelledby="other-wikis-heading"]')).toBeNull();
+    expect(Boolean(screen.queryByRole('button', { name: 'AddMaterial.open' }))).toBe(addMaterial);
+  });
+
   it('keeps Project Profile out of Search and does not load it there', async () => {
     render(<HomeClient />);
     await waitForInitialSearchState();
@@ -577,6 +617,7 @@ describe('LWC-248 home search submission contract', () => {
 
 describe('LWC-342 completed query history restoration', () => {
   it.each(['wiki', 'full'] as const)('restores the exact %s result through browser Back and resubmits distinctly', async (searchMode) => {
+    mocks.projects = [{ id: 'project-a', name: 'Project A' }, { id: 'project-b', name: 'Project B' }];
     const firstResponse = {
       results: [{ id: 'first-result', slug: 'first-result', title: 'First result', type: 'concept', excerpt: 'first excerpt', content: '' }],
       aiAnswer: 'First answer from this submission. [First citation]',
@@ -596,6 +637,7 @@ describe('LWC-342 completed query history restoration', () => {
 
     const firstPage = render(<HomeClient />);
     await waitForInitialSearchState();
+    expectQuerySections();
     const queryInput = screen.getByRole('textbox');
     const form = (await getFormFromSearchButton()).form;
     await act(async () => {
@@ -610,6 +652,7 @@ describe('LWC-342 completed query history restoration', () => {
       fireEvent.submit(form);
     });
     expect(await screen.findByText(/First answer from this submission\./)).toBeTruthy();
+    expectQuerySections();
     expect(screen.getByText('QueryResults.aiFailure.heading')).toBeTruthy();
     expect(mocks.searchWiki).toHaveBeenCalledTimes(1);
 
@@ -620,6 +663,7 @@ describe('LWC-342 completed query history restoration', () => {
 
     const restoredPage = render(<HomeClient />);
     expect(await screen.findByText(/First answer from this submission\./)).toBeTruthy();
+    expectQuerySections();
     expect(screen.getByRole('textbox')).toHaveProperty('value', 'same question');
     expect(screen.getByText(searchMode === 'wiki' ? 'QueryResults.wikiMode' : 'QueryResults.fullMode')).toBeTruthy();
     expect(within(screen.getByRole('list', { name: 'Demo.sources' })).getByRole('button').textContent).toContain('First citation');
@@ -632,6 +676,7 @@ describe('LWC-342 completed query history restoration', () => {
       fireEvent.submit((await getFormFromSearchButton()).form);
     });
     expect(await screen.findByText(/Different answer from the resubmission\./)).toBeTruthy();
+    expectQuerySections();
     expect(mocks.searchWiki).toHaveBeenCalledTimes(2);
     expect(mocks.searchWiki).toHaveBeenNthCalledWith(2, 'same question', searchMode);
 
@@ -642,21 +687,25 @@ describe('LWC-342 completed query history restoration', () => {
     render(<HomeClient />);
 
     expect(await screen.findByText(/Different answer from the resubmission\./)).toBeTruthy();
+    expectQuerySections();
     expect(within(screen.getByRole('list', { name: 'Demo.sources' })).getByRole('button').textContent).toContain('Second citation');
     expect(screen.getByText('QueryResults.expansionKeywords')).toBeTruthy();
     expect(mocks.searchWiki).toHaveBeenCalledTimes(2);
   });
 
   it('restores a completed empty result and keeps a restore miss query-free until explicit retry', async () => {
+    mocks.projects = [{ id: 'project-a', name: 'Project A' }, { id: 'project-b', name: 'Project B' }];
     mocks.searchWiki.mockResolvedValueOnce({ results: [], aiAnswer: '', citations: [], expand: { keywords: [] } });
     const firstPage = render(<HomeClient />);
     await waitForInitialSearchState();
+    expectQuerySections();
     const input = screen.getByRole('textbox');
     await act(async () => {
       fireEvent.change(input, { target: { value: 'empty answer' } });
       fireEvent.submit((await getFormFromSearchButton()).form);
     });
     expect(await screen.findByText('QueryResults.noResults')).toBeTruthy();
+    expectQuerySections();
 
     window.history.pushState({}, '', '/sources/empty-result');
     firstPage.unmount();
@@ -664,6 +713,7 @@ describe('LWC-342 completed query history restoration', () => {
     await waitFor(() => expect(window.location.pathname).toBe('/'));
     render(<HomeClient />);
     expect(await screen.findByText('QueryResults.noResults')).toBeTruthy();
+    expectQuerySections();
     expect(mocks.searchWiki).toHaveBeenCalledTimes(1);
 
     window.history.pushState({}, '', '/sources/empty-result');
@@ -673,6 +723,7 @@ describe('LWC-342 completed query history restoration', () => {
     await waitFor(() => expect(window.location.pathname).toBe('/'));
     render(<HomeClient />);
     expect(await screen.findByText('QueryResults.resultUnavailable')).toBeTruthy();
+    expectQuerySections();
     expect(screen.queryByText('QueryResults.noResults')).toBeNull();
     expect(mocks.searchWiki).toHaveBeenCalledTimes(1);
 
@@ -685,7 +736,31 @@ describe('LWC-342 completed query history restoration', () => {
       fireEvent.click(screen.getByRole('button', { name: 'QueryResults.searchAgain' }));
     });
     expect(await screen.findByText('Retry result answer.')).toBeTruthy();
+    expectQuerySections();
     expect(mocks.searchWiki).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the Wiki sections on a fresh full-mode URL search', async () => {
+    const pendingSearch = deferred<SearchResponse>();
+    mocks.projects = [{ id: 'project-a', name: 'Project A' }, { id: 'project-b', name: 'Project B' }];
+    mocks.searchWiki.mockReturnValueOnce(pendingSearch.promise);
+    window.history.replaceState(null, '', '/?q=fresh+deep+link&mode=full');
+
+    render(<HomeClient />);
+    await waitForInitialSearchState();
+    expectQuerySections();
+    expect(await screen.findByText('QueryResults.searching...')).toBeTruthy();
+    expect(mocks.searchWiki).toHaveBeenCalledWith('fresh deep link', 'full');
+
+    await act(async () => {
+      pendingSearch.resolve({
+        results: [{ id: 'fresh-result', slug: 'fresh-result', title: 'Fresh deep-link result', type: 'concept', content: '', raw: {} }],
+        aiAnswer: '', citations: [],
+      });
+      await pendingSearch.promise;
+    });
+    expect(await screen.findByText('Fresh deep-link result')).toBeTruthy();
+    expectQuerySections();
   });
 
   it.each(['en', 'zh-TW'] as const)('renders insufficient Wiki evidence as a localized terminal state in %s', async (locale) => {
