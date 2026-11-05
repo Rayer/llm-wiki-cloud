@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -71,8 +72,8 @@ func authProjectionForTest(environment string) authSourceProjection {
 			{
 				ID: "lwc-project", Kind: "project-template", Enabled: true,
 				URI: "https://bff." + environment + ".example.test/mcp/projects/{project_id}", Name: "LWC Project",
-				Scopes:           []config.AuthOAuthScope{{Name: "mcp:query", Description: "Query project knowledge."}, {Name: "mcp:raw:write", Description: "Add permitted raw sources."}},
-				AllowedScopeSets: [][]string{{"mcp:query"}, {"mcp:query", "mcp:raw:write"}}, DefaultScopeSet: []string{"mcp:query"},
+				Scopes:           []config.AuthOAuthScope{{Name: "mcp:query", Description: "Query project knowledge."}, {Name: "mcp:content:read", Description: "List and read published Concepts, Sources, and retained Source text in this Project."}, {Name: "mcp:raw:write", Description: "Add permitted raw sources."}},
+				AllowedScopeSets: [][]string{{"mcp:query"}, {"mcp:query", "mcp:content:read"}, {"mcp:query", "mcp:raw:write"}, {"mcp:query", "mcp:content:read", "mcp:raw:write"}}, DefaultScopeSet: []string{"mcp:query"},
 			},
 			{
 				ID: "daily-brief", Kind: "fixed", Enabled: false, URI: briefURI, Name: "Daily Brief",
@@ -82,13 +83,38 @@ func authProjectionForTest(environment string) authSourceProjection {
 			},
 		},
 	}
+	setAuthProjectCatalogForTest(&projection.OAuthResources[0], projection.SchemaVersion)
 	return projection
+}
+
+func setAuthProjectCatalogForTest(project *config.AuthOAuthResource, schemaVersion int) {
+	project.DefaultScopeSet = []string{"mcp:query"}
+	if schemaVersion >= 3 {
+		project.Scopes = []config.AuthOAuthScope{
+			{Name: "mcp:query", Description: "Query project knowledge."},
+			{Name: "mcp:content:read", Description: "List and read published Concepts, Sources, and retained Source text in this Project."},
+			{Name: "mcp:raw:write", Description: "Add permitted raw sources."},
+		}
+		project.AllowedScopeSets = [][]string{
+			{"mcp:query"},
+			{"mcp:query", "mcp:content:read"},
+			{"mcp:query", "mcp:raw:write"},
+			{"mcp:query", "mcp:content:read", "mcp:raw:write"},
+		}
+		return
+	}
+	project.Scopes = []config.AuthOAuthScope{
+		{Name: "mcp:query", Description: "Query project knowledge."},
+		{Name: "mcp:raw:write", Description: "Add permitted raw sources."},
+	}
+	project.AllowedScopeSets = [][]string{{"mcp:query"}, {"mcp:query", "mcp:raw:write"}}
 }
 
 func authSchema4ProjectionForTest() authSourceProjection {
 	const origin = "https://llm-wiki-bff-dev-580854833715.asia-east1.run.app"
 	projection := authProjectionForTest("dev")
 	projection.SchemaVersion = 4
+	setAuthProjectCatalogForTest(&projection.OAuthResources[0], projection.SchemaVersion)
 	projection.SyncServiceURL = origin
 	projection.OAuthResources[0].URI = origin + "/mcp/projects/{project_id}"
 	projection.ManagementScopes = []config.AuthManagementScope{
@@ -354,6 +380,26 @@ func TestRealPklAuthPrepareProducesLocalFileAndCloudInputStages(t *testing.T) {
 		localConfig.AuthOAuthResources[1].URI != "https://brief.rayer.idv.tw/mcp" ||
 		len(localConfig.AuthOAuthResources[1].AccountSelectionClientIDs) != 0 {
 		t.Fatalf("local disabled Brief policy changed: %#v", localConfig.AuthOAuthResources)
+	}
+	projectOAuth := localConfig.AuthOAuthResources[0]
+	if !reflect.DeepEqual(projectOAuth.ScopesNames(), []string{"mcp:query", "mcp:content:read", "mcp:raw:write"}) ||
+		!reflect.DeepEqual(projectOAuth.AllowedScopeSets, [][]string{
+			{"mcp:query"}, {"mcp:query", "mcp:raw:write"}, {"mcp:query", "mcp:content:read"},
+			{"mcp:query", "mcp:content:read", "mcp:raw:write"},
+		}) || !reflect.DeepEqual(projectOAuth.DefaultScopeSet, []string{"mcp:query"}) {
+		t.Fatalf("local Auth Pkl producer did not materialize the exact query-default four-set scope catalog: %#v", projectOAuth)
+	}
+	if runtimeOutput := strings.TrimSpace(os.Getenv("LWC_TEST_AUTH_RUNTIME_OUTPUT")); runtimeOutput != "" {
+		if err := os.MkdirAll(filepath.Dir(runtimeOutput), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(localPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(runtimeOutput, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	manifest, err := os.ReadFile(filepath.Join(localOutput, "auth", "success.json"))
 	if err != nil {

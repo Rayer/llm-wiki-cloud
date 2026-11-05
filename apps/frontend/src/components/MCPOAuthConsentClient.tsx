@@ -51,13 +51,17 @@ export function MCPOAuthConsentClient({ transactionId }: { transactionId: string
   ));
   const dailyBriefLanding = canReturnToDailyBrief ? dailyBriefSignedOutLandingURL() : null;
   const fixedResource = visibleDetails?.resource_kind === 'fixed';
-  const legacyProjectScopeDescription = visibleDetails && !fixedResource && !visibleDetails.scope_details?.length
-    ? visibleDetails.scope === 'mcp:query'
-      ? t('MCPOAuth.queryOnly')
-      : visibleDetails.scope === 'mcp:query mcp:raw:write'
-        ? t('MCPOAuth.queryAndRawWrite')
-        : ''
-    : '';
+  const scopeDetails = visibleDetails
+    ? (visibleDetails.scope_details?.length
+      ? visibleDetails.scope_details
+      : visibleDetails.scope.split(/\s+/).filter(Boolean).map((name) => ({ name, description: '' })))
+    : [];
+  const describeScope = (name: string, fallback: string) => {
+    if (name === 'mcp:query') return t('MCPOAuth.scopeQueryDescription');
+    if (name === 'mcp:content:read') return t('MCPOAuth.scopeContentReadDescription');
+    if (name === 'mcp:raw:write') return t('MCPOAuth.scopeRawWriteDescription');
+    return fallback || t('MCPOAuth.unknownScopeDescription');
+  };
 
   useLayoutEffect(() => {
     authRef.current = { accessToken, userId: user?.id, isDemoSession };
@@ -229,9 +233,9 @@ export function MCPOAuthConsentClient({ transactionId }: { transactionId: string
               <div><dt className="text-xs text-zinc-500">{t('MCPOAuth.project')}</dt><dd className="mt-1 break-words text-sm font-medium text-white">{visibleDetails.project_name}<span className="mt-1 block break-all font-sans text-xs text-zinc-500">{visibleDetails.project_id}</span></dd></div>
             )}
             <div><dt className="text-xs text-zinc-500">{t('MCPOAuth.scope')}</dt><dd className="mt-1 font-sans text-sm text-emerald-200">{visibleDetails.scope}</dd></div>
-            {visibleDetails.scope_details?.length ? visibleDetails.scope_details.map((scope) => (
-              <div key={scope.name} className="sm:col-span-2"><dt className="font-sans text-xs text-emerald-200">{scope.name}</dt><dd className="mt-1 text-sm leading-6 text-zinc-300">{scope.description}</dd></div>
-            )) : legacyProjectScopeDescription ? <p className="sm:col-span-2 text-sm leading-6 text-zinc-300">{legacyProjectScopeDescription}</p> : null}
+            {scopeDetails.map((scope) => (
+              <div key={scope.name} className="sm:col-span-2"><dt className="font-sans text-xs text-emerald-200">{scope.name}</dt><dd className="mt-1 text-sm leading-6 text-zinc-300">{describeScope(scope.name, scope.description)}</dd></div>
+            ))}
             <div className="sm:col-span-2"><dt className="text-xs text-zinc-500">{t('MCPOAuth.resource')}</dt><dd className="mt-1 break-all font-sans text-xs leading-5 text-zinc-200">{visibleDetails.resource}</dd></div>
             <div className="sm:col-span-2"><dt className="text-xs text-zinc-500">{t('MCPOAuth.expires')}</dt><dd className="mt-1 text-sm text-zinc-300">{new Date(visibleDetails.expires_at).toLocaleString(locale === 'zh-TW' ? 'zh-TW' : locale === 'zh-CN' ? 'zh-CN' : 'en-US')}</dd></div>
           </dl>

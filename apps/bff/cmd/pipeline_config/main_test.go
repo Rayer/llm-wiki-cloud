@@ -11,20 +11,31 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/rayer/llm-wiki-bff/internal/auth"
 	runtimeconfig "github.com/rayer/llm-wiki-bff/internal/config"
+	internalfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
+	"github.com/rayer/llm-wiki-bff/internal/gcs"
+	"github.com/rayer/llm-wiki-bff/internal/generation"
 	handlerv1 "github.com/rayer/llm-wiki-bff/internal/handler/v1"
 	"github.com/rayer/llm-wiki-bff/internal/localfs"
 	"github.com/rayer/llm-wiki-bff/internal/profiletags"
+	"github.com/rayer/llm-wiki-bff/internal/storage"
 	"github.com/rayer/llm-wiki-bff/internal/urlintake"
+	"github.com/rayer/llm-wiki-bff/internal/wikiindex"
 	"google.golang.org/api/cloudresourcemanager/v3"
 	"google.golang.org/api/idtoken"
 	"google.golang.org/api/option"
@@ -43,6 +54,157 @@ type fakeSecretReader struct {
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
+
+type mcpCaCAdmissionBarrierRoot struct {
+	storage.RootStore
+	entered chan struct{}
+	release chan struct{}
+	active  atomic.Bool
+	content *gcs.Client
+}
+
+func (r *mcpCaCAdmissionBarrierRoot) Scope(userID, projectID string) storage.Store {
+	if r.active.Load() {
+		r.entered <- struct{}{}
+		<-r.release
+	}
+	if r.content != nil {
+		return r.content.WithScope(userID, projectID)
+	}
+	return r.RootStore.Scope(userID, projectID)
+}
+
+type mcpCaCGCSObject struct {
+	data       []byte
+	generation int64
+}
+
+func newMcpCaCContentFixture(t *testing.T, scope, userID, projectID string) (*gcs.Client, *httptest.Server) {
+	t.Helper()
+	const contentGeneration = "g_mcp_cac_sdk_fixture"
+	const targetConcepts, targetMentions = 50, 51
+	conceptsByID := map[string]string{"alpha-id": "alpha"}
+	pages := map[string][]byte{"wiki/sources/source-one.md": []byte("---\nid: source-one\ntitle: Source One\n---\n# Source One\n")}
+	var concepts strings.Builder
+	concepts.WriteString("{\"slug\":\"alpha\",\"title\":\"Alpha Guide\",\"frontmatter\":{\"id\":\"alpha-id\",\"sources\":[]}}\n")
+	mentionTargets := make([]string, 0, targetMentions)
+	for i := 1; i <= targetConcepts; i++ {
+		id, slug := fmt.Sprintf("concept-%02d-id", i), fmt.Sprintf("concept-%02d", i)
+		conceptsByID[id] = slug
+		pages["wiki/"+slug+".md"] = []byte(fmt.Sprintf("---\nid: %s\ntitle: Concept %02d\n---\n# Concept %02d\n", id, i, i))
+		fmt.Fprintf(&concepts, "{\"slug\":%q,\"title\":%q,\"frontmatter\":{\"id\":%q}}\n", slug, fmt.Sprintf("Concept %02d", i), id)
+		mentionTargets = append(mentionTargets, "[["+id+"]]")
+	}
+	mentionTargets = append(mentionTargets, "[[source-one]]")
+	alphaBody := "---\nid: alpha-id\ntitle: Alpha Guide\nsources: []\n---\n# Alpha\n\n" + strings.Repeat("fixture content ", 1100) + "\n" + strings.Join(mentionTargets, " ") + "\n"
+	pages["wiki/alpha.md"] = []byte(alphaBody)
+	if len(mentionTargets) != targetMentions {
+		t.Fatalf("MCP CaC fixture mentions=%d, want %d", len(mentionTargets), targetMentions)
+	}
+	idMapBytes, err := json.Marshal(wikiindex.IDMap{
+		Concept:     conceptsByID,
+		Source:      map[string]string{"source-one": "source-one"},
+		SourceMeta:  map[string]wikiindex.SourceMeta{"source-one": {Slug: "source-one", Title: "Source One"}},
+		Redirects:   map[string][]string{},
+		IDRedirects: map[string]string{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := map[string][]byte{"cache/id_map.json": idMapBytes, "cache/concepts.jsonl": []byte(concepts.String())}
+	for name, data := range pages {
+		files[name] = data
+	}
+	paths := make([]string, 0, len(files))
+	for name := range files {
+		paths = append(paths, name)
+	}
+	sort.Strings(paths)
+	manifest := generation.Manifest{Version: generation.Version, GenerationID: contentGeneration, CreatedAt: "2026-11-05T00:00:00Z", InputFingerprint: "local-mcp-cac-fixture", Files: make([]generation.File, 0, len(paths))}
+	objects := map[string]mcpCaCGCSObject{}
+	for i, name := range paths {
+		file, err := generation.NewFile(name, files[name], int64(100+i))
+		if err != nil {
+			t.Fatalf("make CaC fixture manifest entry %q: %v", name, err)
+		}
+		manifest.Files = append(manifest.Files, file)
+	}
+	if err := manifest.Validate(); err != nil {
+		t.Fatalf("validate CaC fixture generation manifest: %v", err)
+	}
+	manifestBytes, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix := "local_scopes/" + scope + "/users/" + userID + "/projects/" + projectID + "/"
+	for _, file := range manifest.Files {
+		objects[prefix+manifest.ObjectPath(file)] = mcpCaCGCSObject{data: files[file.Path], generation: file.Generation}
+	}
+	archivePath, err := generation.ArchivedManifestPath(contentGeneration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	objects[prefix+archivePath] = mcpCaCGCSObject{data: manifestBytes, generation: 900}
+	objects[prefix+generation.ManifestPath] = mcpCaCGCSObject{data: manifestBytes, generation: 901}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		escaped := r.URL.EscapedPath()
+		marker := strings.LastIndex(escaped, "/o/")
+		encodedName := ""
+		if marker >= 0 {
+			encodedName = escaped[marker+3:]
+		} else if strings.HasPrefix(escaped, "/mcp-cac-content-fixture/") {
+			encodedName = strings.TrimPrefix(escaped, "/mcp-cac-content-fixture/")
+		}
+		if encodedName == "" {
+			http.NotFound(w, r)
+			return
+		}
+		name, err := url.PathUnescape(encodedName)
+		if err != nil {
+			http.Error(w, "invalid object path", http.StatusBadRequest)
+			return
+		}
+		object, ok := objects[name]
+		if !ok || r.Method != http.MethodGet {
+			t.Errorf("MCP CaC fixture received unexpected object request method=%s name=%q found=%t", r.Method, name, ok)
+			http.NotFound(w, r)
+			return
+		}
+		if requested := r.URL.Query().Get("generation"); requested != "" && requested != strconv.FormatInt(object.generation, 10) {
+			http.NotFound(w, r)
+			return
+		}
+		if !strings.Contains(r.URL.Path, "/storage/v1/") || r.URL.Query().Get("alt") == "media" {
+			w.Header().Set("Content-Length", strconv.Itoa(len(object.data)))
+			w.Header().Set("X-Goog-Generation", strconv.FormatInt(object.generation, 10))
+			_, _ = w.Write(object.data)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"name": name, "bucket": "mcp-cac-content-fixture", "generation": strconv.FormatInt(object.generation, 10),
+			"metageneration": "1", "size": strconv.Itoa(len(object.data)), "updated": "2026-11-05T00:00:00Z", "contentType": "application/octet-stream",
+		})
+	}))
+	t.Setenv("STORAGE_EMULATOR_HOST", server.URL)
+	t.Setenv("GOOGLE_CLOUD_PROJECT", "mcp-cac-content-fixture")
+	client, err := gcs.NewClientWithScope("mcp-cac-content-fixture", scope)
+	if err != nil {
+		server.Close()
+		t.Fatalf("create local GCS client for CaC fixture: %v", err)
+	}
+	pinCtx, cancelPin := context.WithTimeout(context.Background(), 5*time.Second)
+	_, pinned, exists, pinErr := client.WithScope(userID, projectID).PinCurrentGenerationIfPublished(pinCtx)
+	cancelPin()
+	if pinErr != nil || !exists || pinned.Manifest.GenerationID != contentGeneration {
+		_ = client.Close()
+		server.Close()
+		t.Fatalf("pin current CaC fixture generation=%q exists=%t err=%v", pinned.Manifest.GenerationID, exists, pinErr)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	return client, server
+}
 
 func newOwnedLoopbackTestServer(t *testing.T, handler http.Handler) *httptest.Server {
 	t.Helper()
@@ -528,6 +690,415 @@ func TestRealPklBFFLocalPrepareUsesSelectedSharedSecretVersion(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(failingOutput, "bff.json")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("failed selected-secret prepare left a launchable BFF config: %v", err)
 	}
+}
+
+func TestRealPklMCPProtectionReachesLoadedSDKConsumer(t *testing.T) {
+	const expectedMentions = 51
+	emulatorHost := strings.TrimSpace(os.Getenv("FIRESTORE_EMULATOR_HOST"))
+	if emulatorHost == "" {
+		t.Skip("requires a loopback Firestore emulator")
+	}
+	parsed, err := netip.ParseAddrPort(strings.TrimPrefix(emulatorHost, "http://"))
+	if err != nil || !parsed.Addr().IsLoopback() {
+		t.Fatalf("Firestore emulator must use loopback, got %q", emulatorHost)
+	}
+	realPKL := strings.TrimSpace(os.Getenv("PKL_BIN"))
+	if realPKL == "" {
+		realPKL, err = exec.LookPath("pkl")
+		if err != nil {
+			t.Fatalf("Pkl is required for real MCP CaC acceptance: %v", err)
+		}
+	}
+	if _, err := os.Stat(realPKL); err != nil {
+		t.Fatalf("configured Pkl binary is unavailable: %v", err)
+	}
+
+	root := t.TempDir()
+	cacDir := filepath.Join(root, "deploy", "cac")
+	if err := os.MkdirAll(cacDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	repoRoot, err := filepath.Abs(filepath.Join("..", "..", "..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	original, err := os.ReadFile(filepath.Join(repoRoot, "deploy", "cac", "ssot.pkl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const selectedQueryPath = "apps/bff/configs/query/dev/query-dev-2026-09-12.1.json"
+	querySource, err := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(selectedQueryPath)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	queryTarget := filepath.Join(root, filepath.FromSlash(selectedQueryPath))
+	if err := os.MkdirAll(filepath.Dir(queryTarget), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(queryTarget, querySource, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"synto.pkl"} {
+		data, err := os.ReadFile(filepath.Join(repoRoot, "deploy", "cac", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(cacDir, name), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mutated := strings.ReplaceAll(string(original), "list_default = 20", "list_default = 2")
+	mutated = strings.ReplaceAll(mutated, "list_max = 50", "list_max = 4")
+	mutated = strings.ReplaceAll(mutated, "chunk_max_bytes = 16384", "chunk_max_bytes = 1024")
+	mutated = strings.ReplaceAll(mutated, "reference_page_max = 50", "reference_page_max = 3")
+	mutated = strings.Replace(mutated, `policy_revision = "mcp-protection-v1"`, `policy_revision = "mcp-cac-lowered-v1"`, 1)
+	mutated = strings.Replace(mutated, "project = new BffMcpRateBucket { capacity = 24; refill_microunits_per_second = 2000000; max_inflight = 8 }", "project = new BffMcpRateBucket { capacity = 24; refill_microunits_per_second = 2000000; max_inflight = 2 }", 1)
+	if mutated == string(original) || !strings.Contains(mutated, "reference_page_max = 3") ||
+		!strings.Contains(mutated, "project = new BffMcpRateBucket { capacity = 24; refill_microunits_per_second = 2000000; max_inflight = 2 }") {
+		t.Fatal("synthetic policy lowering did not change only the intended project admission policy and content limits")
+	}
+	ssotPath := filepath.Join(cacDir, "ssot.pkl")
+	if err := os.WriteFile(ssotPath, []byte(mutated), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LWC_REPOSITORY_ROOT", root)
+	t.Setenv("PKL_BIN", realPKL)
+	t.Setenv("PKL_CACHE_DIR", "")
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "/dev/null")
+	t.Setenv("LWC_PIPELINE_RUN_TIMEOUT_SECONDS", "82800")
+	t.Setenv("LWC_PIPELINE_LOCAL_SECRET_VERSION_RESOURCE", "projects/llm-wiki-cloud/secrets/lwc369-mcp-cac-fixture/versions/1")
+	t.Setenv("LLM_API_KEY", "TEST_ONLY_LOCAL_LLM_KEY")
+	t.Setenv("TYPESAFE_API_KEY", "")
+	t.Setenv("LOCAL_CLOUD_SCOPE", "lwc369-mcp-cac-synthetic")
+	t.Setenv("LOCAL_CLOUD_WORKER_PATH", filepath.Join(root, "olw_worker"))
+	t.Setenv("LOCAL_CLOUD_PIPELINE_CONFIG_PATH", filepath.Join(root, "synthetic-synto.toml"))
+	t.Setenv("LOCAL_CLOUD_PIPELINE_BINDINGS_PATH", filepath.Join(root, "synthetic-bindings.json"))
+	jwtPath := filepath.Join(root, "jwt-key")
+	if err := os.WriteFile(jwtPath, []byte(strings.Repeat("a", 64)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LOCAL_CLOUD_JWT_SECRET_FILE", jwtPath)
+	t.Setenv("PIPELINE_DEMO_USER_IDS", "")
+	t.Setenv("BFF_PORT", "18080")
+	t.Setenv("AUTH_PORT", "18081")
+	t.Setenv("FRONTEND_PORT", "13000")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	suffix := strconv.FormatInt(time.Now().UnixNano(), 10)
+	fs, err := internalfirestore.NewClientWithDatabaseAndScope("lwc-mcp-cac-"+suffix, "", "", "", "mcp-cac-"+suffix)
+	if err != nil {
+		t.Fatalf("create scoped emulator Firestore client: %v", err)
+	}
+	defer fs.Close()
+	userID, projectID := "mcp-cac-owner-"+suffix, "mcp-cac-project-"+suffix
+	if _, err := internalfirestore.Collection(fs.Raw(), "users").Doc(userID).Set(ctx,
+		auth.UserRecord{Email: userID + "@example.test", Status: auth.AccountActive, AuthVersion: 0}); err != nil {
+		t.Fatalf("seed emulator account: %v", err)
+	}
+	if _, err := internalfirestore.Collection(fs.Raw(), "projects").Doc(userID+"_"+projectID).Set(ctx,
+		map[string]any{"user_id": userID, "project_id": projectID, "name": "MCP CaC fixture", "status": "ready"}); err != nil {
+		t.Fatalf("seed emulator Project: %v", err)
+	}
+	_, projectKey, _, err := auth.NewProjectKeyService(fs.Raw()).CreateWithCapabilities(ctx, userID, projectID,
+		"CaC dynamic policy fixture", []string{"query", "content:read"})
+	if err != nil || projectKey == "" {
+		t.Fatalf("create content-read project key: token_present=%t err=%v", projectKey != "", err)
+	}
+	contentClient, contentServer := newMcpCaCContentFixture(t, "lwc369-mcp-cac-synthetic", userID, projectID)
+	defer contentServer.Close()
+
+	assertSDKPolicy := func(policyName string, wantDefault, wantListMax, wantChunk, wantRefs, wantProjectInflight, wantAccountInflight, wantFleetInflight, wantLocalInflight, concurrentReads int) {
+		t.Helper()
+		descriptorDir := filepath.Join(root, policyName+"-descriptor")
+		if err := runPrepareTargetMode(ctx, "bff", "dev", descriptorDir, true,
+			func(context.Context) (secretReader, error) {
+				return nil, errors.New("descriptor cannot resolve secrets")
+			}); err != nil {
+			t.Fatalf("prepare %s BFF descriptor: %v", policyName, err)
+		}
+		descriptorBytes, err := os.ReadFile(filepath.Join(descriptorDir, "bff-inputs.json"))
+		if err != nil {
+			t.Fatalf("read %s descriptor: %v", policyName, err)
+		}
+		var descriptor bffSourceProjection
+		if err := json.Unmarshal(descriptorBytes, &descriptor); err != nil {
+			t.Fatalf("decode %s descriptor: %v", policyName, err)
+		}
+		if descriptor.MCP.Protection == nil || descriptor.MCP.Protection.ListDefault != wantDefault ||
+			descriptor.MCP.Protection.ListMax != wantListMax || descriptor.MCP.Protection.ChunkMaxBytes != wantChunk ||
+			descriptor.MCP.Protection.ReferencePageMax != wantRefs || descriptor.MCP.Protection.Content.Project.MaxInflight != wantProjectInflight ||
+			descriptor.MCP.Protection.Content.Account.MaxInflight != wantAccountInflight || descriptor.MCP.Protection.Content.FleetMaxInflight != wantFleetInflight ||
+			descriptor.MCP.Protection.Content.LocalMaxInflight != wantLocalInflight {
+			t.Fatalf("%s descriptor lost the CaC policy: %+v", policyName, descriptor.MCP.Protection)
+		}
+		normalize := exec.CommandContext(ctx, "go", "run", "./cmd/deploy_config", "--environment", "development", "--config", filepath.Join(repoRoot, "deploy/environments/development.yaml"), "--components", "bff", "--bff-inputs", filepath.Join(descriptorDir, "bff-inputs.json"))
+		normalize.Dir = filepath.Join(repoRoot, "apps/bff")
+		normalizedBytes, normalizeErr := normalize.CombinedOutput()
+		if normalizeErr != nil {
+			t.Fatalf("deploy_config normalize %s producer descriptor: %v output=%s", policyName, normalizeErr, normalizedBytes)
+		}
+		var normalizedPlan struct {
+			BFF struct {
+				RuntimeInputs json.RawMessage `json:"runtime_inputs"`
+			} `json:"bff"`
+		}
+		if err := json.Unmarshal(normalizedBytes, &normalizedPlan); err != nil || len(normalizedPlan.BFF.RuntimeInputs) == 0 {
+			t.Fatalf("decode deploy_config normalized %s plan: runtime_inputs=%s err=%v", policyName, normalizedPlan.BFF.RuntimeInputs, err)
+		}
+		var normalizedSource bffSourceProjection
+		if err := json.Unmarshal(normalizedPlan.BFF.RuntimeInputs, &normalizedSource); err != nil || normalizedSource.MCP.Protection == nil ||
+			normalizedSource.MCP.Protection.Content.Project.MaxInflight != wantProjectInflight ||
+			normalizedSource.MCP.Protection.Content.Account.MaxInflight != wantAccountInflight ||
+			normalizedSource.MCP.Protection.Content.FleetMaxInflight != wantFleetInflight ||
+			normalizedSource.MCP.Protection.Content.LocalMaxInflight != wantLocalInflight {
+			t.Fatalf("deploy_config normalization lost %s MCP admission policy: protection=%+v err=%v", policyName, normalizedSource.MCP.Protection, err)
+		}
+		t.Logf("cac_producer_normalized policy=%s revision=%s project_inflight=%d account_inflight=%d fleet_inflight=%d local_inflight=%d", policyName, normalizedSource.MCP.Protection.PolicyRevision, normalizedSource.MCP.Protection.Content.Project.MaxInflight, normalizedSource.MCP.Protection.Content.Account.MaxInflight, normalizedSource.MCP.Protection.Content.FleetMaxInflight, normalizedSource.MCP.Protection.Content.LocalMaxInflight)
+		reader := &fakeSecretReader{value: []byte("TEST_ONLY_MCP_CAC_SECRET")}
+		runtimeDir := filepath.Join(root, policyName+"-runtime")
+		if err := runPrepareTargetMode(ctx, "bff", "dev", runtimeDir, false,
+			func(context.Context) (secretReader, error) { return reader, nil }); err != nil {
+			t.Fatalf("materialize %s BFF config: %v", policyName, err)
+		}
+		loaded, err := runtimeconfig.LoadBFFFile(filepath.Join(runtimeDir, "bff.json"))
+		if err != nil || loaded.MCP == nil || loaded.MCP.Protection == nil {
+			t.Fatalf("load %s BFF runtime config: protection_present=%t err=%v", policyName,
+				loaded.MCP != nil && loaded.MCP.Protection != nil, err)
+		}
+		if got := loaded.MCP.Protection; got.ListDefault != wantDefault || got.ListMax != wantListMax ||
+			got.ChunkMaxBytes != wantChunk || got.ReferencePageMax != wantRefs || got.Content.LocalMaxInflight != wantLocalInflight ||
+			got.Content.Project.MaxInflight != wantProjectInflight || got.Content.Account.MaxInflight != wantAccountInflight || got.Content.FleetMaxInflight != wantFleetInflight {
+			t.Fatalf("%s runtime loader lost the CaC policy: %+v", policyName, got)
+		}
+		if normalizedSource.MCP.Protection.PolicyRevision != loaded.MCP.Protection.PolicyRevision ||
+			normalizedSource.MCP.Protection.Content.LocalMaxInflight != loaded.MCP.Protection.Content.LocalMaxInflight {
+			t.Fatalf("%s normalizer and runtime loader disagree: normalized=%+v loaded=%+v", policyName, normalizedSource.MCP.Protection, loaded.MCP.Protection)
+		}
+		t.Logf("cac_materialized_loaded policy=%s revision=%s", policyName, loaded.MCP.Protection.PolicyRevision)
+
+		barrier := &mcpCaCAdmissionBarrierRoot{entered: make(chan struct{}, 3), release: make(chan struct{}), content: contentClient}
+		var releaseOnce sync.Once
+		releaseBarrier := func() { releaseOnce.Do(func() { close(barrier.release) }) }
+		t.Cleanup(releaseBarrier)
+		handler := handlerv1.New(barrier, fs, nil, nil, nil, nil)
+		handler.SetMCPConfig(loaded.MCP)
+		handler.SetMCPEnvironment("local")
+		router := gin.New()
+		router.Any("/mcp", gin.WrapH(handler.MCPHandler()))
+		server := httptest.NewServer(router)
+		defer server.Close()
+		httpClient := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			cloned := request.Clone(request.Context())
+			cloned.Header = request.Header.Clone()
+			cloned.Header.Set("Authorization", "Bearer "+projectKey)
+			cloned.Header.Set("X-Project-ID", projectID)
+			return http.DefaultTransport.RoundTrip(cloned)
+		})}
+		client := mcp.NewClient(&mcp.Implementation{Name: "mcp-cac-policy-consumer", Version: "local"}, nil)
+		connectCtx, cancelConnect := context.WithTimeout(ctx, 5*time.Second)
+		session, err := client.Connect(connectCtx, &mcp.StreamableClientTransport{Endpoint: server.URL + "/mcp", HTTPClient: httpClient, DisableStandaloneSSE: true}, nil)
+		cancelConnect()
+		if err != nil {
+			t.Fatalf("connect actual SDK client to %s BFF: %v", policyName, err)
+		}
+		defer session.Close()
+		t.Logf("cac_sdk_connected policy=%s", policyName)
+		listCtx, cancelList := context.WithTimeout(ctx, 5*time.Second)
+		listed, err := session.ListTools(listCtx, nil)
+		cancelList()
+		if err != nil {
+			t.Fatalf("actual SDK tools/list for %s: %v", policyName, err)
+		}
+		t.Logf("cac_sdk_tools_list policy=%s tools=%d", policyName, len(listed.Tools))
+		byName := make(map[string]*mcp.Tool, len(listed.Tools))
+		for _, tool := range listed.Tools {
+			byName[tool.Name] = tool
+		}
+		for _, name := range []string{"list_content", "find_content", "read_content", "read_source_raw"} {
+			if _, ok := byName[name]; !ok {
+				t.Fatalf("%s actual SDK consumer omitted %s", policyName, name)
+			}
+		}
+		assertSchemaNumber := func(toolName, property, key string, want int) {
+			t.Helper()
+			tool := byName[toolName]
+			schema, ok := tool.InputSchema.(map[string]any)
+			if !ok {
+				t.Fatalf("%s %s schema type is %T", policyName, toolName, tool.InputSchema)
+			}
+			properties, ok := schema["properties"].(map[string]any)
+			if !ok {
+				t.Fatalf("%s %s schema has no properties", policyName, toolName)
+			}
+			shape, ok := properties[property].(map[string]any)
+			if !ok {
+				t.Fatalf("%s %s schema has no %s property", policyName, toolName, property)
+			}
+			got, ok := shape[key].(float64)
+			if !ok || int(got) != want {
+				t.Fatalf("%s %s.%s.%s = %v, want %d", policyName, toolName, property, key, shape[key], want)
+			}
+		}
+		assertSchemaNumber("list_content", "limit", "default", wantDefault)
+		assertSchemaNumber("list_content", "limit", "maximum", wantListMax)
+		assertSchemaNumber("find_content", "limit", "maximum", wantListMax)
+		assertSchemaNumber("read_content", "max_bytes", "default", wantChunk)
+		assertSchemaNumber("read_content", "max_bytes", "maximum", wantChunk)
+		assertSchemaNumber("read_source_raw", "max_bytes", "maximum", wantChunk)
+		listPage, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "list_content", Arguments: map[string]any{"kind": "concept"}})
+		if err != nil || listPage == nil || listPage.IsError {
+			t.Fatalf("%s readable SDK list_content failed: result=%+v err=%v", policyName, listPage, err)
+		}
+		listPayload, _ := listPage.StructuredContent.(map[string]any)
+		listItems, _ := listPayload["items"].([]any)
+		listCursor, _ := listPayload["next_cursor"].(string)
+		if len(listItems) != wantDefault || listCursor == "" {
+			t.Fatalf("%s SDK list page items=%d cursor=%q payload=%#v", policyName, len(listItems), listCursor, listPayload)
+		}
+		secondListPage, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "list_content", Arguments: map[string]any{"kind": "concept", "cursor": listCursor}})
+		if err != nil || secondListPage == nil || secondListPage.IsError {
+			t.Fatalf("%s readable SDK list_content cursor failed: result=%+v err=%v", policyName, secondListPage, err)
+		}
+		secondListPayload, _ := secondListPage.StructuredContent.(map[string]any)
+		secondListItems, _ := secondListPayload["items"].([]any)
+		secondListCursor, _ := secondListPayload["next_cursor"].(string)
+		if len(secondListItems) != wantDefault || secondListPayload["generation"] != "g_mcp_cac_sdk_fixture" || secondListCursor == "" {
+			t.Fatalf("%s SDK second list page items=%d payload=%#v", policyName, len(secondListItems), secondListPayload)
+		}
+		seenListIDs := map[string]struct{}{}
+		for _, pageItems := range [][]any{listItems, secondListItems} {
+			for _, item := range pageItems {
+				ref, _ := item.(map[string]any)
+				id, _ := ref["id"].(string)
+				if id == "" {
+					t.Fatalf("%s CaC list page has an empty item ID: %#v", policyName, item)
+				}
+				if _, exists := seenListIDs[id]; exists {
+					t.Fatalf("%s CaC list pages duplicated ID %q", policyName, id)
+				}
+				seenListIDs[id] = struct{}{}
+			}
+		}
+		readPage, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "read_content", Arguments: map[string]any{"kind": "concept", "id": "alpha-id", "max_bytes": wantChunk}})
+		if err != nil || readPage == nil || readPage.IsError {
+			t.Fatalf("%s readable SDK read_content failed: result=%+v err=%v", policyName, readPage, err)
+		}
+		readPayload, _ := readPage.StructuredContent.(map[string]any)
+		readBody, _ := readPayload["content"].(map[string]any)
+		readText, _ := readBody["text"].(string)
+		readCursor, _ := readPayload["next_refs_cursor"].(string)
+		mentions, _ := readPayload["mentions"].([]any)
+		contentCursor, _ := readBody["next_cursor"].(string)
+		if len(readText) != wantChunk || contentCursor == "" || len(mentions) != wantRefs || readCursor == "" {
+			t.Fatalf("%s SDK read chunk/refs page text=%d content_cursor=%q mentions=%d refs_cursor=%q payload=%#v", policyName, len(readText), contentCursor, len(mentions), readCursor, readPayload)
+		}
+		seenReferences := make(map[string]struct{}, expectedMentions)
+		consumeReferences := func(items []any) {
+			t.Helper()
+			for _, item := range items {
+				ref, _ := item.(map[string]any)
+				referenceID, _ := ref["reference_id"].(string)
+				if referenceID == "" {
+					t.Fatalf("%s CaC reference page has an empty reference ID: %#v", policyName, item)
+				}
+				if _, exists := seenReferences[referenceID]; exists {
+					t.Fatalf("%s CaC reference pages duplicated reference %q", policyName, referenceID)
+				}
+				seenReferences[referenceID] = struct{}{}
+			}
+		}
+		consumeReferences(mentions)
+		refPages := 1
+		for readCursor != "" {
+			nextRefsPage, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "read_content", Arguments: map[string]any{"kind": "concept", "id": "alpha-id", "max_bytes": wantChunk, "refs_cursor": readCursor}})
+			if err != nil || nextRefsPage == nil || nextRefsPage.IsError {
+				t.Fatalf("%s readable SDK read_content refs cursor failed: result=%+v err=%v", policyName, nextRefsPage, err)
+			}
+			nextRefsPayload, _ := nextRefsPage.StructuredContent.(map[string]any)
+			nextMentions, _ := nextRefsPayload["mentions"].([]any)
+			if len(nextMentions) == 0 || len(nextMentions) > wantRefs {
+				t.Fatalf("%s SDK reference cursor page size=%d, policy max=%d payload=%#v", policyName, len(nextMentions), wantRefs, nextRefsPayload)
+			}
+			consumeReferences(nextMentions)
+			readCursor, _ = nextRefsPayload["next_refs_cursor"].(string)
+			refPages++
+			if refPages > expectedMentions {
+				t.Fatalf("%s SDK reference pagination failed to advance: pages=%d", policyName, refPages)
+			}
+		}
+		if len(seenReferences) != expectedMentions {
+			t.Fatalf("%s SDK reference pagination returned %d distinct mentions across %d pages, want %d", policyName, len(seenReferences), refPages, expectedMentions)
+		}
+		t.Logf("cac_sdk_reference_pages policy=%s mentions=%d pages=%d restored_limit=%d", policyName, len(seenReferences), refPages, wantRefs)
+		barrier.active.Store(true)
+
+		type readOutcome struct {
+			result *mcp.CallToolResult
+			err    error
+		}
+		readDone := make(chan readOutcome, 3)
+		for i := 0; i < concurrentReads; i++ {
+			go func() {
+				result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "read_content", Arguments: map[string]any{"kind": "concept", "id": "alpha-id"}})
+				readDone <- readOutcome{result: result, err: err}
+			}()
+		}
+		for i := 0; i < concurrentReads; i++ {
+			select {
+			case <-barrier.entered:
+			case <-time.After(10 * time.Second):
+				releaseBarrier()
+				t.Fatalf("%s CaC-configured SDK reads reached storage barrier=%d, want %d before 10s timeout", policyName, i, concurrentReads)
+			}
+		}
+		t.Logf("cac_sdk_reads_reached_storage policy=%s count=%d", policyName, concurrentReads)
+		if concurrentReads == 2 {
+			thirdDone := make(chan readOutcome, 1)
+			go func() {
+				result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "read_content", Arguments: map[string]any{"kind": "concept", "id": "alpha-id"}})
+				thirdDone <- readOutcome{result: result, err: err}
+			}()
+			select {
+			case third := <-thirdDone:
+				if third.err != nil || third.result == nil || !third.result.IsError {
+					releaseBarrier()
+					t.Fatalf("lowered CaC policy third SDK read was not rejected: result=%+v err=%v", third.result, third.err)
+				}
+				payload, _ := third.result.StructuredContent.(map[string]any)
+				retryAfter, _ := payload["retry_after_ms"].(float64)
+				if payload["code"] != "concurrency_limited" || retryAfter < 250 {
+					releaseBarrier()
+					t.Fatalf("lowered CaC policy third SDK read response=%#v", third.result.StructuredContent)
+				}
+			case <-time.After(3 * time.Second):
+				releaseBarrier()
+				t.Fatal("lowered CaC policy third SDK read did not settle while first two were blocked")
+			}
+		}
+		releaseBarrier()
+		for i := 0; i < concurrentReads; i++ {
+			select {
+			case outcome := <-readDone:
+				if outcome.err != nil || outcome.result == nil || outcome.result.IsError {
+					t.Fatalf("%s admitted SDK read did not return readable content after release: result=%+v err=%v", policyName, outcome.result, outcome.err)
+				}
+				payload, _ := outcome.result.StructuredContent.(map[string]any)
+				if payload["generation"] != "g_mcp_cac_sdk_fixture" {
+					t.Fatalf("%s admitted SDK read returned wrong generation payload=%#v", policyName, payload)
+				}
+			case <-ctx.Done():
+				t.Fatalf("%s admitted SDK reads did not settle after releasing the storage barrier: %v", policyName, ctx.Err())
+			}
+		}
+		t.Logf("cac_sdk_admission policy=%s admitted_reads=%d third_blocked=%t restored=%t", policyName, concurrentReads, concurrentReads == 2, concurrentReads > 2)
+	}
+
+	assertSDKPolicy("lowered", 2, 4, 1024, 3, 2, 16, 64, 32, 2)
+	if err := os.WriteFile(ssotPath, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	assertSDKPolicy("restored", 20, 50, 16_384, 50, 8, 16, 64, 32, 3)
 }
 
 func capturePipelinePrepareStdout(t *testing.T, run func() error) (string, error) {

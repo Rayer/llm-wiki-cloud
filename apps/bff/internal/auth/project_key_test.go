@@ -221,6 +221,33 @@ func TestProjectKeyCreateAuthenticateListAndRevoke(t *testing.T) {
 	}
 }
 
+func TestProjectKeyContentReadCapabilityIsExplicitAndRoundTrips(t *testing.T) {
+	ctx := context.Background()
+	store := newMemoryProjectKeyStore()
+	service := testProjectKeyService(store)
+	metadata, token, _, err := service.CreateWithCapabilities(ctx, "owner", "project-a", "reader", []string{"query", "content:read"})
+	if err != nil || token == "" || len(metadata.Capabilities) != 2 || metadata.Capabilities[0] != "query" || metadata.Capabilities[1] != "content:read" {
+		t.Fatalf("read-key create metadata=%#v tokenPresent=%v err=%v", metadata, token != "", err)
+	}
+	record := store.records[metadata.KeyID]
+	if record.SchemaVersion != projectKeyReadSchema || !validProjectKeyCapabilities(record.SchemaVersion, record.Capabilities) {
+		t.Fatalf("stored read-key record=%#v", record)
+	}
+	authenticated, err := service.AuthenticateWithoutUsage(ctx, token, "project-a")
+	if err != nil || !equalProjectKeyCapabilities(authenticated.Capabilities, []string{"query", "content:read"}) {
+		t.Fatalf("authenticated capabilities=%#v err=%v", authenticated.Capabilities, err)
+	}
+	listed, err := service.List(ctx, "owner", "project-a")
+	if err != nil || len(listed) != 1 || !equalProjectKeyCapabilities(listed[0].Capabilities, authenticated.Capabilities) {
+		t.Fatalf("listed capabilities=%#v err=%v", listed, err)
+	}
+	for _, invalid := range [][]string{{"content:read"}, {"query", "query"}, {"query", "mcp:raw:write"}, {"query", "content:read", "extra"}} {
+		if _, _, _, err := service.CreateWithCapabilities(ctx, "owner", "project-a", "invalid", invalid); !errors.Is(err, ErrProjectKeyInvalidInput) {
+			t.Errorf("CreateWithCapabilities(%#v) error=%v, want invalid input", invalid, err)
+		}
+	}
+}
+
 func TestProjectKeyLongLivedRevalidationDoesNotWriteUsage(t *testing.T) {
 	store := newMemoryProjectKeyStore()
 	service := testProjectKeyService(store)

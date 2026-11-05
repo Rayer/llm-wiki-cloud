@@ -33,6 +33,39 @@ func ReadBoundedBody(reader io.Reader, maxBytes int64) ([]byte, error) {
 	return data, nil
 }
 
+// ReadExactBoundedBody uses a size already obtained from trusted object
+// attributes to allocate one exact body buffer, then verifies both short and
+// long streams. This avoids io.ReadAll's geometric buffer growth for large
+// immutable objects while retaining a max+1 integrity check.
+func ReadExactBoundedBody(reader io.Reader, expectedBytes, maxBytes int64) ([]byte, error) {
+	if expectedBytes < 0 || maxBytes < 0 || expectedBytes > maxBytes || expectedBytes > int64(int(^uint(0)>>1)) {
+		return nil, errors.New("invalid exact bounded read size")
+	}
+	data := make([]byte, int(expectedBytes))
+	if expectedBytes > 0 {
+		if _, err := io.ReadFull(reader, data); err != nil {
+			return nil, err
+		}
+	}
+	var sentinel [1]byte
+	n, err := reader.Read(sentinel[:])
+	if n > 0 {
+		return nil, ErrReadLimitExceeded
+	}
+	if err == nil {
+		// Retry once through ReadFull when a Reader reports (0, nil), so this
+		// path distinguishes an empty stream from a stalled reader.
+		n, err = io.ReadFull(reader, sentinel[:])
+		if n > 0 {
+			return nil, ErrReadLimitExceeded
+		}
+	}
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+	return data, nil
+}
+
 // BoundedFileReader reads at most maxBytes+1 bytes and reports
 // ErrReadLimitExceeded when the object is larger. It is an optional Store
 // capability so callers can enforce tighter limits without changing the

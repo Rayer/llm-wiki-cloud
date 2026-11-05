@@ -57,6 +57,18 @@ func (h *Handler) MCPProjectConsentDetails(c *gin.Context) {
 		return
 	}
 	scope := strings.Join(lookup.RequestedScopes, " ")
+	scopeDetails := make([]map[string]string, 0, len(lookup.RequestedScopes))
+	for _, name := range lookup.RequestedScopes {
+		description, known := map[string]string{
+			mcpQueryCapability:       "Query knowledge in this Project.",
+			mcpContentReadCapability: "List and read published Concepts, Sources, and retained Source text in this Project.",
+			mcpRawWriteCapability:    "Add permitted raw sources to this Project.",
+		}[name]
+		if !known {
+			description = "This scope is not defined in the LWC permission catalog. Review it carefully before allowing."
+		}
+		scopeDetails = append(scopeDetails, map[string]string{"name": name, "description": description})
+	}
 	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, gin.H{
 		"schema_version": 1, "status": "pending", "transaction_id": transactionID,
@@ -64,7 +76,7 @@ func (h *Handler) MCPProjectConsentDetails(c *gin.Context) {
 		"project_id": lookup.ProjectID, "project_name": project.Name,
 		"client_name": lookup.ClientName, "resource": lookup.Resource,
 		"resource_kind": "project", "resource_name": project.Name,
-		"scope_details": []any{}, "scope": scope, "expires_at": lookup.ExpiresAt,
+		"scope_details": scopeDetails, "scope": scope, "expires_at": lookup.ExpiresAt,
 	})
 }
 

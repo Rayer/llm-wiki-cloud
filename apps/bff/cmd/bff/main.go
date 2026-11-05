@@ -237,6 +237,7 @@ func main() {
 		log.Fatalf("configure Auth consumer: %v", err)
 	}
 	hV1.SetMCPConfig(cfg.MCP)
+	hV1.SetMCPEnvironment(cfg.AuthEnvironment)
 	hV1.SetQueryExecutor(productionExecutor)
 	hV1.SetPipelineJobURL(cfg.PipelineJobURL)
 	if localMode {

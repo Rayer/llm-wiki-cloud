@@ -48,10 +48,15 @@ func TestPrepareI18nTargetAssemblesStablePublicSources(t *testing.T) {
 			PromptVersion: "test-prompt-v1",
 		},
 		MCP: i18nMCPSource{Instructions: "Use only the currently listed tools.", ToolDescriptions: struct {
-			QueryProject string `json:"query_project"`
-			AddRaw       string `json:"add_raw"`
-			ImportURL    string `json:"import_url"`
-		}{QueryProject: "Search existing knowledge.", AddRaw: "Save supplied Markdown.", ImportURL: "Import a public URL."}},
+			QueryProject  string `json:"query_project"`
+			AddRaw        string `json:"add_raw"`
+			ImportURL     string `json:"import_url"`
+			ListContent   string `json:"list_content"`
+			FindContent   string `json:"find_content"`
+			ReadContent   string `json:"read_content"`
+			ReadSourceRaw string `json:"read_source_raw"`
+		}{QueryProject: "Search existing knowledge.", AddRaw: "Save supplied Markdown.", ImportURL: "Import a public URL.",
+			ListContent: "List published content.", FindContent: "Find published content.", ReadContent: "Read published content.", ReadSourceRaw: "Read retained Source text."}},
 	}
 	projectionBytes, err := json.Marshal(projection)
 	if err != nil {

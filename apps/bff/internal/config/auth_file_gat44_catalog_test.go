@@ -63,6 +63,12 @@ func setGateAuthProjectCatalogForTest(project *AuthOAuthResource, newCatalog boo
 	project.AllowedScopeSets = [][]string{{"mcp:query"}, {"mcp:query", "mcp:raw:write"}}
 }
 
+func previousAuthProjectCatalogForTest(syncOrigin, environment string) []AuthOAuthResource {
+	resources := authOAuthResourcesForTest(syncOrigin, environment)
+	setGateAuthProjectCatalogForTest(&resources[0], false)
+	return resources
+}
+
 func TestLoadAuthFileAcceptsExactlyOldAndNewProjectCatalogs(t *testing.T) {
 	for _, tc := range []struct {
 		name          string

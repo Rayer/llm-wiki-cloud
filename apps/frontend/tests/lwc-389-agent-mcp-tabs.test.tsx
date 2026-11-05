@@ -50,6 +50,34 @@ describe('LWC-389 Agent & MCP client guides', () => {
     expect(mcpResourceURL('project/a & team')).toBe('https://api.runtime.test/mcp/projects/project%2Fa%20%26%20team');
   });
 
+  it('requests query by default and adds only the scopes selected by the user', () => {
+    renderTabs();
+    const contentReadLabel = translate('en', 'MCPOAuth.contentReadScope');
+    const rawWriteLabel = translate('en', 'MCPOAuth.rawWriteScope');
+    expect((screen.getByRole('checkbox', { name: contentReadLabel }) as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByRole('checkbox', { name: rawWriteLabel }) as HTMLInputElement).checked).toBe(false);
+    expect(buildMCPGuideSnippet('hermes', resourceURLA)).toContain('scope: "mcp:query"');
+
+    fireEvent.click(screen.getByRole('checkbox', { name: contentReadLabel }));
+    const readScopes = ['mcp:query', 'mcp:content:read'];
+    const hermesSnippet = buildMCPGuideSnippet('hermes', resourceURLA, 'en', readScopes);
+    expect(hermesSnippet).toContain('scope: "mcp:query mcp:content:read"');
+    expect(within(screen.getByRole('tabpanel')).getByText((_, element) => element?.tagName === 'CODE' && element.textContent === hermesSnippet)).toBeDefined();
+    expect(buildMCPGuideSnippet('codex', resourceURLA, 'en', readScopes)).toContain('--scopes mcp:query,mcp:content:read');
+    expect(buildMCPGuideSnippet('grok-cli', resourceURLA, 'en', readScopes)).toContain('mcp:query mcp:content:read');
+    expect(buildMCPGuideSnippet('grok-bot', resourceURLA, 'en', readScopes)).toContain('mcp:query mcp:content:read');
+    expect(buildMCPGuideSnippet('openai-web', resourceURLA, 'en', readScopes)).toContain('mcp:query mcp:content:read');
+    expect(buildMCPGuideSnippet('claude-code', resourceURLA, 'en', readScopes)).toContain('mcp:query mcp:content:read');
+    expect(buildMCPGuideSnippet('openclaw', resourceURLA, 'en', readScopes)).toContain('mcp:query mcp:content:read');
+
+    fireEvent.click(screen.getByRole('checkbox', { name: rawWriteLabel }));
+    const allScopes = [...readScopes, 'mcp:raw:write'];
+    const codexSnippet = buildMCPGuideSnippet('codex', resourceURLA, 'en', allScopes);
+    expect(codexSnippet).toContain('--scopes mcp:query,mcp:content:read,mcp:raw:write');
+    fireEvent.click(screen.getByRole('tab', { name: translate('en', 'MCPOAuth.toolCodex') }));
+    expect(within(screen.getByRole('tabpanel')).getByText((_, element) => element?.tagName === 'CODE' && element.textContent === codexSnippet)).toBeDefined();
+  });
+
   it.each(['en', 'zh-TW'] as const)('keeps the five accessible, horizontally scrollable tabs in %s', (locale) => {
     const t = (key: string) => translate(locale, key);
     renderTabs(locale);
@@ -136,7 +164,7 @@ describe('LWC-389 Agent & MCP client guides', () => {
   it('quotes shell and JSON arguments, rejects invalid resources, and keeps Grok CLI separate from Bot URL', () => {
     const urlWithQuote = "https://api.example.test/mcp/projects/a';printf INJECTED >&2;printf '";
     const codex = buildMCPGuideSnippet('codex', urlWithQuote);
-    const openclaw = buildMCPGuideSnippet('openclaw', urlWithQuote);
+    const openclaw = buildMCPGuideSnippet('openclaw', urlWithQuote, 'en', ['mcp:query', 'mcp:raw:write']);
     expect(codex).toContain("'\\''");
     expect(openclaw).toContain("'\\''");
     expect(openclaw).toContain('"transport":"streamable-http"');

@@ -291,8 +291,10 @@ func TestV1QueryResponseMatchesApplicationResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(got, mapQueryResult(result)) {
-		t.Fatalf("handler/application mismatch: handler=%#v application=%#v", got, result)
+	want := mapQueryResult(result)
+	want.ContentGeneration = queryContentGeneration(context.Background(), reader, "project")
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("handler/application mismatch: handler=%#v application=%#v", got, want)
 	}
 }
 

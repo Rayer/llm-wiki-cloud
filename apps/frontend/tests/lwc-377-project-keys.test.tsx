@@ -98,7 +98,7 @@ describe('LWC-377 Project API keys', () => {
     fireEvent.click(screen.getByRole('button', { name: 'AccountSettings.projectKeyCreate' }));
     expect((await screen.findByTestId('project-key-secret')).textContent).toBe(secret);
     expect(mocks.apiFetch).toHaveBeenLastCalledWith('/api/v1/projects/project-1/keys', {
-      method: 'POST', projectId: 'project-1', json: true, body: JSON.stringify({ name: 'Indexer' }),
+      method: 'POST', projectId: 'project-1', json: true, body: JSON.stringify({ name: 'Indexer', capabilities: ['query'] }),
     });
     expect(screen.getByRole('list', { name: 'ProjectSettings.projectKeys' }).textContent).toContain('Indexer');
     expect(screen.getByRole('list', { name: 'ProjectSettings.projectKeys' }).textContent).toContain('AccountSettings.projectKeyActive');
@@ -108,6 +108,26 @@ describe('LWC-377 Project API keys', () => {
     await waitFor(() => expect(copy).toHaveBeenCalledWith(secret));
     fireEvent.click(screen.getByRole('button', { name: 'AccountSettings.projectKeyDismiss' }));
     expect(screen.queryByTestId('project-key-secret')).toBeNull();
+  });
+
+  it('creates content-read keys only after the explicit permission is selected', async () => {
+    const contentKey = { ...key, capabilities: ['query', 'content:read'] };
+    mocks.apiFetch.mockResolvedValueOnce(response({ keys: [] }));
+    renderKeys();
+    await waitFor(() => expect(mocks.apiFetch).toHaveBeenCalledTimes(1));
+
+    expect((screen.getByRole('checkbox', { name: 'AccountSettings.projectKeyQuery' }) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByRole('checkbox', { name: 'AccountSettings.projectKeyContentRead' }) as HTMLInputElement).checked).toBe(false);
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Content reader' } });
+    fireEvent.click(screen.getByRole('checkbox', { name: 'AccountSettings.projectKeyContentRead' }));
+    mocks.apiFetch.mockResolvedValueOnce(response({ key: contentKey, secret }, 201));
+    fireEvent.click(screen.getByRole('button', { name: 'AccountSettings.projectKeyCreate' }));
+
+    await screen.findByTestId('project-key-secret');
+    expect(mocks.apiFetch).toHaveBeenLastCalledWith('/api/v1/projects/project-1/keys', {
+      method: 'POST', projectId: 'project-1', json: true, body: JSON.stringify({ name: 'Content reader', capabilities: ['query', 'content:read'] }),
+    });
+    expect(screen.getByRole('list', { name: 'ProjectSettings.projectKeys' }).textContent).toContain('AccountSettings.projectKeyQueryAndContentRead');
   });
 
   it('disables creation when no current Project exists', () => {

@@ -27,8 +27,8 @@ func authOAuthResourcesForTest(syncOrigin, environment string) []AuthOAuthResour
 		{
 			ID: "lwc-project", Kind: "project-template", Enabled: true,
 			URI: strings.TrimRight(syncOrigin, "/") + "/mcp/projects/{project_id}", Name: "LWC Project",
-			Scopes:           []AuthOAuthScope{{Name: "mcp:query", Description: "Query project knowledge."}, {Name: "mcp:raw:write", Description: "Add permitted raw sources."}},
-			AllowedScopeSets: [][]string{{"mcp:query"}, {"mcp:query", "mcp:raw:write"}}, DefaultScopeSet: []string{"mcp:query"},
+			Scopes:           []AuthOAuthScope{{Name: "mcp:query", Description: "Query project knowledge."}, {Name: "mcp:content:read", Description: "List and read published Concepts, Sources, and retained Source text in this Project."}, {Name: "mcp:raw:write", Description: "Add permitted raw sources."}},
+			AllowedScopeSets: [][]string{{"mcp:query"}, {"mcp:query", "mcp:content:read"}, {"mcp:query", "mcp:raw:write"}, {"mcp:query", "mcp:content:read", "mcp:raw:write"}}, DefaultScopeSet: []string{"mcp:query"},
 		},
 		{
 			ID: "daily-brief", Kind: "fixed", Enabled: false,
@@ -43,7 +43,7 @@ func authOAuthResourcesForTest(syncOrigin, environment string) []AuthOAuthResour
 func validAuthInputSnapshotV2ForTest() AuthInputSnapshot {
 	inputs := validAuthInputSnapshotForTest()
 	inputs.SchemaVersion = 2
-	inputs.OAuthResources = authOAuthResourcesForTest(inputs.SyncServiceURL, inputs.Environment)
+	inputs.OAuthResources = previousAuthProjectCatalogForTest(inputs.SyncServiceURL, inputs.Environment)
 	inputs.ConfigID, _ = AuthInputConfigID(inputs)
 	return inputs
 }

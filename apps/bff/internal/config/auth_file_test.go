@@ -113,7 +113,7 @@ func TestDecodeAuthFileStrictSchemaAndGoogleModes(t *testing.T) {
 func TestSchema2AuthFileUsesStrictOAuthRegistryAndPreservesSchema1Defaults(t *testing.T) {
 	file := validAuthFileForTest()
 	file.SchemaVersion = 2
-	file.OAuthResources = authOAuthResourcesForTest(file.SyncServiceURL, file.Environment)
+	file.OAuthResources = previousAuthProjectCatalogForTest(file.SyncServiceURL, file.Environment)
 	data, err := json.Marshal(file)
 	if err != nil {
 		t.Fatal(err)
@@ -150,7 +150,7 @@ func TestSchema2AuthFileUsesStrictOAuthRegistryAndPreservesSchema1Defaults(t *te
 	} {
 		t.Run(name, func(t *testing.T) {
 			bad := file
-			bad.OAuthResources = authOAuthResourcesForTest(bad.SyncServiceURL, bad.Environment)
+			bad.OAuthResources = previousAuthProjectCatalogForTest(bad.SyncServiceURL, bad.Environment)
 			mutate(&bad)
 			encoded, marshalErr := json.Marshal(bad)
 			if marshalErr != nil {
@@ -170,7 +170,7 @@ func TestSchema2AuthFileUsesStrictOAuthRegistryAndPreservesSchema1Defaults(t *te
 func TestSchema2AuthAccountSelectionClientAllowlistIsOptionalAndStrict(t *testing.T) {
 	file := validAuthFileForTest()
 	file.SchemaVersion = 2
-	file.OAuthResources = authOAuthResourcesForTest(file.SyncServiceURL, file.Environment)
+	file.OAuthResources = previousAuthProjectCatalogForTest(file.SyncServiceURL, file.Environment)
 
 	legacyShape, err := json.Marshal(file)
 	if err != nil {
@@ -205,7 +205,7 @@ func TestSchema2AuthAccountSelectionClientAllowlistIsOptionalAndStrict(t *testin
 	} {
 		t.Run(name, func(t *testing.T) {
 			bad := file
-			bad.OAuthResources = authOAuthResourcesForTest(bad.SyncServiceURL, bad.Environment)
+			bad.OAuthResources = previousAuthProjectCatalogForTest(bad.SyncServiceURL, bad.Environment)
 			bad.OAuthResources[1].AccountSelectionClientIDs = []string{clientID}
 			mutate(&bad)
 			encoded, err := json.Marshal(bad)
@@ -232,7 +232,7 @@ func TestAuthDailyBriefBindingMatchesSelectedEnvironment(t *testing.T) {
 		t.Run(test.environment, func(t *testing.T) {
 			file := validAuthFileForTest()
 			file.Environment = test.environment
-			file.OAuthResources = authOAuthResourcesForTest(file.SyncServiceURL, file.Environment)
+			file.OAuthResources = previousAuthProjectCatalogForTest(file.SyncServiceURL, file.Environment)
 			file.OAuthResources[1].VerifierAudience = test.audience
 			if file.OAuthResources[1].URI != test.uri {
 				t.Fatalf("fixture URI=%q, want %q", file.OAuthResources[1].URI, test.uri)
@@ -261,7 +261,7 @@ func TestAuthDailyBriefBindingMatchesSelectedEnvironment(t *testing.T) {
 
 func TestAuthDevDailyBriefRejectsProductionVerifierCaller(t *testing.T) {
 	file := validAuthFileForTest()
-	file.OAuthResources = authOAuthResourcesForTest(file.SyncServiceURL, file.Environment)
+	file.OAuthResources = previousAuthProjectCatalogForTest(file.SyncServiceURL, file.Environment)
 	brief := &file.OAuthResources[1]
 	brief.Enabled = true
 	brief.VerifierAudience = authDailyBriefDevVerifierAudience
@@ -280,7 +280,7 @@ func TestAuthVerifierAudienceUsesSelectedEnvironmentPolicy(t *testing.T) {
 	local := localAuthFileForTest()
 	local.SchemaVersion = 2
 	local.AuthSessionEnvironment = "llm-wiki-cloud-local"
-	local.OAuthResources = authOAuthResourcesForTest(local.SyncServiceURL, local.Environment)
+	local.OAuthResources = previousAuthProjectCatalogForTest(local.SyncServiceURL, local.Environment)
 	local.OAuthResources[1].Enabled = true
 	local.OAuthResources[1].VerifierCallerServiceAccount = "fixture-runtime@llm-wiki-cloud.iam.gserviceaccount.com"
 	local.OAuthResources[1].VerifierAudience = "https://auth.fixture.example.test"
@@ -306,7 +306,7 @@ func TestAuthVerifierAudienceUsesSelectedEnvironmentPolicy(t *testing.T) {
 	prod.Environment = "prod"
 	prod.FirestoreDatabaseID = "llm-wiki-cloud-prod"
 	prod.AuthSessionEnvironment = "llm-wiki-cloud-prod"
-	prod.OAuthResources = authOAuthResourcesForTest(prod.SyncServiceURL, prod.Environment)
+	prod.OAuthResources = previousAuthProjectCatalogForTest(prod.SyncServiceURL, prod.Environment)
 	prod.OAuthResources[1].VerifierAudience = ""
 	encoded, _ = json.Marshal(prod)
 	if _, err := DecodeAuthFile(encoded); err != nil {

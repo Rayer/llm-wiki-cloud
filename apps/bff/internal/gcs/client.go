@@ -298,13 +298,29 @@ func (c *Client) QueryGenerationIdentity(context.Context) (store.QueryGeneration
 // PinCurrentGeneration reads and validates the current manifest once, then
 // returns a client whose generation-owned reads use that immutable view.
 func (c *Client) PinCurrentGeneration(ctx context.Context) (*Client, GenerationSnapshot, error) {
-	object, err := c.readObject(ctx, c.prefix()+"/"+generation.ManifestPath, 0, generation.MaxManifestBytes)
+	pinned, snapshot, exists, err := c.PinCurrentGenerationIfPublished(ctx)
 	if err != nil {
-		return nil, GenerationSnapshot{}, fmt.Errorf("read generation manifest: %w", err)
+		return nil, GenerationSnapshot{}, err
+	}
+	if !exists {
+		return nil, GenerationSnapshot{}, store.ErrObjectNotExist
+	}
+	return pinned, snapshot, nil
+}
+
+// PinCurrentGenerationIfPublished resolves current.json once and distinguishes
+// an unpublished project from a malformed or unavailable publication.
+func (c *Client) PinCurrentGenerationIfPublished(ctx context.Context) (*Client, GenerationSnapshot, bool, error) {
+	object, err := c.readObject(ctx, c.prefix()+"/"+generation.ManifestPath, 0, generation.MaxManifestBytes)
+	if objectNotFound(err) {
+		return nil, GenerationSnapshot{}, false, nil
+	}
+	if err != nil {
+		return nil, GenerationSnapshot{}, true, fmt.Errorf("read generation manifest: %w", err)
 	}
 	manifest, err := generation.Decode(object.Data)
 	if err != nil {
-		return nil, GenerationSnapshot{}, err
+		return nil, GenerationSnapshot{}, true, err
 	}
 	digest := sha256.Sum256(object.Data)
 	view := &generationView{manifest: &manifest, token: fmt.Sprintf("manifest-%d", object.Generation)}
@@ -314,7 +330,7 @@ func (c *Client) PinCurrentGeneration(ctx context.Context) (*Client, GenerationS
 		Manifest:           manifest,
 		ManifestGeneration: object.Generation,
 		ManifestSHA256:     hex.EncodeToString(digest[:]),
-	}, nil
+	}, true, nil
 }
 
 // NewScopedClient returns a client that shares the bucket connection but uses
@@ -1143,7 +1159,7 @@ func applyWikiPageFrontmatter(page WikiPage, data []byte) (WikiPage, error) {
 }
 
 func WikiPagesFromConceptsJSONL(data []byte) ([]WikiPage, error) {
-	scanner := bufio.NewScanner(strings.NewReader(string(data)))
+	scanner := bufio.NewScanner(bytes.NewReader(data))
 	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
 	pages := make([]WikiPage, 0)
 	lineNumber := 0

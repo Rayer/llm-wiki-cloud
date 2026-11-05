@@ -27,8 +27,17 @@ func authOAuthResourcesForTest(syncOrigin, environment string) []AuthOAuthResour
 		{
 			ID: "lwc-project", Kind: "project-template", Enabled: true,
 			URI: strings.TrimRight(syncOrigin, "/") + "/mcp/projects/{project_id}", Name: "LWC Project",
-			Scopes:           []AuthOAuthScope{{Name: "mcp:query", Description: "Query project knowledge."}, {Name: "mcp:raw:write", Description: "Add permitted raw sources."}},
-			AllowedScopeSets: [][]string{{"mcp:query"}, {"mcp:query", "mcp:raw:write"}}, DefaultScopeSet: []string{"mcp:query"},
+			Scopes: []AuthOAuthScope{
+				{Name: "mcp:query", Description: "Query project knowledge."},
+				{Name: "mcp:content:read", Description: "List and read published Concepts, Sources, and retained Source text in this Project."},
+				{Name: "mcp:raw:write", Description: "Add permitted raw sources."},
+			},
+			AllowedScopeSets: [][]string{
+				{"mcp:query"},
+				{"mcp:query", "mcp:raw:write"},
+				{"mcp:query", "mcp:content:read"},
+				{"mcp:query", "mcp:content:read", "mcp:raw:write"},
+			}, DefaultScopeSet: []string{"mcp:query"},
 		},
 		{
 			ID: "daily-brief", Kind: "fixed", Enabled: false,
@@ -46,6 +55,59 @@ func validAuthInputSnapshotV2ForTest() AuthInputSnapshot {
 	inputs.OAuthResources = authOAuthResourcesForTest(inputs.SyncServiceURL, inputs.Environment)
 	inputs.ConfigID, _ = AuthInputConfigID(inputs)
 	return inputs
+}
+
+func authManagementScopesForTest(resource string) []AuthManagementScope {
+	return []AuthManagementScope{
+		{ID: "auth:admin", Product: "auth", Resource: resource, GrantMode: "operator-only",
+			Name:          AuthLocalizedText{En: "Platform administrator", ZhTW: "平台管理員"},
+			Description:   AuthLocalizedText{En: "Manage accounts and registered scopes.", ZhTW: "管理帳號與已登錄權限。"},
+			GrantorScopes: []string{"auth:admin"}},
+		{ID: "lwc:admin", Product: "lwc", Resource: resource, GrantMode: "operator-only",
+			Name:          AuthLocalizedText{En: "LWC administrator", ZhTW: "LWC 管理員"},
+			Description:   AuthLocalizedText{En: "Operate LWC projects.", ZhTW: "管理 LWC 專案。"},
+			GrantorScopes: []string{"auth:admin"}},
+	}
+}
+
+func validAuthInputSnapshotV4ForTest() AuthInputSnapshot {
+	inputs := validAuthInputSnapshotV2ForTest()
+	inputs.SchemaVersion = 4
+	inputs.ManagementScopes = authManagementScopesForTest(inputs.SyncServiceURL)
+	verifiers := []AuthConsumerVerifier{{ID: "lwc-bff", Environment: inputs.Environment,
+		CallerServiceAccount: "lwc-bff-dev@llm-wiki-cloud.iam.gserviceaccount.com", Audience: "https://auth.dev.example.test",
+		Resource: inputs.SyncServiceURL, AllowedCredentialKinds: []string{"web-access", "cli-access", "mcp-oauth"},
+		AuthorityModes: []string{"legacy-shadow", "central"}}}
+	inputs.ConsumerVerifiers = &verifiers
+	projection := AuthConsumerPublicProjection{Issuer: inputs.AuthServiceURL, Resource: inputs.SyncServiceURL, ManagementScopes: inputs.ManagementScopes}
+	inputs.ConsumerPublicProjection = &projection
+	inputs.Portal = &AuthInputPortal{LWCBFFOrigin: inputs.SyncServiceURL}
+	inputs.ConfigID, _ = AuthInputConfigID(inputs)
+	return inputs
+}
+
+func TestSchema4AuthInputSnapshotLoadsPortalFromStrictContract(t *testing.T) {
+	inputs := validAuthInputSnapshotV4ForTest()
+	data, err := json.Marshal(inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := DecodeAuthInputSnapshot(data)
+	if err != nil || decoded.Portal == nil || decoded.Portal.LWCBFFOrigin != inputs.SyncServiceURL {
+		t.Fatalf("DecodeAuthInputSnapshot(schema 4) portal=%+v err=%v", decoded.Portal, err)
+	}
+	withoutPortal := inputs
+	withoutPortal.Portal = nil
+	withoutPortal.ConfigID, _ = AuthInputConfigID(withoutPortal)
+	if err := ValidateAuthInputSnapshot(withoutPortal); err == nil {
+		t.Fatal("schema-4 input snapshot without a portal origin was accepted")
+	}
+	changed := inputs
+	changed.Portal = &AuthInputPortal{LWCBFFOrigin: inputs.SyncServiceURL + "/path"}
+	changed.ConfigID, _ = AuthInputConfigID(changed)
+	if err := ValidateAuthInputSnapshot(changed); err == nil {
+		t.Fatal("schema-4 input snapshot with a changed portal origin was accepted")
+	}
 }
 
 func TestDecodeAuthInputSnapshotRequiresCompleteImmutableContract(t *testing.T) {

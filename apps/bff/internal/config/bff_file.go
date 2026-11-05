@@ -93,12 +93,50 @@ type BFFMCP struct {
 	ToolDescriptions BFFMCPToolDescriptions `json:"tool_descriptions"`
 	DiscoveryTTLMS   int                    `json:"discovery_ttl_ms"`
 	ToolsListTTLMS   int                    `json:"tools_list_ttl_ms"`
+	Protection       *MCPProtection         `json:"protection,omitempty"`
 }
 
 type BFFMCPToolDescriptions struct {
-	QueryProject string `json:"query_project"`
-	AddRaw       string `json:"add_raw"`
-	ImportURL    string `json:"import_url"`
+	QueryProject  string `json:"query_project"`
+	AddRaw        string `json:"add_raw"`
+	ImportURL     string `json:"import_url"`
+	ListContent   string `json:"list_content,omitempty"`
+	FindContent   string `json:"find_content,omitempty"`
+	ReadContent   string `json:"read_content,omitempty"`
+	ReadSourceRaw string `json:"read_source_raw,omitempty"`
+}
+
+type MCPProtection struct {
+	SchemaVersion           int                `json:"schema_version"`
+	PolicyRevision          string             `json:"policy_revision"`
+	Content                 MCPProtectionClass `json:"content"`
+	Query                   MCPProtectionClass `json:"query"`
+	AdmissionTimeoutMS      int                `json:"admission_timeout_ms"`
+	TransactionMaxAttempts  int                `json:"transaction_max_attempts"`
+	ReleaseTimeoutMS        int                `json:"release_timeout_ms"`
+	ReleaseMaxAttempts      int                `json:"release_max_attempts"`
+	ControlLocalMaxInflight int                `json:"control_local_max_inflight"`
+	ListDefault             int                `json:"list_default"`
+	ListMax                 int                `json:"list_max"`
+	ChunkMaxBytes           int                `json:"chunk_max_bytes"`
+	ResponseMaxBytes        int                `json:"response_max_bytes"`
+	ReferencePageMax        int                `json:"reference_page_max"`
+}
+
+type MCPProtectionClass struct {
+	Project          MCPProtectionBucket `json:"project"`
+	Account          MCPProtectionBucket `json:"account"`
+	FleetMaxInflight int                 `json:"fleet_max_inflight"`
+	LocalMaxInflight int                 `json:"local_max_inflight"`
+	WorkTimeoutMS    int                 `json:"work_timeout_ms"`
+	LeaseMS          int                 `json:"lease_ms"`
+	WorkingBytes     int64               `json:"working_bytes"`
+}
+
+type MCPProtectionBucket struct {
+	Capacity                  int64 `json:"capacity"`
+	RefillMicrounitsPerSecond int64 `json:"refill_microunits_per_second"`
+	MaxInflight               int   `json:"max_inflight"`
 }
 
 const (
@@ -117,8 +155,13 @@ func ValidateBFFMCP(mcp BFFMCP) error {
 		{"query_project", mcp.ToolDescriptions.QueryProject},
 		{"add_raw", mcp.ToolDescriptions.AddRaw},
 		{"import_url", mcp.ToolDescriptions.ImportURL},
+		{"list_content", mcp.ToolDescriptions.ListContent},
+		{"find_content", mcp.ToolDescriptions.FindContent},
+		{"read_content", mcp.ToolDescriptions.ReadContent},
+		{"read_source_raw", mcp.ToolDescriptions.ReadSourceRaw},
 	} {
-		if strings.TrimSpace(field.value) == "" || len(field.value) > maxMCPToolDescriptionBytes {
+		if (field.name == "query_project" || field.name == "add_raw" || field.name == "import_url" || mcp.Protection != nil) &&
+			(strings.TrimSpace(field.value) == "" || len(field.value) > maxMCPToolDescriptionBytes) {
 			return fmt.Errorf("BFF config mcp.tool_descriptions.%s is invalid", field.name)
 		}
 	}
@@ -127,6 +170,40 @@ func ValidateBFFMCP(mcp BFFMCP) error {
 	}
 	if mcp.ToolsListTTLMS < 0 || mcp.ToolsListTTLMS > maxMCPMetadataTTLMS {
 		return errors.New("BFF config mcp.tools_list_ttl_ms is out of range")
+	}
+	if mcp.Protection != nil {
+		if err := ValidateMCPProtection(*mcp.Protection); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func ValidateMCPProtection(policy MCPProtection) error {
+	validBucket := func(bucket MCPProtectionBucket) bool {
+		return bucket.Capacity >= 1 && bucket.Capacity <= 1_000_000 &&
+			bucket.RefillMicrounitsPerSecond >= 1 && bucket.RefillMicrounitsPerSecond <= 1_000_000_000_000 &&
+			bucket.MaxInflight >= 1 && bucket.MaxInflight <= 10_000
+	}
+	validClass := func(class MCPProtectionClass, content bool) bool {
+		return validBucket(class.Project) && validBucket(class.Account) &&
+			class.FleetMaxInflight >= 1 && class.FleetMaxInflight <= 10_000 &&
+			class.LocalMaxInflight >= 1 && class.LocalMaxInflight <= 10_000 &&
+			class.WorkTimeoutMS >= 100 && class.WorkTimeoutMS <= 300_000 &&
+			class.LeaseMS >= class.WorkTimeoutMS+10_000 && class.LeaseMS <= 600_000 &&
+			((content && class.WorkingBytes >= 64<<20 && class.WorkingBytes <= 4<<30) || (!content && class.WorkingBytes == 0))
+	}
+	if policy.SchemaVersion != 1 || !regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`).MatchString(policy.PolicyRevision) ||
+		!validClass(policy.Content, true) || !validClass(policy.Query, false) ||
+		policy.AdmissionTimeoutMS < 100 || policy.AdmissionTimeoutMS > 30_000 ||
+		policy.TransactionMaxAttempts < 1 || policy.TransactionMaxAttempts > 10 ||
+		policy.ReleaseTimeoutMS < 100 || policy.ReleaseTimeoutMS > 30_000 ||
+		policy.ReleaseMaxAttempts < 1 || policy.ReleaseMaxAttempts > 10 ||
+		policy.ControlLocalMaxInflight < 1 || policy.ControlLocalMaxInflight > 64 ||
+		policy.ListDefault < 1 || policy.ListMax < policy.ListDefault || policy.ListMax > 50 ||
+		policy.ChunkMaxBytes < 1 || policy.ChunkMaxBytes > 16_384 ||
+		policy.ResponseMaxBytes != 256<<10 || policy.ReferencePageMax < 1 || policy.ReferencePageMax > 50 {
+		return errors.New("BFF config mcp.protection is invalid")
 	}
 	return nil
 }
@@ -307,15 +384,25 @@ func validateBFFNestedShapes(fields map[string]json.RawMessage) error {
 		if json.Unmarshal(raw, &mcpFields) != nil || mcpFields == nil {
 			return errors.New("BFF config mcp object is invalid")
 		}
-		if err := requireJSONKeys(mcpFields, []string{"instructions", "tool_descriptions", "discovery_ttl_ms", "tools_list_ttl_ms"}); err != nil {
+		if err := requireJSONKeysWithOptional(mcpFields, []string{"instructions", "tool_descriptions", "discovery_ttl_ms", "tools_list_ttl_ms"}, []string{"protection"}); err != nil {
 			return errors.New("BFF config mcp object has missing or unknown keys")
 		}
 		var descriptions map[string]json.RawMessage
 		if json.Unmarshal(mcpFields["tool_descriptions"], &descriptions) != nil || descriptions == nil {
 			return errors.New("BFF config mcp.tool_descriptions object is invalid")
 		}
-		if err := requireJSONKeys(descriptions, []string{"query_project", "add_raw", "import_url"}); err != nil {
+		if err := requireJSONKeysWithOptional(descriptions, []string{"query_project", "add_raw", "import_url"}, []string{"list_content", "find_content", "read_content", "read_source_raw"}); err != nil {
 			return errors.New("BFF config mcp.tool_descriptions object has missing or unknown keys")
+		}
+		if rawProtection, hasProtection := mcpFields["protection"]; hasProtection {
+			if err := validateMCPProtectionShape(rawProtection); err != nil {
+				return err
+			}
+			for _, name := range []string{"list_content", "find_content", "read_content", "read_source_raw"} {
+				if _, ok := descriptions[name]; !ok {
+					return errors.New("BFF config mcp content tool descriptions are incomplete")
+				}
+			}
 		}
 	}
 	localRaw := bytes.TrimSpace(fields["local"])
@@ -443,6 +530,18 @@ func validateBFFJSONTypes(fields map[string]json.RawMessage, version int) error 
 				return err
 			}
 		}
+		for _, key := range []string{"list_content", "find_content", "read_content", "read_source_raw"} {
+			if raw, ok := descriptions[key]; ok {
+				if err := requireBFFJSONType("mcp.tool_descriptions."+key, raw, "string", false); err != nil {
+					return err
+				}
+			}
+		}
+		if rawProtection, ok := mcpFields["protection"]; ok {
+			if err := requireBFFJSONType("mcp.protection", rawProtection, "object", false); err != nil {
+				return err
+			}
+		}
 	}
 	var scheduleFields map[string]json.RawMessage
 	if err := json.Unmarshal(fields["pipeline_schedule"], &scheduleFields); err != nil {
@@ -558,6 +657,54 @@ func requireBFFJSONType(name string, raw json.RawMessage, kind string, nullable 
 
 func isBFFJSONNull(raw json.RawMessage) bool {
 	return bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
+}
+
+func validateMCPProtectionShape(raw json.RawMessage) error {
+	var policy map[string]json.RawMessage
+	if json.Unmarshal(raw, &policy) != nil || policy == nil {
+		return errors.New("BFF config mcp.protection object is invalid")
+	}
+	policyKeys := []string{"schema_version", "policy_revision", "content", "query", "admission_timeout_ms", "transaction_max_attempts", "release_timeout_ms", "release_max_attempts", "control_local_max_inflight", "list_default", "list_max", "chunk_max_bytes", "response_max_bytes", "reference_page_max"}
+	if err := requireJSONKeys(policy, policyKeys); err != nil {
+		return errors.New("BFF config mcp.protection has missing or unknown keys")
+	}
+	for _, key := range []string{"schema_version", "admission_timeout_ms", "transaction_max_attempts", "release_timeout_ms", "release_max_attempts", "control_local_max_inflight", "list_default", "list_max", "chunk_max_bytes", "response_max_bytes", "reference_page_max"} {
+		if err := requireBFFJSONType("mcp.protection."+key, policy[key], "integer", false); err != nil {
+			return err
+		}
+	}
+	if err := requireBFFJSONType("mcp.protection.policy_revision", policy["policy_revision"], "string", false); err != nil {
+		return err
+	}
+	for _, className := range []string{"content", "query"} {
+		var class map[string]json.RawMessage
+		if json.Unmarshal(policy[className], &class) != nil || class == nil {
+			return fmt.Errorf("BFF config mcp.protection.%s is invalid", className)
+		}
+		if err := requireJSONKeys(class, []string{"project", "account", "fleet_max_inflight", "local_max_inflight", "work_timeout_ms", "lease_ms", "working_bytes"}); err != nil {
+			return fmt.Errorf("BFF config mcp.protection.%s has missing or unknown keys", className)
+		}
+		for _, bucketName := range []string{"project", "account"} {
+			var bucket map[string]json.RawMessage
+			if json.Unmarshal(class[bucketName], &bucket) != nil || bucket == nil {
+				return fmt.Errorf("BFF config mcp.protection.%s.%s is invalid", className, bucketName)
+			}
+			if err := requireJSONKeys(bucket, []string{"capacity", "refill_microunits_per_second", "max_inflight"}); err != nil {
+				return fmt.Errorf("BFF config mcp.protection.%s.%s has missing or unknown keys", className, bucketName)
+			}
+			for _, key := range []string{"capacity", "refill_microunits_per_second", "max_inflight"} {
+				if err := requireBFFJSONType("mcp.protection."+className+"."+bucketName+"."+key, bucket[key], "integer", false); err != nil {
+					return err
+				}
+			}
+		}
+		for _, key := range []string{"fleet_max_inflight", "local_max_inflight", "work_timeout_ms", "lease_ms", "working_bytes"} {
+			if err := requireBFFJSONType("mcp.protection."+className+"."+key, class[key], "integer", false); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func requireJSONKeys(fields map[string]json.RawMessage, required []string) error {
