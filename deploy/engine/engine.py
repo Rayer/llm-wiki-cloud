@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import urllib.parse
@@ -16,7 +17,7 @@ import urllib.parse
 from support import (ROOT, Breakpoint, digest, is_frontend_quota_rejection, read,
                      release_source_mode, require, run, structured_cause, write)
 from providers import Providers, CLOUD_BUILD_LOCATION
-from receipt_contract import (ReceiptError, validate_auth_component_receipt,
+from receipt_contract import (ReceiptError, load_json, validate_auth_component_receipt,
                               validate_dev_receipt, validate_receipt_pair)
 
 ORDER = ('documentimport', 'exportjob', 'auth', 'bff', 'worker', 'frontend')
@@ -31,6 +32,78 @@ CHECKPOINT_STATUSES = frozenset({
 RESOLVED_TARGET_STATUSES = frozenset({
     'success', 'rolled_back', 'failed_rolled_back', 'ready', 'prepared',
 })
+_AUTH_INPUT_ID_CACHE = {}
+GO_BINARY = shutil.which('go') or 'go'
+
+
+def auth_input_config_id_valid(inputs):
+    if (not isinstance(inputs, dict) or type(inputs.get('schema_version')) is not int or
+            inputs.get('schema_version') != 3 or inputs.get('environment') not in ('dev', 'prod')):
+        return False
+    try:
+        cache_key = digest(inputs)
+    except (TypeError, ValueError):
+        return False
+    if cache_key in _AUTH_INPUT_ID_CACHE:
+        return _AUTH_INPUT_ID_CACHE[cache_key]
+
+    environment = {'dev': 'development', 'prod': 'production'}[inputs['environment']]
+    try:
+        with tempfile.TemporaryDirectory(prefix='lwc-auth-input-identity-') as temporary:
+            descriptor = Path(temporary) / 'auth-inputs.json'
+            write(descriptor, inputs)
+            if descriptor.stat().st_size > 64 * 1024:
+                _AUTH_INPUT_ID_CACHE[cache_key] = False
+                return False
+            env = dict(os.environ, LWC_REPOSITORY_ROOT=str(ROOT), GOWORK='off',
+                       GOFLAGS='-mod=readonly', GOTOOLCHAIN='local', GOPROXY='off',
+                       GOOGLE_APPLICATION_CREDENTIALS='/dev/null',
+                       GCE_METADATA_HOST='127.0.0.1:9', GCE_METADATA_IP='127.0.0.1',
+                       CLOUDSDK_CONFIG='/dev/null')
+            command = [
+                GO_BINARY, 'run', './cmd/deploy_config', '--environment', environment,
+                '--config', ROOT / 'deploy/environments' / (environment + '.yaml'),
+                '--components', 'auth', '--auth-inputs', descriptor,
+            ]
+            result = subprocess.run([str(value) for value in command], cwd=ROOT / 'apps/bff',
+                                    env=env, capture_output=True, text=True, timeout=180)
+    except subprocess.TimeoutExpired as exc:
+        cause = structured_cause(exc, stage='unknown', code='child-command-timeout',
+                                 message=exc.stderr)
+        cause['stage'] = 'auth-input-config-identity'
+        raise Breakpoint('auth-input-validator-unavailable', 'failed', False,
+                         'reconcile-before-replay', stage='auth-input-config-identity',
+                         timeout_class='subprocess-timeout', cause=cause) from None
+    except OSError as exc:
+        cause = structured_cause(exc, stage='unknown', code='tool-unavailable')
+        cause['stage'] = 'auth-input-config-identity'
+        raise Breakpoint('auth-input-validator-unavailable', 'failed', False,
+                         'reconcile-before-replay', stage='auth-input-config-identity',
+                         timeout_class='tool-unavailable', cause=cause) from None
+    except (TypeError, ValueError):
+        _AUTH_INPUT_ID_CACHE[cache_key] = False
+        return False
+
+    if result.returncode:
+        output = result.stderr or ''
+        input_rejected = ('generated Auth input descriptor is invalid:' in output or
+                          any(line.startswith('Auth input snapshot')
+                              for line in output.splitlines()))
+        if input_rejected:
+            valid = False
+        else:
+            cause = structured_cause(ChildProcessError(), stage='unknown',
+                                     code='child-command-failed', message=output)
+            cause['stage'] = 'auth-input-config-identity'
+            raise Breakpoint('auth-input-validator-unavailable', 'failed', False,
+                             'reconcile-before-replay', stage='auth-input-config-identity',
+                             exit_code=result.returncode, cause=cause) from None
+    else:
+        valid = True
+    _AUTH_INPUT_ID_CACHE[cache_key] = valid
+    return valid
+
+
 def release_identity(plan):
     identity = {key: plan[key] for key in RELEASE_IDENTITY_FIELDS}
     if 'release_source_mode' in plan:
@@ -140,6 +213,65 @@ def auth_source_from_receipt(path):
     }
 
 
+def runtime3_auth_inputs_match(actual, expected):
+    if (not isinstance(actual, dict) or not isinstance(expected, dict) or
+            type(actual.get('schema_version')) is not int or actual.get('schema_version') != 3 or
+            type(expected.get('schema_version')) is not int or expected.get('schema_version') != 3 or
+            not auth_input_config_id_valid(actual) or not auth_input_config_id_valid(expected)):
+        return False
+    actual_compatible = copy.deepcopy(actual)
+    expected_compatible = copy.deepcopy(expected)
+    actual_compatible.pop('source_sha', None)
+    expected_compatible.pop('source_sha', None)
+    # The native Go consumer verifies each source-bound ConfigID before the
+    # release trace and its derived ID are omitted from runtime equality.
+    actual_compatible.pop('config_id', None)
+    expected_compatible.pop('config_id', None)
+    return actual_compatible == expected_compatible
+
+
+def retained_runtime3_pair_compatible(directory, expected_inputs, expected_auth_source,
+                                      expected_auth_identity):
+    """Accept a retained DEV Auth pair only when its actual runtime is schema 3."""
+    directory = Path(directory)
+    try:
+        auth = load_json(directory / 'receipts/auth.json')
+        dev = load_json(directory / 'images/dev-receipt.json')
+        metadata = load_json(directory / 'dev-source-metadata.json')
+        validate_receipt_pair(auth, dev, 'independent')
+    except (ReceiptError, OSError, KeyError, TypeError, ValueError):
+        return False
+
+    inputs = auth.get('auth_config_inputs') if isinstance(auth, dict) else None
+    if (not isinstance(inputs, dict) or type(inputs.get('schema_version')) is not int or
+            inputs.get('schema_version') != 3 or inputs.get('environment') != 'dev' or
+            inputs.get('target') != 'auth' or auth.get('identity') != expected_auth_identity):
+        return False
+
+    actual_source = auth.get('auth_source')
+    if not isinstance(actual_source, dict) or actual_source != {
+            'repository_id': expected_auth_source.get('repository_id'),
+            'revision': expected_auth_source.get('revision'),
+            'tree_sha256': expected_auth_source.get('tree_sha256'),
+            'artifact_id': expected_auth_source.get('artifact_id'),
+            'build_run_id': expected_auth_source.get('run_id'),
+            'build_run_attempt': expected_auth_source.get('run_attempt')}:
+        return False
+
+    # A new LWC release may reuse the independent Auth build inputs. The paired
+    # receipt proves the original source/build binding; every runtime input must
+    # still match the new plan except that source trace.
+    if not runtime3_auth_inputs_match(inputs, expected_inputs):
+        return False
+
+    source = dev.get('source', {})
+    if (not isinstance(metadata, dict) or set(metadata) != {'lwc', 'auth'} or
+            metadata.get('lwc') != source.get('lwc') or
+            metadata.get('auth') != source.get('auth')):
+        return False
+    return True
+
+
 def admit(args):
     selected = selection(args.components)
     release_source_mode = getattr(args, 'release_source_mode', None)
@@ -156,13 +288,6 @@ def admit(args):
             require(release_source_mode == 'independent' and selected == ['bff'] and
                     args.environment == 'development' and args.reuse,
                     'auth-schema3-selection-not-supported')
-            try:
-                retained_auth = read(Path(args.reuse) / 'receipts/auth.json')
-            except (OSError, Breakpoint, ValueError, TypeError):
-                retained_auth = None
-            require(isinstance(retained_auth, dict) and retained_auth.get('component') == 'auth' and
-                    retained_auth.get('schema') == 3 and isinstance(retained_auth.get('auth_source'), dict),
-                    'auth-schema3-staging-requires-v3-receipt')
     require(re.fullmatch(r'[0-9a-f]{40}', args.source), 'invalid-source')
     executor_sha = getattr(args, 'executor_sha', None) or run(['git', 'rev-parse', 'HEAD'])
     require(re.fullmatch(r'[0-9a-f]{40}', executor_sha), 'invalid-executor-sha')
@@ -266,6 +391,11 @@ def admit(args):
     identities = {c: source_identity(c, args.source,
                                      auth_source if c == 'auth' else None)
                   for c in selected}
+    if auth_schema_version == 3 and selected == ['bff']:
+        require(auth_source is not None and retained_runtime3_pair_compatible(
+            args.reuse, normalized.get('auth', {}).get('runtime_inputs'), auth_source,
+            source_identity('auth', args.source, auth_source)),
+            'auth-schema3-staging-requires-runtime3-pair')
     body = {'schema': 3, 'source': args.source, 'branch': branch, 'tag': args.tag,
             'executor_sha': executor_sha, 'normalized': normalized, 'identities': identities,
             'dev_reference': args.dev_reference, 'selected': selected,
@@ -440,6 +570,16 @@ class Engine:
             return True
         if not self.auth_receipt_supports_schema(candidate, self.auth_input_snapshot()['schema_version']):
             return True
+        destination_inputs = self.auth_input_snapshot()
+        if destination_inputs['schema_version'] == 3:
+            candidate_inputs = candidate.get('auth_config_inputs')
+            if destination_inputs['environment'] == 'dev':
+                if not runtime3_auth_inputs_match(candidate_inputs, destination_inputs):
+                    return True
+            elif (not dev or not isinstance(candidate_inputs, dict) or
+                  candidate_inputs.get('environment') != 'dev' or
+                  not auth_input_config_id_valid(candidate_inputs)):
+                return True
         try:
             self.provider.usable('auth', candidate['artifact'])
         except Breakpoint as exc:
@@ -498,6 +638,8 @@ class Engine:
                     all(isinstance(value, dict) for value in inputs['consumer_verifiers']) and
                     isinstance(inputs['consumer_public_projection'], dict),
                     'auth-input-snapshot-invalid')
+        if schema_version == 3:
+            require(auth_input_config_id_valid(inputs), 'auth-input-snapshot-invalid')
         if schema_version == 4:
             portal = inputs['portal']
             origin = portal.get('lwc_bff_origin') if isinstance(portal, dict) else None
@@ -510,6 +652,11 @@ class Engine:
     @staticmethod
     def auth_receipt_supports_schema(receipt, schema_version):
         receipt_schema = receipt.get('schema') if isinstance(receipt, dict) else None
+        if schema_version == 3:
+            inputs = receipt.get('auth_config_inputs') if isinstance(receipt, dict) else None
+            if (not isinstance(inputs, dict) or type(inputs.get('schema_version')) is not int or
+                    inputs.get('schema_version') != 3):
+                return False
         if receipt_schema == 4:
             versions = receipt.get('auth_supported_schema_versions')
             return (isinstance(versions, list) and all(type(value) is int for value in versions) and
@@ -813,6 +960,16 @@ class Engine:
                         if not self.auth_receipt_supports_schema(
                                 candidate, self.auth_input_snapshot()['schema_version']):
                             applicable = False
+                        if applicable and self.auth_input_snapshot()['schema_version'] == 3:
+                            candidate_inputs = candidate.get('auth_config_inputs')
+                            destination_inputs = self.auth_input_snapshot()
+                            if destination_inputs['environment'] == 'dev':
+                                if not runtime3_auth_inputs_match(candidate_inputs, destination_inputs):
+                                    applicable = False
+                            elif (not provenance or not isinstance(candidate_inputs, dict) or
+                                  candidate_inputs.get('environment') != 'dev' or
+                                  not auth_input_config_id_valid(candidate_inputs)):
+                                applicable = False
                     if applicable:
                         receipt = candidate
                         if c == 'frontend':
@@ -871,8 +1028,12 @@ class Engine:
             auth_receipt_path = source_directory / 'receipts/auth.json' if source_directory else None
             require(auth_receipt_path is not None and auth_receipt_path.is_file(),
                     'auth-source-artifact-unavailable')
-            auth_receipt = read(auth_receipt_path)
             expected_identity = source_identity('auth', self.plan['source'], self.plan['auth_source'])
+            if self.auth_input_snapshot()['schema_version'] == 3:
+                require(retained_runtime3_pair_compatible(
+                    source_directory, self.auth_input_snapshot(), self.plan['auth_source'],
+                    expected_identity), 'auth-source-artifact-incompatible')
+            auth_receipt = read(auth_receipt_path)
             require(auth_receipt.get('component') == 'auth' and auth_receipt.get('schema') in (3, 4) and
                     auth_receipt.get('identity') == expected_identity and
                     auth_receipt.get('auth_source') == {

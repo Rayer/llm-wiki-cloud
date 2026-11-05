@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -90,6 +91,59 @@ func TestMCPMetadataUsesCaCForModernAndLegacyWireMethods(t *testing.T) {
 	if !mcpMetadataHasError(malformed) {
 		t.Fatalf("malformed MCP request was not rejected: status=%d body=%s", malformed.Code, malformed.Body.String())
 	}
+}
+
+func TestMCPMetadataAdvertisesCanonicalClientFollowThrough(t *testing.T) {
+	descriptorPath := os.Getenv("LWC_MCP_GUIDANCE_DESCRIPTOR")
+	if descriptorPath == "" {
+		t.Skip("canonical descriptor path is supplied by the focused CaC integration test")
+	}
+	data, err := os.ReadFile(descriptorPath)
+	if err != nil {
+		t.Fatalf("read canonical BFF descriptor: %v", err)
+	}
+	var descriptor struct {
+		MCP config.BFFMCP `json:"mcp"`
+	}
+	if err := json.Unmarshal(data, &descriptor); err != nil {
+		t.Fatalf("decode canonical BFF descriptor: %v", err)
+	}
+	metadata := &descriptor.MCP
+	if metadata.Instructions == "" {
+		t.Fatal("canonical BFF descriptor has empty MCP instructions")
+	}
+
+	h := New(localfs.New(t.TempDir()), nil, nil, nil, nil, nil)
+	h.SetMCPConfig(metadata)
+	queryOnly := mcpProjectKeyIdentity{
+		userID: "synthetic-user", projectID: "synthetic-project",
+		keyID: "synthetic-query-key", capabilities: []string{mcpQueryCapability},
+	}
+	discover := mcpMetadataWireRequest(t, h.mcpAuthenticatedHandler(queryOnly),
+		`{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"fixture-client","version":"1"},"io.modelcontextprotocol/clientCapabilities":{}}}}`,
+		"2026-07-28")
+	result := mcpMetadataResult(t, discover)
+	instructions, ok := result["instructions"].(string)
+	if !ok || !strings.Contains(instructions, metadata.Instructions) {
+		t.Fatalf("configured instructions did not reach MCP SDK discovery: %#v", result)
+	}
+	t.Log("MCP SDK discovery completed with configured descriptor; checking follow-through guidance")
+	for _, required := range []string{
+		"type or kind and stable ID", "synthesis_sources", "mentions, which are links",
+		"content_generation", "first read_content call", "own cursor and revision",
+		"present ambiguous candidates rather than guessing", "partial chunks honestly",
+		"list_content for browsing, not as a full-text search",
+		"Never broaden Project or scope or run a Pipeline merely to read evidence",
+	} {
+		if !strings.Contains(instructions, required) {
+			t.Fatalf("missing follow-through guidance after MCP SDK discovery: %q", required)
+		}
+	}
+
+	list := mcpMetadataWireRequest(t, h.mcpAuthenticatedHandler(queryOnly),
+		`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"fixture-client","version":"1"},"io.modelcontextprotocol/clientCapabilities":{}}}}`,
+		"2026-07-28")
+	assertMCPMetadataTools(t, mcpMetadataResult(t, list), metadata, false)
 }
 
 func TestMCPMetadataPrivateCacheHintsWithControlledClockAndAuthSeparation(t *testing.T) {
