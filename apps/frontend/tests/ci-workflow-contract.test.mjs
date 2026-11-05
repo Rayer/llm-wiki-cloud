@@ -213,7 +213,7 @@ test('shared engine has one approval and one serialized runtime authority', asyn
     required: false,
     type: 'string',
     default: '4',
-    description: "Auth runtime input schema for initial DEV admission; schema 3 remains guarded by the engine's independent BFF-only retained-receipt checks",
+    description: 'Auth runtime input schema; schema 3 is limited to independent Auth-only DEV/Production or BFF-only DEV staging with a retained schema-3 Auth receipt',
   });
   assert.equal(parsed.jobs.release.env.EXECUTOR_SHA, '${{ inputs.executor_sha }}');
   assert.equal(parsed.jobs.release.env.FORCE, '${{ inputs.force }}');

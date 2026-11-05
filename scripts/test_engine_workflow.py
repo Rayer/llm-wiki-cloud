@@ -26,7 +26,7 @@ class EngineWorkflowContract(unittest.TestCase):
         self.assertEqual(dispatch_inputs['auth_schema_version']['default'], '4')
         self.assertEqual(called_inputs['auth_schema_version'], {
             'required': False, 'type': 'string', 'default': '4',
-            'description': "Auth runtime input schema for initial DEV admission; schema 3 remains guarded by the engine's independent BFF-only retained-receipt checks",
+            'description': 'Auth runtime input schema; schema 3 is limited to independent Auth-only DEV/Production or BFF-only DEV staging with a retained schema-3 Auth receipt',
         })
         self.assertEqual(forwarded['auth_schema_version'], '${{ inputs.auth_schema_version }}')
 
