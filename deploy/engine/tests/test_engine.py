@@ -25,6 +25,65 @@ sys.path.insert(0, str(ROOT / 'scripts'))
 from lwc_auth_test_fixture import write_auth_input_fixture
 import test_auth_config_contract as auth_contract_fixtures
 
+RUNTIME_AUTH_IDENTITY = 'sha256:' + 'd' * 64
+
+
+def _runtime_inputs(source_sha, schema_version=3):
+    inputs = {
+        'schema_version': schema_version, 'environment': 'dev', 'target': 'auth',
+        'source_sha': source_sha, 'config_id': 'sha256:' + 'e' * 64,
+    }
+    if schema_version == 4:
+        origin = 'https://bff.example'
+        inputs.update(sync_service_url=origin,
+                      consumer_public_projection={'resource': origin},
+                      portal={'lwc_bff_origin': origin})
+    return inputs
+
+
+def _write_runtime_pair(directory, *, envelope=4, runtime=3, source_sha='c' * 40,
+                        auth_image_digest='a' * 64, auth_identity=RUNTIME_AUTH_IDENTITY):
+    directory = Path(directory)
+    (directory / 'receipts').mkdir(parents=True, exist_ok=True)
+    (directory / 'images').mkdir(parents=True, exist_ok=True)
+    image = ('asia-east1-docker.pkg.dev/llm-wiki-cloud/gateauth-ci-images/gateauth@sha256:' +
+             auth_image_digest)
+    source = {
+        'repository_id': 'github:200', 'revision': 'b' * 40,
+        'tree_sha256': 'sha256:' + 'f' * 64, 'artifact_id': '456',
+        'build_run_id': 789, 'build_run_attempt': 1,
+    }
+    auth_inputs = _runtime_inputs(source_sha, runtime)
+    auth = {
+        'schema': envelope, 'component': 'auth', 'identity': auth_identity,
+        'build_sha': source_sha, 'artifact': {'image': image}, 'target_config': None,
+        'build': {'identity_verified': True, 'status': 'SUCCESS', 'build_id': 'synthetic-build-id'},
+        'auth_config_inputs': auth_inputs, 'auth_materialization_schema': 1,
+        'auth_source': source,
+    }
+    if envelope == 4:
+        auth['auth_supported_schema_versions'] = [1, 2, 3, 4]
+    dev_source = {
+        'lwc': {'repository_id': 'github:100', 'sha': source_sha,
+                'run_id': 790, 'run_attempt': 1},
+        'auth': {'repository_id': source['repository_id'], 'revision': source['revision'],
+                 'tree_sha256': source['tree_sha256'], 'run_id': source['build_run_id'],
+                 'run_attempt': source['build_run_attempt'], 'artifact_id': source['artifact_id'],
+                 'artifact_digest': 'sha256:' + auth_image_digest},
+    }
+    dev = {
+        'schema': 'lwc-306-dev-image-receipt-v2', 'source': dev_source,
+        'config': {'environment': 'development', 'path': 'deploy/environments/development.yaml',
+                   'fingerprint': 'sha256:' + '1' * 64},
+        'components': ['auth'], 'images': {'auth': image},
+    }
+    metadata = {'lwc': copy.deepcopy(dev_source['lwc']), 'auth': copy.deepcopy(dev_source['auth'])}
+    write(directory / 'receipts/auth.json', auth)
+    write(directory / 'images/dev-receipt.json', dev)
+    write(directory / 'dev-source-metadata.json', metadata)
+    return auth, dev, metadata
+
+
 class Acceptance(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -120,21 +179,138 @@ class Acceptance(unittest.TestCase):
                 self.assertEqual(restored.provider._build_source_environment('auth')[:2],
                                  (restored.plan['source'], restored.plan['branch']))
 
-    def test_schema_three_staging_pin_requires_dev_bff_only_and_v3_reuse_receipt(self):
+    def _admit_schema_three_bff_only(self, reuse):
+        source = 'a' * 40
+        executor = 'b' * 40
+        inputs = _runtime_inputs(source)
+        normalized = {
+            'environment': 'development', 'bff': {'runtime_inputs': {}},
+            'selected_components': ['bff'],
+        }
+        normalized_auth = {'environment': 'development', 'auth': {'runtime_inputs': inputs},
+                           'selected_components': ['auth']}
+
+        def fake_run(command, **kwargs):
+            command = [str(value) for value in command]
+            if command[:2] == ['git', 'rev-parse']:
+                if command[2] == 'HEAD':
+                    return executor
+                if command[2] == source + '^{commit}':
+                    return source
+                if command[2] == source + ':deploy/environments/development.yaml':
+                    return 'config-blob'
+                if command[2] == source + ':deploy/cac/ssot.pkl':
+                    return 'ssot-blob'
+            if command[:2] == ['git', 'hash-object']:
+                if command[2] == 'deploy/environments/development.yaml':
+                    return 'config-blob'
+                if command[2] == 'deploy/cac/ssot.pkl':
+                    return 'ssot-blob'
+            if command[:2] == ['git', 'check-ref-format']:
+                return ''
+            if command[:4] == ['go', 'run', './cmd/pipeline_config', 'prepare']:
+                return ''
+            if command[:3] == ['go', 'run', './cmd/deploy_config']:
+                components = command[command.index('--components') + 1]
+                return json.dumps(normalized if components == 'bff' else normalized_auth)
+            self.fail('unexpected command: ' + ' '.join(command))
+
+        args = SimpleNamespace(environment='development', source=source, executor_sha=executor,
+                               components='bff', tag='schema-three-staging',
+                               release_source_mode='independent', auth_schema_version=3,
+                               reuse=str(reuse), auth_repository_id=None, auth_revision=None,
+                               auth_tree_sha256=None, auth_artifact_id=None, auth_run_id=None,
+                               auth_run_attempt=None, dev=None, dev_reference=None)
+        with patch.object(engine, 'run', side_effect=fake_run), \
+                patch.object(engine, 'source_identity', return_value=RUNTIME_AUTH_IDENTITY):
+            return engine.admit(args)
+
+    def test_schema_three_staging_accepts_runtime3_pair_and_rejects_inconsistent_pairs(self):
         with tempfile.TemporaryDirectory() as temporary:
-            reuse = Path(temporary)
+            reuse = Path(temporary) / 'reuse'
+            reuse.mkdir()
+            _write_runtime_pair(reuse, envelope=4, runtime=3)
             base = dict(environment='development', source='a' * 40, components='auth,bff',
                         tag='schema-three-staging', release_source_mode='independent',
                         auth_schema_version=3, reuse=str(reuse))
             with self.assertRaisesRegex(Breakpoint, 'auth-schema3-selection-not-supported'):
                 engine.admit(SimpleNamespace(**base))
-            base['components'] = 'bff'
-            with self.assertRaisesRegex(Breakpoint, 'auth-schema3-staging-requires-v3-receipt'):
-                engine.admit(SimpleNamespace(**base))
-            (reuse / 'receipts').mkdir()
-            write(reuse / 'receipts/auth.json', {'component': 'auth', 'schema': 4, 'auth_source': {}})
-            with self.assertRaisesRegex(Breakpoint, 'auth-schema3-staging-requires-v3-receipt'):
-                engine.admit(SimpleNamespace(**base))
+            plan = self._admit_schema_three_bff_only(reuse)
+            self.assertEqual(plan['selected'], ['bff'])
+            self.assertEqual(plan['auth_source']['artifact_id'], '456')
+            self.assertEqual(plan['normalized']['auth']['runtime_inputs']['schema_version'], 3)
+
+            changed_source = copy.deepcopy(_runtime_inputs('a' * 40))
+            changed_source['source_sha'] = 'c' * 40
+            self.assertTrue(engine.retained_runtime3_pair_compatible(
+                reuse, changed_source, plan['auth_source'], RUNTIME_AUTH_IDENTITY),
+                'schema-4 receipt envelope with actual schema-3 inputs must remain reusable')
+            self.assertTrue(engine.Engine.auth_receipt_supports_schema(
+                json.loads((reuse / 'receipts/auth.json').read_text()), 3))
+
+            for invalid, mutate in (
+                    ('runtime 4', lambda path: _write_runtime_pair(path, envelope=4, runtime=4)),
+                    ('schema 3 envelope with runtime 4',
+                     lambda path: _write_runtime_pair(path, envelope=3, runtime=4)),
+                    ('cross-source image', lambda path: _write_runtime_pair(path, envelope=4, runtime=3)),
+                    ('cross-source Auth tuple', lambda path: _write_runtime_pair(path, envelope=4, runtime=3)),
+                    ('missing DEV pair', lambda path: _write_runtime_pair(path, envelope=4, runtime=3)),
+                    ('input mismatch', lambda path: _write_runtime_pair(path, envelope=4, runtime=3))):
+                with self.subTest(invalid=invalid):
+                    broken = Path(temporary) / invalid.replace(' ', '-')
+                    broken.mkdir()
+                    mutate(broken)
+                    if invalid == 'cross-source image':
+                        dev = json.loads((broken / 'images/dev-receipt.json').read_text())
+                        dev['images']['auth'] = dev['images']['auth'].replace('a' * 64, '9' * 64)
+                        write(broken / 'images/dev-receipt.json', dev)
+                    elif invalid == 'cross-source Auth tuple':
+                        auth = json.loads((broken / 'receipts/auth.json').read_text())
+                        auth['auth_source']['revision'] = '9' * 40
+                        write(broken / 'receipts/auth.json', auth)
+                    elif invalid == 'missing DEV pair':
+                        (broken / 'images/dev-receipt.json').unlink()
+                    elif invalid == 'input mismatch':
+                        mismatched = copy.deepcopy(changed_source)
+                        mismatched['config_id'] = 'sha256:' + '0' * 64
+                        self.assertFalse(engine.retained_runtime3_pair_compatible(
+                            broken, mismatched, plan['auth_source'], RUNTIME_AUTH_IDENTITY))
+                        continue
+                    self.assertFalse(engine.retained_runtime3_pair_compatible(
+                        broken, changed_source, plan['auth_source'], RUNTIME_AUTH_IDENTITY))
+
+            legacy = Path(temporary) / 'schema3-envelope'
+            legacy.mkdir()
+            _write_runtime_pair(legacy, envelope=3, runtime=3)
+            self.assertTrue(engine.retained_runtime3_pair_compatible(
+                legacy, changed_source, plan['auth_source'], RUNTIME_AUTH_IDENTITY),
+                'the prior schema-3 runtime receipt remains supported')
+
+    def test_schema_three_selected_auth_reuse_checks_actual_runtime_and_changed_source_inputs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            reuse = Path(temporary)
+            auth, _, _ = _write_runtime_pair(reuse, envelope=4, runtime=3)
+            release = self.make(('auth',), name='selected-runtime3-reuse')
+            release.plan['release_source_mode'] = 'independent'
+            release.plan['auth_source'] = engine.auth_source_from_receipt(reuse / 'receipts/auth.json')
+            release.plan['identities']['auth'] = auth['identity']
+            release.auth_input_snapshot = lambda: _runtime_inputs('a' * 40)
+            release.provider.usable = lambda component, artifact: None
+            self.assertFalse(release.auth_package_preflight(reuse=reuse),
+                             'a changed LWC source can reuse the same verified Auth runtime inputs')
+
+            auth4, _, _ = _write_runtime_pair(reuse, envelope=4, runtime=4)
+            auth4['identity'] = release.plan['identities']['auth']
+            write(reuse / 'receipts/auth.json', auth4)
+            self.assertTrue(release.auth_package_preflight(reuse=reuse),
+                            'an envelope-4 artifact with actual runtime schema 4 cannot satisfy schema 3')
+
+            auth3, _, _ = _write_runtime_pair(reuse, envelope=4, runtime=3)
+            auth3['identity'] = release.plan['identities']['auth']
+            auth3['auth_config_inputs']['config_id'] = 'sha256:' + '0' * 64
+            write(reuse / 'receipts/auth.json', auth3)
+            self.assertTrue(release.auth_package_preflight(reuse=reuse),
+                            'a schema-3 runtime with changed configuration inputs needs a new package')
 
     def admit_schema_three_auth_only(self, environment):
         source = 'a' * 40
@@ -1239,8 +1415,18 @@ class Acceptance(unittest.TestCase):
         schema4['consumer_public_projection']['resource']=schema4['sync_service_url']
         e.plan['normalized']['auth']['runtime_inputs']=schema4
         self.assertEqual(e.auth_input_snapshot(),schema4)
-        schema4_receipt={'schema':4,'auth_supported_schema_versions':[1,2,3,4]}
+        schema4_receipt={'schema':4,'auth_supported_schema_versions':[1,2,3,4],
+                         'auth_config_inputs':{'schema_version':3}}
         self.assertTrue(e.auth_receipt_supports_schema(schema4_receipt,4))
+        self.assertTrue(e.auth_receipt_supports_schema(schema4_receipt,3),
+                        'schema-4 envelope carries the actual runtime schema-3 input snapshot')
+        self.assertFalse(e.auth_receipt_supports_schema(
+            {'schema':4,'auth_supported_schema_versions':[1,2,3,4],
+             'auth_config_inputs':{'schema_version':4}},3),
+            'supported-version metadata cannot stand in for the actual runtime input schema')
+        self.assertTrue(e.auth_receipt_supports_schema(
+            {'schema':3,'auth_config_inputs':{'schema_version':3}},3),
+            'the previously supported schema-3 envelope remains valid')
         self.assertFalse(e.auth_receipt_supports_schema(
             {'schema':3},4), 'a v3-only artifact cannot receive a schema-4 snapshot')
         with self.assertRaisesRegex(Breakpoint,'auth-input-snapshot-invalid'):

@@ -16,7 +16,7 @@ import urllib.parse
 from support import (ROOT, Breakpoint, digest, is_frontend_quota_rejection, read,
                      release_source_mode, require, run, structured_cause, write)
 from providers import Providers, CLOUD_BUILD_LOCATION
-from receipt_contract import (ReceiptError, validate_auth_component_receipt,
+from receipt_contract import (ReceiptError, load_json, validate_auth_component_receipt,
                               validate_dev_receipt, validate_receipt_pair)
 
 ORDER = ('documentimport', 'exportjob', 'auth', 'bff', 'worker', 'frontend')
@@ -140,6 +140,60 @@ def auth_source_from_receipt(path):
     }
 
 
+def runtime3_auth_inputs_match(actual, expected):
+    if (not isinstance(actual, dict) or not isinstance(expected, dict) or
+            type(actual.get('schema_version')) is not int or actual.get('schema_version') != 3 or
+            type(expected.get('schema_version')) is not int or expected.get('schema_version') != 3):
+        return False
+    actual_compatible = copy.deepcopy(actual)
+    expected_compatible = copy.deepcopy(expected)
+    actual_compatible.pop('source_sha', None)
+    expected_compatible.pop('source_sha', None)
+    return actual_compatible == expected_compatible
+
+
+def retained_runtime3_pair_compatible(directory, expected_inputs, expected_auth_source,
+                                      expected_auth_identity):
+    """Accept a retained DEV Auth pair only when its actual runtime is schema 3."""
+    directory = Path(directory)
+    try:
+        auth = load_json(directory / 'receipts/auth.json')
+        dev = load_json(directory / 'images/dev-receipt.json')
+        metadata = load_json(directory / 'dev-source-metadata.json')
+        validate_receipt_pair(auth, dev, 'independent')
+    except (ReceiptError, OSError, KeyError, TypeError, ValueError):
+        return False
+
+    inputs = auth.get('auth_config_inputs') if isinstance(auth, dict) else None
+    if (not isinstance(inputs, dict) or type(inputs.get('schema_version')) is not int or
+            inputs.get('schema_version') != 3 or inputs.get('environment') != 'dev' or
+            inputs.get('target') != 'auth' or auth.get('identity') != expected_auth_identity):
+        return False
+
+    actual_source = auth.get('auth_source')
+    if not isinstance(actual_source, dict) or actual_source != {
+            'repository_id': expected_auth_source.get('repository_id'),
+            'revision': expected_auth_source.get('revision'),
+            'tree_sha256': expected_auth_source.get('tree_sha256'),
+            'artifact_id': expected_auth_source.get('artifact_id'),
+            'build_run_id': expected_auth_source.get('run_id'),
+            'build_run_attempt': expected_auth_source.get('run_attempt')}:
+        return False
+
+    # A new LWC release may reuse the independent Auth build inputs. The paired
+    # receipt proves the original source/build binding; every runtime input must
+    # still match the new plan except that source trace.
+    if not runtime3_auth_inputs_match(inputs, expected_inputs):
+        return False
+
+    source = dev.get('source', {})
+    if (not isinstance(metadata, dict) or set(metadata) != {'lwc', 'auth'} or
+            metadata.get('lwc') != source.get('lwc') or
+            metadata.get('auth') != source.get('auth')):
+        return False
+    return True
+
+
 def admit(args):
     selected = selection(args.components)
     release_source_mode = getattr(args, 'release_source_mode', None)
@@ -156,13 +210,6 @@ def admit(args):
             require(release_source_mode == 'independent' and selected == ['bff'] and
                     args.environment == 'development' and args.reuse,
                     'auth-schema3-selection-not-supported')
-            try:
-                retained_auth = read(Path(args.reuse) / 'receipts/auth.json')
-            except (OSError, Breakpoint, ValueError, TypeError):
-                retained_auth = None
-            require(isinstance(retained_auth, dict) and retained_auth.get('component') == 'auth' and
-                    retained_auth.get('schema') == 3 and isinstance(retained_auth.get('auth_source'), dict),
-                    'auth-schema3-staging-requires-v3-receipt')
     require(re.fullmatch(r'[0-9a-f]{40}', args.source), 'invalid-source')
     executor_sha = getattr(args, 'executor_sha', None) or run(['git', 'rev-parse', 'HEAD'])
     require(re.fullmatch(r'[0-9a-f]{40}', executor_sha), 'invalid-executor-sha')
@@ -266,6 +313,11 @@ def admit(args):
     identities = {c: source_identity(c, args.source,
                                      auth_source if c == 'auth' else None)
                   for c in selected}
+    if auth_schema_version == 3 and selected == ['bff']:
+        require(auth_source is not None and retained_runtime3_pair_compatible(
+            args.reuse, normalized.get('auth', {}).get('runtime_inputs'), auth_source,
+            source_identity('auth', args.source, auth_source)),
+            'auth-schema3-staging-requires-runtime3-pair')
     body = {'schema': 3, 'source': args.source, 'branch': branch, 'tag': args.tag,
             'executor_sha': executor_sha, 'normalized': normalized, 'identities': identities,
             'dev_reference': args.dev_reference, 'selected': selected,
@@ -440,6 +492,10 @@ class Engine:
             return True
         if not self.auth_receipt_supports_schema(candidate, self.auth_input_snapshot()['schema_version']):
             return True
+        if (self.auth_input_snapshot()['schema_version'] == 3 and
+                not runtime3_auth_inputs_match(candidate.get('auth_config_inputs'),
+                                               self.auth_input_snapshot())):
+            return True
         try:
             self.provider.usable('auth', candidate['artifact'])
         except Breakpoint as exc:
@@ -510,6 +566,11 @@ class Engine:
     @staticmethod
     def auth_receipt_supports_schema(receipt, schema_version):
         receipt_schema = receipt.get('schema') if isinstance(receipt, dict) else None
+        if schema_version == 3:
+            inputs = receipt.get('auth_config_inputs') if isinstance(receipt, dict) else None
+            if (not isinstance(inputs, dict) or type(inputs.get('schema_version')) is not int or
+                    inputs.get('schema_version') != 3):
+                return False
         if receipt_schema == 4:
             versions = receipt.get('auth_supported_schema_versions')
             return (isinstance(versions, list) and all(type(value) is int for value in versions) and
@@ -813,6 +874,10 @@ class Engine:
                         if not self.auth_receipt_supports_schema(
                                 candidate, self.auth_input_snapshot()['schema_version']):
                             applicable = False
+                        if (applicable and self.auth_input_snapshot()['schema_version'] == 3 and
+                                not runtime3_auth_inputs_match(candidate.get('auth_config_inputs'),
+                                                               self.auth_input_snapshot())):
+                            applicable = False
                     if applicable:
                         receipt = candidate
                         if c == 'frontend':
@@ -871,8 +936,12 @@ class Engine:
             auth_receipt_path = source_directory / 'receipts/auth.json' if source_directory else None
             require(auth_receipt_path is not None and auth_receipt_path.is_file(),
                     'auth-source-artifact-unavailable')
-            auth_receipt = read(auth_receipt_path)
             expected_identity = source_identity('auth', self.plan['source'], self.plan['auth_source'])
+            if self.auth_input_snapshot()['schema_version'] == 3:
+                require(retained_runtime3_pair_compatible(
+                    source_directory, self.auth_input_snapshot(), self.plan['auth_source'],
+                    expected_identity), 'auth-source-artifact-incompatible')
+            auth_receipt = read(auth_receipt_path)
             require(auth_receipt.get('component') == 'auth' and auth_receipt.get('schema') in (3, 4) and
                     auth_receipt.get('identity') == expected_identity and
                     auth_receipt.get('auth_source') == {
