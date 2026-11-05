@@ -21,7 +21,7 @@ import providers
 import support
 from support import Breakpoint, digest, read, write
 sys.path.insert(0, str(ROOT / 'scripts'))
-from lwc_auth_test_fixture import write_auth_input_snapshot_fixture
+from lwc_auth_test_fixture import write_auth_input_fixture, write_auth_input_snapshot_fixture
 
 PROJECT = 'llm-wiki-cloud'
 PROJECT_NUMBER = '580854833715'
@@ -469,7 +469,11 @@ class AsyncBuildSubmission(unittest.TestCase):
         }
         receipt['identity']=engine.source_identity('auth',source,plan_auth_source)
         receipt['build_sha']=source
-        receipt['auth_config_inputs']['source_sha']=source
+        auth_input_dir=self.root/'schema3-retained-auth-inputs'
+        auth_inputs_path=write_auth_input_fixture(
+            auth_input_dir,'development',source,schema_version=3)
+        receipt['auth_config_inputs']=json.loads(auth_inputs_path.read_text())
+        receipt['auth_materialization_schema']=1
         receipt['auth_source']={
             'repository_id':auth_source['repository_id'],
             'revision':auth_source['revision'],
@@ -479,6 +483,25 @@ class AsyncBuildSubmission(unittest.TestCase):
             'build_run_attempt':auth_source['build_run_attempt'],
         }
         write(retained/'receipts/auth.json',receipt)
+        image=receipt['artifact']['image']
+        image_digest=image.rsplit('@sha256:',1)[1]
+        dev_source={
+            'lwc':{'repository_id':'github:101','sha':source,'run_id':3001,'run_attempt':1},
+            'auth':{'repository_id':auth_source['repository_id'],
+                    'revision':auth_source['revision'],
+                    'tree_sha256':auth_source['tree_sha256'],
+                    'run_id':auth_source['build_run_id'],
+                    'run_attempt':auth_source['build_run_attempt'],
+                    'artifact_id':auth_source['artifact_id'],
+                    'artifact_digest':'sha256:'+image_digest},
+        }
+        write(retained/'images/dev-receipt.json',{
+            'schema':'lwc-306-dev-image-receipt-v2','source':dev_source,
+            'config':{'environment':'development','path':'deploy/environments/development.yaml',
+                      'fingerprint':'sha256:'+'1'*64},
+            'components':['auth'],'images':{'auth':image},
+        })
+        write(retained/'dev-source-metadata.json',dev_source)
 
         for operation in ('auth-preflight', 'prepare'):
             with self.subTest(operation=operation):
