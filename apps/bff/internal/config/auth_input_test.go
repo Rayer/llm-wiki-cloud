@@ -43,7 +43,7 @@ func authOAuthResourcesForTest(syncOrigin, environment string) []AuthOAuthResour
 func validAuthInputSnapshotV2ForTest() AuthInputSnapshot {
 	inputs := validAuthInputSnapshotForTest()
 	inputs.SchemaVersion = 2
-	inputs.OAuthResources = authOAuthResourcesForTest(inputs.SyncServiceURL, inputs.Environment)
+	inputs.OAuthResources = previousAuthProjectCatalogForTest(inputs.SyncServiceURL, inputs.Environment)
 	inputs.ConfigID, _ = AuthInputConfigID(inputs)
 	return inputs
 }

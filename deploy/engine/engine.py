@@ -150,16 +150,19 @@ def admit(args):
     require(type(auth_schema_version) is int and auth_schema_version in (3, 4),
             'invalid-auth-schema-version')
     if auth_schema_version == 3:
-        require(release_source_mode == 'independent' and selected == ['bff'] and
-                args.environment == 'development' and args.reuse,
-                'auth-schema3-staging-requires-independent-bff-reuse')
-        try:
-            retained_auth = read(Path(args.reuse) / 'receipts/auth.json')
-        except (OSError, Breakpoint, ValueError, TypeError):
-            retained_auth = None
-        require(isinstance(retained_auth, dict) and retained_auth.get('component') == 'auth' and
-                retained_auth.get('schema') == 3 and isinstance(retained_auth.get('auth_source'), dict),
-                'auth-schema3-staging-requires-v3-receipt')
+        auth_only = (release_source_mode == 'independent' and selected == ['auth'] and
+                     args.environment in ('development', 'production'))
+        if not auth_only:
+            require(release_source_mode == 'independent' and selected == ['bff'] and
+                    args.environment == 'development' and args.reuse,
+                    'auth-schema3-selection-not-supported')
+            try:
+                retained_auth = read(Path(args.reuse) / 'receipts/auth.json')
+            except (OSError, Breakpoint, ValueError, TypeError):
+                retained_auth = None
+            require(isinstance(retained_auth, dict) and retained_auth.get('component') == 'auth' and
+                    retained_auth.get('schema') == 3 and isinstance(retained_auth.get('auth_source'), dict),
+                    'auth-schema3-staging-requires-v3-receipt')
     require(re.fullmatch(r'[0-9a-f]{40}', args.source), 'invalid-source')
     executor_sha = getattr(args, 'executor_sha', None) or run(['git', 'rev-parse', 'HEAD'])
     require(re.fullmatch(r'[0-9a-f]{40}', executor_sha), 'invalid-executor-sha')

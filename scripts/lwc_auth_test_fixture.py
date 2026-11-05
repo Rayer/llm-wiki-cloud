@@ -1,4 +1,5 @@
 """Synthetic, payload-free Auth Stage 1 fixtures for offline deployment tests."""
+import copy
 import hashlib
 import json
 import os
@@ -9,6 +10,12 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 GO = shutil.which('go') or 'go'
+
+_SCHEMA_2_PROJECT_SCOPES = [
+    {'name': 'mcp:query', 'description': 'Query project knowledge.'},
+    {'name': 'mcp:raw:write', 'description': 'Add permitted raw sources.'},
+]
+_SCHEMA_2_PROJECT_SCOPE_SETS = [['mcp:query'], ['mcp:query', 'mcp:raw:write']]
 
 
 def write_auth_input_fixture(directory, environment, source_sha='c' * 40, schema_version=2):
@@ -73,7 +80,7 @@ def write_auth_input_snapshot_fixture(directory, environment, source_sha='c' * 4
         'config_secret_resource': source['config_secret_resource'],
     }
     if schema_version >= 2:
-        inputs['oauth_resources'] = source['oauth_resources']
+        inputs['oauth_resources'] = _auth_oauth_resources_for_schema(source['oauth_resources'], schema_version)
     if schema_version >= 3:
         inputs['management_scopes'] = source['management_scopes']
         inputs['consumer_verifiers'] = source['consumer_verifiers']
@@ -86,3 +93,17 @@ def write_auth_input_snapshot_fixture(directory, environment, source_sha='c' * 4
     path.write_text(json.dumps(inputs, ensure_ascii=False, separators=(',', ':')) + '\n')
     path.chmod(0o600)
     return path
+
+
+def _auth_oauth_resources_for_schema(resources, schema_version):
+    projected = copy.deepcopy(resources)
+    if schema_version != 2:
+        return projected
+    projects = [resource for resource in projected if resource.get('id') == 'lwc-project']
+    if len(projects) != 1:
+        raise ValueError('Auth fixture must contain exactly one LWC Project OAuth resource')
+    project = projects[0]
+    project['scopes'] = copy.deepcopy(_SCHEMA_2_PROJECT_SCOPES)
+    project['allowed_scope_sets'] = copy.deepcopy(_SCHEMA_2_PROJECT_SCOPE_SETS)
+    project['default_scope_set'] = ['mcp:query']
+    return projected

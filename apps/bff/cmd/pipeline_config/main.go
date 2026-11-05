@@ -300,13 +300,23 @@ func runPrepareTargetModeAtSource(ctx context.Context, target, environment, outp
 	return runPrepareTargetModeAtSourceWithAuthSchema(ctx, target, environment, output, descriptorOnly, sourceSHA, 0, newReader)
 }
 
+func validateAuthSchemaPin(target, environment string, descriptorOnly bool, schemaVersion int) error {
+	if schemaVersion == 0 {
+		return nil
+	}
+	if target != "auth" || !descriptorOnly || (schemaVersion != 3 && schemaVersion != 4) ||
+		(schemaVersion == 3 && environment != "dev" && environment != "prod") {
+		return errors.New("Auth schema pin requires an Auth descriptor and version 3 or 4; schema 3 supports dev and prod")
+	}
+	return nil
+}
+
 func runPrepareTargetModeAtSourceWithAuthSchema(ctx context.Context, target, environment, output string, descriptorOnly bool, sourceSHA string, authSchemaVersion int, newReader readerFactory) error {
 	if target != "pipeline" && target != "bff" && target != "auth" && target != "i18n" {
 		return errors.New("target must be pipeline, bff, auth, or i18n")
 	}
-	if authSchemaVersion != 0 && (target != "auth" || !descriptorOnly || (authSchemaVersion != 3 && authSchemaVersion != 4) ||
-		(authSchemaVersion == 3 && environment != "dev")) {
-		return errors.New("Auth schema pin requires a dev Auth descriptor and version 3 or 4")
+	if err := validateAuthSchemaPin(target, environment, descriptorOnly, authSchemaVersion); err != nil {
+		return err
 	}
 	if descriptorOnly && target != "bff" && target != "auth" {
 		return errors.New("--descriptor requires --target bff or auth")

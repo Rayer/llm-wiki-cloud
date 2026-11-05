@@ -457,6 +457,24 @@ func validateOAuthResourcesJSON(name string, raw json.RawMessage) error {
 	return nil
 }
 
+func supportsAuthProjectScopeCatalog(schemaVersion int, resource *AuthOAuthResource) bool {
+	if resource == nil {
+		return false
+	}
+	names := resource.ScopesNames()
+	oldCatalog := equalStringSlices(names, []string{"mcp:query", "mcp:raw:write"}) &&
+		equalStringSetSlices(resource.AllowedScopeSets, [][]string{{"mcp:query"}, {"mcp:query", "mcp:raw:write"}})
+	newCatalog := schemaVersion >= 3 &&
+		equalStringSlices(names, []string{"mcp:query", "mcp:content:read", "mcp:raw:write"}) &&
+		equalStringSetSlices(resource.AllowedScopeSets, [][]string{
+			{"mcp:query"},
+			{"mcp:query", "mcp:content:read"},
+			{"mcp:query", "mcp:raw:write"},
+			{"mcp:query", "mcp:content:read", "mcp:raw:write"},
+		})
+	return oldCatalog || newCatalog
+}
+
 func validateAuthOAuthResources(file AuthFile) error {
 	if len(file.OAuthResources) != 2 {
 		return errors.New("Auth OAuth resource registry is incomplete")
@@ -539,9 +557,7 @@ func validateAuthOAuthResources(file AuthFile) error {
 			brief = resource
 		}
 	}
-	if project == nil || brief == nil || !project.Enabled ||
-		!equalStringSlices(project.ScopesNames(), []string{"mcp:query", "mcp:content:read", "mcp:raw:write"}) ||
-		!equalStringSetSlices(project.AllowedScopeSets, [][]string{{"mcp:query"}, {"mcp:query", "mcp:content:read"}, {"mcp:query", "mcp:raw:write"}, {"mcp:query", "mcp:content:read", "mcp:raw:write"}}) ||
+	if project == nil || brief == nil || !project.Enabled || !supportsAuthProjectScopeCatalog(file.SchemaVersion, project) ||
 		!equalStringSlices(project.DefaultScopeSet, []string{"mcp:query"}) ||
 		!equalStringSlices(brief.ScopesNames(), []string{"brief:manage"}) ||
 		!equalStringSetSlices(brief.AllowedScopeSets, [][]string{{"brief:manage"}}) || len(brief.DefaultScopeSet) != 0 {
