@@ -613,6 +613,22 @@ class AsyncBuildSubmission(unittest.TestCase):
         self.assertEqual(read(directory/'receipts/auth.json')['build']['build_id'],BUILD_IDS[0])
         self.assertEqual(self.fake_data()['submit_count'],1)
 
+    def test_cd_runtime_recovery_prepares_cold_auth_identity_validator_modules(self):
+        workflow=(ROOT/'.github/workflows/cd.yml').read_text()
+        release_job=workflow.split('  pipeline-config-only:',1)[0]
+        setup_index=release_job.index('uses: actions/setup-go@')
+        setup_go_end=release_job.index('      - name: Prepare native Auth input identity validator modules',setup_index)
+        setup_block=release_job[setup_index:setup_go_end]
+        self.assertNotIn('\n        if:',setup_block,
+                        'the shared release/runtime job needs Go for non-release recovery barriers too')
+        download_end=release_job.index('      - name: Install pinned Pkl CLI',setup_go_end)
+        download_block=release_job[setup_go_end:download_end]
+        self.assertIn('working-directory: apps/bff',download_block)
+        self.assertIn('run: go mod download',download_block)
+        runtime_index=release_job.index('      - name: Execute bounded runtime or explicit recovery')
+        self.assertLess(setup_index,setup_go_end)
+        self.assertLess(setup_go_end,runtime_index)
+
     def test_registered_dev_release_resumes_legacy_source_with_current_executor(self):
         executor = subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip()
         source,git_env = self.scratch_source_commit(executor)

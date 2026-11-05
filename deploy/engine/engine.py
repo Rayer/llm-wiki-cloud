@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import urllib.parse
@@ -52,20 +53,53 @@ def auth_input_config_id_valid(inputs):
             descriptor = Path(temporary) / 'auth-inputs.json'
             write(descriptor, inputs)
             if descriptor.stat().st_size > 64 * 1024:
-                raise ValueError('Auth input snapshot is oversized')
+                _AUTH_INPUT_ID_CACHE[cache_key] = False
+                return False
             env = dict(os.environ, LWC_REPOSITORY_ROOT=str(ROOT), GOWORK='off',
                        GOFLAGS='-mod=readonly', GOTOOLCHAIN='local', GOPROXY='off',
                        GOOGLE_APPLICATION_CREDENTIALS='/dev/null',
                        GCE_METADATA_HOST='127.0.0.1:9', GCE_METADATA_IP='127.0.0.1',
                        CLOUDSDK_CONFIG='/dev/null')
-            run([
+            command = [
                 GO_BINARY, 'run', './cmd/deploy_config', '--environment', environment,
                 '--config', ROOT / 'deploy/environments' / (environment + '.yaml'),
                 '--components', 'auth', '--auth-inputs', descriptor,
-            ], cwd=ROOT / 'apps/bff', env=env, timeout=180)
-            valid = True
-    except (Breakpoint, OSError, TypeError, ValueError):
-        valid = False
+            ]
+            result = subprocess.run([str(value) for value in command], cwd=ROOT / 'apps/bff',
+                                    env=env, capture_output=True, text=True, timeout=180)
+    except subprocess.TimeoutExpired as exc:
+        cause = structured_cause(exc, stage='unknown', code='child-command-timeout',
+                                 message=exc.stderr)
+        cause['stage'] = 'auth-input-config-identity'
+        raise Breakpoint('auth-input-validator-unavailable', 'failed', False,
+                         'reconcile-before-replay', stage='auth-input-config-identity',
+                         timeout_class='subprocess-timeout', cause=cause) from None
+    except OSError as exc:
+        cause = structured_cause(exc, stage='unknown', code='tool-unavailable')
+        cause['stage'] = 'auth-input-config-identity'
+        raise Breakpoint('auth-input-validator-unavailable', 'failed', False,
+                         'reconcile-before-replay', stage='auth-input-config-identity',
+                         timeout_class='tool-unavailable', cause=cause) from None
+    except (TypeError, ValueError):
+        _AUTH_INPUT_ID_CACHE[cache_key] = False
+        return False
+
+    if result.returncode:
+        output = result.stderr or ''
+        input_rejected = ('generated Auth input descriptor is invalid:' in output or
+                          any(line.startswith('Auth input snapshot')
+                              for line in output.splitlines()))
+        if input_rejected:
+            valid = False
+        else:
+            cause = structured_cause(ChildProcessError(), stage='unknown',
+                                     code='child-command-failed', message=output)
+            cause['stage'] = 'auth-input-config-identity'
+            raise Breakpoint('auth-input-validator-unavailable', 'failed', False,
+                             'reconcile-before-replay', stage='auth-input-config-identity',
+                             exit_code=result.returncode, cause=cause) from None
+    else:
+        valid = True
     _AUTH_INPUT_ID_CACHE[cache_key] = valid
     return valid
 

@@ -239,6 +239,8 @@ class Acceptance(unittest.TestCase):
             return engine.admit(args)
 
     def test_schema_three_staging_accepts_runtime3_pair_and_rejects_inconsistent_pairs(self):
+        engine._AUTH_INPUT_ID_CACHE.clear()
+        self.addCleanup(engine._AUTH_INPUT_ID_CACHE.clear)
         with tempfile.TemporaryDirectory() as temporary:
             reuse = Path(temporary) / 'reuse'
             reuse.mkdir()
@@ -327,6 +329,30 @@ class Acceptance(unittest.TestCase):
             self.assertTrue(engine.retained_runtime3_pair_compatible(
                 legacy, changed_source, plan['auth_source'], RUNTIME_AUTH_IDENTITY),
                 'the prior schema-3 runtime receipt remains supported')
+
+    def test_schema_three_identity_validator_classifies_cold_module_miss_as_infrastructure(self):
+        inputs = _runtime_inputs('e' * 40)
+        engine._AUTH_INPUT_ID_CACHE.clear()
+        self.addCleanup(engine._AUTH_INPUT_ID_CACHE.clear)
+        missing_module = SimpleNamespace(
+            returncode=1, stderr='go: module lookup disabled by GOPROXY=off\n')
+        with patch('engine.subprocess.run', return_value=missing_module):
+            with self.assertRaises(Breakpoint) as caught:
+                engine.auth_input_config_id_valid(inputs)
+        self.assertEqual(caught.exception.reason, 'auth-input-validator-unavailable')
+        self.assertEqual(caught.exception.stage, 'auth-input-config-identity')
+        self.assertEqual(caught.exception.cause['code'], 'child-command-failed')
+        self.assertIn('module lookup disabled', caught.exception.cause['message'])
+        self.assertNotIn(engine.digest(inputs), engine._AUTH_INPUT_ID_CACHE)
+
+        engine._AUTH_INPUT_ID_CACHE.clear()
+        rejected_input = SimpleNamespace(
+            returncode=1,
+            stderr=('deploy config validation failed: generated Auth input descriptor is invalid: '
+                    'Auth input snapshot config_id does not match its source inputs\nexit status 1\n'))
+        with patch('engine.subprocess.run', return_value=rejected_input):
+            self.assertFalse(engine.auth_input_config_id_valid(inputs))
+        self.assertIs(engine._AUTH_INPUT_ID_CACHE[engine.digest(inputs)], False)
 
     def test_schema_three_selected_auth_reuse_checks_actual_runtime_and_changed_source_inputs(self):
         with tempfile.TemporaryDirectory() as temporary:
