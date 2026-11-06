@@ -663,7 +663,7 @@ describe('LWC-389 MCP OAuth frontend', () => {
     const config = document.querySelector('code')!;
     expect(config.textContent).toContain('http://localhost:18080/mcp/projects/project-one');
     expect(config.textContent).toContain('auth: oauth');
-    expect(config.textContent).toContain('scope: "mcp:query"');
+    expect(config.textContent).toContain('scope: "mcp:query mcp:content:read mcp:raw:write"');
     expect(config.textContent).not.toContain('Bearer');
     const writeText = navigator.clipboard.writeText as ReturnType<typeof vi.fn>;
     fireEvent.click(screen.getByRole('button', { name: 'MCPOAuth.copyConfig' }));

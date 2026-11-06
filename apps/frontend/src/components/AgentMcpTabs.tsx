@@ -45,12 +45,10 @@ export function AgentMcpTabs({
   t: Translate;
 }) {
   const [selectedTool, setSelectedTool] = useState<ToolId>('hermes');
-  const [requestContentRead, setRequestContentRead] = useState(false);
-  const [requestRawWrite, setRequestRawWrite] = useState(false);
   const [copyFeedback, setCopyFeedback] = useState<CopyFeedback | null>(null);
   const [sharedCopyFeedback, setSharedCopyFeedback] = useState<'copied' | 'error' | null>(null);
   const sharedInstructions = t('MCPOAuth.sharedInstructions');
-  const requestedScopes = ['mcp:query', ...(requestContentRead ? ['mcp:content:read'] : []), ...(requestRawWrite ? ['mcp:raw:write'] : [])];
+  const requestedScopes = ['mcp:query', 'mcp:content:read', 'mcp:raw:write'];
   const requestedScope = requestedScopes.join(' ');
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const identityRef = useRef({ key: identityKey, generation: 0 });
@@ -187,20 +185,18 @@ export function AgentMcpTabs({
       <div className="p-5 pb-0 sm:p-6 sm:pb-0">
         <h2 id="mcp-oauth-setup-title" className="mt-2 text-lg font-semibold text-white">{t('MCPOAuth.setupTitle')}</h2>
         <p className="mt-2 text-sm leading-6 text-zinc-400">{t('MCPOAuth.setupIntro')}</p>
-        <fieldset className="mt-4 rounded border border-white/10 bg-black/20 p-4">
-          <legend className="px-1 text-sm font-semibold text-white">{t('MCPOAuth.requestedPermissions')}</legend>
-          <p className="mb-2 text-xs leading-5 text-zinc-400">{t('MCPOAuth.queryScopeRequired')}</p>
-          <label className="flex min-h-11 items-center gap-3 text-sm text-zinc-200">
-            <input type="checkbox" checked={requestContentRead} onChange={(event) => setRequestContentRead(event.target.checked)} className="size-4 accent-emerald-300" />
-            <span>{t('MCPOAuth.contentReadScope')}</span>
-          </label>
-          <p className="ml-7 text-xs leading-5 text-zinc-500">{t('MCPOAuth.contentReadScopeHint')}</p>
-          <label className="mt-2 flex min-h-11 items-center gap-3 text-sm text-zinc-200">
-            <input type="checkbox" checked={requestRawWrite} onChange={(event) => setRequestRawWrite(event.target.checked)} className="size-4 accent-emerald-300" />
-            <span>{t('MCPOAuth.rawWriteScope')}</span>
-          </label>
-          <p className="ml-7 text-xs leading-5 text-zinc-500">{t('MCPOAuth.scopeClientWarning')}</p>
-        </fieldset>
+        <section aria-labelledby="mcp-requested-permissions-title" className="mt-4 rounded border border-white/10 bg-black/20 p-4">
+          <h3 id="mcp-requested-permissions-title" className="text-sm font-semibold text-white">{t('MCPOAuth.requestedPermissions')}</h3>
+          <ul className="grid gap-3 text-sm leading-6 text-zinc-200">
+            <li>{t('MCPOAuth.queryScopeRequired')}</li>
+            <li>
+              <span>{t('MCPOAuth.contentReadScope')}</span>
+              <p className="text-xs leading-5 text-zinc-400">{t('MCPOAuth.contentReadScopeHint')}</p>
+            </li>
+            <li>{t('MCPOAuth.rawWriteScope')}</li>
+          </ul>
+          <p className="mt-3 text-xs leading-5 text-zinc-400">{t('MCPOAuth.scopeClientWarning')}</p>
+        </section>
         <details className="mt-4 rounded border border-white/10 bg-black/20 p-4">
           <summary className="cursor-pointer font-semibold text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300">{t('MCPOAuth.sharedInstructionsTitle')}</summary>
           <div className="mt-3">

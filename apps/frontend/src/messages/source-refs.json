@@ -257,10 +257,9 @@
     },
     "MCPOAuth.shortPromptGrokBot": {
       "kind": "literal",
-      "context": "Short natural-language MCP setup prompt for Grok Bot.",
+      "context": "Short natural-language MCP setup prompt for Grok Bot. The prompt supplies the resource URL and user purpose; OAuth transport handles permission scopes.",
       "params": [
-        "resourceURL",
-        "scopes"
+        "resourceURL"
       ],
       "protected_literals": [
         "MCP"
@@ -268,10 +267,9 @@
     },
     "MCPOAuth.shortPromptOpenAIWeb": {
       "kind": "literal",
-      "context": "Short natural-language MCP connection prompt for ChatGPT web.",
+      "context": "Short natural-language MCP connection prompt for ChatGPT web. The prompt supplies the resource URL and user purpose; OAuth transport handles permission scopes.",
       "params": [
-        "resourceURL",
-        "scopes"
+        "resourceURL"
       ]
     },
     "MCPOAuth.connection.confirmPrompt": {
