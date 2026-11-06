@@ -13,6 +13,7 @@ import (
 	"log"
 	"log/slog"
 	"net"
+	"net/http"
 	"net/url"
 	"path"
 	"strings"
@@ -820,6 +821,7 @@ func fetchFailureMessage(diagnostic FailureDiagnostic) string {
 		name = "DeepSeek Fetch"
 	}
 	message := name + " failed with an unknown cause"
+	statusInMessage := false
 	switch diagnostic.Category {
 	case FailureCategoryNotConfigured:
 		message = name + " is not configured; no provider request was made"
@@ -831,10 +833,21 @@ func fetchFailureMessage(diagnostic FailureDiagnostic) string {
 		message = name + " rejected the request under its security policy"
 	case FailureCategoryContentUnavailable:
 		message = name + " could not retrieve usable page content"
+		if diagnostic.UpstreamStatus == http.StatusNotFound {
+			message += fmt.Sprintf(" (upstream HTTP %d). Possible causes include target access restrictions or target errors, unsupported content type, or extraction yielding no usable content; this does not establish that the target website returned HTTP 404", diagnostic.UpstreamStatus)
+			statusInMessage = true
+		}
 	case FailureCategoryRateLimited:
-		message = name + " rate limit was reached"
+		message = name + " was rate limited"
 	case FailureCategoryProviderTimeout:
-		message = name + " upstream request timed out"
+		switch diagnostic.UpstreamStatus {
+		case http.StatusGatewayTimeout:
+			message = name + " reported that its downstream fetch timed out"
+		case http.StatusRequestTimeout:
+			message = name + " returned Request Timeout because the responding server did not receive a complete request message within its wait window"
+		default:
+			message = name + " reported a request timeout"
+		}
 	case FailureCategoryProviderError:
 		message = name + " returned a server error"
 	case FailureCategoryInvalidRequest:
@@ -844,9 +857,9 @@ func fetchFailureMessage(diagnostic FailureDiagnostic) string {
 	case FailureCategoryUnexpectedStatus:
 		message = name + " returned an unexpected HTTP status"
 	case FailureCategoryTransportTimeout:
-		message = name + " transport timed out"
+		message = "The local LWC-to-" + name + " transport timed out"
 	case FailureCategoryTransportCancelled:
-		message = name + " request was cancelled"
+		message = "The local LWC-to-" + name + " request was cancelled"
 	case FailureCategoryTransportError:
 		message = name + " transport failed"
 	case FailureCategoryInvalidResponse:
@@ -854,7 +867,7 @@ func fetchFailureMessage(diagnostic FailureDiagnostic) string {
 	case FailureCategoryContentTooLarge:
 		message = name + " returned content exceeding the supported size"
 	}
-	if diagnostic.UpstreamStatus > 0 {
+	if diagnostic.UpstreamStatus > 0 && !statusInMessage {
 		message += fmt.Sprintf(" (upstream HTTP %d)", diagnostic.UpstreamStatus)
 	}
 	return message + ". Paste Markdown or upload a saved page capture instead."

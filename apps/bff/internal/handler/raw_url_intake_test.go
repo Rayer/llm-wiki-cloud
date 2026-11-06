@@ -166,6 +166,144 @@ func TestScrapeRawReportsSafeFetchFailureAttribution(t *testing.T) {
 	}
 }
 
+func TestScrapeRawSerializesDistinctFetchFailureMeanings(t *testing.T) {
+	tests := []struct {
+		name     string
+		failure  *urlintake.ProviderFailure
+		category urlintake.FailureCategory
+		status   int
+		want     []string
+		notWant  []string
+	}{
+		{
+			name: "content unavailable 404",
+			failure: &urlintake.ProviderFailure{Provider: urlintake.DeepSeekFetchProvider, Kind: urlintake.FailureProvider,
+				Category: urlintake.FailureCategoryContentUnavailable, StatusCode: http.StatusNotFound},
+			category: urlintake.FailureCategoryContentUnavailable, status: http.StatusNotFound,
+			want: []string{"could not retrieve usable page content", "target access restrictions or target errors",
+				"unsupported content type", "extraction yielding no usable content",
+				"does not establish that the target website returned HTTP 404", "upstream HTTP 404"},
+		},
+		{
+			name: "provider downstream timeout 504",
+			failure: &urlintake.ProviderFailure{Provider: urlintake.DeepSeekFetchProvider, Kind: urlintake.FailureProvider,
+				Category: urlintake.FailureCategoryProviderTimeout, StatusCode: http.StatusGatewayTimeout},
+			category: urlintake.FailureCategoryProviderTimeout, status: http.StatusGatewayTimeout,
+			want:    []string{"downstream fetch timed out", "upstream HTTP 504"},
+			notWant: []string{"local LWC-to-DeepSeek Fetch transport timed out"},
+		},
+		{
+			name: "rate limited 429",
+			failure: &urlintake.ProviderFailure{Provider: urlintake.DeepSeekFetchProvider, Kind: urlintake.FailureRateLimited,
+				Category: urlintake.FailureCategoryRateLimited, StatusCode: http.StatusTooManyRequests},
+			category: urlintake.FailureCategoryRateLimited, status: http.StatusTooManyRequests,
+			want:    []string{"rate limited", "upstream HTTP 429"},
+			notWant: []string{"timed out", "could not retrieve usable page content"},
+		},
+		{
+			name: "request timeout 408",
+			failure: &urlintake.ProviderFailure{Provider: urlintake.DeepSeekFetchProvider, Kind: urlintake.FailureProvider,
+				Category: urlintake.FailureCategoryProviderTimeout, StatusCode: http.StatusRequestTimeout},
+			category: urlintake.FailureCategoryProviderTimeout, status: http.StatusRequestTimeout,
+			want:    []string{"Request Timeout", "complete request", "upstream HTTP 408"},
+			notWant: []string{"downstream fetch timed out"},
+		},
+		{
+			name: "unexpected status",
+			failure: &urlintake.ProviderFailure{Provider: urlintake.DeepSeekFetchProvider, Kind: urlintake.FailureProvider,
+				Category: urlintake.FailureCategoryUnexpectedStatus, StatusCode: http.StatusTeapot},
+			category: urlintake.FailureCategoryUnexpectedStatus, status: http.StatusTeapot,
+			want:    []string{"unexpected HTTP status", "upstream HTTP 418"},
+			notWant: []string{"downstream fetch timed out", "local LWC-to-DeepSeek Fetch transport timed out"},
+		},
+		{
+			name: "local transport timeout after HTTP 200",
+			failure: &urlintake.ProviderFailure{Provider: urlintake.DeepSeekFetchProvider, Kind: urlintake.FailureTransport,
+				StatusCode: http.StatusOK, Cause: context.DeadlineExceeded},
+			category: urlintake.FailureCategoryTransportTimeout, status: http.StatusOK,
+			want:    []string{"local LWC-to-DeepSeek Fetch transport timed out", "upstream HTTP 200"},
+			notWant: []string{"downstream fetch timed out", "HTTP 504"},
+		},
+		{
+			name: "local transport timeout with unknown status",
+			failure: &urlintake.ProviderFailure{Provider: urlintake.DeepSeekFetchProvider, Kind: urlintake.FailureTransport,
+				Cause: context.DeadlineExceeded},
+			category: urlintake.FailureCategoryTransportTimeout,
+			want:     []string{"local LWC-to-DeepSeek Fetch transport timed out"},
+			notWant:  []string{"upstream HTTP", "downstream fetch timed out", "HTTP 504"},
+		},
+		{
+			name: "unknown provider timeout status",
+			failure: &urlintake.ProviderFailure{Provider: urlintake.DeepSeekFetchProvider, Kind: urlintake.FailureProvider,
+				Category: urlintake.FailureCategoryProviderTimeout},
+			category: urlintake.FailureCategoryProviderTimeout,
+			want:     []string{"reported a request timeout"},
+			notWant:  []string{"downstream fetch timed out", "upstream HTTP"},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := localfs.New(t.TempDir())
+			service := urlintake.NewService(
+				intakeTestFetcher(func(context.Context, string) (urlintake.Page, error) {
+					return urlintake.Page{}, test.failure
+				}),
+				intakeTestEvaluator(func(context.Context, urlintake.QualityInput) (urlintake.QualityEvaluation, error) {
+					t.Fatal("Fetch failure must stop before quality evaluation")
+					return urlintake.QualityEvaluation{}, nil
+				}),
+				func(scope urlintake.ActorProject) (urlintake.ProjectStore, error) {
+					return root.WithScope(scope.ActorID, scope.ProjectID), nil
+				},
+				urlintake.DefaultQualityThresholds,
+			)
+			service.Resolver = intakeTestResolver{}
+			h := NewWithURLIntake(nil, nil, service)
+
+			response := callScrapeRaw(t, h, "actor-1", "project-1", `{"url":"https://example.com/article?query-canary=private"}`)
+			if response.Code != http.StatusServiceUnavailable {
+				t.Fatalf("Web outer status = %d, want 503; body=%s", response.Code, response.Body.String())
+			}
+			var payload ScrapeResponse
+			if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload.Status != "unavailable" || payload.FailureStage != "fetch" || payload.FailureDiagnostic == nil ||
+				payload.FailureDiagnostic.Dependency != urlintake.DeepSeekFetchProvider ||
+				payload.FailureDiagnostic.Category != test.category || payload.FailureDiagnostic.UpstreamStatus != test.status {
+				t.Fatalf("Web diagnostic = %#v; status=%s stage=%s", payload.FailureDiagnostic, payload.Status, payload.FailureStage)
+			}
+			for _, fragment := range test.want {
+				if !strings.Contains(payload.Message, fragment) {
+					t.Errorf("Web message %q does not contain %q", payload.Message, fragment)
+				}
+			}
+			for _, fragment := range test.notWant {
+				if strings.Contains(payload.Message, fragment) {
+					t.Errorf("Web message %q must not contain %q", payload.Message, fragment)
+				}
+			}
+			var wire map[string]any
+			if err := json.Unmarshal(response.Body.Bytes(), &wire); err != nil {
+				t.Fatal(err)
+			}
+			diagnosticWire, _ := wire["failure_diagnostic"].(map[string]any)
+			_, hasUpstreamStatus := diagnosticWire["upstream_status"]
+			if (test.status == 0) == hasUpstreamStatus {
+				t.Fatalf("upstream_status presence=%t for expected status %d: %#v", hasUpstreamStatus, test.status, diagnosticWire)
+			}
+			if strings.Contains(response.Body.String(), "query-canary=private") {
+				t.Fatal("source URL query leaked into the Web error response")
+			}
+			files, err := root.WithScope("actor-1", "project-1").ListRawFiles(context.Background())
+			if err != nil || len(files) != 0 {
+				t.Fatalf("Fetch failure changed raw content: files=%v err=%v", files, err)
+			}
+		})
+	}
+}
+
 func TestScrapeRawFailureLogAndFilteredTraceShareCorrelation(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	t.Setenv("LWC_OTLP_CLOUD_QA", "")
