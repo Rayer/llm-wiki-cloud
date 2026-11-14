@@ -891,9 +891,12 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
             event_path = root / "event.json"
             event_path.write_bytes(canonical({"inputs": {
                 "package_zip_base64": archive_b64,
-                "request_id": request_id,
-                "ready_artifact_id": "701",
-                "retention_days": "90",
+                "prepare_release_notes_package": True,
+                "operation": "release",
+                "release_notes_action": "stop",
+                "release_notes_package_request_id": request_id,
+                "artifact_id": "701",
+                "release_notes_package_retention_days": "90",
             }}))
             plan_path = self.make_plan_file(root)
             destination = root / "staged-package"
@@ -904,13 +907,29 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
             completed = subprocess.run([
                 sys.executable, str(ROOT / "deploy/engine/release_notes_workflow.py"),
                 "prepare-package", "--plan", str(plan_path), "--package-dir", str(destination),
-                "--environment", "dev", "--request-id", request_id, "--event-path", str(event_path),
+                "--environment", "dev", "--request-id", request_id, "--ready-artifact-id", "701",
+                "--retention-days", "90",
+                "--event-path", str(event_path),
             ], cwd=ROOT, env=environment, text=True, capture_output=True, check=False)
             self.assertEqual(completed.returncode, 0, completed.stderr)
             self.assertNotIn(archive_b64, completed.stdout + completed.stderr)
             self.assertNotIn(self.body.decode(), completed.stdout + completed.stderr)
             self.assertEqual((destination / "en.json").read_bytes(), self.body)
             self.assertEqual(output.read_text(), "product_version=1.2.3\n")
+
+            event = json.loads(event_path.read_text())
+            for field, value in (("prepare_release_notes_package", False),
+                                 ("prepare_release_notes_package", 1),
+                                 ("operation", "deploy"), ("release_notes_action", "run"),
+                                 ("release_notes_package_request_id", "2" * 32), ("artifact_id", "702"),
+                                 ("release_notes_package_retention_days", "30")):
+                with self.subTest(field=field):
+                    bad_path = root / f"bad-{field}.json"
+                    bad_event = {"inputs": {**event["inputs"], field: value}}
+                    bad_path.write_bytes(canonical(bad_event))
+                    with self.assertRaisesRegex(release_notes_workflow.PackageWorkflowError,
+                                                "workflow-event-invalid"):
+                        release_notes_workflow._read_package_input_from_event(bad_path, request_id, "701", "90")
 
     def test_manual_request_correlation_is_closed_and_invalid_values_are_not_staged(self):
         with TemporaryDirectory() as temporary:
@@ -1080,8 +1099,15 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
             self.assertEqual(version, "1.2.3")
             self.assertNotIn("Private package payload sentinel", serialized)
             self.assertLessEqual(len(serialized.encode()), 65535)
-            self.assertEqual(body["inputs"]["request_id"], "1" * 32)
-            self.assertEqual(body["inputs"]["retention_days"], "90")
+            inputs = body["inputs"]
+            self.assertEqual(inputs["release_notes_package_request_id"], "1" * 32)
+            self.assertEqual(inputs["release_notes_package_retention_days"], "90")
+            self.assertTrue(inputs["prepare_release_notes_package"])
+            self.assertEqual(inputs["operation"], "release")
+            self.assertEqual(inputs["release_notes_action"], "stop")
+            self.assertEqual(inputs["artifact_id"], "701")
+            self.assertEqual(len(base64.b64decode(inputs["package_zip_base64"], validate=True)),
+                             len(release_notes_workflow.package_directory_archive(package)))
 
     def test_parent_dispatch_posts_private_input_via_gh_stdin_and_returns_exact_artifact_receipt(self):
         with TemporaryDirectory() as temporary:
@@ -1093,7 +1119,7 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
                 None,
                 {"workflow_runs": [{
                     "id": 802, "run_attempt": 1, "display_title": "Prepare Release Notes package " + "a" * 32,
-                    "path": ".github/workflows/prepare-release-notes-package.yml@refs/heads/develop", "event": "workflow_dispatch",
+                    "path": ".github/workflows/deploy-dev.yml@refs/heads/develop", "event": "workflow_dispatch",
                     "head_branch": "develop", "head_sha": "c" * 40, "status": "completed",
                     "conclusion": "success", "html_url": "https://github.test/run/802",
                 }]},
@@ -1114,22 +1140,29 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
             self.assertNotIn("Private package payload sentinel", json.dumps(receipt))
             endpoint, = api.call_args_list[0].args[1:2]
             body = json.loads(api.call_args_list[0].kwargs["body"])
-            self.assertEqual(endpoint, "actions/workflows/prepare-release-notes-package.yml/dispatches")
+            self.assertEqual(endpoint, "actions/workflows/deploy-dev.yml/dispatches")
             self.assertEqual(body["ref"], "develop")
-            self.assertEqual(body["inputs"]["request_id"], "a" * 32)
+            self.assertEqual(body["inputs"]["release_notes_package_request_id"], "a" * 32)
+            self.assertTrue(body["inputs"]["prepare_release_notes_package"])
+            self.assertEqual(body["inputs"]["operation"], "release")
+            self.assertEqual(body["inputs"]["release_notes_action"], "stop")
+            self.assertEqual(body["inputs"]["artifact_id"], "701")
+            self.assertTrue(body["inputs"]["package_zip_base64"])
             self.assertEqual(api.call_args_list[0].kwargs["method"], "POST")
-            self.assertEqual(body["inputs"]["retention_days"], "90")
+            self.assertEqual(body["inputs"]["release_notes_package_retention_days"], "90")
+            self.assertNotIn("Private package payload sentinel", json.dumps(receipt))
+            self.assertNotIn(body["inputs"]["package_zip_base64"], json.dumps(receipt))
 
     def test_gh_api_writer_uses_stdin_and_never_shells_package_json(self):
-        package_request = b'{"ref":"develop","inputs":{"package_zip_base64":"private"}}'
+        package_request = b'{"ref":"develop","inputs":{"prepare_release_notes_package":true,"package_zip_base64":"private"}}'
         completed = type("Completed", (), {"returncode": 0, "stdout": b"", "stderr": b""})()
         with patch.object(release_notes_workflow.subprocess, "run", return_value=completed) as run:
             self.assertIsNone(release_notes_workflow._gh_api(
-                "Rayer/llm-wiki-cloud", "actions/workflows/prepare-release-notes-package.yml/dispatches",
+                "Rayer/llm-wiki-cloud", "actions/workflows/deploy-dev.yml/dispatches",
                 method="POST", body=package_request))
         args, kwargs = run.call_args
         self.assertEqual(args[0], ["gh", "api",
-                                   "repos/Rayer/llm-wiki-cloud/actions/workflows/prepare-release-notes-package.yml/dispatches",
+                                   "repos/Rayer/llm-wiki-cloud/actions/workflows/deploy-dev.yml/dispatches",
                                    "--method", "POST", "--input", "-"])
         self.assertEqual(kwargs["input"], package_request)
         self.assertIs(kwargs["capture_output"], True)

@@ -406,7 +406,7 @@ test('DEV workflow invokes the shared engine and isolates the fixed diagnostic r
   const workflow = (await import('js-yaml')).load(await readFile(join(monorepoRoot, '.github/workflows/deploy-dev.yml'), 'utf8'));
   const job = workflow.jobs.release;
   assert.equal(workflow.on.push, undefined);
-  assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), ['components', 'release_tag', 'artifact_id', 'release_notes_artifact_id', 'release_notes_action', 'release_notes_result_artifact_id', 'release_notes_operation', 'dev_artifact_id', 'frontend_config_artifact_id', 'source_sha', 'force', 'operation', 'pipeline_run_timeout_seconds', 'release_source_mode', 'auth_schema_version', 'auth_repository_id', 'auth_revision', 'auth_tree_sha256', 'auth_artifact_id', 'auth_run_id', 'auth_run_attempt']);
+  assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), ['components', 'release_tag', 'artifact_id', 'release_notes_artifact_id', 'release_notes_action', 'release_notes_result_artifact_id', 'release_notes_operation', 'dev_artifact_id', 'frontend_config_artifact_id', 'source_sha', 'force', 'operation', 'pipeline_run_timeout_seconds', 'release_source_mode', 'auth_schema_version', 'auth_repository_id', 'auth_revision', 'auth_tree_sha256', 'auth_artifact_id', 'auth_run_id', 'auth_run_attempt', 'prepare_release_notes_package', 'package_zip_base64', 'release_notes_package_retention_days', 'release_notes_package_request_id']);
   assert.equal(workflow.on.workflow_dispatch.inputs.operation.type, 'choice');
   assert.deepEqual(workflow.on.workflow_dispatch.inputs.operation.options, ['release', 'config-only', 'frontend-config-only', 'frontend-config-generate', 'deploy', 'rollback', 'reactivate', 'tag', 'readback', 'notes-resend', 'diagnose-auth-image']);
   assert.equal(workflow.on.workflow_dispatch.inputs.operation.default, 'release');
@@ -426,7 +426,7 @@ test('DEV workflow invokes the shared engine and isolates the fixed diagnostic r
     options: ['release', 'deploy', 'rollback', 'reactivate', 'promote'], default: 'release',
   });
   assert.equal(workflow.on.workflow_dispatch.inputs.release_tag.required, false);
-  assert.equal(job.if, "github.ref == 'refs/heads/develop' && inputs.operation != 'diagnose-auth-image' && inputs.operation != 'frontend-config-generate'");
+  assert.equal(job.if, "github.ref == 'refs/heads/develop' && inputs.prepare_release_notes_package != true && inputs.operation != 'diagnose-auth-image' && inputs.operation != 'frontend-config-generate'");
   assert.equal(job.uses, './.github/workflows/cd.yml');
   assert.equal(job.secrets, 'inherit');
   assert.deepEqual(job.with, {
@@ -451,12 +451,33 @@ test('DEV workflow invokes the shared engine and isolates the fixed diagnostic r
     auth_run_id: '${{ fromJSON(inputs.auth_run_id) }}',
     auth_run_attempt: '${{ fromJSON(inputs.auth_run_attempt) }}',
   });
+  assert.equal(workflow.on.workflow_dispatch.inputs.prepare_release_notes_package.type, 'boolean');
+  assert.equal(workflow.on.workflow_dispatch.inputs.prepare_release_notes_package.default, false);
+  assert.equal(workflow.on.workflow_dispatch.inputs.package_zip_base64.type, 'string');
+  assert.equal(workflow.on.workflow_dispatch.inputs.package_zip_base64.default, '');
+  assert.equal(workflow.on.workflow_dispatch.inputs.release_notes_package_retention_days.type, 'choice');
+  assert.deepEqual(workflow.on.workflow_dispatch.inputs.release_notes_package_retention_days.options, ['30', '90']);
+  assert.equal(workflow.on.workflow_dispatch.inputs.release_notes_package_request_id.type, 'string');
+  const packageJob = workflow.jobs['prepare-release-notes-package'];
+  assert.equal(packageJob.if, 'inputs.prepare_release_notes_package == true');
+  assert.equal(packageJob.uses, './.github/workflows/prepare-release-notes-package.yml');
+  assert.deepEqual(packageJob.permissions, { contents: 'read', actions: 'write' });
+  assert.deepEqual(packageJob.with, {
+    ready_artifact_id: '${{ inputs.artifact_id }}',
+    retention_days: '${{ inputs.release_notes_package_retention_days }}',
+    request_id: '${{ inputs.release_notes_package_request_id }}',
+  });
+  assert.equal(packageJob.secrets, undefined);
+  assert.doesNotMatch(JSON.stringify(packageJob.with), /package_zip_base64|package body|secret/i);
+  assert.ok(workflow.jobs['frontend-config-generate'].if.includes('inputs.prepare_release_notes_package != true'));
   const diagnostic = workflow.jobs['auth-image-diagnostic'];
   assert.ok(diagnostic.if.includes("inputs.operation == 'diagnose-auth-image'"));
+  assert.ok(diagnostic.if.includes('inputs.prepare_release_notes_package != true'));
   assert.ok(diagnostic.if.includes("github.ref == 'refs/heads/develop'"));
   assert.deepEqual(diagnostic.permissions, { contents: 'read', actions: 'read', 'id-token': 'write' });
   assert.equal(diagnostic.uses, './.github/workflows/cd-auth-image-diagnostic.yml');
   assert.equal(diagnostic.secrets, 'inherit');
   assert.deepEqual(diagnostic.with, { source_sha: '${{ github.sha }}' });
   assert.ok(workflow.jobs['main-fast-forward-eligible'].if.includes("inputs.operation != 'notes-resend'"));
+  assert.ok(workflow.jobs['main-fast-forward-eligible'].if.includes('inputs.prepare_release_notes_package != true'));
 });

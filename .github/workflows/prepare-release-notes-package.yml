@@ -1,22 +1,15 @@
 name: Prepare private Release Notes package
-run-name: Prepare Release Notes package ${{ inputs.request_id }}
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
       ready_artifact_id:
         description: Exact retained Ready artifact from a DEV release stopped because its selected BFF Notes package ID was missing
         required: true
         type: string
-      package_zip_base64:
-        description: Private base64 ZIP (at most 40 KiB compressed) of the existing TPM-authored manifest and locale JSON files; read from the event file, never a step environment
-        required: true
-        type: string
       retention_days:
         description: Private artifact retention period
         required: true
-        type: choice
-        options: ['30', '90']
-        default: '90'
+        type: string
       request_id:
         description: Unique lowercase 32-hex correlation value used only for this manual preparation run
         required: true
@@ -29,7 +22,6 @@ concurrency:
   cancel-in-progress: false
 jobs:
   package:
-    if: github.ref == 'refs/heads/develop'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -41,10 +33,20 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
       - name: Validate workflow source branch
+        env:
+          REQUEST_ID: ${{ inputs.request_id }}
+          READY_ARTIFACT_ID: ${{ inputs.ready_artifact_id }}
+          RETENTION_DAYS: ${{ inputs.retention_days }}
         run: |
           set -Eeuo pipefail
           test "$GITHUB_REF" = refs/heads/develop
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          [[ "$REQUEST_ID" =~ ^[0-9a-f]{32}$ ]]
+          [[ "$READY_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$RETENTION_DAYS" == 30 || "$RETENTION_DAYS" == 90 ]]
+          python3 deploy/engine/release_notes_workflow.py validate-package-event \
+            --event-path "$GITHUB_EVENT_PATH" --request-id "$REQUEST_ID" \
+            --ready-artifact-id "$READY_ARTIFACT_ID" --retention-days "$RETENTION_DAYS"
       - name: Locate the exact prepared Ready run and its final result artifact
         id: ready
         env:
@@ -104,12 +106,16 @@ jobs:
         id: prepare
         env:
           REQUEST_ID: ${{ inputs.request_id }}
+          READY_ARTIFACT_ID: ${{ inputs.ready_artifact_id }}
+          RETENTION_DAYS: ${{ inputs.retention_days }}
         run: |
           set -Eeuo pipefail
           python3 deploy/engine/release_notes_workflow.py prepare-package \
             --plan "$RUNNER_TEMP/ready-plan/plan.json" \
             --package-dir "$RUNNER_TEMP/release-notes-input" \
             --environment dev --request-id "$REQUEST_ID" \
+            --ready-artifact-id "$READY_ARTIFACT_ID" \
+            --retention-days "$RETENTION_DAYS" \
             --event-path "$GITHUB_EVENT_PATH"
       - name: Upload the validated package as the exact private runtime artifact
         id: upload

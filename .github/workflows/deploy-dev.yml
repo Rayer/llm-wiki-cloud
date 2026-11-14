@@ -1,4 +1,5 @@
 name: Deploy Development
+run-name: ${{ inputs.prepare_release_notes_package && format('Prepare Release Notes package {0}', inputs.release_notes_package_request_id) || github.ref_name }}
 on:
   workflow_dispatch:
     inputs:
@@ -96,13 +97,44 @@ on:
         description: Successful GateAuth workflow run attempt
         type: number
         default: 0
+      prepare_release_notes_package:
+        description: Prepare the TPM-authored private Notes package for an exact retained Ready artifact; skips every deployment operation
+        required: false
+        type: boolean
+        default: false
+      package_zip_base64:
+        description: Private bounded base64 ZIP of the existing TPM-authored Notes package; consumed from this dispatch event file only
+        required: false
+        type: string
+        default: ''
+      release_notes_package_retention_days:
+        description: Retention for the private package artifact
+        required: false
+        type: choice
+        options: ['30', '90']
+        default: '90'
+      release_notes_package_request_id:
+        description: Unique lowercase 32-hex correlation value for private package preparation
+        required: false
+        type: string
+        default: ''
 permissions:
   contents: write
   actions: read
   id-token: write
 jobs:
+  prepare-release-notes-package:
+    if: inputs.prepare_release_notes_package == true
+    permissions:
+      contents: read
+      actions: write
+    uses: ./.github/workflows/prepare-release-notes-package.yml
+    with:
+      ready_artifact_id: ${{ inputs.artifact_id }}
+      retention_days: ${{ inputs.release_notes_package_retention_days }}
+      request_id: ${{ inputs.release_notes_package_request_id }}
   release:
-    if: github.ref == 'refs/heads/develop' && inputs.operation != 'diagnose-auth-image' && inputs.operation != 'frontend-config-generate'
+    if: github.ref == 'refs/heads/develop' && inputs.prepare_release_notes_package != true && inputs.operation != 'diagnose-auth-image' && inputs.operation != 'frontend-config-generate'
     uses: ./.github/workflows/cd.yml
     secrets: inherit
     with:
@@ -130,7 +162,7 @@ jobs:
       force: ${{ inputs.force }}
       pipeline_run_timeout_seconds: ${{ inputs.pipeline_run_timeout_seconds }}
   frontend-config-generate:
-    if: github.ref == 'refs/heads/develop' && inputs.operation == 'frontend-config-generate'
+    if: github.ref == 'refs/heads/develop' && inputs.prepare_release_notes_package != true && inputs.operation == 'frontend-config-generate'
     permissions:
       contents: read
     uses: ./.github/workflows/generate-frontend-config.yml
@@ -139,6 +171,7 @@ jobs:
   auth-image-diagnostic:
     if: >-
       inputs.operation == 'diagnose-auth-image' &&
+      inputs.prepare_release_notes_package != true &&
       github.ref == 'refs/heads/develop' &&
       inputs.components == 'auth' &&
       inputs.release_tag == 'diagnostic-36992147920' &&
@@ -157,6 +190,7 @@ jobs:
     if: >-
       always() && github.event_name == 'workflow_dispatch' &&
       github.ref == 'refs/heads/develop' &&
+      inputs.prepare_release_notes_package != true &&
       inputs.components != 'provision-exportjob-dev' &&
       inputs.operation != 'diagnose-auth-image' &&
       inputs.operation != 'config-only' &&

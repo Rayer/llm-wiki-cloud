@@ -22,7 +22,7 @@ import zipfile
 import release_notes
 
 
-WORKFLOW_PATH = ".github/workflows/prepare-release-notes-package.yml"
+WORKFLOW_PATH = ".github/workflows/deploy-dev.yml"
 READY_WORKFLOW_PATH = ".github/workflows/deploy-dev.yml"
 MAX_DISPATCH_ZIP_BYTES = 40 * 1024
 MAX_DISPATCH_BASE64_CHARS = 4 * ((MAX_DISPATCH_ZIP_BYTES + 2) // 3)
@@ -89,7 +89,13 @@ def _read_json(path: Path):
         _fail("metadata-unavailable")
 
 
-def _read_package_input_from_event(event_path: Path, expected_request_id: str) -> str:
+def _read_package_input_from_event(event_path: Path, expected_request_id: str,
+                                  expected_ready_artifact_id: str,
+                                  expected_retention_days: str) -> str:
+    if (not REQUEST_ID_RE.fullmatch(expected_request_id) or
+            not ID_RE.fullmatch(expected_ready_artifact_id) or
+            expected_retention_days not in {str(value) for value in ALLOWED_RETENTION_DAYS}):
+        _fail("workflow-event-invalid")
     try:
         if event_path.is_symlink() or not event_path.is_file() or event_path.stat().st_size > MAX_EVENT_BYTES:
             _fail("workflow-event-unavailable")
@@ -97,7 +103,14 @@ def _read_package_input_from_event(event_path: Path, expected_request_id: str) -
     except OSError:
         _fail("workflow-event-unavailable")
     inputs = event.get("inputs")
-    if not isinstance(inputs, dict) or inputs.get("request_id") != expected_request_id:
+    prepare_mode = inputs.get("prepare_release_notes_package") if isinstance(inputs, dict) else None
+    if (not isinstance(inputs, dict) or
+            not (prepare_mode is True or (type(prepare_mode) is str and prepare_mode == "true")) or
+            inputs.get("operation") != "release" or
+            inputs.get("release_notes_action") != "stop" or
+            inputs.get("release_notes_package_request_id") != expected_request_id or
+            inputs.get("artifact_id") != expected_ready_artifact_id or
+            inputs.get("release_notes_package_retention_days") != expected_retention_days):
         _fail("workflow-event-invalid")
     archive_b64 = inputs.get("package_zip_base64")
     if not isinstance(archive_b64, str) or not archive_b64:
@@ -513,8 +526,10 @@ def prepare_package(archive_b64: str, plan_path: Path, destination: Path, output
 
 
 def prepare_package_from_event(event_path: Path, plan_path: Path, destination: Path,
-                               output_path: str | None, request_id: str) -> dict:
-    archive_b64 = _read_package_input_from_event(event_path, request_id)
+                               output_path: str | None, request_id: str,
+                               ready_artifact_id: str, retention_days: str) -> dict:
+    archive_b64 = _read_package_input_from_event(
+        event_path, request_id, ready_artifact_id, retention_days)
     return prepare_package(archive_b64, plan_path, destination, output_path, request_id)
 
 
@@ -597,10 +612,13 @@ def build_dispatch_payload(package_dir: Path, *, ready_artifact_id: str, retenti
     if not REQUEST_ID_RE.fullmatch(request_id):
         _fail("dispatch-request-id-invalid")
     inputs = {
-        "ready_artifact_id": ready_artifact_id,
+        "artifact_id": ready_artifact_id,
+        "prepare_release_notes_package": True,
+        "operation": "release",
+        "release_notes_action": "stop",
         "package_zip_base64": archive_b64,
-        "retention_days": str(retention_days),
-        "request_id": request_id,
+        "release_notes_package_retention_days": str(retention_days),
+        "release_notes_package_request_id": request_id,
     }
     body = {"ref": "develop", "inputs": inputs}
     encoded_body = json.dumps(body, separators=(",", ":")).encode("utf-8")
@@ -635,10 +653,10 @@ def dispatch_package(repository: str, package_dir: Path, *, ready_artifact_id: s
     body, version = build_dispatch_payload(package_dir, ready_artifact_id=ready_artifact_id,
                                            retention_days=retention_days, request_id=request_id)
     body_bytes = json.dumps(body, separators=(",", ":")).encode("utf-8")
-    _gh_api(repository, f"actions/workflows/prepare-release-notes-package.yml/dispatches",
+    _gh_api(repository, f"actions/workflows/deploy-dev.yml/dispatches",
             method="POST", body=body_bytes)
     title = f"Prepare Release Notes package {request_id}"
-    endpoint = "actions/workflows/prepare-release-notes-package.yml/runs?branch=develop&event=workflow_dispatch&per_page=100"
+    endpoint = "actions/workflows/deploy-dev.yml/runs?branch=develop&event=workflow_dispatch&per_page=100"
     deadline = time.monotonic() + timeout_seconds
     run = None
     while time.monotonic() < deadline:
@@ -736,8 +754,15 @@ def _argument_parser():
     prepare.add_argument("--package-dir", required=True)
     prepare.add_argument("--environment", choices=("dev",), required=True)
     prepare.add_argument("--request-id", required=True)
+    prepare.add_argument("--ready-artifact-id", required=True)
+    prepare.add_argument("--retention-days", choices=tuple(str(x) for x in sorted(ALLOWED_RETENTION_DAYS)), required=True)
     prepare.add_argument("--event-path", default="")
     prepare.add_argument("--output", default="")
+    validate_event = subparsers.add_parser("validate-package-event")
+    validate_event.add_argument("--event-path", required=True)
+    validate_event.add_argument("--request-id", required=True)
+    validate_event.add_argument("--ready-artifact-id", required=True)
+    validate_event.add_argument("--retention-days", choices=tuple(str(x) for x in sorted(ALLOWED_RETENTION_DAYS)), required=True)
     verify = subparsers.add_parser("verify-upload")
     verify.add_argument("--package-dir", required=True)
     verify.add_argument("--plan", required=True)
@@ -798,7 +823,12 @@ def main(argv=None):
             if not event_value:
                 _fail("workflow-event-unavailable")
             result = prepare_package_from_event(Path(event_value), Path(args.plan), Path(args.package_dir),
-                                                args.output, args.request_id)
+                                                args.output, args.request_id, args.ready_artifact_id,
+                                                args.retention_days)
+        elif args.command == "validate-package-event":
+            _read_package_input_from_event(Path(args.event_path), args.request_id,
+                                           args.ready_artifact_id, args.retention_days)
+            result = {"status": "valid"}
         elif args.command == "verify-upload":
             metadata = _read_json(Path(args.metadata))
             result = verify_uploaded_package(
