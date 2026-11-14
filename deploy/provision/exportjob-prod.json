@@ -1,0 +1,10 @@
+{
+  "environment": "production",
+  "project": "llm-wiki-cloud",
+  "bucket": "llm-wiki-data",
+  "runtime_service_account": "lwc-export-worker-prod@llm-wiki-cloud.iam.gserviceaccount.com",
+  "role": "projects/llm-wiki-cloud/roles/lwcExportObjectLister",
+  "included_permissions": [
+    "storage.objects.list"
+  ]
+}
