@@ -889,15 +889,24 @@ func runPostprocessCommand(ctx context.Context, cfg workerConfig) (runErr error)
 	if err := localWorkspaceBatchHooks.recoverInterruptedPublish(vault); err != nil {
 		return lifecycle.fail(err, failureStageGenerationPublish, failureClassIO)
 	}
+	priorRecency, err := wikiindex.CaptureConceptRecencySnapshot(ctx, fsstore.New(vault))
+	if err != nil {
+		return lifecycle.fail(fmt.Errorf("capture prior concept recency: %w", err), failureStageInputMaterialization, failureClassStateInvalid)
+	}
 	workspace, err := localWorkspaceBatchHooks.createWorkspace(cfg.WorkspaceDir, vault)
 	lifecycle.workspace = workspace
 	if err != nil {
 		return lifecycle.fail(err, failureStageInputMaterialization, failureClassIO)
 	}
+	runAt := time.Now().UTC()
 	postCtx, postSpan := observability.StartWorkerSpan(ctx, "pipeline.worker.postprocess")
 	if err := localWorkspaceBatchHooks.runPostprocessWithProvider(postCtx, workspace, suggestedQueryProvider(cfg), nil); err != nil {
 		observability.FinishPipelineSpan(postSpan, workerTraceOutcome(err))
 		return lifecycle.fail(err, failureStagePostprocess, failureClassIO)
+	}
+	if err := enrichWorkspaceConceptRecency(ctx, workspace, priorRecency, runAt); err != nil {
+		observability.FinishPipelineSpan(postSpan, workerTraceOutcome(err))
+		return lifecycle.fail(fmt.Errorf("postprocess concept recency: %w", err), failureStagePostprocess, failureClassStateInvalid)
 	}
 	observability.FinishPipelineSpan(postSpan, "success")
 	if err := localWorkspaceBatchHooks.syncWorkspaceOutputs(workspace, vault, cfg.ExecutionID); err != nil {
@@ -1819,10 +1828,10 @@ func runCacheIndexStage(ctx context.Context, vault string, warn io.Writer) error
 		if err := enforceActiveEntityCoverage(plan); err != nil {
 			return fmt.Errorf("postprocess Synto index: %w", err)
 		}
-		if _, err := wikiindex.RebuildWithSyntoIdentity(ctx, store, plan); err != nil {
+		if _, err := wikiindex.RebuildWithSyntoIdentityWithoutRecency(ctx, store, plan); err != nil {
 			return fmt.Errorf("postprocess Synto index: %w", err)
 		}
-	} else if _, err := wikiindex.Rebuild(ctx, store); err != nil {
+	} else if _, err := wikiindex.RebuildWithoutRecency(ctx, store); err != nil {
 		return fmt.Errorf("postprocess: %w", err)
 	}
 	if err := ensureDormantConceptCache(vault); err != nil {
@@ -1830,6 +1839,28 @@ func runCacheIndexStage(ctx context.Context, vault string, warn io.Writer) error
 	}
 	if err := writeRawStatus(ctx, vault); err != nil {
 		return fmt.Errorf("postprocess raw status: %w", err)
+	}
+	return nil
+}
+
+// enrichWorkspaceConceptRecency restores semantic history after postprocess
+// rebuilds the private candidate without recency. The committed snapshot is
+// captured by runPostprocessCommand before the candidate is rebuilt; all
+// validation and encoding complete before either candidate cache is replaced.
+func enrichWorkspaceConceptRecency(ctx context.Context, workspace string, prior wikiindex.ConceptRecencySnapshot, runAt time.Time) error {
+	current, err := wikiindex.CaptureConceptRecencySnapshot(ctx, fsstore.New(workspace))
+	if err != nil {
+		return fmt.Errorf("capture rebuilt concept snapshot: %w", err)
+	}
+	active, dormant, err := wikiindex.EnrichConceptRecency(current, prior, runAt)
+	if err != nil {
+		return err
+	}
+	if err := writeFileAtomicWithin(workspace, wikiindex.ConceptsJSONLPath, active); err != nil {
+		return fmt.Errorf("write enriched active concept cache: %w", err)
+	}
+	if err := writeFileAtomicWithin(workspace, wikiindex.DormantConceptsJSONLPath, dormant); err != nil {
+		return fmt.Errorf("write enriched dormant concept cache: %w", err)
 	}
 	return nil
 }

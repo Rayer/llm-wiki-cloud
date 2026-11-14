@@ -6,8 +6,8 @@ export function entryDate(entry: WikiEntry): number | null {
   return Number.isFinite(value) ? value : null;
 }
 
-export function entryObjectUpdatedAt(entry: WikiEntry): number | null {
-  const value = entry.objectUpdatedAt ? Date.parse(entry.objectUpdatedAt) : NaN;
+export function entryContentUpdatedAt(entry: WikiEntry): number | null {
+  const value = entry.contentUpdatedAt ? Date.parse(entry.contentUpdatedAt) : NaN;
   return Number.isFinite(value) ? value : null;
 }
 
@@ -19,8 +19,8 @@ export function selectEntries(entries: WikiEntry[], search: string, status: stri
     && (dates === 'all' || (entryDate(entry) !== null) === (dates === 'dated')),
   ).sort((a, b) => {
     if (order === 'updated-desc') {
-      const left = entryObjectUpdatedAt(a);
-      const right = entryObjectUpdatedAt(b);
+      const left = entryContentUpdatedAt(a);
+      const right = entryContentUpdatedAt(b);
       if (left === null || right === null) return left === right ? collator.compare(a.title, b.title) || collator.compare(a.slug, b.slug) : left === null ? 1 : -1;
       return right - left || collator.compare(a.title, b.title) || collator.compare(a.slug, b.slug);
     }
@@ -43,5 +43,19 @@ export function selectSources(sources: SourceListItem[], search: string, lifecyc
     [source.title, source.rawPath].some((value) => value.toLocaleLowerCase().includes(query))
     && (lifecycle === 'all' || source.lifecycle === lifecycle)
     && (annotation === 'all' || source.annotationPresent === (annotation === 'present')),
-  ).sort((a, b) => collator.compare(order === 'path' ? a.rawPath : a.title, order === 'path' ? b.rawPath : b.title) * (order === 'title-desc' ? -1 : 1));
+	).sort((a, b) => {
+		if (order === 'added-desc') {
+			const left = a.addedAt ? Date.parse(a.addedAt) : NaN;
+			const right = b.addedAt ? Date.parse(b.addedAt) : NaN;
+			const validLeft = Number.isFinite(left) ? left : null;
+			const validRight = Number.isFinite(right) ? right : null;
+			if (validLeft === null || validRight === null) {
+				return validLeft === validRight
+					? collator.compare(a.title, b.title) || collator.compare(a.slug, b.slug) || collator.compare(a.rawPath, b.rawPath)
+					: validLeft === null ? 1 : -1;
+			}
+			return validRight - validLeft || collator.compare(a.title, b.title) || collator.compare(a.slug, b.slug) || collator.compare(a.rawPath, b.rawPath);
+		}
+		return collator.compare(order === 'path' ? a.rawPath : a.title, order === 'path' ? b.rawPath : b.title) * (order === 'title-desc' ? -1 : 1);
+	});
 }

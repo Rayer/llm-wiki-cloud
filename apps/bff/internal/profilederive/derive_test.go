@@ -410,3 +410,39 @@ func TestValidateConceptSnapshotCanonicalWriterFields(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateConceptSnapshotAcceptsRecencyFieldsAndKeepsStrictTypes(t *testing.T) {
+	const id = "01JAZ5N7Y3K8M2Q4R6T9VWXABC"
+	const hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	const updatedAt = "2026-11-14T07:46:33.123456789Z"
+	legacy := []byte(`{"slug":"alpha","title":"Alpha","frontmatter":{"id":"` + id + `"}}` + "\n")
+	newRow := []byte(`{"slug":"alpha","title":"Alpha","frontmatter":{"id":"` + id + `"},"content_sha256":"` + hash + `","content_updated_at":"` + updatedAt + `"}` + "\n")
+	ids := wikiindex.IDMap{Concept: map[string]string{id: "alpha"}}
+	for name, data := range map[string][]byte{"legacy": legacy, "recency": newRow} {
+		t.Run(name, func(t *testing.T) {
+			concepts, digest, err := ValidateConceptSnapshot(data, ids)
+			if err != nil || len(concepts) != 1 || concepts[0].Row != strings.TrimSuffix(string(data), "\n") || digest != profileartifacts.SHA256(data) {
+				t.Fatalf("validate snapshot = %+v digest=%s err=%v", concepts, digest, err)
+			}
+		})
+	}
+
+	for name, row := range map[string]string{
+		"unknown field":        `{"slug":"alpha","title":"Alpha","frontmatter":{"id":"` + id + `"},"other":true}`,
+		"duplicate hash":       `{"slug":"alpha","title":"Alpha","frontmatter":{"id":"` + id + `"},"content_sha256":"` + hash + `","content_sha256":"` + hash + `"}`,
+		"null hash":            `{"slug":"alpha","title":"Alpha","frontmatter":{"id":"` + id + `"},"content_sha256":null}`,
+		"wrong hash type":      `{"slug":"alpha","title":"Alpha","frontmatter":{"id":"` + id + `"},"content_sha256":7}`,
+		"bad hash":             `{"slug":"alpha","title":"Alpha","frontmatter":{"id":"` + id + `"},"content_sha256":"ABC"}`,
+		"null time":            `{"slug":"alpha","title":"Alpha","frontmatter":{"id":"` + id + `"},"content_updated_at":null}`,
+		"wrong time type":      `{"slug":"alpha","title":"Alpha","frontmatter":{"id":"` + id + `"},"content_updated_at":7}`,
+		"invalid time":         `{"slug":"alpha","title":"Alpha","frontmatter":{"id":"` + id + `"},"content_updated_at":"not-a-time"}`,
+		"non UTC time":         `{"slug":"alpha","title":"Alpha","frontmatter":{"id":"` + id + `"},"content_updated_at":"2026-11-14T07:46:33+01:00"}`,
+		"duplicate nested key": `{"slug":"alpha","title":"Alpha","frontmatter":{"id":"` + id + `","id":"` + id + `"},"content_sha256":"` + hash + `"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, _, err := ValidateConceptSnapshot([]byte(row+"\n"), ids); err == nil {
+				t.Fatalf("accepted invalid canonical row: %s", row)
+			}
+		})
+	}
+}

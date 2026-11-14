@@ -1,8 +1,8 @@
 import React from 'react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { entryDate, selectEntries, selectSources } from '@/lib/list-controls';
-import type { SourceListItem, WikiEntry } from '@/lib/api';
+import { entryContentUpdatedAt, entryDate, selectEntries, selectSources } from '@/lib/list-controls';
+import { normalizeEntry, normalizeSourceListItem, type SourceListItem, type WikiEntry } from '@/lib/api';
 import { ListClient } from '@/components/ListClient';
 import { SourceListClient } from '@/components/SourceListClient';
 
@@ -61,6 +61,27 @@ it('combines real source fields and supports path ordering', () => {
   expect(selectSources(sources, 'notes', 'synced', 'present', 'title-desc').map((source) => source.title)).toEqual(['Alpha notes']);
   expect(selectSources(sources, '', 'all', 'all', 'path').map((source) => source.title)).toEqual(['Beta notes', 'Gamma notes', 'Alpha notes']);
 });
+it('sorts Sources by raw added time, with unknown last and deterministic ties', () => {
+  const dated = [
+    { ...sources[0], title: 'Same', slug: 'z', addedAt: '2026-01-01T00:00:00Z' },
+    { ...sources[1], title: 'Same', slug: 'a', addedAt: '2026-01-01T00:00:00Z' },
+    { ...sources[2], title: 'Newest', addedAt: '2026-02-01T00:00:00Z' },
+    { ...sources[0], title: 'Unknown', slug: 'unknown', addedAt: null },
+  ];
+  expect(selectSources(dated, '', 'all', 'all', 'added-desc').map((source) => source.title)).toEqual(['Newest', 'Same', 'Same', 'Unknown']);
+  expect(selectSources(dated, '', 'all', 'all', 'added-desc').slice(1, 3).map((source) => source.slug)).toEqual(['a', 'z']);
+});
+it('normalizes optional semantic timestamps without falling back to physical object time', () => {
+  expect(normalizeEntry({ slug: 'legacy', updated_at: '2026-11-10T00:00:00Z', content_updated_at: 'invalid' }).contentUpdatedAt).toBeNull();
+  expect(normalizeSourceListItem({ raw_path: 'raw/a.md', added_at: '2026-11-10T00:00:00Z' }).addedAt).toBe('2026-11-10T00:00:00Z');
+  const semantic: WikiEntry[] = [
+    { title: 'Old semantic', slug: 'old', objectUpdatedAt: '2026-11-13T00:00:00Z', contentUpdatedAt: '2026-11-01T00:00:00Z', raw: {} },
+    { title: 'New semantic', slug: 'new', objectUpdatedAt: '2026-11-01T00:00:00Z', contentUpdatedAt: '2026-11-12T00:00:00Z', raw: {} },
+    { title: 'Legacy', slug: 'legacy', objectUpdatedAt: '2026-11-14T00:00:00Z', raw: {} },
+  ];
+  expect(entryContentUpdatedAt(semantic[2])).toBeNull();
+  expect(selectEntries(semantic, '', 'all', 'all', 'updated-desc').map((entry) => entry.title)).toEqual(['New semantic', 'Old semantic', 'Legacy']);
+});
 it('operates the shared entry toolbar, updates counts and clears all conditions', async () => {
   render(<ListClient title="Entries" description="Knowledge" basePath="/concepts" entryType="concept" load={async () => entries} />);
   await screen.findByRole('heading', { name: 'Alpha' });
@@ -76,7 +97,7 @@ it('keeps the Concepts updated-desc default on initial load and Clear across cli
   const concepts = Array.from({ length: 25 }, (_, index): WikiEntry => ({
     title: `Concept ${String(index + 1).padStart(2, '0')}`,
     slug: `concept-${String(index + 1).padStart(2, '0')}`,
-    objectUpdatedAt: `2026-11-${String(index + 1).padStart(2, '0')}T00:00:00Z`,
+    contentUpdatedAt: `2026-11-${String(index + 1).padStart(2, '0')}T00:00:00Z`,
     raw: {},
   }));
   const load = vi.fn(async () => concepts);

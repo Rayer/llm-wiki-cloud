@@ -11,6 +11,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"time"
 
 	"cloud.google.com/go/storage"
 	fm "github.com/adrg/frontmatter"
@@ -202,6 +203,25 @@ type markdownMatter struct {
 }
 
 func Rebuild(ctx context.Context, store Store) (IDMap, error) {
+	return rebuild(ctx, store, true)
+}
+
+// RebuildWithoutRecency is for Worker candidate generation, where the actual
+// committed page snapshot was captured before the compiler mutates its private
+// workspace and final reconciliation performs the recency enrichment.
+func RebuildWithoutRecency(ctx context.Context, store Store) (IDMap, error) {
+	return rebuild(ctx, store, false)
+}
+
+func rebuild(ctx context.Context, store Store, enrichRecency bool) (IDMap, error) {
+	var priorRecency ConceptRecencySnapshot
+	var err error
+	if enrichRecency {
+		priorRecency, err = CaptureConceptRecencySnapshot(ctx, store)
+		if err != nil {
+			return IDMap{}, fmt.Errorf("capture prior concept recency: %w", err)
+		}
+	}
 	next, err := BuildIDMap(ctx, store)
 	if err != nil {
 		return next, err
@@ -214,11 +234,31 @@ func Rebuild(ctx context.Context, store Store) (IDMap, error) {
 	if err != nil {
 		return next, fmt.Errorf("build concepts jsonl: %w", err)
 	}
+	var dormantData []byte
+	if enrichRecency {
+		files, err := store.ListMarkdownFiles(ctx, "wiki/")
+		if err != nil {
+			return next, fmt.Errorf("list wiki for concept recency: %w", err)
+		}
+		currentRecency, err := ConceptRecencySnapshotFromFiles(next, conceptsData, priorRecency.DormantJSONL, files, priorRecency)
+		if err != nil {
+			return next, fmt.Errorf("bind candidate concept recency: %w", err)
+		}
+		conceptsData, dormantData, err = EnrichConceptRecency(currentRecency, priorRecency, time.Now().UTC())
+		if err != nil {
+			return next, fmt.Errorf("enrich concept recency: %w", err)
+		}
+	}
 	if err := writeIDMap(ctx, store, idMapData); err != nil {
 		return next, err
 	}
 	if err := writeConceptsJSONL(ctx, store, conceptsData); err != nil {
 		return next, err
+	}
+	if len(dormantData) > 0 {
+		if _, err := store.WriteBytesAtomic(ctx, dormantData, DormantConceptsJSONLPath+".tmp", DormantConceptsJSONLPath); err != nil {
+			return next, fmt.Errorf("write dormant concepts jsonl: %w", err)
+		}
 	}
 	return next, nil
 }
@@ -263,6 +303,25 @@ func BuildIDMap(ctx context.Context, store Store) (IDMap, error) {
 // frontmatter/content-derived ID behavior, while Synto uses entity_id as the
 // Concept ID authority and canonicalizes entity-bound page frontmatter.
 func RebuildWithSyntoIdentity(ctx context.Context, store Store, plan SyntoIdentityPlan) (IDMap, error) {
+	return rebuildWithSyntoIdentity(ctx, store, plan, true)
+}
+
+// RebuildWithSyntoIdentityWithoutRecency is the Worker counterpart of
+// RebuildWithoutRecency; the caller supplies the true pre-compile snapshot to
+// final identity reconciliation.
+func RebuildWithSyntoIdentityWithoutRecency(ctx context.Context, store Store, plan SyntoIdentityPlan) (IDMap, error) {
+	return rebuildWithSyntoIdentity(ctx, store, plan, false)
+}
+
+func rebuildWithSyntoIdentity(ctx context.Context, store Store, plan SyntoIdentityPlan, enrichRecency bool) (IDMap, error) {
+	var priorRecency ConceptRecencySnapshot
+	var err error
+	if enrichRecency {
+		priorRecency, err = CaptureConceptRecencySnapshot(ctx, store)
+		if err != nil {
+			return IDMap{}, fmt.Errorf("capture prior concept recency: %w", err)
+		}
+	}
 	files, err := store.ListMarkdownFiles(ctx, "wiki/")
 	if err != nil {
 		return IDMap{}, fmt.Errorf("list wiki/: %w", err)
@@ -333,6 +392,16 @@ func RebuildWithSyntoIdentity(ctx context.Context, store Store, plan SyntoIdenti
 	conceptsData, err := buildSyntoConceptsJSONL(cacheFiles, plan)
 	if err != nil {
 		return next, err
+	}
+	if enrichRecency {
+		currentRecency, err := ConceptRecencySnapshotFromFiles(next, conceptsData, nil, cacheFiles, priorRecency)
+		if err != nil {
+			return next, fmt.Errorf("bind candidate concept recency: %w", err)
+		}
+		conceptsData, _, err = EnrichConceptRecency(currentRecency, priorRecency, time.Now().UTC())
+		if err != nil {
+			return next, fmt.Errorf("enrich concept recency: %w", err)
+		}
 	}
 	if err := writeIDMap(ctx, store, idMapData); err != nil {
 		return next, err

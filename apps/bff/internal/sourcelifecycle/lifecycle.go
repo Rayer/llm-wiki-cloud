@@ -61,6 +61,10 @@ func Calculate(in Input) ([]storage.WikiPage, Counts) {
 			}
 		}
 		raw, rawExists := raws[page.RawPath]
+		if rawExists && !raw.Created.IsZero() {
+			added := raw.Created.UTC().Format(time.RFC3339Nano)
+			page.AddedAt = &added
+		}
 		receipt, hasReceipt := in.Receipts[page.ID]
 		fingerprint := sourcestatus.Fingerprint(raw.SHA256, ann)
 		if rawExists && hasReceipt && sourcestatus.ValidCurrentFailure(receipt, page.RawPath, fingerprint) {
@@ -113,7 +117,12 @@ func Calculate(in Input) ([]storage.WikiPage, Counts) {
 		if mapped[raw.Path] {
 			continue
 		}
-		pages = append(pages, storage.WikiPage{Slug: raw.Path, Title: raw.Name, RawPath: raw.Path, LifecycleStatus: "new"})
+		page := storage.WikiPage{Slug: raw.Path, Title: raw.Name, RawPath: raw.Path, LifecycleStatus: "new"}
+		if !raw.Created.IsZero() {
+			added := raw.Created.UTC().Format(time.RFC3339Nano)
+			page.AddedAt = &added
+		}
+		pages = append(pages, page)
 		counts.NewRaw++
 	}
 	return pages, counts
