@@ -803,64 +803,105 @@ func scanConceptBody(body string, redirects map[string]string) ([]conceptFingerp
 	section := "concepts"
 	fenceChar, fenceSize := byte(0), 0
 	lines := strings.Split(body, "\n")
-	for lineNo, line := range lines {
+	for lineNo := 0; lineNo < len(lines); {
+		line := lines[lineNo]
 		trimmed := strings.TrimLeft(line, " ")
 		if fenceChar != 0 {
 			appendFingerprintText(&segments, line)
 			if count, ch, rest, ok := markdownFenceLine(trimmed); ok && rest == "" && ch == fenceChar && count >= fenceSize {
 				fenceChar, fenceSize = 0, 0
 			}
-		} else if count, ch, _, opening := markdownFenceLine(trimmed); opening {
+			if lineNo < len(lines)-1 {
+				appendFingerprintText(&segments, "\n")
+			}
+			lineNo++
+			continue
+		}
+		if count, ch, _, opening := markdownFenceLine(trimmed); opening {
 			appendFingerprintText(&segments, line)
 			fenceChar, fenceSize = ch, count
-		} else {
-			if strings.HasPrefix(line, "## ") {
-				heading := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(line, "## ")))
-				if strings.HasPrefix(heading, "sources") {
-					section = "sources"
-				}
-				if strings.HasPrefix(heading, "concepts") {
-					section = "concepts"
-				}
+			if lineNo < len(lines)-1 {
+				appendFingerprintText(&segments, "\n")
 			}
-			if section == "sources" {
-				appendFingerprintText(&segments, line)
-			} else {
-				lineSegments, lineTargets := scanConceptLine(line, section, redirects)
-				for _, segment := range lineSegments {
-					if segment.Type == "text" {
-						appendFingerprintText(&segments, segment.Text)
-					} else {
-						segments = append(segments, segment)
-					}
-				}
-				targets = append(targets, lineTargets...)
+			lineNo++
+			continue
+		}
+		if strings.HasPrefix(line, "## ") {
+			heading := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(line, "## ")))
+			if strings.HasPrefix(heading, "sources") {
+				section = "sources"
+			}
+			if strings.HasPrefix(heading, "concepts") {
+				section = "concepts"
 			}
 		}
-		if lineNo < len(lines)-1 {
+		endLine := lineNo
+		for endLine+1 < len(lines) {
+			next := lines[endLine+1]
+			if next == "" || isMarkdownHeadingLine(next) {
+				break
+			}
+			if _, _, _, opensFence := markdownFenceLine(strings.TrimLeft(next, " ")); opensFence {
+				break
+			}
+			endLine++
+		}
+		paragraph := strings.Join(lines[lineNo:endLine+1], "\n")
+		if section == "sources" {
+			appendFingerprintText(&segments, paragraph)
+		} else {
+			paragraphSegments, paragraphTargets := scanConceptParagraph(paragraph, section, redirects)
+			appendFingerprintSegments(&segments, paragraphSegments)
+			targets = append(targets, paragraphTargets...)
+		}
+		if endLine < len(lines)-1 {
 			appendFingerprintText(&segments, "\n")
 		}
+		lineNo = endLine + 1
 	}
 	return segments, targets, nil
 }
 
-func scanConceptLine(line, section string, redirects map[string]string) ([]conceptFingerprintSegment, []conceptLinkTarget) {
+func appendFingerprintSegments(target *[]conceptFingerprintSegment, segments []conceptFingerprintSegment) {
+	for _, segment := range segments {
+		if segment.Type == "text" {
+			appendFingerprintText(target, segment.Text)
+		} else {
+			*target = append(*target, segment)
+		}
+	}
+}
+
+func scanConceptParagraph(paragraph, section string, redirects map[string]string) ([]conceptFingerprintSegment, []conceptLinkTarget) {
 	segments := []conceptFingerprintSegment{}
 	var targets []conceptLinkTarget
+	inlineCodeEnds := inlineCodeSpanEnds(paragraph)
 	textStart := 0
-	for i := 0; i < len(line); {
-		if line[i] == '`' {
-			i = inlineCodeEnd(line, i)
+	for i := 0; i < len(paragraph); {
+		if paragraph[i] == '`' {
+			runEnd := backtickRunEnd(paragraph, i)
+			if closeEnd, found := inlineCodeEnds[i]; found {
+				appendFingerprintText(&segments, paragraph[textStart:i])
+				appendFingerprintText(&segments, paragraph[i:closeEnd])
+				i = closeEnd
+				textStart = closeEnd
+				continue
+			}
+			i = runEnd
 			continue
 		}
-		if i+1 < len(line) && line[i] == '[' && line[i+1] == '[' {
-			relativeEnd := strings.Index(line[i+2:], "]]")
-			if relativeEnd >= 0 {
+		if i+1 < len(paragraph) && paragraph[i] == '[' && paragraph[i+1] == '[' {
+			lineEnd := strings.IndexByte(paragraph[i:], '\n')
+			if lineEnd < 0 {
+				lineEnd = len(paragraph) - i
+			}
+			linkEnd := i + lineEnd
+			if relativeEnd := strings.Index(paragraph[i+2:linkEnd], "]]"); relativeEnd >= 0 {
 				end := i + 2 + relativeEnd
-				inner := line[i+2 : end]
+				inner := paragraph[i+2 : end]
 				segment, target, ok := fingerprintLinkSegment(inner, section, redirects)
 				if ok {
-					appendFingerprintText(&segments, line[textStart:i])
+					appendFingerprintText(&segments, paragraph[textStart:i])
 					segments = append(segments, segment)
 					targets = append(targets, target)
 					i = end + 2
@@ -873,30 +914,78 @@ func scanConceptLine(line, section string, redirects map[string]string) ([]conce
 		}
 		i++
 	}
-	appendFingerprintText(&segments, line[textStart:])
+	appendFingerprintText(&segments, paragraph[textStart:])
 	return segments, targets
 }
 
-func inlineCodeEnd(line string, start int) int {
-	width := 1
-	for start+width < len(line) && line[start+width] == '`' {
-		width++
+func backtickRunEnd(text string, start int) int {
+	end := start + 1
+	for end < len(text) && text[end] == '`' {
+		end++
 	}
-	for i := start + width; i < len(line); {
-		if line[i] != '`' {
-			i++
+	return end
+}
+
+func isEscapedMarkdownDelimiter(text string, start int) bool {
+	backslashes := 0
+	for index := start - 1; index >= 0 && text[index] == '\\'; index-- {
+		backslashes++
+	}
+	return backslashes%2 == 1
+}
+
+func inlineCodeSpanEnds(text string) map[int]int {
+	ends := map[int]int{}
+	type delimiterRun struct {
+		start      int
+		end        int
+		width      int
+		escaped    bool
+		nextOfSize int
+	}
+	var runs []delimiterRun
+	for index := 0; index < len(text); {
+		if text[index] != '`' {
+			index++
 			continue
 		}
-		end := i + 1
-		for end < len(line) && line[end] == '`' {
-			end++
-		}
-		if end-i == width {
-			return end
-		}
-		i = end
+		end := backtickRunEnd(text, index)
+		runs = append(runs, delimiterRun{
+			start: index, end: end, width: end - index,
+			escaped: isEscapedMarkdownDelimiter(text, index), nextOfSize: -1,
+		})
+		index = end
 	}
-	return len(line)
+	nextByWidth := map[int]int{}
+	for index := len(runs) - 1; index >= 0; index-- {
+		if next, ok := nextByWidth[runs[index].width]; ok {
+			runs[index].nextOfSize = next
+		}
+		nextByWidth[runs[index].width] = index
+	}
+	for index := 0; index < len(runs); index++ {
+		open := runs[index]
+		if open.escaped || open.nextOfSize < 0 {
+			continue
+		}
+		close := runs[open.nextOfSize]
+		ends[open.start] = close.end
+		index = open.nextOfSize
+	}
+	return ends
+}
+
+func isMarkdownHeadingLine(line string) bool {
+	indent := len(line) - len(strings.TrimLeft(line, " "))
+	if indent > 3 {
+		return false
+	}
+	line = line[indent:]
+	width := 0
+	for width < len(line) && line[width] == '#' {
+		width++
+	}
+	return width > 0 && width <= 6 && width < len(line) && (line[width] == ' ' || line[width] == '\t')
 }
 
 func fingerprintLinkSegment(inner, section string, redirects map[string]string) (conceptFingerprintSegment, conceptLinkTarget, bool) {

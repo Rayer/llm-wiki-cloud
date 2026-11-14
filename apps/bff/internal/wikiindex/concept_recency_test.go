@@ -212,6 +212,69 @@ func TestConceptFingerprintCanonicalizesIdentityAndRendererVisibleSegments(t *te
 	}
 }
 
+func TestConceptFingerprintMultilineInlineCodeRemainsLiteralAndDoesNotSwallowProse(t *testing.T) {
+	redirects := map[string]string{recencyLegacyB: recencyEntityB}
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{
+			name: "single-backtick span across lines",
+			body: "`code starts\n[[concepts/" + recencyLegacyB + "-old-route#part|Visible]]\ncode ends`",
+		},
+		{
+			name: "exact delimiter width across lines",
+			body: "``code starts `different width\n[[concepts/" + recencyLegacyB + "-old-route#part|Visible]]\ncode ends``",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			changed := strings.Replace(tc.body, recencyLegacyB+"-old-route", recencyEntityB+"-new-route", 1)
+			if changed == tc.body {
+				t.Fatal("fixture did not contain the target suffix")
+			}
+			oldTargets, err := conceptTargets([]byte(tc.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(oldTargets) != 0 {
+				t.Fatalf("multiline code span exposed basis targets: %#v", oldTargets)
+			}
+			oldHash := fingerprintForTest(t, []byte("---\ntitle: Alpha\n---\n"+tc.body+"\n"), redirects, "alpha")
+			newHash := fingerprintForTest(t, []byte("---\ntitle: Alpha\n---\n"+changed+"\n"), redirects, "alpha")
+			if oldHash == newHash {
+				t.Fatalf("multiline code literal edit was canonicalized: %s", oldHash)
+			}
+		})
+	}
+
+	proseOld := []byte("---\ntitle: Alpha\n---\nSee [[concepts/" + recencyLegacyB + "-old-route#part|Visible]]\n")
+	proseNew := []byte("---\ntitle: Alpha\n---\nSee [[concepts/" + recencyEntityB + "-new-route#part|Visible]]\n")
+	if oldHash, newHash := fingerprintForTest(t, proseOld, redirects, "alpha"), fingerprintForTest(t, proseNew, redirects, "alpha"); oldHash != newHash {
+		t.Fatalf("prose technical target suffix rewrite changed fingerprint: %s != %s", oldHash, newHash)
+	}
+	proseTargets, err := conceptTargets([]byte("See [[concepts/" + recencyLegacyB + "-old-route#part|Visible]]\n"))
+	if err != nil || len(proseTargets) != 1 {
+		t.Fatalf("prose target count=%d err=%v, want one recognized target", len(proseTargets), err)
+	}
+
+	// An unmatched delimiter is a literal character, not an opening that hides
+	// a later valid prose link from canonicalization or basis admission.
+	unmatchedOld := []byte("---\ntitle: Alpha\n---\nAn unmatched ` then [[concepts/" + recencyLegacyB + "-old-route#part|Visible]]\n")
+	unmatchedNew := []byte("---\ntitle: Alpha\n---\nAn unmatched ` then [[concepts/" + recencyEntityB + "-new-route#part|Visible]]\n")
+	if oldHash, newHash := fingerprintForTest(t, unmatchedOld, redirects, "alpha"), fingerprintForTest(t, unmatchedNew, redirects, "alpha"); oldHash != newHash {
+		t.Fatalf("unmatched inline-code delimiter swallowed valid prose: %s != %s", oldHash, newHash)
+	}
+	unmatchedTargets, err := conceptTargets([]byte("An unmatched ` then [[concepts/" + recencyLegacyB + "-old-route#part|Visible]]\n"))
+	if err != nil || len(unmatchedTargets) != 1 {
+		t.Fatalf("unmatched-delimiter prose target count=%d err=%v, want one recognized target", len(unmatchedTargets), err)
+	}
+	escapedOld := []byte("---\ntitle: Alpha\n---\nAn escaped \\` then [[concepts/" + recencyLegacyB + "-old-route#part|Visible]]\n")
+	escapedNew := []byte("---\ntitle: Alpha\n---\nAn escaped \\` then [[concepts/" + recencyEntityB + "-new-route#part|Visible]]\n")
+	if oldHash, newHash := fingerprintForTest(t, escapedOld, redirects, "alpha"), fingerprintForTest(t, escapedNew, redirects, "alpha"); oldHash != newHash {
+		t.Fatalf("escaped backtick swallowed valid prose: %s != %s", oldHash, newHash)
+	}
+}
+
 func fingerprintForTest(t *testing.T, page []byte, redirects map[string]string, slug string) string {
 	t.Helper()
 	hash, err := fingerprintConcept(page, redirects, slug)
