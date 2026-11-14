@@ -23,6 +23,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/gcs"
 	"github.com/rayer/llm-wiki-bff/internal/handler"
 	"github.com/rayer/llm-wiki-bff/internal/localfs"
+	"github.com/rayer/llm-wiki-bff/internal/pipelinequota"
 	"github.com/rayer/llm-wiki-bff/internal/profileruntime"
 	"github.com/rayer/llm-wiki-bff/internal/sourceautomation"
 	"github.com/rayer/llm-wiki-bff/internal/storage"
@@ -82,11 +83,15 @@ func TestPipelineAutomationRawSyncToLocalConsumer(t *testing.T) {
 		t.Fatalf("committed source=%q err=%v", stored, err)
 	}
 
-	repo := h.profileRepository.(*firestoreProfileRepository)
 	dispatcher := &ProfileDispatcher{Handler: h}
 	automationWork := profileruntime.Work{UserID: owner, ProjectID: projectID, Kind: "pipeline_automation", Revision: 1, ID: "source-1"}
-	if err := dispatcher.execute(ctx, repo, automationWork); err != nil {
-		t.Fatalf("consume source commit work: %v", err)
+	automationProcessed, err := dispatcher.Dispatch(ctx, 8)
+	if err != nil || automationProcessed != 1 {
+		t.Fatalf("dispatch source commit work processed=%d err=%v; want exactly one persisted automation item", automationProcessed, err)
+	}
+	automationWorkRef := scopedfirestore.Collection(client.Raw(), profileruntime.WorkCollection).Doc(profileruntime.WorkID(automationWork))
+	if snapshot, err := automationWorkRef.Get(ctx); err != nil || snapshot.Data()["pending"] != false || snapshot.Data()["status"] != "complete" {
+		t.Fatalf("automation work was not consumed from durable storage: data=%v err=%v", snapshot.Data(), err)
 	}
 
 	works, err := scopedfirestore.Collection(client.Raw(), profileruntime.WorkCollection).Documents(ctx).GetAll()
@@ -106,11 +111,15 @@ func TestPipelineAutomationRawSyncToLocalConsumer(t *testing.T) {
 	if pipelineWork.ID == "" {
 		t.Fatalf("source consumer did not enqueue a pipeline intent; works=%v", works)
 	}
-	if err := dispatcher.execute(ctx, repo, pipelineWork); err != nil {
-		t.Fatalf("consume local Pipeline intent: %v", err)
+	pipelineProcessed, err := dispatcher.Dispatch(ctx, 8)
+	if err != nil || pipelineProcessed != 1 {
+		t.Fatalf("dispatch Pipeline intent processed=%d err=%v; want exactly one persisted intent item", pipelineProcessed, err)
 	}
 	if local.starts != 1 || !strings.HasPrefix(local.reservationID, "auto-") {
 		t.Fatalf("local pipeline starts=%d reservation=%q", local.starts, local.reservationID)
+	}
+	if replayProcessed, err := dispatcher.Dispatch(ctx, 8); err != nil || replayProcessed != 0 || local.starts != 1 {
+		t.Fatalf("replay consumed=%d err=%v controlled invocations=%d; want no pending work and one invocation", replayProcessed, err, local.starts)
 	}
 
 	reservation, err := scopedfirestore.Collection(client.Raw(), "pipeline_quota_reservations").Doc(local.reservationID).Get(ctx)
@@ -129,6 +138,273 @@ func TestPipelineAutomationRawSyncToLocalConsumer(t *testing.T) {
 	}
 	if _, ok := root.Scope(owner, projectID).(storage.RawSyncStore); !ok {
 		t.Fatal("local Project storage did not retain its RawSyncStore contract")
+	}
+}
+
+func TestQuotaSettlementChoosesOneAutomationStatusAndQueuesLatestSource(t *testing.T) {
+	client := newOnboardingFirestore(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	adminRef := pipelineAutomationAdminRef(client.Raw())
+	priorAdmin, priorAdminErr := adminRef.Get(ctx)
+	if priorAdminErr != nil && status.Code(priorAdminErr) != codes.NotFound {
+		t.Fatalf("read prior Admin automation state: %v", priorAdminErr)
+	}
+	var priorAdminData map[string]interface{}
+	if priorAdmin != nil && priorAdmin.Exists() {
+		priorAdminData = priorAdmin.Data()
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cleanupCancel()
+		if priorAdminData != nil {
+			_, _ = adminRef.Set(cleanupCtx, priorAdminData)
+		} else {
+			_, _ = adminRef.Delete(cleanupCtx)
+		}
+	})
+
+	tests := []struct {
+		name            string
+		currentRevision int64
+		projectEnabled  bool
+		adminEnabled    bool
+		state           string
+		wantStatus      string
+		wantWork        bool
+		wantFailure     bool
+	}{
+		{name: "success queues latest source once", currentRevision: 4, projectEnabled: true, adminEnabled: true, state: "SUCCEEDED", wantStatus: "pending", wantWork: true},
+		{name: "success at same revision stays published", currentRevision: 1, projectEnabled: true, adminEnabled: true, state: "SUCCEEDED", wantStatus: "published"},
+		{name: "success with Project automation disabled stays published", currentRevision: 4, projectEnabled: false, adminEnabled: true, state: "SUCCEEDED", wantStatus: "published"},
+		{name: "success with Admin automation disabled stays published", currentRevision: 4, projectEnabled: true, adminEnabled: false, state: "SUCCEEDED", wantStatus: "published"},
+		{name: "failure without newer source stays failed", currentRevision: 1, projectEnabled: true, adminEnabled: true, state: "FAILED", wantStatus: "failed", wantFailure: true},
+		{name: "failure queues newer source and preserves fence", currentRevision: 4, projectEnabled: true, adminEnabled: true, state: "FAILED", wantStatus: "pending", wantWork: true, wantFailure: true},
+		{name: "cancellation does not queue newer source", currentRevision: 4, projectEnabled: true, adminEnabled: true, state: "CANCELLED", wantStatus: "cancelled"},
+	}
+	for index, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			owner := fmt.Sprintf("lwc484-settle-owner-%d-%d", time.Now().UnixNano(), index)
+			projectID := "wiki"
+			reservationID := fmt.Sprintf("lwc484-settle-%d-%d", time.Now().UnixNano(), index)
+			fingerprint := "fingerprint-" + reservationID
+			projectRef := scopedfirestore.Collection(client.Raw(), "projects").Doc(projectDocID(owner, projectID))
+			if _, err := projectRef.Set(ctx, map[string]interface{}{
+				"user_id": owner, "project_id": projectID, "status": "ready",
+				"auto_pipeline_enabled": true, "auto_pipeline_revision": int64(1), "pipeline_source_revision": int64(1),
+			}); err != nil {
+				t.Fatalf("seed Project: %v", err)
+			}
+			if _, err := adminRef.Set(ctx, map[string]interface{}{"allow_auto_pipeline": true, "revision": int64(1)}); err != nil {
+				t.Fatalf("seed Admin automation: %v", err)
+			}
+			t.Cleanup(func() {
+				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cleanupCancel()
+				_, _ = projectRef.Delete(cleanupCtx)
+				_, _ = scopedfirestore.Collection(client.Raw(), "pipeline_quota").Doc(scopedfirestore.QuotaDocID(owner, projectID)).Delete(cleanupCtx)
+				_, _ = scopedfirestore.Collection(client.Raw(), "pipeline_quota_reservations").Doc(reservationID).Delete(cleanupCtx)
+				workRevision := tt.currentRevision
+				work := profileruntime.Work{UserID: owner, ProjectID: projectID, Kind: "pipeline_automation", Revision: workRevision, ID: fmt.Sprintf("source-%d", workRevision)}
+				_, _ = scopedfirestore.Collection(client.Raw(), profileruntime.WorkCollection).Doc(profileruntime.WorkID(work)).Delete(cleanupCtx)
+			})
+
+			h := New(nil, client, nil, nil, nil, nil)
+			h.SetPipelineQuotaConfig(5, 1, 1, nil)
+			_, reserved, err := client.ReserveQuotaForPipelineAutomation(ctx, reservationID, owner, projectID, h.pipelineLimits(), time.Now().UTC(), false, false, 1, 0, 0,
+				scopedfirestore.PipelineAutomationAdmission{SourceFingerprint: fingerprint, SourceRevision: 1, ProjectRevision: 1, AdminRevision: 1})
+			if err != nil || !reserved {
+				t.Fatalf("reserve source-commit quota reserved=%t err=%v", reserved, err)
+			}
+			if _, err := projectRef.Update(ctx, []cloudfirestore.Update{
+				{Path: "pipeline_source_revision", Value: tt.currentRevision},
+				{Path: "auto_pipeline_enabled", Value: tt.projectEnabled},
+			}); err != nil {
+				t.Fatalf("advance/disable Project after reservation: %v", err)
+			}
+			if _, err := adminRef.Update(ctx, []cloudfirestore.Update{{Path: "allow_auto_pipeline", Value: tt.adminEnabled}}); err != nil {
+				t.Fatalf("update Admin automation: %v", err)
+			}
+			settlement, err := client.SettleQuotaReservation(ctx, reservationID, tt.state)
+			if err != nil || settlement != "not_applicable" {
+				t.Fatalf("settlement=%q err=%v; want committed not_applicable source-commit outcome", settlement, err)
+			}
+			reservation, exists, err := client.GetQuotaReservation(ctx, reservationID)
+			wantIntent := map[string]string{"SUCCEEDED": "succeeded", "FAILED": "failed", "CANCELLED": "cancelled"}[tt.state]
+			if err != nil || !exists || reservation.SettlementStatus != "not_applicable" || reservation.Outcome != tt.state || reservation.IntentStatus != wantIntent {
+				t.Fatalf("reservation=%+v exists=%t err=%v; want terminal outcome", reservation, exists, err)
+			}
+			quotaRef := scopedfirestore.Collection(client.Raw(), "pipeline_quota").Doc(scopedfirestore.QuotaDocID(owner, projectID))
+			quotaSnapshot, err := quotaRef.Get(ctx)
+			if err != nil {
+				t.Fatalf("read settled quota claim: %v", err)
+			}
+			if active, _ := quotaSnapshot.Data()["active_reservation_id"].(string); active == reservationID {
+				t.Fatalf("settled reservation still owns active claim: %q", active)
+			}
+			projectSnapshot, err := projectRef.Get(ctx)
+			if err != nil {
+				t.Fatalf("read settled Project: %v", err)
+			}
+			projectData := projectSnapshot.Data()
+			if projectData["pipeline_automation_status"] != tt.wantStatus {
+				t.Fatalf("Project automation status=%v, want %q", projectData["pipeline_automation_status"], tt.wantStatus)
+			}
+			if tt.state == "SUCCEEDED" && (projectData["pipeline_auto_consumed_fingerprint"] != fingerprint || projectData["pipeline_auto_consumed_source_revision"] != int64(1)) {
+				t.Fatalf("successful settlement did not persist consumed source: %v", projectData)
+			}
+			if tt.wantFailure && (projectData["pipeline_failure_blocked_fingerprint"] != fingerprint || projectData["pipeline_failure_blocked_admin_revision"] != int64(1)) {
+				t.Fatalf("failed source fence missing/changed: %v", projectData)
+			}
+
+			workSnapshots, err := scopedfirestore.Collection(client.Raw(), profileruntime.WorkCollection).Where("user_id", "==", owner).Documents(ctx).GetAll()
+			if err != nil {
+				t.Fatalf("read next-revision work: %v", err)
+			}
+			var matching []profileruntime.Work
+			for _, snapshot := range workSnapshots {
+				var work profileruntime.Work
+				if err := snapshot.DataTo(&work); err != nil {
+					t.Fatalf("decode work %s: %v", snapshot.Ref.ID, err)
+				}
+				if work.ProjectID == projectID && work.Kind == "pipeline_automation" {
+					matching = append(matching, work)
+				}
+			}
+			if len(matching) != map[bool]int{true: 1, false: 0}[tt.wantWork] {
+				t.Fatalf("matching automation work=%+v, want work=%t", matching, tt.wantWork)
+			}
+			if tt.wantWork && (matching[0].ID != fmt.Sprintf("source-%d", tt.currentRevision) || matching[0].Revision != tt.currentRevision || !matching[0].Pending) {
+				t.Fatalf("queued work=%+v; want one pending latest revision", matching[0])
+			}
+			replay, err := client.SettleQuotaReservation(ctx, reservationID, tt.state)
+			if err != nil || replay != "not_applicable" {
+				t.Fatalf("terminal replay=%q err=%v", replay, err)
+			}
+		})
+	}
+}
+
+func TestQuotaSettlementSerializesConcurrentReservationAndSourceAdvance(t *testing.T) {
+	client := newOnboardingFirestore(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	owner := fmt.Sprintf("lwc484-race-owner-%d", time.Now().UnixNano())
+	projectID := "wiki"
+	projectRef := scopedfirestore.Collection(client.Raw(), "projects").Doc(projectDocID(owner, projectID))
+	if _, err := projectRef.Set(ctx, map[string]interface{}{
+		"user_id": owner, "project_id": projectID, "status": "ready", "auto_pipeline_enabled": true,
+		"auto_pipeline_revision": int64(1), "pipeline_source_revision": int64(1),
+	}); err != nil {
+		t.Fatalf("seed Project: %v", err)
+	}
+	if _, err := pipelineAutomationAdminRef(client.Raw()).Set(ctx, map[string]interface{}{"allow_auto_pipeline": true, "revision": int64(1)}); err != nil {
+		t.Fatalf("seed Admin automation: %v", err)
+	}
+	root := localfs.New(t.TempDir())
+	verified := sourceautomation.VerifiedProject{OwnerID: owner, ProjectID: projectID}
+	writer, ok := root.Scope(owner, projectID).(storage.ConditionalWriter)
+	if !ok {
+		t.Fatal("local source fixture does not support conditional write contract")
+	}
+	body := []byte("# Concurrent source revision\n")
+	digest := sha256.Sum256(body)
+	generation, err := writer.WriteFileIfGeneration(ctx, body, "raw/notes/concurrent.md", 0)
+	if err != nil {
+		t.Fatalf("write source revision fixture: %v", err)
+	}
+	operationID := fmt.Sprintf("lwc484-concurrent-source-%d", time.Now().UnixNano())
+	journal := sourceautomation.NewJournal(client.Raw(), root)
+	ref, err := journal.PrepareSourceCommit(ctx, verified, sourceautomation.PrepareRequest{
+		OperationID: operationID, Entrypoint: "cli_sync", RawPath: "notes/concurrent.md",
+		ExpectedSHA256: hex.EncodeToString(digest[:]), ExpectedStorageGeneration: fmt.Sprint(generation),
+	})
+	if err != nil {
+		t.Fatalf("prepare concurrent source commit: %v", err)
+	}
+	h := New(root, client, nil, nil, nil, nil)
+	h.SetPipelineQuotaConfig(5, 1, 1, nil)
+	oldReservationID := "lwc484-old-source-" + operationID
+	_, reserved, err := client.ReserveQuotaForPipelineAutomation(ctx, oldReservationID, owner, projectID, h.pipelineLimits(), time.Now().UTC(), false, false, 1, 0, 0,
+		scopedfirestore.PipelineAutomationAdmission{SourceFingerprint: "old-source-fingerprint", SourceRevision: 1, ProjectRevision: 1, AdminRevision: 1})
+	if err != nil || !reserved {
+		t.Fatalf("reserve old source attempt reserved=%t err=%v", reserved, err)
+	}
+
+	start := make(chan struct{})
+	type result struct {
+		name     string
+		reserved bool
+		commit   sourceautomation.CommitResult
+		err      error
+	}
+	results := make(chan result, 3)
+	go func() {
+		<-start
+		settlement, err := client.SettleQuotaReservation(ctx, oldReservationID, "SUCCEEDED")
+		if err == nil && settlement != "not_applicable" {
+			err = fmt.Errorf("settlement=%q", settlement)
+		}
+		results <- result{name: "settlement", err: err}
+	}()
+	go func() {
+		<-start
+		commit, err := journal.ConfirmSourceCommit(ctx, ref, sourceautomation.ConfirmRequest{Generation: fmt.Sprint(generation), Status: "created"})
+		results <- result{name: "source_commit", commit: commit, err: err}
+	}()
+	newReservationID := "lwc484-new-claim-" + operationID
+	go func() {
+		<-start
+		_, reserved, err := client.ReserveQuota(ctx, newReservationID, owner, projectID, h.pipelineLimits(), time.Now().UTC(), pipelinequota.ModeIncremental, false, false, 1, 0, 0)
+		results <- result{name: "new_reservation", reserved: reserved, err: err}
+	}()
+	close(start)
+	var racedReservation bool
+	for range 3 {
+		got := <-results
+		if got.err != nil {
+			t.Fatalf("concurrent %s failed: %v", got.name, got.err)
+		}
+		if got.name == "source_commit" && (got.commit.State != "committed" || got.commit.SourceRevision != 2) {
+			t.Fatalf("concurrent source commit=%+v; want committed revision 2", got.commit)
+		}
+		if got.name == "new_reservation" {
+			racedReservation = got.reserved
+		}
+	}
+	if !racedReservation {
+		if _, reserved, err := client.ReserveQuota(ctx, newReservationID, owner, projectID, h.pipelineLimits(), time.Now().UTC(), pipelinequota.ModeIncremental, false, false, 1, 0, 0); err != nil || !reserved {
+			t.Fatalf("reserve after old settlement reserved=%t err=%v", reserved, err)
+		}
+	}
+	if _, err := client.SettleQuotaReservation(ctx, oldReservationID, "SUCCEEDED"); err != nil {
+		t.Fatalf("replay old settlement after new claim: %v", err)
+	}
+	quotaRef := scopedfirestore.Collection(client.Raw(), "pipeline_quota").Doc(scopedfirestore.QuotaDocID(owner, projectID))
+	quotaSnapshot, err := quotaRef.Get(ctx)
+	if err != nil || quotaSnapshot.Data()["active_reservation_id"] != newReservationID {
+		t.Fatalf("old settlement replay changed later claim: data=%v err=%v", quotaSnapshot.Data(), err)
+	}
+	projectSnapshot, err := projectRef.Get(ctx)
+	if err != nil || projectSnapshot.Data()["pipeline_source_revision"] != int64(2) || projectSnapshot.Data()["pipeline_automation_status"] != "pending" {
+		t.Fatalf("concurrent settlement/source commit lost latest automation state: data=%v err=%v", projectSnapshot.Data(), err)
+	}
+	workSnapshots, err := scopedfirestore.Collection(client.Raw(), profileruntime.WorkCollection).Where("user_id", "==", owner).Documents(ctx).GetAll()
+	if err != nil {
+		t.Fatalf("read source automation work after concurrent transactions: %v", err)
+	}
+	var sourceTwo []profileruntime.Work
+	for _, snapshot := range workSnapshots {
+		var work profileruntime.Work
+		if err := snapshot.DataTo(&work); err != nil {
+			t.Fatalf("decode work %s: %v", snapshot.Ref.ID, err)
+		}
+		if work.ProjectID == projectID && work.Kind == "pipeline_automation" && work.Revision == 2 && work.ID == "source-2" {
+			sourceTwo = append(sourceTwo, work)
+		}
+	}
+	if len(sourceTwo) != 1 || !sourceTwo[0].Pending {
+		t.Fatalf("source-2 automation work=%+v; want exactly one pending deterministic item", sourceTwo)
 	}
 }
 
