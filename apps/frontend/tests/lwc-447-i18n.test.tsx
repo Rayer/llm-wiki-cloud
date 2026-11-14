@@ -47,6 +47,8 @@ describe('LWC-447 runtime catalogs and locale UI', () => {
     expect(localeHasFallback('en')).toBe(false);
     expect(translate('zh-TW', 'MCPOAuth.sharedInstructions')).toContain('不代表已獲授權');
     expect(translate('zh-TW', 'MCPOAuth.sharedInstructions')).not.toContain('@cac:');
+    expect(translate('zh-TW', 'Nudge.coverage', { selected: 2, total: 3 })).toBe('概述使用 3 個概念中的 2 個。');
+    expect(translate('zh-TW', 'ProjectDescription.help')).toContain('不會取代 Profile 指引');
   });
 
   it('falls back to the producer base map when a locale key or locale pack is missing', () => {

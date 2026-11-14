@@ -21,6 +21,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/generation"
 	"github.com/rayer/llm-wiki-bff/internal/pipelinequota"
 	"github.com/rayer/llm-wiki-bff/internal/profileartifacts"
+	"github.com/rayer/llm-wiki-bff/internal/profilelimits"
 	"google.golang.org/api/option"
 )
 
@@ -85,6 +86,40 @@ func TestValidateProfileGuidanceArtifactStrictly(t *testing.T) {
 	if _, err := validateProfileGuidanceArtifact(tooLarge, ref); err == nil || !strings.Contains(err.Error(), "1 MiB") {
 		t.Fatalf("oversized artifact err=%v, want 1 MiB rejection", err)
 	}
+
+	legacy := envelope
+	legacy.CompileGuidance = strings.Repeat("界", profilelimits.MaxGuidanceScalars+1)
+	legacyData, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyRef := ref
+	legacyRef.Revision = hashBytes(legacyData)
+	if _, err := validateProfileGuidanceArtifact(legacyData, legacyRef); err == nil || !strings.Contains(err.Error(), "profile_guidance_over_limit") {
+		t.Fatalf("legacy oversized artifact err=%v, want bounded consumer refusal", err)
+	}
+}
+
+func TestValidateBootstrapProfileGuidanceRejectsOverLimitLegacyArtifact(t *testing.T) {
+	envelope := profileartifacts.BootstrapGuidanceEnvelope{
+		SchemaVersion: profileartifacts.BootstrapGuidanceSchema, ProfileRevision: 3,
+		InputDigest: strings.Repeat("a", 64), ModelVersion: "legacy-model", PromptVersion: "legacy-prompt",
+		CompileGuidance: strings.Repeat("界", profilelimits.MaxGuidanceScalars+1),
+	}
+	data, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := profileartifacts.BootstrapGuidanceRef{
+		Revision: hashBytes(data), ProfileRevision: envelope.ProfileRevision, InputDigest: envelope.InputDigest,
+		ModelVersion: envelope.ModelVersion, PromptVersion: envelope.PromptVersion, SchemaVersion: envelope.SchemaVersion,
+	}
+	if _, err := profileartifacts.ValidateBootstrapGuidance(data, ref); err != nil {
+		t.Fatalf("legacy generic reader rejected historical artifact: %v", err)
+	}
+	if _, err := validateBootstrapProfileGuidance(data, ref); err == nil || !strings.Contains(err.Error(), "profile_guidance_over_limit") {
+		t.Fatalf("worker accepted legacy oversized bootstrap guidance: %v", err)
+	}
 }
 
 func TestProfileGuidanceRequiresCloudProjectAndHonorsNamedFirestoreDatabase(t *testing.T) {
@@ -105,12 +140,12 @@ func TestProfileGuidanceRequiresCloudProjectAndHonorsNamedFirestoreDatabase(t *t
 	}
 }
 
-func TestProfileGuidanceSchemaMaterializationIsAdditiveAndBounded(t *testing.T) {
+func TestProfileBaseSchemaMaterializationPreservesBytes(t *testing.T) {
 	vault := t.TempDir()
-	if data, err := profileGuidanceSchema(vault, nil); err != nil || data != nil {
+	if data, err := profileBaseSchema(vault, nil); err != nil || data != nil {
 		t.Fatalf("no-active materialization = %q, err=%v", data, err)
 	}
-	if data, err := profileGuidanceSchema(vault, &profileGuidancePin{Revision: strings.Repeat("a", 64)}); err != nil || data != nil {
+	if data, err := profileBaseSchema(vault, &profileGuidancePin{Revision: strings.Repeat("a", 64)}); err != nil || data != nil {
 		t.Fatalf("empty neutral guidance materialization = %q, err=%v", data, err)
 	}
 
@@ -119,35 +154,40 @@ func TestProfileGuidanceSchemaMaterializationIsAdditiveAndBounded(t *testing.T) 
 		t.Fatal(err)
 	}
 	pin := &profileGuidancePin{Revision: strings.Repeat("b", 64), Content: "Write short explanations with clear causes."}
-	got, err := profileGuidanceSchema(vault, pin)
+	got, err := profileBaseSchema(vault, pin)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(string(got), string(original)) || !strings.Contains(string(got), "## Project Profile Compile Guidance\n"+pin.Content) || !strings.Contains(string(got), "Use [[Existing Note]].") {
-		t.Fatalf("materialized schema lost base conventions or guidance: %s", got)
+	if string(got) != string(original) || strings.Contains(string(got), "Project Profile") || strings.Contains(string(got), pin.Content) {
+		t.Fatalf("base schema materialization changed source bytes or included Profile guidance: %s", got)
 	}
-	if chars := len([]rune(string(got))); chars > syntoVaultSchemaCharLimit {
-		t.Fatalf("materialized schema has %d characters, over the %d-character budget", chars, syntoVaultSchemaCharLimit)
+	if !strings.Contains(string(got), "Use [[Existing Note]].") {
+		t.Fatalf("base schema lost wikilink conventions: %s", got)
 	}
 
-	tooLong := &profileGuidancePin{Revision: strings.Repeat("c", 64), Content: strings.Repeat("界", syntoVaultSchemaCharLimit)}
-	if _, err := profileGuidanceSchema(vault, tooLong); err == nil || !strings.Contains(err.Error(), "1500-character") {
-		t.Fatalf("oversized guidance err=%v, want visible 1500-character rejection", err)
+	long := &profileGuidancePin{Revision: strings.Repeat("c", 64), Content: strings.Repeat("界", 1_501) + "tail"}
+	longBase, err := profileBaseSchema(vault, long)
+	if err != nil || string(longBase) != string(original) {
+		t.Fatalf("long guidance should not change base schema: schema=%q err=%v", longBase, err)
 	}
-	if _, err := profileGuidanceSchema(vault, &profileGuidancePin{Revision: "../bad", Content: "x"}); err == nil {
+	tooLong := &profileGuidancePin{Revision: strings.Repeat("d", 64), Content: strings.Repeat("界", profilelimits.MaxGuidanceScalars+1)}
+	if _, err := profileBaseSchema(vault, tooLong); err == nil || !strings.Contains(err.Error(), "profile_guidance_over_limit") {
+		t.Fatalf("oversized guidance err=%v, want explicit consumer limit refusal", err)
+	}
+	if _, err := profileBaseSchema(vault, &profileGuidancePin{Revision: "../bad", Content: "x"}); err == nil {
 		t.Fatal("invalid revision was accepted")
 	}
 
 	configHome := t.TempDir()
-	path, err := profileGuidanceSchemaPath(vault, pin, configHome)
+	path, err := profileBaseSchemaPath(vault, pin, configHome)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if filepath.Dir(path) != configHome {
 		t.Fatalf("profile schema path=%q, want ephemeral config directory %q", path, configHome)
 	}
-	if data, err := os.ReadFile(path); err != nil || string(data) != string(got) {
-		t.Fatalf("ephemeral schema = %q, err=%v; want materialized schema", data, err)
+	if data, err := os.ReadFile(path); err != nil || string(data) != string(original) {
+		t.Fatalf("ephemeral base schema = %q, err=%v; want unchanged source bytes", data, err)
 	}
 }
 
@@ -161,7 +201,7 @@ func TestRunWorkerBatchAtVaultPassesPinnedGuidanceToSyntoAdapter(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(vault, "vault-schema.md"), baseSchema, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	pin := &profileGuidancePin{Revision: strings.Repeat("a", 64), Content: "Keep cause and effect explicit."}
+	pin := &profileGuidancePin{Revision: strings.Repeat("a", 64), Content: strings.Repeat("語", 1_501) + "TAIL_SENTINEL"}
 	var schemaPath, guidance string
 	previous := execOLW
 	t.Cleanup(func() { execOLW = previous })
@@ -170,7 +210,7 @@ func TestRunWorkerBatchAtVaultPassesPinnedGuidanceToSyntoAdapter(t *testing.T) {
 			key, value, ok := strings.Cut(entry, "=")
 			if ok {
 				switch key {
-				case "LWC_PROFILE_SCHEMA_PATH":
+				case "LWC_BASE_SCHEMA_PATH":
 					schemaPath = value
 				case "LWC_PROFILE_GUIDANCE":
 					guidance = value
@@ -178,14 +218,14 @@ func TestRunWorkerBatchAtVaultPassesPinnedGuidanceToSyntoAdapter(t *testing.T) {
 			}
 		}
 		if schemaPath == "" {
-			return errors.New("pinned Profile schema path was not passed to Synto")
+			return errors.New("pinned base schema path was not passed to Synto")
 		}
 		data, err := os.ReadFile(schemaPath)
 		if err != nil {
 			return err
 		}
-		if !strings.HasPrefix(string(data), string(baseSchema)) || !strings.Contains(string(data), pin.Content) {
-			return errors.New("pinned Profile schema did not preserve base schema and add guidance")
+		if string(data) != string(baseSchema) || strings.Contains(string(data), "TAIL_SENTINEL") || strings.Contains(string(data), "Project Profile") {
+			return errors.New("pinned schema did not preserve base bytes separately from Profile guidance")
 		}
 		if guidance != pin.Content {
 			return fmt.Errorf("pinned Profile guidance env = %q, want exact frozen text", guidance)
@@ -222,7 +262,7 @@ func TestRunWorkerBatchAtVaultLeavesNoProfileSchemaOverrideWhenNoPin(t *testing.
 	t.Cleanup(func() { execOLW = previous })
 	execOLW = func(_ context.Context, _ string, _ []string, env []string, _, _ io.Writer) error {
 		for _, entry := range allowlistedSyntoEnvironment(env) {
-			if strings.HasPrefix(entry, "LWC_PROFILE_SCHEMA_PATH=") || strings.HasPrefix(entry, "LWC_PROFILE_GUIDANCE=") {
+			if strings.HasPrefix(entry, "LWC_BASE_SCHEMA_PATH=") || strings.HasPrefix(entry, "LWC_PROFILE_GUIDANCE=") {
 				return errors.New("no-active compile unexpectedly received Profile guidance")
 			}
 		}
@@ -281,7 +321,7 @@ func TestCloudProfileGuidanceRemainsPinnedAfterProfileEdit(t *testing.T) {
 		for _, entry := range allowlistedSyntoEnvironment(env) {
 			if key, value, ok := strings.Cut(entry, "="); ok {
 				switch key {
-				case "LWC_PROFILE_SCHEMA_PATH":
+				case "LWC_BASE_SCHEMA_PATH":
 					schemaPath = value
 				case "LWC_PROFILE_GUIDANCE":
 					guidance = value
@@ -292,8 +332,8 @@ func TestCloudProfileGuidanceRemainsPinnedAfterProfileEdit(t *testing.T) {
 		if err != nil {
 			return fmt.Errorf("read pinned schema: %w", err)
 		}
-		if !strings.Contains(string(data), "Use the currently confirmed causal writing guidance.") || strings.Contains(string(data), "New Profile guidance saved after this compile started.") {
-			return errors.New("compile did not retain the guidance pinned at start")
+		if strings.Contains(string(data), "currently confirmed causal writing guidance") || strings.Contains(string(data), "New Profile guidance") || !strings.Contains(string(data), "# Vault Schema") {
+			return errors.New("base schema contains Profile guidance or lost its default")
 		}
 		if guidance != "Use the currently confirmed causal writing guidance." {
 			return errors.New("compile adapter did not retain the guidance pinned at start")

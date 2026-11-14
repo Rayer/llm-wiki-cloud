@@ -52,7 +52,7 @@ export function NavigationBlockerProvider({ children }: { children: ReactNode })
   }, []);
   const value = useMemo(
     () => ({ setBlocked, confirmNavigation, consumeCapturedConfirmation }),
-    [confirmNavigation, consumeCapturedConfirmation],
+    [confirmNavigation, consumeCapturedConfirmation, setBlocked],
   );
   return (
     <NavigationBlockerContext.Provider value={value}>
@@ -94,9 +94,11 @@ export function NavigationLink({ onNavigate, ...props }: ComponentProps<typeof L
     <Link
       {...props}
       onNavigate={(event) => {
+        if (!consumeCapturedConfirmation() && !confirmNavigation()) {
+          event.preventDefault();
+          return;
+        }
         onNavigate?.(event);
-        if (consumeCapturedConfirmation()) return;
-        if (!confirmNavigation()) event.preventDefault();
       }}
     />
   );

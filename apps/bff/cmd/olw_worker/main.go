@@ -555,12 +555,12 @@ func runWorkerBatchAtVault(ctx context.Context, cfg workerConfig, commands [][]s
 	defer cleanupOLWEnvironment(olwEnv)
 	if cfg.pinnedProfileGuidance != nil {
 		configHome := strings.TrimPrefix(olwEnv[0], "XDG_CONFIG_HOME=")
-		schemaPath, schemaErr := profileGuidanceSchemaPath(vault, cfg.pinnedProfileGuidance, configHome)
+		schemaPath, schemaErr := profileBaseSchemaPath(vault, cfg.pinnedProfileGuidance, configHome)
 		if schemaErr != nil {
 			return newWorkerFailure(ctx, failureStageSyntoConfigValidation, failureClassValidation, "", schemaErr)
 		}
 		if schemaPath != "" {
-			olwEnv = append(olwEnv, "LWC_PROFILE_SCHEMA_PATH="+schemaPath)
+			olwEnv = append(olwEnv, "LWC_BASE_SCHEMA_PATH="+schemaPath)
 			olwEnv = append(olwEnv, "LWC_PROFILE_GUIDANCE="+cfg.pinnedProfileGuidance.Content)
 		}
 	}
@@ -1214,7 +1214,7 @@ func allowlistedSyntoEnvironment(extra []string) []string {
 			continue
 		}
 		switch key {
-		case "XDG_CONFIG_HOME", "SYNTO_API_KEY", "DEEPSEEK_API_KEY", "LWC_PROFILE_SCHEMA_PATH", "LWC_PROFILE_GUIDANCE",
+		case "XDG_CONFIG_HOME", "SYNTO_API_KEY", "DEEPSEEK_API_KEY", "LWC_BASE_SCHEMA_PATH", "LWC_PROFILE_GUIDANCE",
 			"LWC_PROFILE_CONFIG", "LWC_PROFILE_API_KEY", "LWC_PROFILE_QUOTA_MARKER_PATH", "LWC_PROFILE_CALL_SUCCESS_MARKER_PATH", "LWC_PROFILE_CALL_ATTEMPT_MARKER_PATH",
 			"LWC_PROFILE_FIXTURE_TRANSPORT", "LWC_PROFILE_FIXTURE_RECEIPT_FILE", "LWC_PROFILE_FIXTURE_QUOTA_MODEL", "LWC_PROFILE_FIXTURE_QUOTA_AFTER", "LWC_PROFILE_FIXTURE_REQUIRE_AUTH", "LWC_PROFILE_FIXTURE_HEALTH_ROLE":
 			env = append(env, item)

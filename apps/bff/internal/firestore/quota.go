@@ -1419,27 +1419,28 @@ func SettleQuotaReservationInTransactionWithResult(ctx context.Context, tx *fire
 	}
 	if autoProjectRef != nil {
 		updates := []firestore.Update{{Path: "pipeline_automation_updated_at", Value: now}}
+		automationStatus := ""
 		switch state {
 		case "SUCCEEDED":
 			updates = append(updates,
 				firestore.Update{Path: "pipeline_auto_consumed_fingerprint", Value: reservation.SourceFingerprint},
 				firestore.Update{Path: "pipeline_auto_consumed_source_revision", Value: reservation.SourceRevision},
-				firestore.Update{Path: "pipeline_automation_status", Value: "published"},
 				firestore.Update{Path: "pipeline_failure_blocked_fingerprint", Value: firestore.Delete},
 				firestore.Update{Path: "pipeline_failure_blocked_admin_revision", Value: firestore.Delete},
 				firestore.Update{Path: "pipeline_automation_failure_stage", Value: firestore.Delete},
 				firestore.Update{Path: "pipeline_automation_failure_code", Value: firestore.Delete},
 			)
+			automationStatus = "published"
 		case "FAILED":
 			updates = append(updates,
 				firestore.Update{Path: "pipeline_failure_blocked_fingerprint", Value: reservation.SourceFingerprint},
 				firestore.Update{Path: "pipeline_failure_blocked_admin_revision", Value: reservation.AutomationAdminRevision},
-				firestore.Update{Path: "pipeline_automation_status", Value: "failed"},
 				firestore.Update{Path: "pipeline_automation_failure_stage", Value: "pipeline"},
 				firestore.Update{Path: "pipeline_automation_failure_code", Value: "pipeline_failed"},
 			)
+			automationStatus = "failed"
 		case "CANCELLED":
-			updates = append(updates, firestore.Update{Path: "pipeline_automation_status", Value: "cancelled"})
+			automationStatus = "cancelled"
 		}
 		currentRevision := int64FromFirestore(autoProjectData["pipeline_source_revision"])
 		projectEnabled, _ := autoProjectData["auto_pipeline_enabled"].(bool)
@@ -1447,8 +1448,9 @@ func SettleQuotaReservationInTransactionWithResult(ctx context.Context, tx *fire
 			if err := enqueuePipelineAutomationWork(tx, fs, reservation.UserID, reservation.ProjectID, currentRevision, now); err != nil {
 				return "", false, err
 			}
-			updates = append(updates, firestore.Update{Path: "pipeline_automation_status", Value: "pending"})
+			automationStatus = "pending"
 		}
+		updates = append(updates, firestore.Update{Path: "pipeline_automation_status", Value: automationStatus})
 		if err := tx.Update(autoProjectRef, updates); err != nil {
 			return "", false, err
 		}

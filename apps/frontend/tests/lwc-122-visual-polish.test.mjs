@@ -16,7 +16,7 @@ test('entry cards retain localized type badges and navigation without staggered 
   assert.match(entryCard, /<NavigationLink href=\{href\}/);
   assert.match(entryCard, /<Badge variant=\{entryType\}>/);
   assert.match(entryCard, /entryType === 'source' \? t\('Source\.singular'\) : t\('Entry\.singular'\)/);
-  assert.match(listClient, /filtered\.map\(\(entry, index\) =>/);
+  assert.match(listClient, /page\.items\.map\(\(entry, index\) =>/);
   assert.match(listClient, /index=\{index\}/);
 });
 

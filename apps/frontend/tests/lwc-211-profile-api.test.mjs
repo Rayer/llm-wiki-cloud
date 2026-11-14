@@ -16,6 +16,7 @@ import {
   recompileAll,
   saveProfile,
 } from '../src/lib/api.ts';
+import { countUnicodeScalars, PROFILE_LIMITS, validateProfileRequirements } from '../src/lib/profile-limits.ts';
 
 const profile = {
   project_id: 'project-a',
@@ -191,6 +192,52 @@ test('Profile API preserves HTTP conflict status and rejects unsafe project IDs 
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test('Profile API errors preserve limit and bounded-body fields; client counts Unicode scalars', async () => {
+  installAuth();
+  const originalFetch = globalThis.fetch;
+  let payload = {
+    error: 'Profile input exceeds a supported limit',
+    code: 'profile_limit_exceeded',
+    violation: 'requirement_text',
+    max: 2000,
+    actual: 2001,
+  };
+  globalThis.fetch = async () => Response.json(payload, { status: payload.code === 'profile_limit_exceeded' ? 400 : 413 });
+
+  try {
+    await assert.rejects(() => saveProfile('project-a', 4, [{ id: 'req-1', text: 'oversized' }]), (error) => (
+      error instanceof ApiError
+      && error.status === 400
+      && error.code === 'profile_limit_exceeded'
+      && error.violation === 'requirement_text'
+      && error.max === 2000
+      && error.actual === 2001
+    ));
+    payload = { error: 'Profile request body exceeds the maximum size', code: 'profile_request_body_too_large', max_bytes: 1048576 };
+    await assert.rejects(() => saveProfile('project-a', 4, []), (error) => (
+      error instanceof ApiError
+      && error.status === 413
+      && error.code === 'profile_request_body_too_large'
+      && error.maxBytes === 1048576
+    ));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.deepEqual(PROFILE_LIMITS, {
+    requirementRows: 20,
+    requirementTextScalars: 2000,
+    profileTextScalars: 10000,
+    guidanceScalars: 6000,
+    requestBodyBytes: 1048576,
+  });
+  assert.equal(countUnicodeScalars('a\u0301\r\n👩‍🔬'), 7);
+  assert.equal(validateProfileRequirements([{ text: '🙂'.repeat(2000) }]), null);
+  assert.deepEqual(validateProfileRequirements([{ text: '🙂'.repeat(2001) }]), {
+    kind: 'requirement_text', max: 2000, actual: 2001, index: 0,
+  });
 });
 
 test('Recompile all reads the server capability and posts only to its dedicated endpoint', async () => {

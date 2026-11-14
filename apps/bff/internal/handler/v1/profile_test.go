@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/localfs"
 	"github.com/rayer/llm-wiki-bff/internal/profileartifacts"
 	"github.com/rayer/llm-wiki-bff/internal/profilederive"
+	"github.com/rayer/llm-wiki-bff/internal/profilelimits"
 )
 
 func TestProfileCompileSuccessCarriesOnlySuccessfulCommittedManifest(t *testing.T) {
@@ -262,6 +264,49 @@ func TestGetProfileGuidanceArtifactReturnsExactCurrentImmutableText(t *testing.T
 
 	if recorder := invokeProfileGuidanceArtifact(t, h, strings.Repeat("f", 64)); recorder.Code != http.StatusNotFound {
 		t.Fatalf("stale guidance reference status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestGetProfileGuidanceArtifactReadsLegacyOverLimitText(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	inputDigest := profileRequirementsDigest([]ProfileRequirement{{ID: "legacy-req", Text: "old guidance source"}})
+	legacyText := strings.Repeat("🙂", profilelimits.MaxGuidanceScalars+1)
+	envelope := profileartifacts.GenerationGuidanceEnvelope{
+		SchemaVersion: profileartifacts.GuidanceSchema, InputDigest: inputDigest,
+		SourceContentGeneration: "legacy-generation", CanonicalConceptsDigest: profileartifacts.SHA256([]byte("legacy concepts")),
+		ModelVersion: "legacy-model-v1", PromptVersion: "legacy-prompt-v1", CompileGuidance: legacyText,
+	}
+	data, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := profileartifacts.DerivedRef{
+		Revision: profileartifacts.SHA256(data), InputDigest: inputDigest,
+		ModelVersion: envelope.ModelVersion, PromptVersion: envelope.PromptVersion, SchemaVersion: envelope.SchemaVersion,
+	}
+	state := newProfileState("alpha")
+	state.Revision = 2
+	state.Requirements = []ProfileRequirement{{ID: "legacy-req", Text: "old guidance source"}}
+	state.Candidate = &ProfileCandidate{
+		CandidateID: "legacy-candidate", Source: "manual", ContentGeneration: "legacy-generation",
+		Guidance: profileDerivedRefFromArtifact(ref),
+	}
+	objects := &profileDerivationIntegrationStore{objects: map[string][]byte{
+		profileartifacts.GuidanceObjectPath(ref.Revision): data,
+	}}
+	h := New(&profileDerivationIntegrationRoot{RootStore: localfs.New(t.TempDir()), scoped: objects}, nil, nil, nil, nil, nil)
+	h.profileRepository = &profileRepositoryStub{state: state}
+
+	recorder := invokeProfileGuidanceArtifact(t, h, ref.Revision)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("legacy guidance read status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response profileGuidanceArtifactResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if got := response.GuidanceArtifact.CompileGuidance; got != legacyText {
+		t.Fatalf("legacy guidance was not returned exactly: scalar count=%d, want %d", profilelimits.CountScalars(got), profilelimits.MaxGuidanceScalars+1)
 	}
 }
 
@@ -535,6 +580,68 @@ func TestProfileSaveConflictAndDuplicateRequirementIDs(t *testing.T) {
 	_, err = saveProfileState(state, 3, []ProfileRequirement{{ID: "same", Text: "one"}, {ID: "same", Text: "two"}}, time.Now())
 	if !errors.Is(err, errInvalidProfileRequirements) {
 		t.Fatalf("duplicate IDs error = %v, want invalid requirements", err)
+	}
+}
+
+func TestSaveProfileStateEnforcesLimitsAfterRevisionCheck(t *testing.T) {
+	state := newProfileState("alpha")
+	state.Revision = 3
+	requirements := make([]ProfileRequirement, 5)
+	for index := range requirements {
+		requirements[index] = ProfileRequirement{ID: fmt.Sprintf("r%d", index), Text: strings.Repeat("🙂", profilelimits.MaxRequirementTextScalars)}
+	}
+	saved, err := saveProfileState(state, 3, requirements, time.Now())
+	if err != nil || len(saved.Requirements) != profilelimits.MaxRequirementRows/4 || saved.Revision != 4 {
+		t.Fatalf("exact aggregate boundary save = revision %d rows %d err=%v", saved.Revision, len(saved.Requirements), err)
+	}
+	tooLong := append([]ProfileRequirement(nil), requirements...)
+	tooLong[0].Text += "x"
+	_, err = saveProfileState(state, 3, tooLong, time.Now())
+	var violation *profilelimits.Violation
+	if !errors.As(err, &violation) || violation.Kind != profilelimits.ViolationRequirementText || violation.Actual != profilelimits.MaxRequirementTextScalars+1 {
+		t.Fatalf("row +1 save error = %v, want structured limit violation", err)
+	}
+	rowsOver := make([]ProfileRequirement, profilelimits.MaxRequirementRows+1)
+	for index := range rowsOver {
+		rowsOver[index] = ProfileRequirement{ID: fmt.Sprintf("row-%d", index), Text: "x"}
+	}
+	_, err = saveProfileState(state, 3, rowsOver, time.Now())
+	if !errors.As(err, &violation) || violation.Kind != profilelimits.ViolationRequirementCount {
+		t.Fatalf("row count did not precede row text error: %v", err)
+	}
+	_, err = saveProfileState(state, 2, tooLong, time.Now())
+	var conflict *profileRevisionConflict
+	if !errors.As(err, &conflict) || conflict.Latest != 3 {
+		t.Fatalf("semantic limit must follow revision conflict, got %v", err)
+	}
+}
+
+func TestProfileAPILimitResponsesAndRequestBodyByteBoundary(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	repo := &profileRepositoryStub{state: newProfileState("alpha")}
+	h := New(nil, nil, nil, nil, nil, nil)
+	h.profileRepository = repo
+	repo.saveErr = &profilelimits.Violation{Kind: profilelimits.ViolationRequirementText, Max: 2_000, Actual: 2_001}
+	limited := invokeProfileHandler(t, h, http.MethodPut, "alpha", "owner", "alpha", `{"expected_revision":0,"requirements":[{"id":"r1","text":"PRIVATE_PROFILE_TEXT"}]}`, h.PutProfile)
+	var payload map[string]any
+	if err := json.Unmarshal(limited.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if limited.Code != http.StatusBadRequest || payload["code"] != "profile_limit_exceeded" || payload["violation"] != "requirement_text" || payload["max"] != float64(2_000) || payload["actual"] != float64(2_001) || strings.Contains(limited.Body.String(), "PRIVATE_PROFILE_TEXT") {
+		t.Fatalf("limit response status=%d body=%s", limited.Code, limited.Body.String())
+	}
+
+	repo.saveErr = nil
+	repo.saveCalls = 0
+	body := `{"expected_revision":0,"requirements":[]}`
+	body += strings.Repeat(" ", maxProfileRequestBytes-len(body))
+	exact := invokeProfileHandler(t, h, http.MethodPut, "alpha", "owner", "alpha", body, h.PutProfile)
+	if exact.Code != http.StatusOK || repo.saveCalls != 1 {
+		t.Fatalf("exact %d-byte body status=%d calls=%d body=%s", maxProfileRequestBytes, exact.Code, repo.saveCalls, exact.Body.String())
+	}
+	oversized := invokeProfileHandler(t, h, http.MethodPut, "alpha", "owner", "alpha", body+" ", h.PutProfile)
+	if oversized.Code != http.StatusRequestEntityTooLarge || repo.saveCalls != 1 || !strings.Contains(oversized.Body.String(), `"code":"profile_request_body_too_large"`) || !strings.Contains(oversized.Body.String(), `"max_bytes":1048576`) {
+		t.Fatalf("over-limit %d-byte body status=%d calls=%d body=%s", maxProfileRequestBytes+1, oversized.Code, repo.saveCalls, oversized.Body.String())
 	}
 }
 

@@ -13,6 +13,8 @@ import (
 	"regexp"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/rayer/llm-wiki-bff/internal/profilelimits"
 )
 
 const (
@@ -96,6 +98,9 @@ type ObjectStore interface {
 }
 
 func EncodeBootstrapGuidance(envelope BootstrapGuidanceEnvelope) ([]byte, BootstrapGuidanceRef, error) {
+	if violation := profilelimits.ValidateGuidance(envelope.CompileGuidance); violation != nil {
+		return nil, BootstrapGuidanceRef{}, violation
+	}
 	if err := validateBootstrapEnvelope(envelope); err != nil {
 		return nil, BootstrapGuidanceRef{}, err
 	}
@@ -160,6 +165,9 @@ func ValidateDictionary(data []byte, ref DerivedRef, contentGeneration, concepts
 }
 
 func EncodeGuidance(envelope GenerationGuidanceEnvelope) ([]byte, DerivedRef, error) {
+	if violation := profilelimits.ValidateGuidance(envelope.CompileGuidance); violation != nil {
+		return nil, DerivedRef{}, violation
+	}
 	if err := validateGenerationGuidance(envelope); err != nil {
 		return nil, DerivedRef{}, err
 	}
@@ -192,8 +200,12 @@ func WriteBootstrapGuidance(ctx context.Context, objects ObjectStore, ref Bootst
 	if objects == nil {
 		return errors.New("Profile artifact store unavailable")
 	}
-	if _, err := ValidateBootstrapGuidance(data, ref); err != nil {
+	envelope, err := ValidateBootstrapGuidance(data, ref)
+	if err != nil {
 		return err
+	}
+	if violation := profilelimits.ValidateGuidance(envelope.CompileGuidance); violation != nil {
+		return violation
 	}
 	return writeCreateOnly(ctx, objects, BootstrapObjectPath(ref.Revision), data)
 }
@@ -206,8 +218,15 @@ func WriteDictionary(ctx context.Context, objects ObjectStore, ref DerivedRef, d
 }
 
 func WriteGuidance(ctx context.Context, objects ObjectStore, ref DerivedRef, data []byte) error {
-	if objects == nil || !validDerivedRef(data, ref, GuidanceSchema) {
+	if objects == nil {
 		return errors.New("invalid guidance object reference")
+	}
+	envelope, err := ValidateGuidance(data, ref)
+	if err != nil {
+		return err
+	}
+	if violation := profilelimits.ValidateGuidance(envelope.CompileGuidance); violation != nil {
+		return violation
 	}
 	return writeCreateOnly(ctx, objects, GuidanceObjectPath(ref.Revision), data)
 }

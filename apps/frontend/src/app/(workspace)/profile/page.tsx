@@ -1,17 +1,31 @@
 'use client';
 
 import { useState } from 'react';
+import { Suspense } from 'react';
 import { ProjectRenameModal } from '@/components/ProjectRenameModal';
 import type { Project } from '@/lib/projects';
 import { ProjectProfilePanel } from '@/components/ProjectProfilePanel';
 import { useWorkspace } from '@/components/WorkspaceProvider';
 import { useAuth } from '@/lib/auth';
 import { useT } from '@/lib/i18n';
+import { useSearchParams } from 'next/navigation';
+import { safeWikiRouteSegment } from '@/lib/api';
 
 export default function ProfilePage() {
+  return <Suspense fallback={<ProfileLoading />}><ProfilePageContent /></Suspense>;
+}
+
+function ProfileLoading() {
+  const { t } = useT();
+  return <p role="status" className="text-sm text-zinc-400">{t('Profile.loading')}</p>;
+}
+
+function ProfilePageContent() {
   const { t } = useT();
   const { user, sessionIdentityEpoch } = useAuth();
-  const { hydrated, currentProject, isDemoSession, projectsLoading } = useWorkspace();
+  const { hydrated, currentProject, isDemoSession, projectsLoading, projects = [], projectsError } = useWorkspace();
+  const searchParams = useSearchParams();
+  const projectQuery = searchParams?.getAll('project_id') ?? [];
 
   if (!hydrated || projectsLoading) {
     return <p role="status" className="text-sm text-zinc-400">{t('Profile.loading')}</p>;
@@ -21,6 +35,22 @@ export default function ProfilePage() {
   }
   if (isDemoSession) {
     return <p className="text-sm text-zinc-400">{t('Profile.demoDisabled')}</p>;
+  }
+  if (projectQuery.length > 0) {
+    if (projectQuery.length !== 1 || !safeWikiRouteSegment(projectQuery[0]) || projectsError) {
+      return <p role="status" className="text-sm text-zinc-400">{t('Profile.unavailable')}</p>;
+    }
+    const targetProject = projects.find((project) => project.id === projectQuery[0]);
+    if (!targetProject) return <p role="status" className="text-sm text-zinc-400">{t('Profile.unavailable')}</p>;
+    return (
+      <div className="space-y-5">
+        <ProjectHeading key={`heading:${user.id}:${targetProject.id}`} project={targetProject} />
+        <ProjectProfilePanel
+          key={`${user.id}:${sessionIdentityEpoch}:${targetProject.id}`}
+          projectId={targetProject.id}
+        />
+      </div>
+    );
   }
   if (!currentProject) {
     return <p className="text-sm text-zinc-400">{t('Profile.selectProject')}</p>;

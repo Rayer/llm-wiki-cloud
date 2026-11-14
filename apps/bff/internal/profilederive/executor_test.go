@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/rayer/llm-wiki-bff/internal/profileartifacts"
+	"github.com/rayer/llm-wiki-bff/internal/profilelimits"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -24,6 +25,7 @@ type transitionsStub struct {
 	failedDigest      string
 	failureCode       string
 	failureDiagnostic FailureDiagnostic
+	failErr           error
 	completeErr       error
 	alreadyRunning    bool
 }
@@ -50,7 +52,7 @@ func (r *transitionsStub) CompleteProfileDerivation(_ context.Context, _ Attempt
 }
 func (r *transitionsStub) FailProfileDerivation(_ context.Context, _ Attempt, digest, code string, diagnostic FailureDiagnostic) error {
 	r.failedDigest, r.failureCode, r.failureDiagnostic = digest, code, diagnostic
-	return nil
+	return r.failErr
 }
 
 type contentStub struct {
@@ -273,6 +275,96 @@ func TestExecutorFailureStoresBoundedCodeNotRawProviderError(t *testing.T) {
 	}
 	if strings.Contains(repo.failureCode, "ignored") {
 		t.Fatal("raw provider output was persisted as error code")
+	}
+}
+
+func TestExecutorRejectsLegacyOversizedRequirementsBeforePinningContent(t *testing.T) {
+	requirements := []Requirement{{ID: "r1", Text: strings.Repeat("x", profilelimits.MaxRequirementTextScalars+1)}}
+	repo := &transitionsStub{snapshot: ProfileSnapshot{Revision: 7, Requirements: requirements, HasActive: true}}
+	content := &contentStub{exists: true, content: PinnedContent{Generation: "must-not-pin"}}
+	objects := newMemoryArtifacts()
+	result, err := (&Executor{Profiles: repo, Content: content, Artifacts: artifactsStub{objects}}).Run(
+		context.Background(), Attempt{UserID: "owner", ProjectID: "alpha", Revision: 7, AttemptID: "legacy-over-limit"})
+	if err == nil || result.Mode != "" || repo.failureCode != FailureCodeRequirementsOverLimit || repo.failureDiagnostic != (FailureDiagnostic{Stage: FailureStageRequirements, Class: FailureClassInputInvalid}) {
+		t.Fatalf("oversized legacy requirements result=%+v err=%v failure=(%s,%+v)", result, err, repo.failureCode, repo.failureDiagnostic)
+	}
+	if code, committed := CommittedLimitFailureCode(err); !committed || code != FailureCodeRequirementsOverLimit {
+		t.Fatalf("committed over-limit marker=(%q,%t), want requirements code", code, committed)
+	}
+	if content.called != 0 || len(objects.files) != 0 {
+		t.Fatalf("oversized input reached content or artifacts: content=%d objects=%d", content.called, len(objects.files))
+	}
+}
+
+func TestExecutorRejectsOversizedBootstrapAndManualGuidanceBeforeWrites(t *testing.T) {
+	guidance := strings.Repeat("🙂", profilelimits.MaxGuidanceScalars+1)
+	bootstrapRequirements := []Requirement{{ID: "r1", Text: "write concise"}}
+	manualRequirements := []Requirement{{ID: "r1", Text: "write concise"}}
+	bootstrapOutput, err := json.Marshal(BootstrapOutput{
+		CompileGuidance: guidance, GuidanceDiff: "too long", Requirements: []RequirementAccounting{{ID: "r1", Disposition: "compile_guidance", Explanation: "Applied."}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manualOutput, err := json.Marshal(ManualOutput{
+		Tags: []profileartifacts.Tag{}, CompileGuidance: guidance, DictionaryDiff: "none", GuidanceDiff: "too long",
+		Requirements: []RequirementAccounting{{ID: "r1", Disposition: "compile_guidance", Explanation: "Applied."}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name         string
+		snapshot     ProfileSnapshot
+		content      *contentStub
+		providerText string
+		stage        string
+	}{
+		{
+			name: "bootstrap", snapshot: ProfileSnapshot{Revision: 8, Requirements: bootstrapRequirements},
+			content: &contentStub{exists: false}, providerText: string(bootstrapOutput), stage: FailureStageBootstrapValidate,
+		},
+		{
+			name: "manual", snapshot: ProfileSnapshot{Revision: 8, Requirements: manualRequirements, HasActive: true},
+			content:      &contentStub{exists: true, content: PinnedContent{Generation: "g8", SourceSnapshotDigest: strings.Repeat("a", 64), IDMap: []byte(`{"concept":{}}`), Concepts: []byte{}}},
+			providerText: string(manualOutput), stage: FailureStageManualValidate,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repo := &transitionsStub{snapshot: test.snapshot}
+			objects := newMemoryArtifacts()
+			provider := NewProvider(&fakeChat{model: "fixture-model", text: test.providerText})
+			_, runErr := (&Executor{Profiles: repo, Content: test.content, Artifacts: artifactsStub{objects}, Provider: provider}).Run(
+				context.Background(), Attempt{UserID: "owner", ProjectID: "alpha", Revision: 8, AttemptID: "overlong-" + test.name})
+			if runErr == nil || repo.failureCode != FailureCodeGuidanceTooLong || repo.failureDiagnostic != (FailureDiagnostic{Stage: test.stage, Class: FailureClassModelAccountingInvalid}) {
+				t.Fatalf("failure err=%v code=%q diagnostic=%+v", runErr, repo.failureCode, repo.failureDiagnostic)
+			}
+			if code, committed := CommittedLimitFailureCode(runErr); !committed || code != FailureCodeGuidanceTooLong {
+				t.Fatalf("committed over-limit marker=(%q,%t), want guidance code", code, committed)
+			}
+			if len(objects.files) != 0 || repo.bootstrap != nil || repo.dictionary != nil || repo.guidance != nil || repo.mode != "" {
+				t.Fatalf("overlong output published partial artifacts or candidate: objects=%v transitions=%+v", objects.files, repo)
+			}
+		})
+	}
+}
+
+func TestExecutorDoesNotMarkOverLimitFailureWhenFailureCommitIsUnknown(t *testing.T) {
+	commitErr := errors.New("failure transition commit outcome is unknown")
+	repo := &transitionsStub{
+		snapshot: ProfileSnapshot{Revision: 2, Requirements: []Requirement{{ID: "r1", Text: strings.Repeat("x", profilelimits.MaxRequirementTextScalars+1)}}},
+		failErr:  commitErr,
+	}
+	_, err := (&Executor{Profiles: repo, Content: &contentStub{}, Artifacts: artifactsStub{newMemoryArtifacts()}}).Run(context.Background(), Attempt{UserID: "owner", ProjectID: "alpha", Revision: 2, AttemptID: "attempt-2"})
+	if err == nil || !errors.Is(err, commitErr) {
+		t.Fatalf("uncertain failure commit error=%v; want commit error retained", err)
+	}
+	var violation *profilelimits.Violation
+	if !errors.As(err, &violation) || violation.Kind != profilelimits.ViolationRequirementText {
+		t.Fatalf("uncertain failure lost original over-limit cause: %v", err)
+	}
+	if code, committed := CommittedLimitFailureCode(err); committed || code != "" {
+		t.Fatalf("uncertain failure commit was misclassified as durable rejection: (%q,%t)", code, committed)
 	}
 }
 

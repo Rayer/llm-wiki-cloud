@@ -18,6 +18,7 @@ import { uploadRawFile, ApiError } from '@/lib/api';
 import { NavigationBlockerProvider } from '@/components/NavigationBlocker';
 import { LoginModal } from '@/components/LoginModal';
 import { useWorkspace, WorkspaceProvider } from '@/components/WorkspaceProvider';
+import { readListViewState, writeListViewState } from '@/lib/list-view-state';
 
 if (!(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT) {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -290,6 +291,7 @@ beforeEach(() => {
   clearPublicConfigCache();
   clearForceHomeRedirect(window.localStorage);
   window.localStorage.clear();
+  window.sessionStorage.clear();
   requestLog = [];
   vi.spyOn(window, 'confirm').mockReturnValue(true);
 
@@ -309,6 +311,41 @@ beforeEach(() => {
 });
 
 describe('LWC-221 auth redirect behavior', () => {
+  it('keeps the list namespace across same-user refresh and reload, then rotates and clears it on logout/login', async () => {
+    writeStoredAccessToken(window.localStorage, 'stored-token');
+    writeStoredAuthUser(window.localStorage, TEST_USER);
+    setQueue('refresh', [{
+      status: 200,
+      body: { access_token: 'refreshed-token', user: TEST_USER },
+    }]);
+
+    await renderProviders();
+    await waitForHydrated();
+    await waitUntil(() => workspaceRef.current?.token === 'refreshed-token');
+    const firstNamespace = workspaceRef.current?.listViewSessionId;
+    expect(firstNamespace).toBeTruthy();
+    const scope = { ownerId: TEST_USER.id, namespaceId: firstNamespace!, projectId: 'project-a', list: 'concepts' as const };
+    writeListViewState(scope, { search: 'kept across reload', filters: { status: 'published', dates: 'all' }, order: 'title', page: 2 });
+
+    await unmountProviders();
+    await renderProviders();
+    await waitForHydrated();
+    expect(workspaceRef.current?.listViewSessionId).toBe(firstNamespace);
+    expect(readListViewState(scope)).toEqual({ search: 'kept across reload', filters: { status: 'published', dates: 'all' }, order: 'title', page: 2 });
+
+    setQueue('logout', [{ status: 200, body: {} }]);
+    await actSignOut();
+    expect(workspaceRef.current?.listViewSessionId).toBeNull();
+    expect(readListViewState(scope)).toBeNull();
+
+    setQueue('login', [{ status: 200, body: loginBody('same-user-new-login') }]);
+    await actSignIn(TEST_USER.email, 'synthetic-test-password');
+    const nextNamespace = workspaceRef.current?.listViewSessionId;
+    expect(nextNamespace).toBeTruthy();
+    expect(nextNamespace).not.toBe(firstNamespace);
+    expect(readListViewState({ ...scope, namespaceId: nextNamespace! })).toBeNull();
+  });
+
   it('keeps a committed registration session and loads Projects without workspace bootstrap', async () => {
     setQueue('refresh', [{ status: 401, body: { error: 'missing' } }]);
     setQueue('register', [{

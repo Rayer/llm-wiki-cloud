@@ -935,6 +935,207 @@ func TestQuotaReconcileDetailBudgetDoesNotCapActualProcessing(t *testing.T) {
 	}
 }
 
+func TestQuotaReconcileAggregatesRecordErrorsAcrossExitPaths(t *testing.T) {
+	const recordSecret = "record-error-secret-sentinel"
+	const globalSecret = "global-error-sentinel"
+	newReservation := func(id, executionID string) firestore.QuotaReservation {
+		return firestore.QuotaReservation{ID: id, UserID: "user", ProjectID: "project", ExecutionID: executionID, SettlementStatus: "pending"}
+	}
+	t.Run("no execution lookup exit retains record error and redacts log", func(t *testing.T) {
+		quotaStore := &stubQuotaStore{reservations: map[string]firestore.QuotaReservation{"record-lookup": newReservation("record-lookup", "")}}
+		h := New(pipelineLogErrorRoot{RootStore: localfs.New(t.TempDir()), err: errors.New(recordSecret)}, nil, search.NewIndex(), conceptcache.New(), nil, nil)
+		h.SetPipelineQuotaStore(quotaStore)
+		previous := log.Writer()
+		var captured bytes.Buffer
+		log.SetOutput(&captured)
+		err := h.ReconcilePipelineQuota(context.Background())
+		log.SetOutput(previous)
+		if err == nil || !strings.Contains(err.Error(), recordSecret) {
+			t.Fatalf("ReconcilePipelineQuota() error=%v; want collected record failure", err)
+		}
+		if got := captured.String(); !strings.Contains(got, "stage=invoke_failure_lookup") || !strings.Contains(got, "reservation_id=record-lookup") || strings.Contains(got, recordSecret) {
+			t.Fatalf("record diagnostic log=%q; want finite stage/correlation without raw error", got)
+		}
+	})
+
+	t.Run("later token error joins prior record error", func(t *testing.T) {
+		quotaStore := &stubQuotaStore{reservations: map[string]firestore.QuotaReservation{
+			"record-lookup":    newReservation("record-lookup", ""),
+			"record-execution": newReservation("record-execution", "execution-token-fail"),
+		}}
+		h := New(pipelineLogErrorRoot{RootStore: localfs.New(t.TempDir()), err: errors.New(recordSecret)}, nil, search.NewIndex(), conceptcache.New(), nil, nil)
+		h.SetPipelineQuotaStore(quotaStore)
+		h.metadataTokenURL = "http://run.test/token"
+		h.httpClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			return testHTTPResponse(http.StatusServiceUnavailable, globalSecret), nil
+		})}
+		err := h.ReconcilePipelineQuota(context.Background())
+		if err == nil || !strings.Contains(err.Error(), recordSecret) || !strings.Contains(err.Error(), globalSecret) {
+			t.Fatalf("ReconcilePipelineQuota() error=%v; want both record and token failures", err)
+		}
+	})
+
+	t.Run("no-unlinked-work exit retains settlement error", func(t *testing.T) {
+		settlementSecret := "settlement-error-secret-sentinel"
+		quotaStore := &stubQuotaStore{
+			reservations: map[string]firestore.QuotaReservation{
+				"record-settle": newReservation("record-settle", "execution-settle-only"),
+			},
+			settlementErrors: map[string]error{"record-settle": errors.New(settlementSecret)},
+		}
+		h := New(localfs.New(t.TempDir()), nil, search.NewIndex(), conceptcache.New(), nil, nil)
+		h.SetPipelineQuotaStore(quotaStore)
+		h.metadataTokenURL = "http://run.test/token"
+		h.SetPipelineJobURL("http://run.test/job:run")
+		h.httpClient = reconciliationExecutionHTTPClient(t, map[string]reconcileExecutionFixture{
+			"execution-settle-only": {userID: "user", projectID: "project", reservationID: "record-settle", state: "SUCCEEDED"},
+		}, http.StatusServiceUnavailable, globalSecret, nil)
+		err := h.ReconcilePipelineQuota(context.Background())
+		if err == nil || !strings.Contains(err.Error(), settlementSecret) || strings.Contains(err.Error(), globalSecret) {
+			t.Fatalf("ReconcilePipelineQuota() error=%v; want accrued settlement error and no unneeded page request", err)
+		}
+	})
+
+	t.Run("final page and later page failure retain settlement error", func(t *testing.T) {
+		for _, pageStatus := range []int{http.StatusOK, http.StatusServiceUnavailable} {
+			name := "normal final page"
+			if pageStatus != http.StatusOK {
+				name = "global page failure"
+			}
+			t.Run(name, func(t *testing.T) {
+				settlementSecret := "settlement-error-secret-sentinel"
+				quotaStore := &stubQuotaStore{
+					reservations: map[string]firestore.QuotaReservation{
+						"record-settle":   newReservation("record-settle", "execution-settle-fail"),
+						"record-unlinked": newReservation("record-unlinked", ""),
+					},
+					settlementErrors: map[string]error{"record-settle": errors.New(settlementSecret)},
+				}
+				h := New(localfs.New(t.TempDir()), nil, search.NewIndex(), conceptcache.New(), nil, nil)
+				h.SetPipelineQuotaStore(quotaStore)
+				h.metadataTokenURL = "http://run.test/token"
+				h.SetPipelineJobURL("http://run.test/job:run")
+				h.httpClient = reconciliationExecutionHTTPClient(t, map[string]reconcileExecutionFixture{
+					"execution-settle-fail": {userID: "user", projectID: "project", reservationID: "record-settle", state: "SUCCEEDED"},
+				}, pageStatus, globalSecret, nil)
+				err := h.ReconcilePipelineQuota(context.Background())
+				if err == nil || !strings.Contains(err.Error(), settlementSecret) {
+					t.Fatalf("ReconcilePipelineQuota() error=%v; want collected settlement failure", err)
+				}
+				if pageStatus != http.StatusOK && !strings.Contains(err.Error(), globalSecret) {
+					t.Fatalf("ReconcilePipelineQuota() error=%v; want later global page failure", err)
+				}
+			})
+		}
+	})
+
+	t.Run("healthy later reservation settles despite earlier item failure", func(t *testing.T) {
+		quotaStore := &stubQuotaStore{
+			reservations: map[string]firestore.QuotaReservation{
+				"record-fails":   newReservation("record-fails", "execution-fails"),
+				"record-healthy": newReservation("record-healthy", "execution-healthy"),
+			},
+			settlementErrors: map[string]error{"record-fails": errors.New(recordSecret)},
+		}
+		h := New(nil, nil, search.NewIndex(), conceptcache.New(), nil, nil)
+		h.SetPipelineQuotaStore(quotaStore)
+		h.metadataTokenURL = "http://run.test/token"
+		h.SetPipelineJobURL("http://run.test/job:run")
+		h.httpClient = reconciliationExecutionHTTPClient(t, map[string]reconcileExecutionFixture{
+			"execution-fails":   {userID: "user", projectID: "project", reservationID: "record-fails", state: "SUCCEEDED"},
+			"execution-healthy": {userID: "user", projectID: "project", reservationID: "record-healthy", state: "SUCCEEDED"},
+		}, http.StatusOK, "", nil)
+		err := h.ReconcilePipelineQuota(context.Background())
+		if err == nil || !strings.Contains(err.Error(), recordSecret) {
+			t.Fatalf("ReconcilePipelineQuota() error=%v; want failed record after processing healthy one", err)
+		}
+		if len(quotaStore.settlementCalls) != 2 {
+			t.Fatalf("settlement calls=%v; want both independent records attempted", quotaStore.settlementCalls)
+		}
+		if got := quotaStore.reservations["record-healthy"].SettlementStatus; got != "charged" {
+			t.Fatalf("healthy later reservation settlement=%q; want charged", got)
+		}
+		if got := quotaStore.reservations["record-fails"].SettlementStatus; got != "pending" {
+			t.Fatalf("failed reservation settlement=%q; want pending", got)
+		}
+	})
+
+	t.Run("parent cancellation stops later work and joins accrued errors", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		quotaStore := &stubQuotaStore{
+			reservations: map[string]firestore.QuotaReservation{
+				"record-one": newReservation("record-one", "execution-one"),
+				"record-two": newReservation("record-two", "execution-two"),
+			},
+			settlementErrors: map[string]error{
+				"record-one": errors.New(recordSecret),
+				"record-two": errors.New(recordSecret),
+			},
+			afterSettle: func(string) { cancel() },
+		}
+		h := New(nil, nil, search.NewIndex(), conceptcache.New(), nil, nil)
+		h.SetPipelineQuotaStore(quotaStore)
+		h.metadataTokenURL = "http://run.test/token"
+		h.SetPipelineJobURL("http://run.test/job:run")
+		var executionFetches int
+		h.httpClient = reconciliationExecutionHTTPClient(t, map[string]reconcileExecutionFixture{
+			"execution-one": {userID: "user", projectID: "project", reservationID: "record-one", state: "SUCCEEDED"},
+			"execution-two": {userID: "user", projectID: "project", reservationID: "record-two", state: "SUCCEEDED"},
+		}, http.StatusOK, "", &executionFetches)
+		err := h.ReconcilePipelineQuota(ctx)
+		cancel()
+		if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), recordSecret) {
+			t.Fatalf("ReconcilePipelineQuota() error=%v; want accrued record error plus context cancellation", err)
+		}
+		if len(quotaStore.settlementCalls) != 1 || executionFetches != 1 {
+			t.Fatalf("settlements=%v execution fetches=%d; want stop after first record", quotaStore.settlementCalls, executionFetches)
+		}
+	})
+}
+
+type reconcileExecutionFixture struct {
+	userID, projectID, reservationID, state string
+}
+
+func reconciliationExecutionHTTPClient(t *testing.T, executions map[string]reconcileExecutionFixture, pageStatus int, pageBody string, executionFetches *int) *http.Client {
+	t.Helper()
+	return &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch {
+		case r.URL.Path == "/token":
+			return testHTTPResponse(http.StatusOK, `{"access_token":"test-token"}`), nil
+		case strings.HasPrefix(r.URL.Path, "/job/executions/"):
+			if executionFetches != nil {
+				*executionFetches++
+			}
+			executionID := strings.TrimPrefix(r.URL.Path, "/job/executions/")
+			fixture, ok := executions[executionID]
+			if !ok {
+				return testHTTPResponse(http.StatusNotFound, `{"error":"not found"}`), nil
+			}
+			execution := cloudRunExecution{
+				Name:             "projects/test/locations/local/jobs/job/executions/" + executionID,
+				CompletionStatus: fixture.state,
+				Template: cloudRunExecutionTemplate{Containers: []cloudRunContainer{{Env: []cloudRunEnv{
+					{Name: "USER_ID", Value: fixture.userID}, {Name: "PROJECT_ID", Value: fixture.projectID},
+					{Name: "TASK_TYPE", Value: "pipeline"}, {Name: pipelineReservationEnvName, Value: fixture.reservationID},
+				}}}},
+			}
+			body, err := json.Marshal(execution)
+			if err != nil {
+				t.Fatalf("marshal Cloud Run execution fixture: %v", err)
+			}
+			return testHTTPResponse(http.StatusOK, string(body)), nil
+		case r.URL.Path == "/job/executions":
+			if pageBody == "" {
+				pageBody = `{"executions":[]}`
+			}
+			return testHTTPResponse(pageStatus, pageBody), nil
+		default:
+			return testHTTPResponse(http.StatusNotFound, `not found`), nil
+		}
+	})}
+}
+
 func hasPipelineTraceCount(attrs []attribute.KeyValue, key string, want int) bool {
 	for _, attr := range attrs {
 		if string(attr.Key) == key && attr.Value.AsInt64() == int64(want) {
@@ -1483,15 +1684,19 @@ func TestPipelineRunReturnsCloudRunResponseOnFailure(t *testing.T) {
 
 // stubQuotaStore is an in-memory pipelineQuotaStore for handler tests.
 type stubQuotaStore struct {
-	runsToday    int
-	dayKey       string
-	lastRunAt    time.Time
-	loadCalls    int
-	reserveCalls int
-	refundCalls  int
-	refundErr    error
-	linkErr      error
-	reservations map[string]firestore.QuotaReservation
+	runsToday        int
+	dayKey           string
+	lastRunAt        time.Time
+	loadCalls        int
+	reserveCalls     int
+	refundCalls      int
+	refundErr        error
+	settlementErrors map[string]error
+	settlementCalls  []string
+	afterSettle      func(string)
+	listErr          error
+	linkErr          error
+	reservations     map[string]firestore.QuotaReservation
 }
 
 func (s *stubQuotaStore) LoadQuotaState(context.Context, string, string) (int, string, time.Time, error) {
@@ -1571,6 +1776,9 @@ func (s *stubQuotaStore) GetQuotaReservation(_ context.Context, reservationID st
 }
 
 func (s *stubQuotaStore) ListPendingQuotaReservations(context.Context) ([]firestore.QuotaReservation, error) {
+	if s.listErr != nil {
+		return nil, s.listErr
+	}
 	var pending []firestore.QuotaReservation
 	for _, reservation := range s.reservations {
 		if reservation.SettlementStatus == "pending" {
@@ -1589,6 +1797,13 @@ func (s *stubQuotaStore) SettleQuotaReservation(_ context.Context, reservationID
 		return reservation.SettlementStatus, nil
 	}
 	s.refundCalls++
+	s.settlementCalls = append(s.settlementCalls, reservationID)
+	if s.afterSettle != nil {
+		s.afterSettle(reservationID)
+	}
+	if err := s.settlementErrors[reservationID]; err != nil {
+		return "", err
+	}
 	if s.refundErr != nil {
 		return "", s.refundErr
 	}

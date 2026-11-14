@@ -19,6 +19,8 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"github.com/rayer/llm-wiki-bff/internal/profileartifacts"
 	"github.com/rayer/llm-wiki-bff/internal/profilederive"
+	"github.com/rayer/llm-wiki-bff/internal/profilelimits"
+	"github.com/rayer/llm-wiki-bff/internal/profileruntime"
 	store "github.com/rayer/llm-wiki-bff/internal/storage"
 	"go.opentelemetry.io/otel"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -131,6 +133,50 @@ func TestFirestoreProfileTransactionsAndTransitions(t *testing.T) {
 	var conflict *profileRevisionConflict
 	if _, err := repo.SaveProfile(ctx, userID, projectID, 0, requirements); !errors.As(err, &conflict) || conflict.Latest != 1 {
 		t.Fatalf("stale revision error = %v, want latest=1", err)
+	}
+	stateBeforeInvalid, err := repo.GetProfile(ctx, userID, projectID)
+	if err != nil {
+		t.Fatalf("read state before invalid save: %v", err)
+	}
+	intentBeforeInvalid, err := intentRef.Get(ctx)
+	if err != nil {
+		t.Fatalf("read intent before invalid save: %v", err)
+	}
+	attemptBeforeInvalid, err := intentRef.Collection("attempts").Doc(attemptID).Get(ctx)
+	if err != nil {
+		t.Fatalf("read attempt before invalid save: %v", err)
+	}
+	workRef := internalfirestore.Collection(client, profileruntime.WorkCollection).Doc(profileruntime.WorkID(profileruntime.Work{
+		UserID: userID, ProjectID: projectID, Kind: "derive", ID: attemptID,
+	}))
+	workBeforeInvalid, err := workRef.Get(ctx)
+	if err != nil {
+		t.Fatalf("read queued work before invalid save: %v", err)
+	}
+	oversizedRequirements := []ProfileRequirement{{ID: "r1", Text: strings.Repeat("x", profilelimits.MaxRequirementTextScalars+1)}}
+	if _, err := repo.SaveProfile(ctx, userID, projectID, 1, oversizedRequirements); err == nil {
+		t.Fatal("Firestore accepted an over-limit Profile save")
+	} else {
+		var violation *profilelimits.Violation
+		if !errors.As(err, &violation) {
+			t.Fatalf("over-limit Firestore save error = %v, want limit violation", err)
+		}
+	}
+	stateAfterInvalid, err := repo.GetProfile(ctx, userID, projectID)
+	if err != nil || stateAfterInvalid.Revision != stateBeforeInvalid.Revision || len(stateAfterInvalid.Requirements) != len(stateBeforeInvalid.Requirements) || stateAfterInvalid.Requirements[0] != stateBeforeInvalid.Requirements[0] || stateAfterInvalid.ScheduledFor == nil || *stateAfterInvalid.ScheduledFor != *stateBeforeInvalid.ScheduledFor {
+		t.Fatalf("invalid save changed Profile state: before=%+v after=%+v err=%v", stateBeforeInvalid, stateAfterInvalid, err)
+	}
+	intentAfterInvalid, err := intentRef.Get(ctx)
+	if err != nil || intentAfterInvalid.Data()["attempt_id"] != intentBeforeInvalid.Data()["attempt_id"] || intentAfterInvalid.Data()["status"] != intentBeforeInvalid.Data()["status"] {
+		t.Fatalf("invalid save changed derivation intent: before=%v after=%v err=%v", intentBeforeInvalid.Data(), intentAfterInvalid.Data(), err)
+	}
+	attemptAfterInvalid, err := intentRef.Collection("attempts").Doc(attemptID).Get(ctx)
+	if err != nil || attemptAfterInvalid.Data()["status"] != attemptBeforeInvalid.Data()["status"] {
+		t.Fatalf("invalid save superseded attempt: before=%v after=%v err=%v", attemptBeforeInvalid.Data(), attemptAfterInvalid.Data(), err)
+	}
+	workAfterInvalid, err := workRef.Get(ctx)
+	if err != nil || workAfterInvalid.Data()["status"] != workBeforeInvalid.Data()["status"] || workAfterInvalid.Data()["pending"] != workBeforeInvalid.Data()["pending"] {
+		t.Fatalf("invalid save changed queued work: before=%v after=%v err=%v", workBeforeInvalid.Data(), workAfterInvalid.Data(), err)
 	}
 
 	clock = clock.Add(profileDebounce)
