@@ -1,6 +1,7 @@
 package v1
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -28,9 +29,11 @@ import (
 	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"github.com/rayer/llm-wiki-bff/internal/gcs"
 	"github.com/rayer/llm-wiki-bff/internal/handler"
+	"github.com/rayer/llm-wiki-bff/internal/localcloud"
 	"github.com/rayer/llm-wiki-bff/internal/localfs"
 	"github.com/rayer/llm-wiki-bff/internal/pipelinequota"
 	"github.com/rayer/llm-wiki-bff/internal/profileartifacts"
+	"github.com/rayer/llm-wiki-bff/internal/profileruntime"
 	"github.com/rayer/llm-wiki-bff/internal/search"
 	storeapi "github.com/rayer/llm-wiki-bff/internal/storage"
 	"google.golang.org/api/idtoken"
@@ -435,6 +438,234 @@ func TestPipelineQuotaCloudRunHandlerEmulator(t *testing.T) {
 	proxyHandler.SetPipelineQuotaConfig(5, 1, 1, nil)
 	proxyHandler.httpClient = &http.Client{Transport: roundTripFunc(fixture.roundTrip)}
 
+	adminAutomationRef := scopedfirestore.Collection(fsClient.Raw(), "system").Doc("pipeline_automation")
+	priorAdminAutomation, priorAdminErr := adminAutomationRef.Get(ctx)
+	if priorAdminErr != nil && status.Code(priorAdminErr) != codes.NotFound {
+		t.Fatalf("read prior Admin automation state: %v", priorAdminErr)
+	}
+	var priorAdminAutomationData map[string]interface{}
+	if priorAdminAutomation != nil && priorAdminAutomation.Exists() {
+		priorAdminAutomationData = priorAdminAutomation.Data()
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cleanupCancel()
+		if priorAdminAutomationData == nil {
+			_, _ = adminAutomationRef.Delete(cleanupCtx)
+		} else {
+			_, _ = adminAutomationRef.Set(cleanupCtx, priorAdminAutomationData)
+		}
+	})
+	seedSourceReservation := func(projectID string, currentRevision int64, executionState string, publish bool) (string, string) {
+		t.Helper()
+		projectRef := scopedfirestore.Collection(fsClient.Raw(), "projects").Doc(projectDocID(userID, projectID))
+		if _, err := projectRef.Set(ctx, map[string]interface{}{
+			"user_id": userID, "project_id": projectID, "status": "ready", "auto_pipeline_enabled": true,
+			"auto_pipeline_revision": int64(1), "pipeline_source_revision": int64(1),
+		}); err != nil {
+			t.Fatalf("seed source-commit Project %s: %v", projectID, err)
+		}
+		if _, err := adminAutomationRef.Set(ctx, map[string]interface{}{"allow_auto_pipeline": true, "revision": int64(1)}); err != nil {
+			t.Fatalf("seed Admin automation: %v", err)
+		}
+		projectStore := deployedQuotaClient.WithScope(userID, projectID)
+		if _, err := projectStore.WriteBytes(ctx, []byte("# Synthetic source commit for "+projectID+"\n"), "raw/source.md"); err != nil {
+			t.Fatalf("seed source-commit content for %s: %v", projectID, err)
+		}
+		reservationID := "lwc484-source-" + projectID
+		admission := scopedfirestore.PipelineAutomationAdmission{
+			SourceFingerprint: "fingerprint-" + projectID, SourceRevision: 1, ProjectRevision: 1, AdminRevision: 1,
+		}
+		_, reserved, err := fsClient.ReserveQuotaForPipelineAutomation(ctx, reservationID, userID, projectID,
+			deployedHandler.pipelineLimits(), time.Now().UTC(), false, false, 1, 0, 0, admission)
+		if err != nil || !reserved {
+			t.Fatalf("reserve source-commit %s reserved=%t err=%v", projectID, reserved, err)
+		}
+		if currentRevision != 1 {
+			if _, err := projectRef.Update(ctx, []cloudfirestore.Update{{Path: "pipeline_source_revision", Value: currentRevision}}); err != nil {
+				t.Fatalf("advance source revision for %s: %v", projectID, err)
+			}
+		}
+		executionID := fixture.addExecution(userID, projectID, reservationID, executionState)
+		if err := fsClient.LinkQuotaReservation(ctx, reservationID, executionID); err != nil {
+			t.Fatalf("link Cloud Run execution for %s: %v", projectID, err)
+		}
+		if publish {
+			output, err := runCloudRunQuotaFixtureWorker(t, ctx, worker, workerBucket, userID, projectID, executionID, storageEndpoint)
+			if err != nil {
+				t.Fatalf("write committed worker receipt for %s: %v\n%s", projectID, err, output)
+			}
+			if _, err := projectStore.ReadLocalPublicationReceipt(ctx, executionID); err != nil {
+				t.Fatalf("verify committed worker receipt for %s: %v", projectID, err)
+			}
+		}
+		return reservationID, executionID
+	}
+	newSourceReconciler := func(reservationID string) *Handler {
+		reconciler := New(proxyQuotaClient, fsClient, search.NewIndex(), conceptcache.New(), nil, nil)
+		reconciler.SetPipelineQuotaStore(&selectedQuotaReservationStore{Client: fsClient, allowed: map[string]struct{}{reservationID: {}}})
+		reconciler.metadataTokenURL = h.metadataTokenURL
+		reconciler.SetPipelineJobURL("http://run.test/job:run")
+		reconciler.SetPipelineQuotaConfig(5, 1, 1, nil)
+		reconciler.httpClient = &http.Client{Transport: roundTripFunc(fixture.roundTrip)}
+		return reconciler
+	}
+
+	// F1: exact-owned source_commit publication precedence remains authoritative
+	// after execution identity has been checked.
+	runningCommittedReservation, runningCommittedExecution := seedSourceReservation("f1-running-committed", 1, "RUNNING", true)
+	fixture.setStatus(runningCommittedExecution, "RUNNING")
+	if err := newSourceReconciler(runningCommittedReservation).ReconcilePipelineQuota(ctx); err != nil {
+		t.Fatalf("reconcile source_commit running + committed: %v", err)
+	}
+	assertQuotaReservation(t, ctx, fsClient, runningCommittedReservation, "not_applicable")
+	unknownCommittedReservation, unknownCommittedExecution := seedSourceReservation("f1-unknown-committed", 1, "UNKNOWN", true)
+	fixture.setStatus(unknownCommittedExecution, "UNKNOWN")
+	if err := newSourceReconciler(unknownCommittedReservation).ReconcilePipelineQuota(ctx); err != nil {
+		t.Fatalf("reconcile source_commit unknown + committed: %v", err)
+	}
+	assertQuotaReservation(t, ctx, fsClient, unknownCommittedReservation, "not_applicable")
+	runningAbsentReservation, runningAbsentExecution := seedSourceReservation("f1-running-absent", 1, "RUNNING", false)
+	fixture.setStatus(runningAbsentExecution, "RUNNING")
+	if err := newSourceReconciler(runningAbsentReservation).ReconcilePipelineQuota(ctx); err != nil {
+		t.Fatalf("reconcile source_commit running + absent: %v", err)
+	}
+	assertQuotaReservation(t, ctx, fsClient, runningAbsentReservation, "pending")
+	terminalUnknownReservation, terminalUnknownExecution := seedSourceReservation("f1-terminal-unknown-publication", 1, "SUCCEEDED", true)
+	fixture.setStatus(terminalUnknownExecution, "SUCCEEDED")
+	terminalUnknownProject := deployedQuotaClient.WithScope(userID, "f1-terminal-unknown-publication")
+	receiptPath, err := localcloud.PublicationReceiptPath(terminalUnknownExecution)
+	if err != nil {
+		t.Fatalf("resolve terminal execution receipt path: %v", err)
+	}
+	if _, err := terminalUnknownProject.WriteBytes(ctx, []byte("synthetic malformed publication receipt"), receiptPath); err != nil {
+		t.Fatalf("seed malformed terminal execution receipt: %v", err)
+	}
+	terminalUnknownErr := newSourceReconciler(terminalUnknownReservation).ReconcilePipelineQuota(ctx)
+	if terminalUnknownErr != nil {
+		t.Fatalf("reconcile terminal source_commit + unknown publication: %v", terminalUnknownErr)
+	}
+	assertQuotaReservation(t, ctx, fsClient, terminalUnknownReservation, "pending")
+	for _, identityCase := range []struct {
+		name         string
+		wrongUser    string
+		wrongProject string
+		wrongRes     string
+	}{
+		{name: "wrong owner", wrongUser: "foreign-owner"},
+		{name: "wrong reservation", wrongRes: "foreign-reservation"},
+	} {
+		projectID := "f1-" + strings.ReplaceAll(identityCase.name, " ", "-")
+		reservationID, executionID := seedSourceReservation(projectID, 1, "RUNNING", true)
+		owner := userID
+		project := projectID
+		if identityCase.wrongUser != "" {
+			owner = identityCase.wrongUser
+		}
+		if identityCase.wrongProject != "" {
+			project = identityCase.wrongProject
+		}
+		reservation := reservationID
+		if identityCase.wrongRes != "" {
+			reservation = identityCase.wrongRes
+		}
+		fixture.setIdentity(executionID, owner, project, reservation)
+		beforeStorageReads := storageProxy.RequestCount()
+		if err := newSourceReconciler(reservationID).ReconcilePipelineQuota(ctx); err != nil {
+			t.Fatalf("reconcile %s execution identity mismatch: %v", identityCase.name, err)
+		}
+		if delta := storageProxy.RequestCount() - beforeStorageReads; delta != 0 {
+			t.Fatalf("%s mismatch performed %d publication/storage requests; want identity rejection first", identityCase.name, delta)
+		}
+		assertQuotaReservation(t, ctx, fsClient, reservationID, "pending")
+	}
+
+	// AC5: a completed, committed source execution settles through the normal
+	// reconciler and is visible through the existing status path without an old
+	// active claim or a changed receipt/Profile/other Project.
+	untouchedProjectID := "untouched-ac5"
+	untouchedProjectRef := scopedfirestore.Collection(fsClient.Raw(), "projects").Doc(projectDocID(userID, untouchedProjectID))
+	if _, err := untouchedProjectRef.Set(ctx, map[string]interface{}{
+		"user_id": userID, "project_id": untouchedProjectID, "status": "ready",
+		"pipeline_automation_status": "sentinel", "pipeline_source_revision": int64(7),
+	}); err != nil {
+		t.Fatalf("seed unrelated Project control: %v", err)
+	}
+	ac5ProjectID := "ac5-affected-state"
+	ac5ReservationID, ac5ExecutionID := seedSourceReservation(ac5ProjectID, 4, "SUCCEEDED", true)
+	ac5ProjectRef := scopedfirestore.Collection(fsClient.Raw(), "projects").Doc(projectDocID(userID, ac5ProjectID))
+	reservationBefore, exists, err := fsClient.GetQuotaReservation(ctx, ac5ReservationID)
+	if err != nil || !exists {
+		t.Fatalf("read AC5 reservation before reconciliation: exists=%t err=%v", exists, err)
+	}
+	receiptBefore, err := deployedQuotaClient.WithScope(userID, ac5ProjectID).ReadLocalPublicationReceipt(ctx, ac5ExecutionID)
+	if err != nil {
+		t.Fatalf("read AC5 publication receipt before reconciliation: %v", err)
+	}
+	fixture.setStatus(ac5ExecutionID, "SUCCEEDED")
+	if err := newSourceReconciler(ac5ReservationID).ReconcilePipelineQuota(ctx); err != nil {
+		t.Fatalf("reconcile AC5 affected state: %v", err)
+	}
+	settledAC5, exists, err := fsClient.GetQuotaReservation(ctx, ac5ReservationID)
+	if err != nil || !exists || settledAC5.IntentStatus != "succeeded" || settledAC5.SettlementStatus != "not_applicable" || settledAC5.ProfileRevision != reservationBefore.ProfileRevision {
+		t.Fatalf("AC5 settled reservation=%+v exists=%t err=%v; want succeeded with original Profile revision", settledAC5, exists, err)
+	}
+	ac5Project, err := ac5ProjectRef.Get(ctx)
+	if err != nil || ac5Project.Data()["pipeline_automation_status"] != "pending" {
+		t.Fatalf("AC5 Project automation status=%v err=%v; want pending", ac5Project.Data(), err)
+	}
+	quotaDoc, err := scopedfirestore.Collection(fsClient.Raw(), "pipeline_quota").Doc(scopedfirestore.QuotaDocID(userID, ac5ProjectID)).Get(ctx)
+	if err != nil {
+		t.Fatalf("read AC5 quota claim: %v", err)
+	}
+	if active, _ := quotaDoc.Data()["active_reservation_id"].(string); active == ac5ReservationID {
+		t.Fatalf("AC5 old reservation still owns active claim %q", active)
+	}
+	workDocs, err := scopedfirestore.Collection(fsClient.Raw(), profileruntime.WorkCollection).Where("user_id", "==", userID).Documents(ctx).GetAll()
+	if err != nil {
+		t.Fatalf("read AC5 queued work: %v", err)
+	}
+	var ac5Work []profileruntime.Work
+	for _, snapshot := range workDocs {
+		var work profileruntime.Work
+		if err := snapshot.DataTo(&work); err != nil {
+			t.Fatalf("decode AC5 work: %v", err)
+		}
+		if work.ProjectID == ac5ProjectID && work.Kind == "pipeline_automation" {
+			ac5Work = append(ac5Work, work)
+		}
+	}
+	if len(ac5Work) != 1 || ac5Work[0].ID != "source-4" || ac5Work[0].Revision != 4 || !ac5Work[0].Pending {
+		t.Fatalf("AC5 next-source work=%+v; want one pending source-4 record", ac5Work)
+	}
+	recorder := httptest.NewRecorder()
+	statusContext, _ := gin.CreateTestContext(recorder)
+	statusContext.Request = httptest.NewRequest(http.MethodGet, "/api/v1/pipeline/status", nil)
+	statusContext.Set("userID", userID)
+	statusContext.Set("projectID", ac5ProjectID)
+	newSourceReconciler(ac5ReservationID).PipelineStatus(statusContext)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("AC5 status API returned %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var statusPayload struct {
+		PipelineIntent *handler.PipelineIntentStatus `json:"pipeline_intent"`
+		Quota          *pipelinequota.Snapshot       `json:"quota"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &statusPayload); err != nil {
+		t.Fatalf("decode AC5 status API: %v body=%s", err, recorder.Body.String())
+	}
+	if statusPayload.PipelineIntent == nil || statusPayload.PipelineIntent.Status != "succeeded" || statusPayload.Quota == nil || statusPayload.Quota.AlreadyRunning {
+		t.Fatalf("AC5 status intent=%+v quota=%+v; want succeeded and not already_running", statusPayload.PipelineIntent, statusPayload.Quota)
+	}
+	receiptAfter, err := deployedQuotaClient.WithScope(userID, ac5ProjectID).ReadLocalPublicationReceipt(ctx, ac5ExecutionID)
+	if err != nil || !bytes.Equal(receiptAfter, receiptBefore) {
+		t.Fatalf("AC5 publication receipt changed bytes=%t err=%v", bytes.Equal(receiptAfter, receiptBefore), err)
+	}
+	untouchedProject, err := untouchedProjectRef.Get(ctx)
+	if err != nil || untouchedProject.Data()["pipeline_automation_status"] != "sentinel" || untouchedProject.Data()["pipeline_source_revision"] != int64(7) {
+		t.Fatalf("unrelated Project changed: %v err=%v", untouchedProject.Data(), err)
+	}
+
 	// A later real Cloud Run worker can fail before publication while the
 	// current manifest still belongs to an earlier success. Its own diagnostic
 	// resolves the failure without a status endpoint poll or manifest guessing.
@@ -518,9 +749,9 @@ func TestPipelineQuotaCloudRunHandlerEmulator(t *testing.T) {
 	fixture.setStatus(committedID, "FAILED")
 	storageProxy.SetBlocked(true)
 	storageOutageCtx, storageOutageCancel := context.WithTimeout(ctx, 5*time.Second)
-	if err := proxyHandler.ReconcilePipelineQuota(storageOutageCtx); err != nil {
+	if err := proxyHandler.ReconcilePipelineQuota(storageOutageCtx); !errors.Is(err, context.DeadlineExceeded) {
 		storageOutageCancel()
-		t.Fatalf("reconcile published execution during temporary GCS outage: %v", err)
+		t.Fatalf("reconcile published execution during temporary GCS outage: %v; want bounded context deadline", err)
 	}
 	storageOutageCancel()
 	assertQuotaReservation(t, ctx, fsClient, committedReservation, "pending")
@@ -1488,10 +1719,11 @@ func deleteQuotaFixtureBucket(ctx context.Context, client *cloudstorage.Client, 
 }
 
 type quotaStorageProxy struct {
-	server  *httptest.Server
-	proxy   *httputil.ReverseProxy
-	mu      sync.RWMutex
-	blocked bool
+	server       *httptest.Server
+	proxy        *httputil.ReverseProxy
+	mu           sync.RWMutex
+	blocked      bool
+	requestCount int
 }
 
 func newQuotaStorageProxy(t *testing.T, endpoint string) *quotaStorageProxy {
@@ -1508,9 +1740,10 @@ func newQuotaStorageProxy(t *testing.T, endpoint string) *quotaStorageProxy {
 	}
 	gate := &quotaStorageProxy{proxy: proxy}
 	gate.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gate.mu.RLock()
+		gate.mu.Lock()
+		gate.requestCount++
 		blocked := gate.blocked
-		gate.mu.RUnlock()
+		gate.mu.Unlock()
 		if blocked {
 			http.Error(w, "synthetic temporary Storage outage", http.StatusServiceUnavailable)
 			return
@@ -1522,6 +1755,12 @@ func newQuotaStorageProxy(t *testing.T, endpoint string) *quotaStorageProxy {
 }
 
 func (p *quotaStorageProxy) URL() string { return p.server.URL }
+
+func (p *quotaStorageProxy) RequestCount() int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.requestCount
+}
 
 func (p *quotaStorageProxy) SetBlocked(blocked bool) {
 	p.mu.Lock()
@@ -1739,6 +1978,14 @@ func (f *quotaCloudRunFixture) setStatus(executionID, state string) {
 	f.mu.Unlock()
 }
 
+func (f *quotaCloudRunFixture) setIdentity(executionID, userID, projectID, reservationID string) {
+	f.mu.Lock()
+	f.executions[executionID].UserID = userID
+	f.executions[executionID].ProjectID = projectID
+	f.executions[executionID].ReservationID = reservationID
+	f.mu.Unlock()
+}
+
 func (f *quotaCloudRunFixture) setExecutionUnavailable(executionID string, unavailable bool) {
 	f.mu.Lock()
 	f.executionUnavailable[executionID] = unavailable
@@ -1835,7 +2082,7 @@ func (f *quotaCloudRunFixture) apiExecution(execution *quotaCloudRunExecution) m
 func deletePipelineQuotaFirestoreScope(ctx context.Context, client *cloudfirestore.Client, scope string) error {
 	root := client.Collection("local_scopes").Doc(scope)
 	var failures []error
-	collections := []string{"pipeline_quota", "pipeline_quota_reservations", "pipeline_scheduled_daily", "pipeline_scheduled_status", "projects", "locks", "executions"}
+	collections := []string{"pipeline_quota", "pipeline_quota_reservations", "pipeline_scheduled_daily", "pipeline_scheduled_status", "projects", "profile_runtime_work", "system", "locks", "executions"}
 	for _, name := range collections {
 		docs, err := root.Collection(name).Documents(ctx).GetAll()
 		if err != nil {
