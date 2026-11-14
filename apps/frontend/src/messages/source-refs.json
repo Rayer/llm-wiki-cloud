@@ -385,6 +385,14 @@
         "error"
       ]
     },
+    "Nudge.coverage": {
+      "kind": "literal",
+      "context": "Accessible evidence coverage summary shown with a Project purpose comparison.",
+      "params": [
+        "selected",
+        "total"
+      ]
+    },
     "Pipeline.quotaLine": {
       "kind": "literal",
       "params": [

@@ -61,6 +61,9 @@ vi.mock('@/lib/auth', () => ({
     refreshAccessToken: async () => mocks.token,
   }),
 }));
+vi.mock('@/components/NudgePanel', () => ({
+  NudgePanel: ({ onClose }: { onClose: () => void }) => <div role="dialog" aria-label="Nudge test panel"><button type="button" onClick={onClose}>close test panel</button></div>,
+}));
 
 import { Shell } from '@/components/Shell';
 import { useWorkspace } from '@/components/WorkspaceProvider';
@@ -134,6 +137,22 @@ afterEach(() => {
 });
 
 describe('LWC-174 production Shell rename behavior', () => {
+  it('opens Near Status from the Shell and omits the entry in a Demo session', async () => {
+    localStorage.setItem('locale', 'en');
+    const view = renderShell();
+    const open = await screen.findByRole('button', { name: 'Near Status' });
+    fireEvent.click(open);
+    expect(screen.getByRole('dialog', { name: 'Nudge test panel' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'close test panel' }));
+    expect(screen.queryByRole('dialog', { name: 'Nudge test panel' })).toBeNull();
+    view.unmount();
+
+    mocks.isDemoSession = true;
+    renderShell();
+    await screen.findByText('workspace content');
+    expect(screen.queryByRole('button', { name: 'Near Status' })).toBeNull();
+  });
+
   it('loads an empty Shell, opens and cancels creation without mutation, then selects the server ID on submit', async () => {
     localStorage.setItem('locale', 'en');
     mocks.getProjects.mockResolvedValueOnce([]);

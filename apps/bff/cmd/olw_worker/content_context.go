@@ -460,6 +460,7 @@ func runCloudContentContext(ctx context.Context, cfg workerConfig, objects objec
 		return &contentContextOperationError{operation: "claim", err: err}
 	}
 	if claim == nil {
+		runStoredPurposeComparison(ctx, cfg, repository, authority)
 		return nil
 	}
 
@@ -528,6 +529,9 @@ func runClaimedContentContextSummary(ctx context.Context, cfg workerConfig, repo
 	}
 	if !completed {
 		return &contentContextOperationError{operation: "complete", attemptID: claim.AttemptID, err: contentcontext.ErrAttemptRejected}
+	}
+	if purposeErr := runPurposeComparison(ctx, cfg, repository, authority, summaryClient, identity); purposeErr != nil {
+		reportContentContextReconcileFailure(purposeErr)
 	}
 	return nil
 }
