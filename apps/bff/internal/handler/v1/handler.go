@@ -19,6 +19,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/llm"
 	"github.com/rayer/llm-wiki-bff/internal/mcpquota"
 	"github.com/rayer/llm-wiki-bff/internal/query"
+	"github.com/rayer/llm-wiki-bff/internal/releasenotes"
 	"github.com/rayer/llm-wiki-bff/internal/search"
 	store "github.com/rayer/llm-wiki-bff/internal/storage"
 	"github.com/rayer/llm-wiki-bff/internal/urlintake"
@@ -48,6 +49,8 @@ type Handler struct {
 	mcpControlSlots                chan struct{}
 	store                          store.RootStore
 	firestore                      *firestore.Client
+	releaseNotesStore              releasenotes.ReadStore
+	releaseNotesRuntime            releasenotes.BuildInfo
 	index                          *search.Index
 	cache                          *conceptcache.Cache
 	llm                            *llm.Client
@@ -138,6 +141,14 @@ func New(wikiStore store.RootStore, fs *firestore.Client, idx *search.Index, cac
 		h.documentImports = &documentimport.Service{Repository: documentimport.NewFirestoreRepository(fs.Raw())}
 	}
 	return h
+}
+
+// SetReleaseNotesSource installs the fixed root-bucket reader and process
+// identity used by the Release Nudge adapter and its persisted visibility
+// projection.
+func (h *Handler) SetReleaseNotesSource(source releasenotes.ReadStore, runtime releasenotes.BuildInfo) {
+	h.releaseNotesStore = source
+	h.releaseNotesRuntime = runtime
 }
 
 func (h *Handler) SetDocumentImportStarter(starter documentimport.JobStarter) {

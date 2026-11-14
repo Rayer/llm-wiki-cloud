@@ -797,10 +797,7 @@ test('DEV authority uses the protected shared engine and durable selected stage 
   assert.equal(resultUpload.if, 'always()');
   assert.equal(resultUpload.with['retention-days'], 90);
   const runnerTemp = String.fromCharCode(36) + '{{ runner.temp }}';
-  assert.deepEqual(resultUpload.with.path.split(String.fromCharCode(10)).filter(Boolean), [
-    runnerTemp + '/release',
-    runnerTemp + '/release-notes-package',
-  ]);
+  assert.equal(resultUpload.with.path, runnerTemp + '/release');
   const notesResend = source.jobs['notes-resend'];
   assert.equal(notesResend.if, "inputs.operation == 'notes-resend'");
   assert.equal(notesResend.environment, job.environment);
@@ -811,10 +808,7 @@ test('DEV authority uses the protected shared engine and durable selected stage 
   assert.ok(resendEvidence);
   assert.equal(resendEvidence.if, 'always()');
   assert.equal(resendEvidence.with['retention-days'], 90);
-  assert.deepEqual(resendEvidence.with.path.split(String.fromCharCode(10)).filter(Boolean), [
-    runnerTemp + '/release',
-    runnerTemp + '/release-notes-package',
-  ]);
+  assert.equal(resendEvidence.with.path, runnerTemp + '/release');
   assert.equal(job.steps.find(step => step.uses?.startsWith('actions/checkout@')).with.ref, '${{ inputs.executor_sha }}');
   const diagnosticWorkflow = parseYaml(await readFile(join(monorepoRoot, '.github/workflows/cd-auth-image-diagnostic.yml'), 'utf8'));
   assert.deepEqual(Object.keys(diagnosticWorkflow.jobs), ['auth-image-diagnostic']);

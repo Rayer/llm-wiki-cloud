@@ -25,6 +25,12 @@ class GenerationConflict(Exception):
     safe_class = "generation-conflict"
 
 
+PUBLICATION_FIELDS = {
+    "schema_version", "environment", "operation", "run_id", "run_attempt",
+    "plan_sha256", "state_sha256", "result_sha256", "receipt_sha256", "published_at",
+}
+
+
 class GCSCLIStore:
     def __init__(self, bucket: str):
         if not bucket or "/" in bucket:
@@ -189,9 +195,12 @@ def write_evidence(directory: Path, value: dict) -> None:
 
 def operation_marker(directory: Path, args) -> tuple[dict, bytes]:
     sidecar_path = directory / "release-notes-operation.json"
+    if sidecar_path.is_symlink():
+        raise release_notes.ReleaseNotesError("index_update", "operation-evidence-mismatch")
     if not sidecar_path.exists():
         if args.action == "resend":
-            raise release_notes.ReleaseNotesError("index_update", "retained-operation-evidence-unavailable")
+            validate_retained_operation(directory, args)
+            return None, b""
         return release_notes_capture.capture(directory, args.operation, args.run_id, args.run_attempt)
     sidecar_bytes = release_notes_capture.read_bytes(sidecar_path)
     plan_bytes = release_notes_capture.read_bytes(Path(args.plan))
@@ -208,6 +217,102 @@ def operation_marker(directory: Path, args) -> tuple[dict, bytes]:
         environment=args.environment, workflow_operation=args.operation, run_id=args.run_id,
         run_attempt=args.run_attempt, service=sidecar.get("service", ""), receipt_bytes=receipt_bytes)
     return marker, sidecar_bytes
+
+
+def validate_retained_operation(directory: Path, args) -> dict:
+    """Validate immutable operation bytes without provider access or recovery writes."""
+    try:
+        return release_notes.validate_native_operation(
+            Path(args.plan).read_bytes(), (directory / "state.json").read_bytes(),
+            (directory / "result.json").read_bytes(), (directory / "receipts" / "bff.json").read_bytes(),
+            environment=args.environment, workflow_operation=args.operation,
+            run_id=args.run_id, run_attempt=args.run_attempt)
+    except OSError:
+        raise release_notes.ReleaseNotesError("product_release", "retained-operation-evidence-unavailable") from None
+
+
+def publication_record(directory: Path, args, plan_bytes: bytes) -> tuple[dict | None, bytes]:
+    """Read and validate the original post-release timestamp, if this artifact has one."""
+    path = directory / "release-notes-publication.json"
+    if path.is_symlink():
+        raise release_notes.ReleaseNotesError("product_release", "publication-time-evidence-invalid")
+    if not path.exists():
+        return None, b""
+    if not path.is_file():
+        raise release_notes.ReleaseNotesError("product_release", "publication-time-evidence-invalid")
+    try:
+        data = path.read_bytes()
+        state_bytes = (directory / "state.json").read_bytes()
+        result_bytes = (directory / "result.json").read_bytes()
+        receipt_bytes = (directory / "receipts" / "bff.json").read_bytes()
+    except OSError:
+        raise release_notes.ReleaseNotesError("product_release", "publication-time-evidence-invalid") from None
+    record = release_notes._json_object(data.removesuffix(b"\n"), "product_release",
+                                        16 * 1024, PUBLICATION_FIELDS)
+    expected = {
+        "schema_version": 1, "environment": args.environment, "operation": "release",
+        "run_id": args.run_id, "run_attempt": args.run_attempt,
+        "plan_sha256": release_notes.digest_bytes(plan_bytes),
+        "state_sha256": release_notes.digest_bytes(state_bytes),
+        "result_sha256": release_notes.digest_bytes(result_bytes),
+        "receipt_sha256": release_notes.digest_bytes(receipt_bytes),
+    }
+    if set(record) != PUBLICATION_FIELDS or any(record.get(key) != value for key, value in expected.items()) or \
+            args.operation != "release" or not release_notes._valid_timestamp(record.get("published_at")):
+        raise release_notes.ReleaseNotesError("product_release", "publication-time-evidence-invalid")
+    release_notes.validate_native_operation(
+        plan_bytes, state_bytes, result_bytes, receipt_bytes,
+        environment=args.environment, workflow_operation=args.operation,
+        run_id=args.run_id, run_attempt=args.run_attempt)
+    canonical = json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
+    if data != canonical:
+        raise release_notes.ReleaseNotesError("product_release", "publication-time-evidence-invalid")
+    return record, data
+
+
+def write_publication_record(directory: Path, args, plan_bytes: bytes) -> tuple[dict, bytes]:
+    if args.operation != "release" or args.product_status != "released" or \
+            not release_notes._valid_timestamp(args.published_at):
+        raise release_notes.ReleaseNotesError("product_release", "publication-time-input-invalid")
+    state_bytes = release_notes_capture.read_bytes(directory / "state.json")
+    result_bytes = release_notes_capture.read_bytes(directory / "result.json")
+    receipt_bytes = release_notes_capture.read_bytes(directory / "receipts" / "bff.json")
+    release_notes.validate_native_operation(
+        plan_bytes, state_bytes, result_bytes, receipt_bytes,
+        environment=args.environment, workflow_operation=args.operation,
+        run_id=args.run_id, run_attempt=args.run_attempt)
+    record = {
+        "schema_version": 1, "environment": args.environment, "operation": args.operation,
+        "run_id": args.run_id, "run_attempt": args.run_attempt,
+        "plan_sha256": release_notes.digest_bytes(plan_bytes),
+        "state_sha256": release_notes.digest_bytes(state_bytes),
+        "result_sha256": release_notes.digest_bytes(result_bytes),
+        "receipt_sha256": release_notes.digest_bytes(receipt_bytes),
+        "published_at": args.published_at,
+    }
+    data = json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
+    path = directory / "release-notes-publication.json"
+    if path.is_symlink():
+        raise release_notes.ReleaseNotesError("product_release", "publication-time-evidence-invalid")
+    if path.exists():
+        old = release_notes_capture.read_bytes(path)
+        if old != data:
+            raise release_notes.ReleaseNotesError("product_release", "publication-time-evidence-conflict")
+        return record, data
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile("wb", dir=directory, prefix=".release-notes-publication-", delete=False) as temporary:
+            temporary_path = Path(temporary.name)
+            temporary.write(data)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        os.chmod(temporary_path, 0o600)
+        os.replace(temporary_path, path)
+    except OSError:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+        raise release_notes.ReleaseNotesError("product_release", "publication-time-evidence-write-failed") from None
+    return record, data
 
 
 def verify_reader_api(directory: Path, expected_environment: str, marker: dict, product_version: str,
@@ -261,26 +366,48 @@ def execute(args) -> dict:
     generations = {}
     content_files = {}
     manifest = {}
+    publication = None
+    publication_bytes = b""
+    publication_time_source = None
     product_version = ""
     marker = None
     published_at = args.published_at
     try:
+        if args.action == "record-publication":
+            publication, publication_bytes = write_publication_record(directory, args, plan_bytes)
+            evidence = {
+                "schema_version": 1, "action": args.action, "environment": args.environment,
+                "stage": "product_release", "status": "verified", "product_status": "released",
+                "plan_sha256": release_notes.digest_bytes(plan_bytes),
+                "publication_evidence_sha256": release_notes.digest_bytes(publication_bytes),
+                "operation": args.operation, "run_id": args.run_id, "run_attempt": args.run_attempt,
+                "published_at": publication["published_at"],
+            }
+            write_evidence(directory, evidence)
+            return evidence
         if args.action in ("prepare", "publish", "resend"):
             store = GCSCLIStore(args.bucket)
             product_version, content_files, manifest = release_notes.validate_package(
                 args.package_dir, expected_environment=args.environment,
                 expected_artifact_digest=args.artifact_digest,
                 artifact_metadata_digest=args.artifact_metadata_digest, plan_bytes=plan_bytes)
+            if args.action in ("publish", "resend"):
+                publication, publication_bytes = publication_record(directory, args, plan_bytes)
+                historical_fields = {"original_published_at", "historical_source_record_ref",
+                                     "historical_source_record_sha256", "imported_at"}
+                if historical_fields <= set(manifest):
+                    published_at = manifest["original_published_at"]
+                    publication_time_source = "historical-manifest"
+                elif publication is not None:
+                    published_at = publication["published_at"]
+                    publication_time_source = "retained-release-operation"
+                else:
+                    raise release_notes.ReleaseNotesError("product_release", "retained-publication-time-unavailable")
             stage = "content_upload"
             generations = release_notes.upload_content(store, content_files, product_version=product_version)
         if args.action == "verify-operation":
             stage = "product_release"
-            bundle = release_notes.validate_native_operation(
-                Path(args.plan).read_bytes(), (directory / "state.json").read_bytes(),
-                (directory / "result.json").read_bytes(),
-                (directory / "receipts" / "bff.json").read_bytes(),
-                environment=args.environment, workflow_operation=args.operation,
-                run_id=args.run_id, run_attempt=args.run_attempt)
+            bundle = validate_retained_operation(directory, args)
             evidence = {
                 "schema_version": 1, "action": "verify-operation", "environment": args.environment,
                 "stage": "product_release", "status": "verified", "product_status": "released",
@@ -296,14 +423,9 @@ def execute(args) -> dict:
                 store = GCSCLIStore(args.bucket)
             stage = "service_readback"
             marker, sidecar_bytes = operation_marker(directory, args)
-            if args.action == "resend" and not release_notes_capture.active_marker_matches(
+            if args.action == "resend" and marker is not None and not release_notes_capture.active_marker_matches(
                     directory, args.operation, args.run_id, args.run_attempt, marker):
                 marker = None
-                historical_fields = {"original_published_at", "historical_source_record_ref",
-                                     "historical_source_record_sha256", "imported_at"}
-                if not historical_fields <= set(manifest):
-                    raise release_notes.ReleaseNotesError("validate", "historical-provenance-required")
-                published_at = manifest["original_published_at"]
             publisher = PublisherStore(store, directory, args.operation, args.run_id, args.run_attempt)
             if args.action in ("skip", "marker"):
                 stage = "index_update"
@@ -329,13 +451,16 @@ def execute(args) -> dict:
                                sort_keys=True, separators=(",", ":")).encode()),
                 "content_sha256": {locale: release_notes.digest_bytes(data) for locale, data in content_files.items()},
                 "content_generations": generations, "index_generation": result.index_generation,
-                "operation_sidecar_sha256": release_notes.digest_bytes(sidecar_bytes),
+                "operation_sidecar_sha256": release_notes.digest_bytes(sidecar_bytes) if sidecar_bytes else None,
+                "publication_evidence_sha256": release_notes.digest_bytes(publication_bytes) if publication_bytes else None,
                 "reader_api_readback": api_readback,
                 "operation": args.operation, "run_id": args.run_id, "run_attempt": args.run_attempt,
                 "decision_actor": args.decision_actor or None, "decision_time": args.decision_time or None,
                 "published_at": published_at,
-                "imported_at": manifest.get("imported_at") if marker is None else None,
-                "historical_source_record_ref": manifest.get("historical_source_record_ref") if marker is None else None,
+                "published_at_source": publication_time_source,
+                "currentness": "verified" if marker is not None else "history-only",
+                "imported_at": manifest.get("imported_at") if publication_time_source == "historical-manifest" else None,
+                "historical_source_record_ref": manifest.get("historical_source_record_ref") if publication_time_source == "historical-manifest" else None,
             }
         elif args.action == "skip-before-release":
             evidence = {
@@ -431,7 +556,7 @@ def execute(args) -> dict:
 
 def parser():
     result = argparse.ArgumentParser()
-    result.add_argument("--action", required=True, choices=("prepare", "publish", "skip", "marker", "resend", "verify-operation", "skip-before-release", "skip-after-release", "stop", "artifact-failure"))
+    result.add_argument("--action", required=True, choices=("prepare", "publish", "skip", "marker", "resend", "verify-operation", "record-publication", "skip-before-release", "skip-after-release", "stop", "artifact-failure"))
     result.add_argument("--directory", required=True, help="retained workflow artifact directory")
     result.add_argument("--package-dir", default="")
     result.add_argument("--environment", required=True, choices=("dev", "prod"))
@@ -446,7 +571,7 @@ def parser():
     result.add_argument("--run-attempt", required=True, type=int)
     result.add_argument("--product-status", default="not_started",
                         choices=("not_started", "in_progress", "released", "failed"))
-    result.add_argument("--published-at", default=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
+    result.add_argument("--published-at", default="")
     result.add_argument("--decision-actor", default=os.getenv("GITHUB_ACTOR", ""))
     result.add_argument("--decision-time", default=os.getenv("GITHUB_RUN_STARTED_AT") or datetime.now(timezone.utc).isoformat())
     result.add_argument("--failure-class", default="artifact-unavailable",

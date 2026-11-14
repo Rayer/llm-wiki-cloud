@@ -357,10 +357,7 @@ test('Notes resend has exact workflow inputs, a no-deploy authority, and retaine
   assert.equal(upload.with['retention-days'], 90);
   assert.equal(upload.with['if-no-files-found'], 'warn');
   const runnerTemp = String.fromCharCode(36) + '{{ runner.temp }}';
-  assert.deepEqual(upload.with.path.split(String.fromCharCode(10)).filter(Boolean), [
-    runnerTemp + '/release',
-    runnerTemp + '/release-notes-package',
-  ]);
+  assert.equal(upload.with.path, runnerTemp + '/release');
   const auth = steps.find((step) => step.uses?.startsWith('google-github-actions/auth@'));
   assert.equal(auth.if, "inputs.release_notes_action == 'run' || inputs.release_notes_action == 'retry'");
   for (const name of ['Record explicit Notes skip without product deployment',
@@ -377,10 +374,7 @@ test('ready and result artifacts have bounded retention and always retain failur
   assert.equal(uploads[0].with['retention-days'], 90);
   assert.deepEqual(uploads[0].with.path.split(String.fromCharCode(10)).filter(Boolean), [runnerTemp + '/release']);
   assert.equal(uploads[1].with['retention-days'], 90);
-  assert.deepEqual(uploads[1].with.path.split(String.fromCharCode(10)).filter(Boolean), [
-    runnerTemp + '/release',
-    runnerTemp + '/release-notes-package',
-  ]);
+  assert.equal(uploads[1].with.path, runnerTemp + '/release');
   assert.equal(uploads[1].if, 'always()');
   const adapter = await readFile(join(repoRoot, 'deploy/engine/providers.py'), 'utf8');
   assert.match(adapter, /'--prebuilt'/);

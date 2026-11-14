@@ -224,6 +224,7 @@ func main() {
 
 	// Handlers
 	hV1 := handlerv1.New(wikiStore, fsClient, idx, conceptCache, nil, nil)
+	hV1.SetReleaseNotesSource(newReleaseNotesReadStore(gcsClient), releaseNotesBuildInfo(cfg.AuthEnvironment))
 	hV1.SetBYOKCredentialEnvironment(authSessionEnvironment(cfg))
 	if cfg.DeepSeekAPIKeyReference != "" && cfg.DeepSeekAPIKey != "" {
 		hV1.SetBYOKDeploymentCredentials([]handlerv1.BYOKDeploymentCredential{{
@@ -738,18 +739,22 @@ func registerPublicRoutesWithNotes(r *gin.Engine, settingsStore syssettings.Regi
 	_ = authServiceURL
 	r.GET("/api/v1/public/config", syssettings.PublicConfigHandlerWithRegistration(settingsStore, demoEnabled, registration))
 	r.GET("/api/v1/public/version", buildinfo.HandlerWithEnvironment(environment))
-	build := buildinfo.Current()
-	build.Environment = publicReleaseNotesEnvironment(environment)
-	var notesStore releasenotes.ReadStore
-	if notesClient != nil {
-		notesStore = releasenotes.NewGCSReadStore(gcs.NewReleaseNotesStore(notesClient))
-	}
-	notesHandler := releasenotes.NewHTTPHandler(notesStore, releasenotes.BuildInfo{
-		Environment: build.Environment, ProductVersion: build.ProductVersion, Commit: build.Commit,
-		Branch: build.Branch, Tag: build.Tag, ImageTag: build.ImageTag, Service: build.Service, Revision: build.Revision,
-	})
+	notesHandler := releasenotes.NewHTTPHandler(newReleaseNotesReadStore(notesClient), releaseNotesBuildInfo(environment))
 	registerPublicReleaseNotesIndexRoute(r, notesHandler)
 	registerPublicReleaseNotesContentRoute(r, notesHandler)
+}
+
+func newReleaseNotesReadStore(client *gcs.Client) releasenotes.ReadStore {
+	return releasenotes.NewGCSReadStore(gcs.NewReleaseNotesStore(client))
+}
+
+func releaseNotesBuildInfo(environment string) releasenotes.BuildInfo {
+	build := buildinfo.Current()
+	build.Environment = publicReleaseNotesEnvironment(environment)
+	return releasenotes.BuildInfo{
+		Environment: build.Environment, ProductVersion: build.ProductVersion, Commit: build.Commit,
+		Branch: build.Branch, Tag: build.Tag, ImageTag: build.ImageTag, Service: build.Service, Revision: build.Revision,
+	}
 }
 
 // registerPublicReleaseNotesIndexRoute owns the anonymous, no-store Release Notes index route.

@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import release_notes
+import release_notes_capture
 import release_notes_publish
 
 
@@ -372,6 +373,109 @@ class ReleaseNotesContractTests(unittest.TestCase):
         self.assertEqual(index["versions"][0]["product_version"], "1.2.3")
         self.assertEqual(result.index_generation, 2)
         self.assertNotEqual(old, current)
+
+    def test_first_resend_without_capture_sidecar_uses_retained_publication_time_history_only(self):
+        fixture = operation_fixture(operation="release")
+        plan_bytes, state_bytes, result_bytes, _, receipt_bytes, _ = fixture
+        with TemporaryDirectory() as temp:
+            directory = Path(temp)
+            plan_path = directory / "plan.json"
+            plan_path.write_bytes(plan_bytes)
+            (directory / "state.json").write_bytes(state_bytes)
+            (directory / "result.json").write_bytes(result_bytes)
+            (directory / "receipts").mkdir()
+            (directory / "receipts" / "bff.json").write_bytes(receipt_bytes)
+            package = directory / "package"
+            package.mkdir()
+            body = note()
+            manifest = {
+                "schema_version": 1, "product": "llm-wiki-cloud", "product_version": "1.2.3", "environment": "dev",
+                "release_plan_sha256": release_notes.digest_bytes(plan_bytes), "release_note_snapshot_ref": "LWC-A-57:4-123",
+                "release_note_snapshot_sha256": "sha256:" + "a" * 64,
+                "delivered_scope_evidence_sha256": "sha256:" + "b" * 64,
+                "files": {"en": {"path": "en.json", "sha256": release_notes.digest_bytes(body)}},
+            }
+            (package / "release-notes-manifest.json").write_bytes(canonical(manifest))
+            (package / "en.json").write_bytes(body)
+
+            timestamp_args = release_notes_publish.parser().parse_args([
+                "--action", "record-publication", "--directory", str(directory), "--environment", "dev",
+                "--bucket", "unused", "--plan", str(plan_path), "--operation", "release",
+                "--run-id", "701", "--run-attempt", "1", "--product-status", "released",
+                "--published-at", "2026-11-14T10:00:00Z",
+            ])
+            recorded = release_notes_publish.execute(timestamp_args)
+            self.assertEqual(recorded["status"], "verified")
+            publication_path = directory / "release-notes-publication.json"
+            publication_bytes = publication_path.read_bytes()
+
+            current = normalized_marker(operation="deploy", service_generation=44,
+                                        revision="rev-w", product_version="9.0.0")
+            store = MemoryNotesStore()
+            store.active_marker = current
+            release_notes.publish_marker_only(store, current)
+            resend_args = release_notes_publish.parser().parse_args([
+                "--action", "resend", "--directory", str(directory), "--package-dir", str(package),
+                "--environment", "dev", "--bucket", "unused", "--artifact-id", "8001",
+                "--artifact-digest", "sha256:" + "c" * 64,
+                "--artifact-metadata-digest", "sha256:" + "c" * 64,
+                "--plan", str(plan_path), "--operation", "release", "--run-id", "701", "--run-attempt", "1",
+                "--result-artifact-id", "9001", "--product-status", "released",
+                "--published-at", "2026-11-15T10:00:00Z",
+            ])
+            with patch.object(release_notes_publish, "GCSCLIStore", return_value=store), \
+                    patch.object(release_notes_publish, "verify_reader_api", return_value={"current_status": "unavailable"}), \
+                    patch.object(release_notes_capture, "capture", side_effect=AssertionError("must not synthesize a readback")):
+                evidence = release_notes_publish.execute(resend_args)
+
+            index = json.loads(store.index)
+            self.assertEqual(index["current_deployment"], current)
+            self.assertEqual(len(index["versions"]), 1)
+            self.assertEqual(index["versions"][0]["product_version"], "1.2.3")
+            self.assertEqual(index["versions"][0]["published_at"], "2026-11-14T10:00:00Z")
+            self.assertEqual(evidence["published_at_source"], "retained-release-operation")
+            self.assertEqual(evidence["currentness"], "history-only")
+            self.assertEqual(evidence["publication_evidence_sha256"], release_notes.digest_bytes(publication_bytes))
+            self.assertIsNone(evidence["operation_sidecar_sha256"])
+            self.assertFalse((directory / "release-notes-operation.json").exists())
+
+    def test_resend_without_operation_readback_or_original_time_never_fabricates_publication(self):
+        fixture = operation_fixture(operation="release")
+        plan_bytes, state_bytes, result_bytes, _, receipt_bytes, _ = fixture
+        with TemporaryDirectory() as temp:
+            directory = Path(temp)
+            plan_path = directory / "plan.json"
+            plan_path.write_bytes(plan_bytes)
+            (directory / "state.json").write_bytes(state_bytes)
+            (directory / "result.json").write_bytes(result_bytes)
+            (directory / "receipts").mkdir()
+            (directory / "receipts" / "bff.json").write_bytes(receipt_bytes)
+            package = directory / "package"
+            package.mkdir()
+            body = note()
+            manifest = {
+                "schema_version": 1, "product": "llm-wiki-cloud", "product_version": "1.2.3", "environment": "dev",
+                "release_plan_sha256": release_notes.digest_bytes(plan_bytes), "release_note_snapshot_ref": "LWC-A-57:4-123",
+                "release_note_snapshot_sha256": "sha256:" + "a" * 64,
+                "delivered_scope_evidence_sha256": "sha256:" + "b" * 64,
+                "files": {"en": {"path": "en.json", "sha256": release_notes.digest_bytes(body)}},
+            }
+            (package / "release-notes-manifest.json").write_bytes(canonical(manifest))
+            (package / "en.json").write_bytes(body)
+            store = MemoryNotesStore()
+            args = release_notes_publish.parser().parse_args([
+                "--action", "resend", "--directory", str(directory), "--package-dir", str(package),
+                "--environment", "dev", "--bucket", "unused", "--artifact-id", "8001",
+                "--artifact-digest", "sha256:" + "c" * 64,
+                "--artifact-metadata-digest", "sha256:" + "c" * 64,
+                "--plan", str(plan_path), "--operation", "release", "--run-id", "701", "--run-attempt", "1",
+                "--result-artifact-id", "9001", "--product-status", "released",
+            ])
+            with patch.object(release_notes_publish, "GCSCLIStore", return_value=store), \
+                    self.assertRaisesRegex(release_notes.ReleaseNotesError, "retained-publication-time-unavailable"):
+                release_notes_publish.execute(args)
+            self.assertEqual(store.objects, {})
+            self.assertEqual(store.writes, 0)
 
     def test_stage_evidence_appends_attempts_without_overwriting_prior_failure(self):
         with TemporaryDirectory() as temp:

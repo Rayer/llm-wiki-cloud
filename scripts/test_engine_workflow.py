@@ -456,6 +456,45 @@ class EngineWorkflowContract(unittest.TestCase):
             auth=next(step for step in job['steps'] if step.get('uses','').endswith(name))
             self.assertEqual(auth['if'], "inputs.release_notes_action == 'run' || inputs.release_notes_action == 'retry'")
 
+    def test_notes_package_download_and_result_artifact_keep_their_real_roots(self):
+        workflow = yaml.safe_load((ROOT / '.github/workflows/cd.yml').read_text())
+        release = workflow['jobs']['release']
+        resend = workflow['jobs']['notes-resend']
+        runner_temp = '${{ runner.temp }}'
+        package_downloads = [
+            next(step for step in release['steps'] if step.get('name') == 'Download exact TPM Release Notes artifact'),
+            next(step for step in resend['steps'] if step.get('name') == 'Download exact TPM Release Notes artifact'),
+        ]
+        for step in package_downloads:
+            self.assertEqual(step['uses'], 'actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093')
+            self.assertIn('artifact-ids', step['with'])
+            self.assertIn('run-id', step['with'])
+            self.assertIs(step['with']['merge-multiple'], True)
+            self.assertEqual(step['with']['path'], runner_temp + '/release-notes-package')
+
+        pinned_source = (ROOT / 'scripts/fixtures/actions-download-artifact-d3f86a106a0bac45b974a628896c90dbdf5c8093/src/download-artifact.ts').read_text()
+        self.assertIn('mergeMultiple: core.getBooleanInput(Inputs.MergeMultiple', pinned_source)
+        self.assertIn('isSingleArtifactDownload || inputs.mergeMultiple', pinned_source)
+        self.assertIn('? resolvedPath\n          : path.join(resolvedPath, artifact.name)', pinned_source)
+
+        result_upload = next(step for step in release['steps'] if step.get('name') == 'Retain final result even after failure')
+        resend_upload = next(step for step in resend['steps'] if step.get('name') == 'Retain independent Notes resend evidence')
+        self.assertEqual(result_upload['with']['path'], runner_temp + '/release')
+        self.assertEqual(resend_upload['with']['path'], runner_temp + '/release')
+        result_reader = (ROOT / 'deploy/engine/artifacts.cjs').read_text()
+        self.assertIn("client.downloadArtifact(Number(id), {path:destination", result_reader)
+
+        timestamp = next(i for i, step in enumerate(release['steps'])
+                         if step.get('name') == 'Retain original product publication time')
+        runtime = next(i for i, step in enumerate(release['steps'])
+                       if step.get('name') == 'Execute bounded runtime or explicit recovery')
+        publish = next(i for i, step in enumerate(release['steps'])
+                       if step.get('name') == 'Publish Notes content and exact current-operation marker')
+        self.assertLess(runtime, timestamp)
+        self.assertLess(timestamp, publish)
+        self.assertIn('--action record-publication', release['steps'][timestamp]['run'])
+        self.assertNotIn('./.github/actions/deployment-engine', str(resend['steps']))
+
     def test_profiles_and_real_component_operations(self):
         profiles=json.loads((ROOT/'deploy/engine/profiles.json').read_text())
         self.assertEqual(set(profiles),{'auth','bff','worker','exportjob','documentimport','frontend'})

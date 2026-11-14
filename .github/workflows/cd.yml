@@ -323,6 +323,7 @@ jobs:
           run-id: ${{ steps.release-notes-artifact.outputs.run_id }}
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/release-notes-package
+          merge-multiple: true
       - name: Record exact TPM artifact download failure
         if: inputs.operation == 'release' && (inputs.release_notes_action == 'run' || inputs.release_notes_action == 'retry') && inputs.release_notes_artifact_id != '' && steps.release-notes-download.outcome != 'success'
         run: |
@@ -415,6 +416,16 @@ jobs:
         with:
           operation: runtime
           force: ${{ inputs.force }}
+      - name: Retain original product publication time
+        if: inputs.operation == 'release' && steps.deployment.outcome == 'success' && (inputs.release_notes_action == 'run' || inputs.release_notes_action == 'retry')
+        run: |
+          set -Eeuo pipefail
+          python3 deploy/engine/release_notes_publish.py --action record-publication \
+            --directory "$RUNNER_TEMP/release" --environment "${{ inputs.environment == 'production' && 'prod' || 'dev' }}" \
+            --bucket "${{ inputs.environment == 'production' && 'llm-wiki-data' || 'llm-wiki-data-dev' }}" \
+            --plan "$RUNNER_TEMP/release/plan.json" --operation "$OPERATION" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --product-status released --published-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
       - name: Publish Notes content and exact current-operation marker
         if: inputs.operation == 'release' && steps.deployment.outcome == 'success' && (inputs.release_notes_action == 'run' || inputs.release_notes_action == 'retry')
         env:
@@ -430,7 +441,7 @@ jobs:
             --artifact-id "$RELEASE_NOTES_ARTIFACT_ID" --artifact-digest "$NOTES_ARTIFACT_DIGEST" \
             --artifact-metadata-digest "$NOTES_ARTIFACT_DIGEST" --plan "$RUNNER_TEMP/release/plan.json" \
             --operation "$OPERATION" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
-            --product-status released --published-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            --product-status released
       - name: Publish current-operation marker after explicit Notes skip
         if: inputs.operation == 'release' && steps.deployment.outcome == 'success' && inputs.release_notes_action == 'skip'
         run: |
@@ -459,9 +470,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: lwc-result-${{ inputs.environment }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            ${{ runner.temp }}/release
-            ${{ runner.temp }}/release-notes-package
+          path: ${{ runner.temp }}/release
           retention-days: 90
           if-no-files-found: warn
 
@@ -557,6 +566,7 @@ jobs:
           run-id: ${{ steps.notes-package.outputs.run_id }}
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/release-notes-package
+          merge-multiple: true
       - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
         if: inputs.release_notes_action == 'run' || inputs.release_notes_action == 'retry'
         with:
@@ -604,9 +614,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: release-notes-resend-${{ inputs.environment }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            ${{ runner.temp }}/release
-            ${{ runner.temp }}/release-notes-package
+          path: ${{ runner.temp }}/release
           retention-days: 90
           if-no-files-found: warn
 
