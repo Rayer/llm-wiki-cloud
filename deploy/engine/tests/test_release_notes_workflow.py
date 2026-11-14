@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import json
 import os
@@ -6,6 +7,7 @@ import sys
 import subprocess
 import textwrap
 import unittest
+from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -17,6 +19,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import release_notes
+import release_notes_workflow
 import release_notes_publish
 from test_release_notes import canonical, note, operation_fixture, plan_fixture, run_capture_cli_with_service_url_failure
 
@@ -504,6 +507,267 @@ class ReleaseNotesWorkflowLayoutTests(unittest.TestCase):
                 self.assertEqual(evidence[-1]["artifact_id"], str(row["artifact_id"]))
                 if operation == "release":
                     self.assertEqual(evidence[-1]["published_at"], "2026-11-14T10:00:00Z")
+
+
+
+
+class ReleaseNotesWorkflowInputTests(unittest.TestCase):
+    def setUp(self):
+        self.plan = {
+            "schema": 3,
+            "id": "plan-701",
+            "tag": "2026.11.4",
+            "source": "a" * 40,
+            "normalized": {"environment": "development"},
+            "identities": {"bff": {"profile": "bff", "digest": "inputs"}},
+            "selected": ["bff", "frontend"],
+        }
+        self.plan_bytes = canonical(self.plan)
+        self.body = note("1.2.3", "en", "Private package payload sentinel")
+        self.manifest = {
+            "schema_version": 1,
+            "product": "llm-wiki-cloud",
+            "product_version": "1.2.3",
+            "environment": "dev",
+            "release_plan_sha256": hashlib.sha256(self.plan_bytes).hexdigest(),
+            "release_note_snapshot_ref": "LWC-A-62:approved-snapshot-17",
+            "release_note_snapshot_sha256": "sha256:" + "f" * 64,
+            "delivered_scope_evidence_sha256": "sha256:" + "e" * 64,
+            "files": {"en": {"path": "en.json", "sha256": hashlib.sha256(self.body).hexdigest()}},
+        }
+        self.manifest_bytes = canonical(self.manifest)
+
+    def make_package(self, root):
+        root.mkdir(parents=True)
+        (root / "release-notes-manifest.json").write_bytes(self.manifest_bytes)
+        (root / "en.json").write_bytes(self.body)
+        return root
+
+    def make_plan_file(self, root, plan_bytes=None):
+        path = root / "plan.json"
+        path.write_bytes(plan_bytes if plan_bytes is not None else self.plan_bytes)
+        return path
+
+    def test_canonical_plan_selection_distinguishes_bff_frontend_worker_and_full_input(self):
+        self.assertTrue(release_notes_workflow.bff_selected_from_plan(self.plan_bytes))
+        self.assertFalse(release_notes_workflow.bff_selected_from_plan(canonical({"selected": ["frontend"]})))
+        self.assertFalse(release_notes_workflow.bff_selected_from_plan(canonical({"selected": ["worker"]})))
+        canonical_all_selected = canonical({"selected": ["documentimport", "exportjob", "auth", "bff", "worker", "frontend"]})
+        self.assertTrue(release_notes_workflow.bff_selected_from_plan(canonical_all_selected))
+        for selected in ("bff", ["frontend", "frontend"], ["worker", 3]):
+            with self.subTest(selected=selected), self.assertRaises(release_notes_workflow.PackageWorkflowError):
+                release_notes_workflow.bff_selected_from_plan(canonical({"selected": selected}))
+        for selected in ([], ["frontend", "bff"], ["unknown"]):
+            with self.subTest(selected=selected), self.assertRaises(release_notes_workflow.PackageWorkflowError):
+                release_notes_workflow.bff_selected_from_plan(canonical({"selected": selected}))
+
+    def test_selection_output_comes_from_plan_not_raw_component_input(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            plan_path = self.make_plan_file(root)
+            output = root / "github-output"
+            self.assertTrue(release_notes_workflow.write_bff_selection(plan_path, str(output)))
+            self.assertEqual(output.read_text(), "bff_selected=true\n")
+            plan_path.write_bytes(canonical({"selected": ["frontend"]}))
+            self.assertFalse(release_notes_workflow.write_bff_selection(plan_path, str(output)))
+            self.assertEqual(output.read_text(), "bff_selected=true\nbff_selected=false\n")
+
+    def test_private_package_archive_roundtrips_through_existing_validator(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = self.make_package(root / "source")
+            archive = release_notes_workflow.package_directory_archive(source)
+            output = root / "unpacked"
+            result = release_notes_workflow.prepare_package(
+                base64.b64encode(archive).decode("ascii"), self.make_plan_file(root), output,
+                str(root / "github-output"), "1" * 32)
+            product_version, files, manifest = release_notes.validate_package(
+                output, expected_environment="dev", expected_artifact_digest=None,
+                artifact_metadata_digest=None, plan_bytes=self.plan_bytes)
+            self.assertEqual(product_version, "1.2.3")
+            self.assertEqual(files, {"en": self.body})
+            self.assertEqual(manifest, self.manifest)
+            self.assertEqual(result["product_version"], "1.2.3")
+            self.assertEqual((root / "github-output").read_text(), "product_version=1.2.3\n")
+            self.assertEqual((output / "en.json").stat().st_mode & 0o777, 0o600)
+
+    def test_manual_request_correlation_is_closed_and_invalid_values_are_not_staged(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            package = self.make_package(root / "package")
+            archive = release_notes_workflow.package_directory_archive(package)
+            destination = root / "invalid-request"
+            with self.assertRaisesRegex(release_notes_workflow.PackageWorkflowError,
+                                        "dispatch-request-id-invalid"):
+                release_notes_workflow.prepare_package(
+                    base64.b64encode(archive).decode("ascii"), self.make_plan_file(root), destination,
+                    str(root / "github-output"), "bad request id")
+            self.assertFalse(destination.exists())
+
+    def test_package_preupload_validation_still_requires_exact_plan_and_manifest_hashes(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            package = self.make_package(root / "package")
+            wrong_plan = canonical({**self.plan, "source": "b" * 40})
+            path = self.make_plan_file(root, wrong_plan)
+            with self.assertRaisesRegex(release_notes.ReleaseNotesError, "invalid-package-manifest"):
+                release_notes_workflow._validate_package_from_plan(package, path)
+            with self.assertRaisesRegex(release_notes.ReleaseNotesError, "artifact-digest-mismatch"):
+                release_notes.validate_package(package, expected_environment="dev",
+                    expected_artifact_digest="sha256:" + "a" * 64, artifact_metadata_digest=None,
+                    plan_bytes=self.plan_bytes)
+
+    def test_package_input_rejects_path_traversal_duplicate_and_oversize(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            bad_archives = []
+            for entries in (
+                [("release-notes-manifest.json", self.manifest_bytes), ("../en.json", self.body)],
+                [("release-notes-manifest.json", self.manifest_bytes), ("en.json", self.body), ("en.json", self.body)],
+            ):
+                output = BytesIO()
+                with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+                    for name, data in entries:
+                        archive.writestr(name, data)
+                bad_archives.append(output.getvalue())
+            for index, payload in enumerate(bad_archives):
+                destination = root / f"bad-{index}"
+                with self.subTest(index=index), self.assertRaises(release_notes_workflow.PackageWorkflowError):
+                    release_notes_workflow._extract_package_archive(payload, destination)
+            with self.assertRaises(release_notes_workflow.PackageWorkflowError):
+                release_notes_workflow.prepare_package(
+                    "A" * (release_notes_workflow.MAX_DISPATCH_BASE64_CHARS + 1),
+                    self.make_plan_file(root), root / "too-large", "", "1" * 32)
+
+    def test_ready_plan_must_be_successful_development_dispatch_with_exact_artifact_identity(self):
+        metadata = {
+            "id": 701,
+            "name": "lwc-ready-development-600-1",
+            "expired": False,
+            "digest": "sha256:" + "a" * 64,
+            "workflow_run": {"id": 600},
+        }
+        run = {
+            "id": 600,
+            "run_attempt": 1,
+            "event": "workflow_dispatch",
+            "path": ".github/workflows/deploy-dev.yml",
+            "status": "completed",
+            "conclusion": "success",
+            "head_branch": "develop",
+            "head_sha": "a" * 40,
+        }
+        checked = release_notes_workflow.validate_ready_artifact(metadata, run, "701")
+        self.assertEqual(checked["run_id"], "600")
+        self.assertEqual(release_notes_workflow.validate_ready_artifact(
+            metadata, {**run, "path": ".github/workflows/deploy-dev.yml@refs/heads/develop"}, "701")["run_id"], "600")
+        for key, value in (("head_branch", "main"), ("conclusion", "failure"),
+                           ("path", ".github/workflows/recover-deployment.yml")):
+            with self.subTest(key=key):
+                with self.assertRaises(release_notes_workflow.PackageWorkflowError):
+                    release_notes_workflow.validate_ready_artifact(metadata, {**run, key: value}, "701")
+        with self.assertRaises(release_notes_workflow.PackageWorkflowError):
+            release_notes_workflow.validate_ready_artifact(
+                metadata, {**run, "path": ".github/workflows/deploy-dev.yml@refs/heads/main"}, "701")
+        with self.assertRaises(release_notes_workflow.PackageWorkflowError):
+            release_notes_workflow.validate_ready_artifact({**metadata, "id": True}, run, "1")
+
+    def test_upload_verification_binds_action_digest_api_metadata_name_and_source_plan(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            package = self.make_package(root / "package")
+            plan_path = self.make_plan_file(root)
+            artifact_digest = "sha256:" + "c" * 64
+            metadata = {
+                "id": 801,
+                "name": "lwc-release-notes-1.2.3-development-802-1",
+                "digest": artifact_digest,
+                "expired": False,
+                "expires_at": "2026-12-14T00:00:00Z",
+                "workflow_run": {"id": 802},
+            }
+            output = root / "github-output"
+            verified = release_notes_workflow.verify_uploaded_package(
+                package, plan_path, metadata, expected_artifact_id="801", expected_name=metadata["name"],
+                action_digest=artifact_digest, run_id="802", run_attempt="1", ready_artifact_id="701",
+                output_path=str(output))
+            self.assertEqual(verified["artifact_id"], "801")
+            self.assertEqual(verified["ready_artifact_id"], "701")
+            self.assertEqual(verified["artifact_digest"], artifact_digest)
+            self.assertNotIn("Private package payload sentinel", json.dumps(verified))
+            self.assertIn("artifact_digest=" + artifact_digest, output.read_text())
+            with self.assertRaises(release_notes_workflow.PackageWorkflowError):
+                release_notes_workflow.verify_uploaded_package(
+                    package, plan_path, metadata, expected_artifact_id="801", expected_name=metadata["name"],
+                    action_digest="sha256:" + "d" * 64, run_id="802", run_attempt="1",
+                    ready_artifact_id="701", output_path=str(output))
+
+    def test_dispatch_payload_contains_private_archive_without_exposing_content(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            package = self.make_package(root / "package")
+            body, version = release_notes_workflow.build_dispatch_payload(
+                package, ready_artifact_id="701", retention_days=90, request_id="1" * 32)
+            serialized = json.dumps(body)
+            self.assertEqual(body["ref"], "develop")
+            self.assertEqual(version, "1.2.3")
+            self.assertNotIn("Private package payload sentinel", serialized)
+            self.assertLessEqual(len(serialized.encode()), 65535)
+            self.assertEqual(body["inputs"]["request_id"], "1" * 32)
+            self.assertEqual(body["inputs"]["retention_days"], "90")
+
+    def test_parent_dispatch_posts_private_input_via_gh_stdin_and_returns_exact_artifact_receipt(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            package = self.make_package(root / "package")
+            artifact_digest = "sha256:" + "b" * 64
+            expected_name = "lwc-release-notes-1.2.3-development-802-1"
+            responses = [
+                None,
+                {"workflow_runs": [{
+                    "id": 802, "run_attempt": 1, "display_title": "Prepare Release Notes package " + "a" * 32,
+                    "path": ".github/workflows/prepare-release-notes-package.yml@refs/heads/develop", "event": "workflow_dispatch",
+                    "head_branch": "develop", "head_sha": "c" * 40, "status": "completed",
+                    "conclusion": "success", "html_url": "https://github.test/run/802",
+                }]},
+                {"artifacts": [{"id": 801, "name": expected_name}]},
+                {"id": 801, "name": expected_name, "digest": artifact_digest, "expired": False,
+                 "expires_at": "2026-12-14T00:00:00Z", "workflow_run": {"id": 802}},
+            ]
+            with patch.object(release_notes_workflow.uuid, "uuid4", return_value=type("RequestId", (), {"hex": "a" * 32})()), \
+                 patch.object(release_notes_workflow, "_gh_api", side_effect=responses) as api:
+                receipt = release_notes_workflow.dispatch_package(
+                    "Rayer/llm-wiki-cloud", package, ready_artifact_id="701", retention_days=90)
+            self.assertEqual(receipt["status"], "ready")
+            self.assertEqual(receipt["artifact_id"], "801")
+            self.assertEqual(receipt["artifact_name"], expected_name)
+            self.assertEqual(receipt["artifact_digest"], artifact_digest)
+            self.assertEqual(receipt["ready_artifact_id"], "701")
+            self.assertEqual(receipt["requested_retention_days"], 90)
+            self.assertNotIn("Private package payload sentinel", json.dumps(receipt))
+            endpoint, = api.call_args_list[0].args[1:2]
+            body = json.loads(api.call_args_list[0].kwargs["body"])
+            self.assertEqual(endpoint, "actions/workflows/prepare-release-notes-package.yml/dispatches")
+            self.assertEqual(body["ref"], "develop")
+            self.assertEqual(body["inputs"]["request_id"], "a" * 32)
+            self.assertEqual(api.call_args_list[0].kwargs["method"], "POST")
+            self.assertEqual(body["inputs"]["retention_days"], "90")
+
+    def test_gh_api_writer_uses_stdin_and_never_shells_package_json(self):
+        package_request = b'{"ref":"develop","inputs":{"package_zip_base64":"private"}}'
+        completed = type("Completed", (), {"returncode": 0, "stdout": b"", "stderr": b""})()
+        with patch.object(release_notes_workflow.subprocess, "run", return_value=completed) as run:
+            self.assertIsNone(release_notes_workflow._gh_api(
+                "Rayer/llm-wiki-cloud", "actions/workflows/prepare-release-notes-package.yml/dispatches",
+                method="POST", body=package_request))
+        args, kwargs = run.call_args
+        self.assertEqual(args[0], ["gh", "api",
+                                   "repos/Rayer/llm-wiki-cloud/actions/workflows/prepare-release-notes-package.yml/dispatches",
+                                   "--method", "POST", "--input", "-"])
+        self.assertEqual(kwargs["input"], package_request)
+        self.assertIs(kwargs["capture_output"], True)
+        self.assertIs(kwargs["check"], False)
+        self.assertIs(kwargs.get("shell", False), False)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,116 @@
+name: Prepare private Release Notes package
+run-name: Prepare Release Notes package ${{ inputs.request_id }}
+on:
+  workflow_dispatch:
+    inputs:
+      ready_artifact_id:
+        description: Exact successful Deploy Development ready artifact for the selected BFF plan
+        required: true
+        type: string
+      package_zip_base64:
+        description: Base64 ZIP (at most 40 KiB compressed) of the existing TPM-authored manifest and locale JSON files; contents are never logged
+        required: true
+        type: string
+      retention_days:
+        description: Private artifact retention period
+        required: true
+        type: choice
+        options: ['30', '90']
+        default: '90'
+      request_id:
+        description: Unique lowercase 32-hex correlation value used only for this manual preparation run
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: write
+concurrency:
+  group: lwc-notes-package-${{ inputs.request_id }}
+  cancel-in-progress: false
+jobs:
+  package:
+    if: github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Validate workflow source branch
+        run: |
+          set -Eeuo pipefail
+          test "$GITHUB_REF" = refs/heads/develop
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - name: Inspect exact ready-plan artifact and successful producer run
+        id: ready
+        env:
+          GH_TOKEN: ${{ github.token }}
+          READY_ARTIFACT_ID: ${{ inputs.ready_artifact_id }}
+          REQUEST_ID: ${{ inputs.request_id }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$READY_ARTIFACT_ID" =~ ^[1-9][0-9]*$ && "$REQUEST_ID" =~ ^[0-9a-f]{32}$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$READY_ARTIFACT_ID" > "$RUNNER_TEMP/ready-artifact-metadata.json"
+          run_id="$(python3 deploy/engine/release_notes_workflow.py ready-run-id \
+            --metadata "$RUNNER_TEMP/ready-artifact-metadata.json" \
+            --artifact-id "$READY_ARTIFACT_ID")"
+          [[ "$run_id" =~ ^[1-9][0-9]*$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" > "$RUNNER_TEMP/ready-workflow-run.json"
+          python3 deploy/engine/release_notes_workflow.py validate-ready \
+            --metadata "$RUNNER_TEMP/ready-artifact-metadata.json" \
+            --run "$RUNNER_TEMP/ready-workflow-run.json" --artifact-id "$READY_ARTIFACT_ID" \
+            --output "$GITHUB_OUTPUT"
+      - name: Download the exact ready-plan artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.1.8
+        with:
+          artifact-ids: ${{ inputs.ready_artifact_id }}
+          run-id: ${{ steps.ready.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/ready-plan
+          merge-multiple: true
+      - name: Validate and safely stage the existing TPM package
+        id: prepare
+        env:
+          LWC_RELEASE_NOTES_PACKAGE_B64: ${{ inputs.package_zip_base64 }}
+          REQUEST_ID: ${{ inputs.request_id }}
+        run: |
+          set -Eeuo pipefail
+          python3 deploy/engine/release_notes_workflow.py prepare-package \
+            --plan "$RUNNER_TEMP/ready-plan/plan.json" \
+            --package-dir "$RUNNER_TEMP/release-notes-input" \
+            --environment dev --request-id "$REQUEST_ID"
+      - name: Upload the validated package as the exact private runtime artifact
+        id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: lwc-release-notes-${{ steps.prepare.outputs.product_version }}-development-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release-notes-input
+          retention-days: ${{ inputs.retention_days }}
+          if-no-files-found: error
+      - name: Verify the uploaded artifact and emit its exact receipt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACKAGE_DIR: ${{ runner.temp }}/release-notes-input
+          PLAN_PATH: ${{ runner.temp }}/ready-plan/plan.json
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          ARTIFACT_NAME: lwc-release-notes-${{ steps.prepare.outputs.product_version }}-development-${{ github.run_id }}-${{ github.run_attempt }}
+          ACTION_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          READY_ARTIFACT_ID: ${{ inputs.ready_artifact_id }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$ARTIFACT_ID" =~ ^[1-9][0-9]*$ && "$RUN_ID" =~ ^[1-9][0-9]*$ &&
+             "$RUN_ATTEMPT" =~ ^[1-9][0-9]*$ && "$READY_ARTIFACT_ID" =~ ^[1-9][0-9]*$ &&
+             "$ACTION_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID" > "$RUNNER_TEMP/release-notes-upload-metadata.json"
+          python3 deploy/engine/release_notes_workflow.py verify-upload \
+            --package-dir "$PACKAGE_DIR" --plan "$PLAN_PATH" \
+            --metadata "$RUNNER_TEMP/release-notes-upload-metadata.json" \
+            --artifact-id "$ARTIFACT_ID" --artifact-name "$ARTIFACT_NAME" \
+            --action-digest "$ACTION_DIGEST" --run-id "$RUN_ID" --run-attempt "$RUN_ATTEMPT" \
+            --ready-artifact-id "$READY_ARTIFACT_ID"

@@ -121,9 +121,9 @@ def validate_content(data: bytes, expected_version: str, expected_locale: str) -
     return content
 
 
-def validate_package(directory, *, expected_environment: str, expected_artifact_digest: str,
-                     artifact_metadata_digest: str, plan_bytes: bytes) -> tuple[str, dict[str, bytes], dict]:
-    """Validate only the retained TPM-authored package before any storage write."""
+def validate_package(directory, *, expected_environment: str, expected_artifact_digest: str | None,
+                     artifact_metadata_digest: str | None, plan_bytes: bytes) -> tuple[str, dict[str, bytes], dict]:
+    """Validate a TPM package before storage; both digests may be None before upload."""
     from pathlib import Path
 
     root = Path(directory)
@@ -155,10 +155,13 @@ def validate_package(directory, *, expected_environment: str, expected_artifact_
                  isinstance(manifest["historical_source_record_ref"], str) and manifest["historical_source_record_ref"].strip() and
                  re.fullmatch(r"sha256:[0-9a-f]{64}", manifest["historical_source_record_sha256"]) is not None,
                  "validate", "historical-provenance-invalid")
-    artifact_digest = expected_artifact_digest.removeprefix("sha256:")
-    metadata_digest = artifact_metadata_digest.removeprefix("sha256:")
-    _require(SHA_RE.fullmatch(artifact_digest) is not None and SHA_RE.fullmatch(metadata_digest) is not None and
-             artifact_digest == metadata_digest, "validate", "artifact-digest-mismatch")
+    if expected_artifact_digest is not None or artifact_metadata_digest is not None:
+        _require(isinstance(expected_artifact_digest, str) and isinstance(artifact_metadata_digest, str),
+                 "validate", "artifact-digest-mismatch")
+        artifact_digest = expected_artifact_digest.removeprefix("sha256:")
+        metadata_digest = artifact_metadata_digest.removeprefix("sha256:")
+        _require(SHA_RE.fullmatch(artifact_digest) is not None and SHA_RE.fullmatch(metadata_digest) is not None and
+                 artifact_digest == metadata_digest, "validate", "artifact-digest-mismatch")
     package_files = {"release-notes-manifest.json"}
     files = {}
     for locale, entry in manifest["files"].items():
