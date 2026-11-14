@@ -1,12 +1,16 @@
 """Offline contract tests for the fixed Production Export IAM helper."""
 from __future__ import annotations
 
+import base64
 import copy
 import json
+import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
+from urllib.parse import parse_qs, urlsplit
 from deploy.provision import exportjob_prod as prod
 
 
@@ -43,12 +47,14 @@ class FakeProvider:
         self.policy_reads = 0
         self.fail_policy_read_at = set()
         self.policy_reads_without_etag = set()
+        self.omit_policy_version_on_read = False
         self.deny_role_read = False
         self.role_not_found_calls = 0
         self.drop_condition_on_readback = False
         self.drop_target_member_on_readback = False
         self.write_actions = []
         self.writes = []
+        self.api_calls = []
 
     def __call__(self, args):
         self.calls.append(list(args))
@@ -59,10 +65,27 @@ class FakeProvider:
                 self.role_not_found_calls += 1
                 return response(args, 1, stderr="NOT_FOUND")
             return response(args, stdout=json.dumps(self.role))
-        if args[1:4] == ["storage", "buckets", "get-iam-policy"]:
+        raise AssertionError("unexpected provider operation: " + " ".join(args))
+
+    def request(self, method, url, headers, body):
+        parsed = urlsplit(url)
+        if (parsed.scheme != "http" or parsed.hostname != "127.0.0.1" or parsed.port != 18764 or
+                parsed.path != "/storage/v1/b/llm-wiki-data/iam"):
+            raise AssertionError("policy adapter escaped the numeric-loopback fixed-target fixture")
+        self.api_calls.append({
+            "method": method,
+            "url": url,
+            "authorization_is_synthetic": headers.get("Authorization") == "Bearer synthetic-lwc486-fake-provider-token",
+            "body": body.decode("utf-8") if body is not None else None,
+        })
+        query = parse_qs(parsed.query)
+        if method == "GET":
+            if query != {"alt": ["json"], "optionsRequestedPolicyVersion": ["3"],
+                         "fields": ["bindings,etag,version"]}:
+                raise AssertionError("policy read did not request the exact version-aware projection")
             self.policy_reads += 1
             if self.policy_reads in self.fail_policy_read_at:
-                return response(args, 1, stderr="PERMISSION_DENIED")
+                return 403, b'{"error":"PERMISSION_DENIED"}'
             policy = copy.deepcopy(self.policy)
             if self.policy_reads == 2 and self.drop_condition_on_readback:
                 for binding in policy.get("bindings", []):
@@ -75,15 +98,16 @@ class FakeProvider:
                         binding["members"] = [member for member in binding.get("members", []) if member != MEMBER]
             if self.policy_reads in self.policy_reads_without_etag:
                 policy.pop("etag", None)
-            # Installed gcloud 589 requests v3 but projects only bindings and etag.
-            wire_policy = {key: policy[key] for key in prod.IAM_POLICY_FIELDS if key in policy}
-            return response(args, stdout=json.dumps(wire_policy))
-        if args[1:4] == ["storage", "buckets", "set-iam-policy"]:
-            policy_path = Path(args[-2])
-            submitted = json.loads(policy_path.read_text())
-            self.writes.append(submitted)
-            serialized = copy.deepcopy(submitted)
-            serialized["version"] = prod.IAM_POLICY_VERSION  # gcloud set-iam-policy serializer behavior
+            if self.omit_policy_version_on_read:
+                policy.pop("version", None)
+            return 200, json.dumps(policy).encode("utf-8")
+        if method == "PUT":
+            if query != {"alt": ["json"]}:
+                raise AssertionError("policy write did not request JSON response format")
+            submitted = json.loads(body)
+            if not isinstance(submitted, dict):
+                raise AssertionError("policy write omitted the SDK-compatible policy body")
+            self.writes.append(copy.deepcopy(submitted))
             action = self.write_actions.pop(0) if self.write_actions else "success"
             if action == "conflict":
                 self.policy["bindings"].append({
@@ -92,42 +116,33 @@ class FakeProvider:
                     "condition": {"title": "concurrent", "expression": "resource.name.startsWith('logs/')"},
                 })
                 self.policy["etag"] = f"bucket-concurrent-{len(self.writes)}"
-                return response(args, 1, stderr="HTTP 412 conditionNotMet: etag mismatch")
+                return 412, b'{"error":"conditionNotMet: etag mismatch"}'
             if action == "denied":
-                return response(args, 1, stderr="PERMISSION_DENIED: storage.buckets.setIamPolicy")
+                return 403, b'{"error":"PERMISSION_DENIED: storage.buckets.setIamPolicy"}'
             if action == "transport_unknown":
                 raise OSError("simulated connection reset after request transmission")
+            if action == "apply_then_unknown":
+                self.policy = copy.deepcopy(submitted)
+                self.policy["etag"] = "bucket-applied-unknown"
+                raise OSError("simulated lost response after application")
             if action != "success":
                 raise AssertionError(f"unexpected fake write action: {action}")
             if submitted.get("etag") != self.policy.get("etag"):
-                return response(args, 1, stderr="HTTP 412 conditionNotMet: etag mismatch")
-            self.policy = serialized
+                return 412, b'{"error":"conditionNotMet: etag mismatch"}'
+            self.policy = copy.deepcopy(submitted)
             self.policy["etag"] = f"bucket-write-{len(self.writes)}"
-            return response(args)
-        raise AssertionError("unexpected provider operation: " + " ".join(args))
-
-
-class GCloudPolicyWireTransport:
-    """Injected subprocess boundary capturing the installed gcloud CLI's JSON wire shape."""
-
-    def __init__(self, get_policy):
-        self.get_policy = copy.deepcopy(get_policy)
-        self.calls = []
-        self.set_payload = None
-
-    def __call__(self, args):
-        self.calls.append(list(args))
-        if args[1:4] == ["storage", "buckets", "get-iam-policy"]:
-            return response(args, stdout=json.dumps(self.get_policy))
-        if args[1:4] == ["storage", "buckets", "set-iam-policy"]:
-            self.set_payload = json.loads(Path(args[-2]).read_text())
-            return response(args)
-        raise AssertionError("unexpected gcloud policy adapter command: " + " ".join(args))
+            return 200, json.dumps(self.policy).encode("utf-8")
+        raise AssertionError("unexpected fake policy API method: " + method)
 
 
 class ExportJobProdProvisionTests(unittest.TestCase):
     def provisioner(self, fake, directory):
-        return prod.Provisioner(CONTRACT, fake, Path(directory) / "evidence.json")
+        adapter = prod.GCSBucketPolicyAdapter(
+            token_provider=lambda: "synthetic-lwc486-fake-provider-token",
+            transport=fake.request,
+            api_base_url=prod.TEST_JSON_API_BASE,
+        )
+        return prod.Provisioner(CONTRACT, fake, Path(directory) / "evidence.json", policy_adapter=adapter)
 
     def assert_only_fixed_provider_calls(self, fake):
         for args in fake.calls:
@@ -135,62 +150,127 @@ class ExportJobProdProvisionTests(unittest.TestCase):
             if args[1:4] == ["iam", "roles", "describe"]:
                 self.assertEqual(args[4:7], ["lwcExportObjectLister", "--project", "llm-wiki-cloud"])
             else:
-                self.assertIn(args[1:4], (
-                    ["storage", "buckets", "get-iam-policy"],
-                    ["storage", "buckets", "set-iam-policy"],
-                ))
-                self.assertEqual(args[4], "gs://llm-wiki-data")
+                self.fail("only the fixed custom role may be read through gcloud")
         self.assertFalse(any("projects" in args or "service-accounts" in args for args in fake.calls))
+        for call in fake.api_calls:
+            parsed = urlsplit(call["url"])
+            self.assertEqual(parsed.hostname, "127.0.0.1")
+            self.assertEqual(parsed.port, 18764)
+            self.assertEqual(parsed.path, "/storage/v1/b/llm-wiki-data/iam")
+            self.assertTrue(call["authorization_is_synthetic"])
 
-    def test_gcloud_policy_adapter_normalizes_get_projection_and_serializes_v3_write(self):
+    def test_json_api_adapter_requests_and_writes_complete_versioned_policy(self):
         policy = {"etag": "bucket-e1", "version": 3, "bindings": [
-            {"role": "roles/storage.objectAdmin", "members": ["user:admin@example.test"],
-             "condition": {"title": "preserve", "expression": "resource.name.startsWith('safe/')"}},
+            {"role": "roles/storage.objectAdmin", "members": ["user:admin@example.test", "group:owners@example.test"],
+             "condition": {"title": "preserve", "description": "retained", "expression": "resource.name.startsWith('safe/')"}},
         ]}
-        wire = {"etag": policy["etag"], "bindings": policy["bindings"]}
-        transport = GCloudPolicyWireTransport(wire)
-
-        def call_gcloud(args):
-            return transport(["gcloud", *args])
-
-        adapter = prod.GCloudBucketPolicyAdapter(call_gcloud)
+        fake = FakeProvider(policy=policy)
+        adapter = prod.GCSBucketPolicyAdapter(
+            token_provider=lambda: "synthetic-lwc486-fake-provider-token",
+            transport=fake.request,
+            api_base_url=prod.TEST_JSON_API_BASE,
+        )
         readback = adapter.read("llm-wiki-data")
-        self.assertEqual(readback.wire_policy, {"etag": "bucket-e1", "bindings": policy["bindings"]})
-        self.assertNotIn("version", readback.wire_policy)
-        self.assertEqual(readback.policy["version"], prod.IAM_POLICY_VERSION)
-        self.assertEqual(readback.normalization["requested_policy_version"], 3)
-        self.assertEqual(readback.normalization["requested_fields"], ["bindings", "etag"])
-        self.assertEqual(readback.normalization["version_source"], "inferred_from_explicit_requested_policy_version")
-        self.assertEqual(readback.policy["bindings"], policy["bindings"])
+        self.assertEqual(readback.wire_policy, policy)
+        self.assertEqual(readback.policy, policy)
+        self.assertEqual(readback.normalization["requested_fields"], ["bindings", "etag", "version"])
+        self.assertEqual(readback.normalization["version_source"], "returned_and_verified")
+        self.assertEqual(fake.api_calls[0]["method"], "GET")
+        get_query = parse_qs(urlsplit(fake.api_calls[0]["url"]).query)
+        self.assertEqual(get_query, {"alt": ["json"], "optionsRequestedPolicyVersion": ["3"],
+                                     "fields": ["bindings,etag,version"]})
 
-        with tempfile.TemporaryDirectory() as directory:
-            policy_path = Path(directory) / "policy.json"
-            submitted = adapter.write_file(readback.policy, policy_path)
-            self.assertEqual(json.loads(policy_path.read_text()), submitted)
-            self.assertEqual(submitted["version"], 3)
-            self.assertEqual(submitted["etag"], "bucket-e1")
-            self.assertEqual(submitted["bindings"], policy["bindings"])
-            result = call_gcloud(adapter.set_args("llm-wiki-data", policy_path))
+        submitted = adapter.serialize_for_write(readback.policy)
+        self.assertEqual(submitted, policy)
+        result = adapter.write("llm-wiki-data", submitted)
         self.assertEqual(result.returncode, 0)
-        self.assertEqual(transport.set_payload, submitted)
-        self.assertEqual([call[1:4] for call in transport.calls], [
-            ["storage", "buckets", "get-iam-policy"], ["storage", "buckets", "set-iam-policy"],
-        ])
-        self.assertEqual(transport.calls[0], ["gcloud", "storage", "buckets", "get-iam-policy",
-                                               "gs://llm-wiki-data", "--format=json", "--quiet"])
-        self.assertEqual(transport.calls[1][4], "gs://llm-wiki-data")
-        self.assertEqual(transport.calls[1][-1], "--quiet")
+        self.assertEqual(fake.writes, [policy])
+        set_call = fake.api_calls[1]
+        self.assertEqual(set_call["method"], "PUT")
+        self.assertEqual(json.loads(set_call["body"]), policy)
+        with self.assertRaisesRegex(prod.ProvisionError, "fixed bucket"):
+            adapter.read("another-bucket")
+        with self.assertRaisesRegex(prod.ProvisionError, "approved fixed API"):
+            prod.GCSBucketPolicyAdapter(lambda: "synthetic", transport=fake.request,
+                                        api_base_url="https://storage.googleapis.com/alternate/v1")
 
-    def test_policy_version_normalization_requires_v3_and_set_serializer_rejects_missing_or_wrong_version(self):
-        wire_policy = {"etag": "bucket-e1", "bindings": []}
-        with self.assertRaisesRegex(prod.ProvisionError, "explicit v3 request"):
-            prod.normalize_gcloud_policy(wire_policy, requested_version=None)
+    def test_json_api_read_requires_version_that_was_returned(self):
+        adapter_for = lambda fake: prod.GCSBucketPolicyAdapter(
+            token_provider=lambda: "synthetic-lwc486-fake-provider-token",
+            transport=fake.request,
+            api_base_url=prod.TEST_JSON_API_BASE,
+        )
+        wrong = FakeProvider(policy={"etag": "bucket-e1", "version": 2, "bindings": []})
         with self.assertRaisesRegex(prod.ProvisionError, "unexpected policy version"):
-            prod.normalize_gcloud_policy({**wire_policy, "version": 1}, requested_version=3)
+            adapter_for(wrong).read("llm-wiki-data")
+        missing = FakeProvider()
+        missing.omit_policy_version_on_read = True
+        with self.assertRaisesRegex(prod.ProvisionError, "unexpected policy version"):
+            adapter_for(missing).read("llm-wiki-data")
+        self.assertEqual(missing.writes, [])
         with self.assertRaisesRegex(prod.ProvisionError, "requires the verified v3"):
-            prod.GCloudBucketPolicyAdapter.serialize_for_write(wire_policy)
+            prod.GCSBucketPolicyAdapter.serialize_for_write({"etag": "bucket-e1", "bindings": []})
         with self.assertRaisesRegex(prod.ProvisionError, "requires the verified v3"):
-            prod.GCloudBucketPolicyAdapter.serialize_for_write({**wire_policy, "version": 1})
+            prod.GCSBucketPolicyAdapter.serialize_for_write({"etag": "bucket-e1", "version": 2, "bindings": []})
+        with self.assertRaisesRegex(prod.ProvisionError, "requires the observed etag"):
+            prod.GCSBucketPolicyAdapter.serialize_for_write({"version": 3, "bindings": []})
+
+    def test_installed_sdk_get_policy_and_protojson_serializer_wire_fixture(self):
+        gcloud = shutil.which("gcloud")
+        python = shutil.which("python3.14")
+        if not gcloud or not python:
+            self.skipTest("installed Cloud SDK and compatible Python 3.14 are required for the wire fixture")
+        sdk_root = Path(gcloud).resolve().parents[1]
+        fixture = Path(__file__).with_name("lwc486_gcloud_sdk_wire_fixture.py")
+        with tempfile.TemporaryDirectory(prefix="lwc486-sdk-wire-test-") as temp_dir:
+            scratch = Path(temp_dir)
+            home = scratch / "home"
+            config = scratch / "cloudsdk-config"
+            home.mkdir()
+            config.mkdir()
+            adc = scratch / "explicit-nonexistent-adc.json"
+            env = {
+                "PATH": os.environ.get("PATH", ""),
+                "HOME": str(home),
+                "CLOUDSDK_CONFIG": str(config),
+                "GOOGLE_APPLICATION_CREDENTIALS": str(adc),
+                "GCE_METADATA_HOST": "127.0.0.1:1",
+                "GCE_METADATA_IP": "127.0.0.1",
+                "CLOUDSDK_CORE_DISABLE_PROMPTS": "1",
+                "CLOUDSDK_COMPONENT_MANAGER_DISABLE_UPDATE_CHECK": "1",
+                "PYTHONPATH": str(sdk_root / "lib") + os.pathsep + str(sdk_root / "lib" / "third_party"),
+                "PYTHONNOUSERSITE": "1",
+                "PYTHONDONTWRITEBYTECODE": "1",
+                "NO_PROXY": "127.0.0.1,localhost",
+            }
+            self.assertFalse(adc.exists())
+            completed = subprocess.run([python, "-S", str(fixture)], cwd=Path(__file__).resolve().parents[1],
+                                       env=env, text=True, capture_output=True, timeout=20)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        evidence = json.loads(completed.stdout)
+        self.assertEqual(evidence["base_url"], "http://127.0.0.1:18764/storage/v1/")
+        self.assertEqual(evidence["captured_call_count"], 8)
+        self.assertEqual(evidence["version_controls"], [
+            {"response_version": 2, "observed_version": 2},
+            {"response_version": None, "observed_version": None},
+        ])
+        self.assertEqual(evidence["loss_controls"], {"member_loss_observed": True, "condition_loss_observed": True})
+        for case in evidence["cases"]:
+            self.assertEqual(case["get_version"], 3)
+            self.assertTrue(case["get_wire"]["authorization_is_synthetic"])
+            get_query = parse_qs(urlsplit(case["get_wire"]["url"]).query)
+            self.assertEqual(get_query, {"alt": ["json"], "optionsRequestedPolicyVersion": ["3"],
+                                         "fields": ["bindings,etag,version"]})
+            self.assertEqual(case["set_version"], 3)
+            self.assertTrue(case["set_wire"]["authorization_is_synthetic"])
+            self.assertEqual(urlsplit(case["set_wire"]["url"]).path, "/storage/v1/b/llm-wiki-data/iam")
+            submitted = case["set_wire"]["body"]
+            self.assertEqual(submitted["version"], 3)
+            self.assertEqual(submitted["etag"], base64.b64encode(case["get_etag"].encode("utf-8")).decode("ascii"))
+            self.assertEqual(submitted["bindings"], case["get_bindings"]["bindings"])
+            self.assertEqual(submitted["bindings"][0].get("condition"), case["get_bindings"]["bindings"][0].get("condition"))
+        self.assertIsNotNone(evidence["cases"][0]["get_bindings"]["bindings"][0].get("condition"))
+        self.assertNotIn("condition", evidence["cases"][1]["get_bindings"]["bindings"][0])
 
     def test_declaration_is_the_exact_fixed_production_binding(self):
         self.assertEqual(prod.load_contract(), {
@@ -289,10 +369,10 @@ class ExportJobProdProvisionTests(unittest.TestCase):
         attempt = evidence["invocations"][0]["policy_attempts"][0]
         self.assertEqual(attempt["before_policy"]["version"], 3)
         self.assertEqual(attempt["after_policy"]["version"], 3)
-        self.assertNotIn("version", attempt["before_wire_policy"])
-        self.assertNotIn("version", attempt["after_wire_policy"])
-        self.assertEqual(attempt["before_policy_normalization"]["version_source"], "inferred_from_explicit_requested_policy_version")
-        self.assertEqual(attempt["after_policy_normalization"]["version_source"], "inferred_from_explicit_requested_policy_version")
+        self.assertEqual(attempt["before_wire_policy"]["version"], 3)
+        self.assertEqual(attempt["after_wire_policy"]["version"], 3)
+        self.assertEqual(attempt["before_policy_normalization"]["version_source"], "returned_and_verified")
+        self.assertEqual(attempt["after_policy_normalization"]["version_source"], "returned_and_verified")
         self.assertEqual(attempt["set_policy_serialization"]["version"], 3)
         self.assert_only_fixed_provider_calls(fake)
 
@@ -376,27 +456,10 @@ class ExportJobProdProvisionTests(unittest.TestCase):
 
     def test_ambiguous_write_reconciles_if_exact_binding_is_read_back(self):
         fake = FakeProvider()
-        fake.write_actions = ["transport_unknown"]
-
-        def apply_then_lose_response(args):
-            policy = json.loads(Path(args[-2]).read_text())
-            fake.policy = policy
-            fake.policy["etag"] = "bucket-applied-unknown"
-            raise OSError("simulated lost response after application")
-
-        fake.write_actions = ["transport_unknown"]
-        # Replace the write method for this case to model apply-then-response-loss.
-        original = fake.__call__
-
-        def run(args):
-            if args[1:4] == ["storage", "buckets", "set-iam-policy"]:
-                fake.calls.append(list(args))
-                fake.writes.append(json.loads(Path(args[-2]).read_text()))
-                apply_then_lose_response(args)
-            return original(args)
+        fake.write_actions = ["apply_then_unknown"]
 
         with tempfile.TemporaryDirectory() as directory:
-            result = self.provisioner(run, directory).apply()
+            result = self.provisioner(fake, directory).apply()
         self.assertEqual(result, "reconciled_ambiguous_write")
         self.assertEqual(len(fake.writes), 1)
         self.assertEqual(fake.policy_reads, 2)
