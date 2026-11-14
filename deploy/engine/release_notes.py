@@ -333,11 +333,10 @@ def normalize_operation(plan_bytes: bytes, state_bytes: bytes, result_bytes: byt
                  component.get("status") == "verified" and result_entry.get("status") == "verified" and
                  observed_result.get("component_status") == "verified" and result.get("candidate") == result_entry.get("candidate"),
                  "index_update", "successful-operation-required")
+        # BFF checkpoints retain config and revision in candidate; its image identity lives in the receipt.
         candidate = component.get("candidate")
         _require(isinstance(candidate, dict) and isinstance(candidate.get("revision"), str) and
                  candidate.get("revision") == sidecar.get("revision") and
-                 isinstance(candidate.get("image"), str) and
-                 candidate["image"].rsplit("@", 1)[-1] == sidecar.get("image_digest") and
                  receipt["artifact"]["image"].rsplit("@", 1)[-1] == sidecar.get("image_digest"),
                  "index_update", "selected-target-readback-mismatch")
     evidence_digest = digest_bytes(json.dumps(sidecar, sort_keys=True, separators=(",", ":")).encode("utf-8"))
@@ -410,12 +409,14 @@ def validate_native_operation(plan_bytes: bytes, state_bytes: bytes, result_byte
                  prior["traffic"][0].get("percent") == 100 and not prior["traffic"][0].get("tag"),
                  "product_release", "native-operation-unsuccessful")
     else:
+        # The native BFF producer does not copy receipt.image into candidate; keep the receipt identity check above.
         candidate = component.get("candidate")
         _require(state.get("status") == "success" and result.get("stage") == "success" and
                  result.get("status") == "success" and component.get("status") == "verified" and
                  result_entry.get("status") == "verified" and observed.get("component_status") == "verified" and
                  result.get("candidate") == result_entry.get("candidate") and
-                 isinstance(candidate, dict) and bool(candidate.get("revision")),
+                 isinstance(candidate, dict) and isinstance(candidate.get("revision"), str) and
+                 bool(candidate.get("revision")),
                  "product_release", "native-operation-unsuccessful")
     receipt = _json_object(receipt_bytes, "product_release", MAX_OPERATION_ARTIFACT_BYTES)
     artifact = receipt.get("artifact")
@@ -423,10 +424,6 @@ def validate_native_operation(plan_bytes: bytes, state_bytes: bytes, result_byte
     _require(receipt.get("component") == "bff" and receipt.get("identity") == identity and
              isinstance(image, str) and re.fullmatch(r".+@sha256:[0-9a-f]{64}", image) is not None,
              "product_release", "selected-target-evidence-invalid")
-    if workflow_operation != "rollback":
-        candidate = component.get("candidate")
-        _require(isinstance(candidate, dict) and candidate.get("image") == image,
-                 "product_release", "selected-target-evidence-invalid")
     return {"plan": plan, "state": state, "result": result, "receipt": receipt}
 
 

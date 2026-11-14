@@ -8,6 +8,7 @@ import textwrap
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import patch
 import zipfile
 
@@ -17,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import release_notes
 import release_notes_publish
-from test_release_notes import canonical, note, operation_fixture, plan_fixture
+from test_release_notes import canonical, note, operation_fixture, plan_fixture, run_capture_cli_with_service_url_failure
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -403,7 +404,106 @@ class ReleaseNotesWorkflowLayoutTests(unittest.TestCase):
             self.assertEqual(plan["source"], artifact["workflow_run"]["head_sha"])
             self.assertEqual(plan["normalized"]["environment"], "development")
             self.assertEqual(artifact["workflow_run"]["head_branch"], "develop")
+            operation_attempt = int(artifact["name"].rsplit("-", 1)[1])
+            verify_args = release_notes_publish.parser().parse_args([
+                "--action", "verify-operation", "--directory", str(restored), "--environment", "dev",
+                "--bucket", "unused", "--plan", str(restored / "plan.json"), "--operation", "release",
+                "--run-id", str(artifact["workflow_run"]["id"]), "--run-attempt", str(operation_attempt),
+                "--result-artifact-id", str(artifact["id"]), "--product-status", "released",
+            ])
+            with patch.object(release_notes_publish, "GCSCLIStore", side_effect=AssertionError("cloud access")):
+                verified = release_notes_publish.execute(verify_args)
+            self.assertEqual(verified["status"], "verified")
+            self.assertEqual(verified["result_artifact_id"], str(artifact["id"]))
         self.assertEqual(hashlib.sha256(source_archive.read_bytes()).hexdigest(), handoff["observed_zip_digest"].removeprefix("sha256:"))
+
+    def test_parent_authentic_native_operations_pass_notes_readers_and_reach_capture(self):
+        counterexample_path = os.environ.get("LWC478_AUTHENTIC_NATIVE_COUNTEREXAMPLE")
+        if not counterexample_path:
+            self.skipTest("parent-provided authentic native artifacts are supplied only to retained source qualification")
+        counterexample = json.loads(Path(counterexample_path).read_text())
+        artifact_base = Path(counterexample_path).parent / "authentic-native-operations"
+
+        for row in counterexample["rows"]:
+            with self.subTest(artifact=row["artifact_id"]), TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                source_root = artifact_base / row["label"] / "extracted"
+                (root / "receipts").mkdir()
+                for relative_path, expected_digest in row["file_hashes"].items():
+                    source = source_root / relative_path
+                    destination = root / relative_path
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    data = source.read_bytes()
+                    self.assertEqual(hashlib.sha256(data).hexdigest(), expected_digest)
+                    destination.write_bytes(data)
+
+                plan_bytes = (root / "plan.json").read_bytes()
+                state_bytes = (root / "state.json").read_bytes()
+                result_bytes = (root / "result.json").read_bytes()
+                receipt_bytes = (root / "receipts" / "bff.json").read_bytes()
+                plan = json.loads(plan_bytes)
+                candidate = json.loads(state_bytes)["components"]["bff"]["candidate"]
+                self.assertEqual(plan["source"], row["source"])
+                self.assertFalse(row["candidate_image_present"])
+                self.assertNotIn("image", candidate)
+
+                metadata = json.loads((artifact_base / row["label"] / "artifact-metadata.json").read_text())
+                artifact = metadata
+                self.assertEqual(artifact["id"], row["artifact_id"])
+                run_id = str(artifact["workflow_run"]["id"])
+                run_attempt = int(artifact["name"].rsplit("-", 1)[1])
+                operation = "release" if row["label"] == "authentic4e" else "deploy"
+
+                native = release_notes.validate_native_operation(
+                    plan_bytes, state_bytes, result_bytes, receipt_bytes, environment="dev",
+                    workflow_operation=operation, run_id=run_id, run_attempt=run_attempt)
+                self.assertEqual(native["plan"]["source"], row["source"])
+                self.assertIn("image", native["receipt"]["artifact"])
+
+                verify_args = release_notes_publish.parser().parse_args([
+                    "--action", "verify-operation", "--directory", str(root), "--environment", "dev",
+                    "--bucket", "unused", "--plan", str(root / "plan.json"), "--operation", operation,
+                    "--run-id", run_id, "--run-attempt", str(run_attempt),
+                    "--result-artifact-id", str(row["artifact_id"]), "--product-status", "released",
+                ])
+                with patch.object(release_notes_publish, "GCSCLIStore", side_effect=AssertionError("cloud access")):
+                    verified = release_notes_publish.execute(verify_args)
+                self.assertEqual(verified["status"], "verified")
+
+                if operation == "release":
+                    publication_args = release_notes_publish.parser().parse_args([
+                        "--action", "record-publication", "--directory", str(root), "--environment", "dev",
+                        "--bucket", "unused", "--plan", str(root / "plan.json"), "--operation", operation,
+                        "--run-id", run_id, "--run-attempt", str(run_attempt), "--product-status", "released",
+                        "--published-at", "2026-11-14T10:00:00Z",
+                    ])
+                    publication = release_notes_publish.execute(publication_args)
+                    self.assertEqual(publication["status"], "verified")
+
+                resend_context = SimpleNamespace(
+                    action="resend", directory=root, environment="dev", operation=operation,
+                    run_id=run_id, run_attempt=run_attempt, plan=str(root / "plan.json"))
+                marker, sidecar_bytes = release_notes_publish.operation_marker(root, resend_context)
+                self.assertIsNone(marker)
+                self.assertEqual(sidecar_bytes, b"")
+
+                capture_action = "run" if operation == "release" else "marker"
+                capture_attempt = run_capture_cli_with_service_url_failure(
+                    root, operation=operation, action=capture_action, run_id=run_id,
+                    artifact_id=str(row["artifact_id"]), artifact_digest=artifact["digest"])
+                self.assertEqual(capture_attempt.returncode, 1, capture_attempt.stderr)
+                capture_failure = json.loads(capture_attempt.stdout)
+                self.assertEqual(capture_failure["stage"], "index_update")
+                self.assertEqual(capture_failure["safe_class"], "service-url-unavailable")
+                self.assertTrue(capture_failure["evidence_recorded"])
+                self.assertFalse((root / "release-notes-operation.json").exists())
+                evidence = json.loads((root / "release-notes-evidence.json").read_text())["stages"]
+                self.assertEqual(evidence[-1]["action"], "capture")
+                self.assertEqual(evidence[-1]["operation"], operation)
+                self.assertEqual(evidence[-1]["run_id"], run_id)
+                self.assertEqual(evidence[-1]["artifact_id"], str(row["artifact_id"]))
+                if operation == "release":
+                    self.assertEqual(evidence[-1]["published_at"], "2026-11-14T10:00:00Z")
 
 
 if __name__ == "__main__":

@@ -25,17 +25,34 @@ def canonical(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
 
 
-def run_capture_cli_with_service_url_failure(directory, *, operation, action, run_id="701", artifact_id=""):
+def run_capture_cli_with_service_url_failure(directory, *, operation, action, run_id="701", artifact_id="",
+                                            artifact_digest=""):
     fake_bin = directory / "fake-bin"
     fake_bin.mkdir(exist_ok=True)
     gcloud = fake_bin / "gcloud"
+    plan = json.loads((directory / "plan.json").read_bytes())
+    state = json.loads((directory / "state.json").read_bytes())
+    receipt = json.loads((directory / "receipts" / "bff.json").read_bytes())
+    service = plan["normalized"]["bff"]["service_name"]
+    entry = state["components"]["bff"]
+    target = entry["prior"] if operation == "rollback" else entry["candidate"]
+    revision = target["revision"]
+    image = receipt["artifact"]["image"]
+    service_object = {
+        "metadata": {"name": service, "uid": "uid-fixture", "generation": max(state.get("sequence", 1), 1)},
+        "status": {"traffic": [{"revisionName": revision, "percent": 100}]},
+    }
+    revision_object = {
+        "metadata": {"name": revision},
+        "status": {"conditions": [{"type": "Ready", "status": "True"}], "imageDigest": image},
+        "spec": {"containers": [{"image": image}]},
+    }
     gcloud.write_text(
-        "#!/bin/sh\n"
-        "if [ \"$2\" = services ]; then\n"
-        "  printf '%s\\n' '{\"metadata\":{\"name\":\"svc\",\"uid\":\"uid-1\",\"generation\":43},\"status\":{\"traffic\":[{\"revisionName\":\"rev-w\",\"percent\":100}]}}'\n"
-        "elif [ \"$2\" = revisions ]; then\n"
-        "  printf '%s\\n' '{\"metadata\":{\"name\":\"rev-w\"},\"status\":{\"conditions\":[{\"type\":\"Ready\",\"status\":\"True\"}],\"imageDigest\":\"" + W_IMAGE + "\"},\"spec\":{\"containers\":[{\"image\":\"" + W_IMAGE + "\"}]}}'\n"
-        "else\n  exit 1\nfi\n"
+        "#!/usr/bin/env python3\n"
+        "import json, sys\n"
+        "if len(sys.argv) > 2 and sys.argv[2] == 'services': print(" + repr(json.dumps(service_object)) + ")\n"
+        "elif len(sys.argv) > 2 and sys.argv[2] == 'revisions': print(" + repr(json.dumps(revision_object)) + ")\n"
+        "else: sys.exit(1)\n"
     )
     gcloud.chmod(0o755)
     environment = os.environ.copy()
@@ -56,7 +73,8 @@ def run_capture_cli_with_service_url_failure(directory, *, operation, action, ru
             "--run-id", run_id, "--run-attempt", "1", "--environment", "dev",
             "--release-notes-action", action, "--product-status", "released"]
     if artifact_id:
-        args.extend(("--artifact-id", artifact_id, "--artifact-digest", "sha256:" + "c" * 64))
+        args.extend(("--artifact-id", artifact_id,
+                     "--artifact-digest", artifact_digest or "sha256:" + "c" * 64))
     return subprocess.run(args, cwd=Path(__file__).resolve().parents[3], env=environment,
                           capture_output=True, text=True, check=False)
 
@@ -76,8 +94,9 @@ def plan_fixture():
 def state_fixture(plan, *, status="rolled_back", prior_image=V_IMAGE, revision="rev-v", generation=43):
     prior = {"revision": "rev-v", "image": prior_image,
              "traffic": [{"revisionName": "rev-v", "percent": 100}]}
-    candidate = {"revision": "rev-w", "image": W_IMAGE,
-                 "traffic": [{"revisionName": "rev-w", "percent": 100}]}
+    candidate = {"bff_config": {"status": "published",
+                                 "version_resource": "projects/project/secrets/bff-config-dev/versions/42"},
+                 "revision": "rev-w"}
     component_status = "rolled_back" if status == "rolled_back" else "verified"
     return {"plan": plan["id"], "status": status, "sequence": generation,
             "components": {"bff": {"status": component_status, "prior": prior, "candidate": candidate}}}
@@ -102,7 +121,7 @@ def operation_fixture(operation="rollback", *, service_generation=43, prior_imag
               "last_verified_checkpoint": state["sequence"]}
     result_bytes = canonical(result)
     active_revision = state_component["prior"]["revision"] if operation == "rollback" else state_component["candidate"]["revision"]
-    active_image = sidecar_image or (state_component["prior"]["image"] if operation == "rollback" else state_component["candidate"]["image"])
+    active_image = sidecar_image or (state_component["prior"]["image"] if operation == "rollback" else W_IMAGE)
     build = {"environment": "dev", "product_version": product_version, "commit": V_COMMIT if operation == "rollback" else W_PLAN_SOURCE,
              "branch": "develop", "tag": "v2026.11.4" if operation == "rollback" else "v2026.11.5",
              "image_tag": "bff-v" if operation == "rollback" else "bff-w", "service": "svc", "revision": active_revision}
@@ -155,8 +174,7 @@ def old_v_release_fixture():
                                      product_version="1.2.3", sidecar_image=V_IMAGE))
     plan, state, result, sidecar, receipt = (json.loads(fixture[i]) for i in range(5))
     candidate = state["components"]["bff"]["candidate"]
-    candidate.update(revision="rev-v", image=V_IMAGE,
-                     traffic=[{"revisionName": "rev-v", "percent": 100}])
+    candidate.update(revision="rev-v")
     result["candidate"] = candidate
     receipt["artifact"]["image"] = V_IMAGE
     sidecar.update(revision="rev-v", image_digest=V_IMAGE.rsplit("@", 1)[-1],
@@ -232,6 +250,7 @@ class ReleaseNotesContractTests(unittest.TestCase):
             run_id="701", run_attempt=1, service="svc", receipt_bytes=fixture[4])
         self.assertEqual(bundle["plan"]["source"], W_PLAN_SOURCE)
         self.assertEqual(bundle["result"]["expected"]["source"], W_PLAN_SOURCE)
+        self.assertNotIn("image", bundle["state"]["components"]["bff"]["candidate"])
         self.assertEqual(marker["product_version"], "1.2.3")
         self.assertEqual(marker["revision"], "rev-v")
         self.assertEqual(marker["operation"], "rollback")
@@ -262,16 +281,27 @@ class ReleaseNotesContractTests(unittest.TestCase):
         self.assertFalse(release_notes.marker_transition_allowed(old_w, {**new_rollback_v, "service_generation": 42, "product_version": "1.2.4"}))
         self.assertTrue(release_notes.marker_transition_allowed(old_w, {**new_rollback_v, "service_uid": "uid-2"}))
 
-    def test_normal_operations_bind_selected_receipt_image_and_candidate(self):
+    def test_normal_operations_bind_receipt_image_to_readback_with_native_candidate_shape(self):
         for operation in ("release", "deploy", "reactivate", "promote"):
             with self.subTest(operation=operation):
                 marker = normalized_marker(operation=operation, revision="rev-w", product_version="9.0.0")
                 self.assertEqual(marker["operation"], operation)
                 self.assertEqual(marker["revision"], "rev-w")
                 fixture = list(operation_fixture(operation=operation, revision="rev-w", product_version="9.0.0"))
+                self.assertNotIn("image", json.loads(fixture[1])["components"]["bff"]["candidate"])
                 receipt = json.loads(fixture[4])
                 receipt["artifact"]["image"] = V_IMAGE
                 fixture[4] = canonical(receipt)
+                with self.assertRaisesRegex(release_notes.ReleaseNotesError, "selected-target-readback-mismatch"):
+                    release_notes.normalize_operation(*fixture[:4], environment="dev", workflow_operation=operation,
+                        run_id="701", run_attempt=1, service="svc", receipt_bytes=fixture[4])
+
+                fixture = list(operation_fixture(operation=operation, revision="rev-w", product_version="9.0.0"))
+                sidecar = json.loads(fixture[3])
+                sidecar["revision"] = "rev-stale"
+                sidecar["build_info"]["revision"] = "rev-stale"
+                sidecar["traffic"][0]["revisionName"] = "rev-stale"
+                fixture[3] = canonical(sidecar)
                 with self.assertRaisesRegex(release_notes.ReleaseNotesError, "selected-target-readback-mismatch"):
                     release_notes.normalize_operation(*fixture[:4], environment="dev", workflow_operation=operation,
                         run_id="701", run_attempt=1, service="svc", receipt_bytes=fixture[4])
