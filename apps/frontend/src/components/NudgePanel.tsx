@@ -78,7 +78,9 @@ export function NudgePanel({ onClose }: { onClose: () => void }) {
       });
       setErrorState({ identity: requestIdentity, value: '' });
     }).catch(() => {
-      if (active && requestIdentityRef.current === requestIdentity) setErrorState({ identity: requestIdentity, value: t('Nudge.loadFailed') });
+      if (active && requestIdentityRef.current === requestIdentity && reconcileSequenceRef.current === reconcileSequence) {
+        setErrorState({ identity: requestIdentity, value: t('Nudge.loadFailed') });
+      }
     });
     return () => { active = false; };
   }, [isDemoSession, requestIdentity, t, user, user?.id]);
