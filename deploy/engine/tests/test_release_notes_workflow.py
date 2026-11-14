@@ -548,6 +548,76 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
         path.write_bytes(plan_bytes if plan_bytes is not None else self.plan_bytes)
         return path
 
+    def make_ready_handoff(self, root):
+        producer_sha = "b" * 40
+        plan = {
+            "schema": 3,
+            "tag": "v2026.11.5",
+            "source": "a" * 40,
+            "branch": "develop",
+            "executor_sha": producer_sha,
+            "normalized": {"environment": "development", "auth": {"runtime_inputs": {"schema_version": 4}}},
+            "identities": {"bff": {"profile": "bff", "digest": "bff-inputs"},
+                           "frontend": {"profile": "frontend", "digest": "frontend-inputs"}},
+            "dev_reference": None,
+            "selected": ["bff", "frontend"],
+            "release_source_mode": "legacy_monorepo",
+        }
+        plan["id"] = release_notes_workflow._plan_id(plan)
+        plan_bytes = canonical(plan)
+        state = {"plan": plan["id"], "status": "ready", "components": {}, "sequence": 5,
+                 "checkpoint_schema": 1, "builds": {}, "executor_sha": producer_sha}
+        state_bytes = canonical(state)
+        result = {
+            "release": plan["tag"], "attempt": plan["id"], "stage": "ready", "status": "ready",
+            "component": "frontend", "reason": "completed", "mutation_may_have_happened": False,
+            "prior": None, "candidate": None,
+            "expected": {"source": plan["source"], "identity": "c" * 64},
+            "observed": {"component_status": "unstarted"}, "last_verified_checkpoint": 5,
+        }
+        result_bytes = canonical(result)
+        notes_evidence = {
+            "schema_version": 1,
+            "stages": [{
+                "schema_version": 1, "action": "prepare", "environment": "dev", "stage": "validate",
+                "status": "failed", "safe_class": "artifact-id-required", "product_status": "not_started",
+                "plan_sha256": hashlib.sha256(plan_bytes).hexdigest(), "artifact_id": None,
+                "next_actions": ["retry", "skip", "stop"], "owner_choice_required": True,
+                "automatic_skip": False, "event_sequence": 1, "stage_attempt": 1,
+                "recorded_at": "2026-11-14T17:00:00Z",
+            }],
+        }
+        evidence_bytes = canonical(notes_evidence)
+        ready_dir = root / "ready"
+        result_dir = root / "result"
+        ready_dir.mkdir()
+        result_dir.mkdir()
+        for directory in (ready_dir, result_dir):
+            (directory / "plan.json").write_bytes(plan_bytes)
+            (directory / "state.json").write_bytes(state_bytes)
+            (directory / "result.json").write_bytes(result_bytes)
+        (result_dir / "release-notes-evidence.json").write_bytes(evidence_bytes)
+        ready_id, result_id, run_id, attempt = 701, 702, 600, 1
+        ready_name = f"lwc-ready-development-{run_id}-{attempt}"
+        result_name = f"lwc-result-development-{run_id}-{attempt}"
+        ready_digest = "sha256:" + "d" * 64
+        result_digest = "sha256:" + "e" * 64
+        metadata = {"id": ready_id, "name": ready_name, "expired": False, "digest": ready_digest,
+                    "expires_at": "2027-02-12T00:00:00Z", "workflow_run": {"id": run_id}}
+        run = {"id": run_id, "run_attempt": attempt, "event": "workflow_dispatch",
+               "path": ".github/workflows/deploy-dev.yml", "status": "completed", "conclusion": "failure",
+               "head_branch": "develop", "head_sha": producer_sha}
+        artifact_list = {"artifacts": [{
+            "id": result_id, "name": result_name, "expired": False, "digest": result_digest,
+            "expires_at": "2027-02-12T00:00:00Z", "workflow_run": {"id": run_id},
+        }]}
+        result_metadata = {**artifact_list["artifacts"][0]}
+        return {"plan": plan, "plan_bytes": plan_bytes, "state_bytes": state_bytes,
+                "result_bytes": result_bytes, "metadata": metadata, "run": run,
+                "artifact_list": artifact_list, "result_metadata": result_metadata,
+                "ready_id": str(ready_id), "result_id": str(result_id),
+                "ready_dir": ready_dir, "result_dir": result_dir}
+
     def test_canonical_plan_selection_distinguishes_bff_frontend_worker_and_full_input(self):
         self.assertTrue(release_notes_workflow.bff_selected_from_plan(self.plan_bytes))
         self.assertFalse(release_notes_workflow.bff_selected_from_plan(canonical({"selected": ["frontend"]})))
@@ -590,6 +660,36 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
             self.assertEqual(result["product_version"], "1.2.3")
             self.assertEqual((root / "github-output").read_text(), "product_version=1.2.3\n")
             self.assertEqual((output / "en.json").stat().st_mode & 0o777, 0o600)
+
+    def test_private_package_event_payload_is_not_runner_env_argv_or_output(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            package = self.make_package(root / "package")
+            archive_b64 = base64.b64encode(release_notes_workflow.package_directory_archive(package)).decode("ascii")
+            request_id = "1" * 32
+            event_path = root / "event.json"
+            event_path.write_bytes(canonical({"inputs": {
+                "package_zip_base64": archive_b64,
+                "request_id": request_id,
+                "ready_artifact_id": "701",
+                "retention_days": "90",
+            }}))
+            plan_path = self.make_plan_file(root)
+            destination = root / "staged-package"
+            output = root / "github-output"
+            environment = os.environ.copy()
+            environment["GITHUB_OUTPUT"] = str(output)
+            environment.pop("LWC_RELEASE_NOTES_PACKAGE_B64", None)
+            completed = subprocess.run([
+                sys.executable, str(ROOT / "deploy/engine/release_notes_workflow.py"),
+                "prepare-package", "--plan", str(plan_path), "--package-dir", str(destination),
+                "--environment", "dev", "--request-id", request_id, "--event-path", str(event_path),
+            ], cwd=ROOT, env=environment, text=True, capture_output=True, check=False)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertNotIn(archive_b64, completed.stdout + completed.stderr)
+            self.assertNotIn(self.body.decode(), completed.stdout + completed.stderr)
+            self.assertEqual((destination / "en.json").read_bytes(), self.body)
+            self.assertEqual(output.read_text(), "product_version=1.2.3\n")
 
     def test_manual_request_correlation_is_closed_and_invalid_values_are_not_staged(self):
         with TemporaryDirectory() as temporary:
@@ -639,45 +739,81 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
                     "A" * (release_notes_workflow.MAX_DISPATCH_BASE64_CHARS + 1),
                     self.make_plan_file(root), root / "too-large", "", "1" * 32)
 
-    def test_ready_plan_must_be_successful_development_dispatch_with_exact_artifact_identity(self):
-        metadata = {
-            "id": 701,
-            "name": "lwc-ready-development-600-1",
-            "expired": False,
-            "digest": "sha256:" + "a" * 64,
-            "workflow_run": {"id": 600},
-        }
-        run = {
-            "id": 600,
-            "run_attempt": 1,
-            "event": "workflow_dispatch",
-            "path": ".github/workflows/deploy-dev.yml",
-            "status": "completed",
-            "conclusion": "success",
-            "head_branch": "develop",
-            "head_sha": "a" * 40,
-        }
-        checked = release_notes_workflow.validate_ready_artifact(metadata, run, "701")
-        self.assertEqual(checked["run_id"], "600")
-        self.assertEqual(release_notes_workflow.validate_ready_artifact(
-            metadata, {**run, "path": ".github/workflows/deploy-dev.yml@refs/heads/develop"}, "701")["run_id"], "600")
-        for key, value in (("head_branch", "main"), ("conclusion", "failure"),
-                           ("path", ".github/workflows/recover-deployment.yml")):
-            with self.subTest(key=key):
-                with self.assertRaises(release_notes_workflow.PackageWorkflowError):
-                    release_notes_workflow.validate_ready_artifact(metadata, {**run, key: value}, "701")
-        with self.assertRaises(release_notes_workflow.PackageWorkflowError):
-            release_notes_workflow.validate_ready_artifact(
-                metadata, {**run, "path": ".github/workflows/deploy-dev.yml@refs/heads/main"}, "701")
-        with self.assertRaises(release_notes_workflow.PackageWorkflowError):
-            release_notes_workflow.validate_ready_artifact({**metadata, "id": True}, run, "1")
+    def test_failed_ready_is_qualified_only_by_exact_missing_package_final_result_and_resume_identity(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fixture = self.make_ready_handoff(root)
+            discovered = release_notes_workflow.find_ready_result_artifact(
+                fixture["metadata"], fixture["run"], fixture["artifact_list"], fixture["ready_id"])
+            self.assertEqual(discovered["result_artifact_id"], fixture["result_id"])
+            output = root / "github-output"
+            accepted = release_notes_workflow.validate_ready_handoff(
+                fixture["metadata"], fixture["run"], fixture["artifact_list"], fixture["result_metadata"],
+                expected_artifact_id=fixture["ready_id"],
+                expected_result_artifact_id=fixture["result_id"],
+                ready_directory=fixture["ready_dir"], result_directory=fixture["result_dir"],
+                output_path=str(output))
+            self.assertEqual(accepted["plan_sha256"], hashlib.sha256(fixture["plan_bytes"]).hexdigest())
+            self.assertEqual(accepted["resume_inputs"], {
+                "operation": "release", "source_sha": fixture["plan"]["source"],
+                "release_tag": fixture["plan"]["tag"], "components": "bff,frontend",
+                "artifact_id": fixture["ready_id"], "release_source_mode": "legacy_monorepo",
+                "auth_schema_version": "4", "dev_artifact_id": "",
+            })
+            self.assertIn(f"resume_artifact_id={fixture['ready_id']}\n", output.read_text())
+
+            for name, mutate in (
+                ("successful aggregate", lambda value: value["run"].update(conclusion="success")),
+                ("non-workflow producer", lambda value: value["run"].update(path=".github/workflows/recover-deployment.yml")),
+                ("different result artifact", lambda value: value["artifact_list"]["artifacts"][0].update(name="lwc-result-development-600-2")),
+                ("result and Ready plan diverge", lambda value: (value["result_dir"] / "plan.json").write_bytes(canonical({**value["plan"], "source": "f" * 40}))),
+                ("runtime already started", lambda value: (value["result_dir"] / "state.json").write_bytes(canonical({
+                    "plan": value["plan"]["id"], "status": "runtime_success", "components": {"bff": {"status": "verified"}},
+                    "sequence": 6, "checkpoint_schema": 1, "builds": {}, "executor_sha": value["plan"]["executor_sha"],
+                }))),
+                ("notes failure has another cause", lambda value: (value["result_dir"] / "release-notes-evidence.json").write_bytes(canonical({
+                    "schema_version": 1, "stages": [{"action": "prepare", "environment": "dev", "stage": "validate",
+                        "status": "failed", "safe_class": "artifact-metadata-invalid", "product_status": "not_started",
+                        "plan_sha256": hashlib.sha256(value["plan_bytes"]).hexdigest(), "artifact_id": None,
+                        "next_actions": ["retry", "skip", "stop"], "owner_choice_required": True, "automatic_skip": False,
+                        "event_sequence": 1, "stage_attempt": 1, "recorded_at": "2026-11-14T17:00:00Z"}]
+                }))),
+            ):
+                with self.subTest(name=name):
+                    case_root = root / name.replace(" ", "-")
+                    case_root.mkdir()
+                    fresh = self.make_ready_handoff(case_root)
+                    mutate(fresh)
+                    with self.assertRaises(release_notes_workflow.PackageWorkflowError):
+                        release_notes_workflow.validate_ready_handoff(
+                            fresh["metadata"], fresh["run"], fresh["artifact_list"], fresh["result_metadata"],
+                            expected_artifact_id=fresh["ready_id"],
+                            expected_result_artifact_id=fresh["result_id"],
+                            ready_directory=fresh["ready_dir"], result_directory=fresh["result_dir"], output_path=None)
+            for key, value in (("head_branch", "main"), ("status", "in_progress"),
+                               ("head_sha", "invalid")):
+                case_root = root / f"bad-run-{key}"
+                case_root.mkdir()
+                fresh = self.make_ready_handoff(case_root)
+                fresh["run"][key] = value
+                with self.subTest(key=key), self.assertRaises(release_notes_workflow.PackageWorkflowError):
+                    release_notes_workflow.find_ready_result_artifact(
+                        fresh["metadata"], fresh["run"], fresh["artifact_list"], fresh["ready_id"])
+            case_root = root / "bad-metadata"
+            case_root.mkdir()
+            invalid = self.make_ready_handoff(case_root)
+            invalid["metadata"]["id"] = True
+            with self.assertRaises(release_notes_workflow.PackageWorkflowError):
+                release_notes_workflow.find_ready_result_artifact(
+                    invalid["metadata"], invalid["run"], invalid["artifact_list"], invalid["ready_id"])
 
     def test_upload_verification_binds_action_digest_api_metadata_name_and_source_plan(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
             package = self.make_package(root / "package")
             plan_path = self.make_plan_file(root)
-            artifact_digest = "sha256:" + "c" * 64
+            action_digest = "c" * 64
+            artifact_digest = "sha256:" + action_digest
             metadata = {
                 "id": 801,
                 "name": "lwc-release-notes-1.2.3-development-802-1",
@@ -689,18 +825,28 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
             output = root / "github-output"
             verified = release_notes_workflow.verify_uploaded_package(
                 package, plan_path, metadata, expected_artifact_id="801", expected_name=metadata["name"],
-                action_digest=artifact_digest, run_id="802", run_attempt="1", ready_artifact_id="701",
+                action_digest=action_digest, run_id="802", run_attempt="1", ready_artifact_id="701",
                 output_path=str(output))
             self.assertEqual(verified["artifact_id"], "801")
             self.assertEqual(verified["ready_artifact_id"], "701")
             self.assertEqual(verified["artifact_digest"], artifact_digest)
+            self.assertEqual(verified["action_digest_raw"], action_digest)
+            self.assertEqual(verified["resume_inputs"]["artifact_id"], "701")
+            self.assertEqual(verified["resume_inputs"]["release_notes_artifact_id"], "801")
+            self.assertEqual(verified["resume_inputs"]["release_notes_action"], "run")
             self.assertNotIn("Private package payload sentinel", json.dumps(verified))
             self.assertIn("artifact_digest=" + artifact_digest, output.read_text())
             with self.assertRaises(release_notes_workflow.PackageWorkflowError):
                 release_notes_workflow.verify_uploaded_package(
                     package, plan_path, metadata, expected_artifact_id="801", expected_name=metadata["name"],
-                    action_digest="sha256:" + "d" * 64, run_id="802", run_attempt="1",
+                    action_digest="d" * 64, run_id="802", run_attempt="1",
                     ready_artifact_id="701", output_path=str(output))
+            for invalid in ("sha256:" + action_digest, "", "C" * 64):
+                with self.subTest(invalid=invalid[:8]), self.assertRaises(release_notes_workflow.PackageWorkflowError):
+                    release_notes_workflow.verify_uploaded_package(
+                        package, plan_path, metadata, expected_artifact_id="801", expected_name=metadata["name"],
+                        action_digest=invalid, run_id="802", run_attempt="1",
+                        ready_artifact_id="701", output_path=str(output))
 
     def test_dispatch_payload_contains_private_archive_without_exposing_content(self):
         with TemporaryDirectory() as temporary:

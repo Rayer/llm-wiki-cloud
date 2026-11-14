@@ -1,16 +1,18 @@
 # Manual TPM Release Notes package preparation
 
-This is a private transport and validation step for a package the TPM editor has already authored. It does not generate or edit note content. The accepted input is a ZIP containing `release-notes-manifest.json` and the locale JSON files named by its existing manifest; the existing `release_notes.validate_package` contract checks the manifest schema, exact ready-plan SHA, environment, version, locales, file hashes, and optional historical provenance.
+This is a private transport for a package the TPM editor has already authored. It does not generate or edit content. The accepted ZIP contains the existing `release-notes-manifest.json` and the locale JSON files named by that manifest; `release_notes.validate_package` checks the existing schema, exact Ready plan hash, DEV environment, version, locale set, file hashes, and historical provenance.
 
-Run the preparation workflow from the `develop` ref only. First identify the exact, unexpired `lwc-ready-development-<run-id>-<attempt>` artifact produced by a successful `workflow_dispatch` of `.github/workflows/deploy-dev.yml`. The helper confirms the artifact ID, name, producer run ID and attempt, workflow path, event, completed-success result, `develop` branch, and the artifact digest. It then downloads that exact artifact and accepts only a plan whose canonical `selected` list includes `bff`.
+## Start from the exact pre-runtime Notes gate
 
-Keep the TPM package directory private. The operator helper reads only the three allowlisted package filenames, rejects symlinks, extra files, invalid manifests, and packages exceeding its bounds, and submits the package as a bounded base64 ZIP through `gh api` stdin. It does not print package contents or construct a shell command from them. The workflow safely extracts only flat manifest/locale files, validates them against the exact ready plan before upload, creates a private Actions artifact with the closed name `lwc-release-notes-<product-version>-development-<run-id>-<attempt>`, and verifies the upload action digest against the artifact API digest before returning the receipt. Retention is explicitly selected as 30 or 90 days.
+On `develop`, start the normal Deploy Development release with the intended canonical BFF-selected component set, `release_notes_action=run`, and an empty `release_notes_artifact_id`. The engine prepares the release and uploads `lwc-ready-development-<run-id>-<attempt>` before the Notes artifact-ID check. That check records `artifact-id-required` with `product_status=not_started` and ends the run before the deployment engine's runtime action; no publication time or product rollback is created.
 
-Use the real successful Deploy Development run ID and attempt from the parent-provided Actions receipt, then query the exact ready artifact ID by its closed name. The current reader artifact is a result artifact, not a ready artifact, and cannot substitute for this input. This does not download or print artifact contents:
+The manual workflow accepts only that specific completed-failure case. It resolves the exact Ready artifact's producer and the same attempt's final result artifact, downloads both by artifact ID, and checks that their `plan.json`, `state.json`, and `result.json` bytes match. It validates the native release plan ID, source/executor binding, canonical BFF selection, ready checkpoint with no runtime component mutations, and the single retained `artifact-id-required` Notes evidence record with the exact plan SHA. A successful aggregate, different failure, missing result artifact, altered plan/checkpoint, or any runtime-started state is rejected. This avoids reusing an unrelated or completed release while still accepting the intentional Notes-only stop.
+
+Find the exact Ready artifact in that failed run without printing its contents:
 
 ```sh
-: "${LWC_478_READY_RUN_ID:?Set this from the exact successful Deploy Development run receipt}"
-: "${LWC_478_READY_RUN_ATTEMPT:?Set this from the exact run attempt}"
+: "${LWC_478_READY_RUN_ID:?Set this from the original Deploy Development run receipt}"
+: "${LWC_478_READY_RUN_ATTEMPT:?Set this from the same run attempt}"
 READY_RUN_ID="$LWC_478_READY_RUN_ID"
 READY_RUN_ATTEMPT="$LWC_478_READY_RUN_ATTEMPT"
 [[ "$READY_RUN_ID" =~ ^[1-9][0-9]*$ && "$READY_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
@@ -19,7 +21,7 @@ trap 'rm -f "$READY_ARTIFACTS_JSON"' EXIT
 gh api "repos/Rayer/llm-wiki-cloud/actions/runs/$READY_RUN_ID/artifacts?per_page=100" > "$READY_ARTIFACTS_JSON"
 READY_NAME="lwc-ready-development-${READY_RUN_ID}-${READY_RUN_ATTEMPT}"
 READY_ARTIFACT_ID="$(jq -er --arg name "$READY_NAME" \
-  '[.artifacts[] | select(.name == $name and .expired == false) | .id] | if length == 1 then .[0] else error("expected one exact ready artifact") end' \
+  '[.artifacts[] | select(.name == $name and .expired == false) | .id] | if length == 1 then .[0] else error("expected one exact Ready artifact") end' \
   "$READY_ARTIFACTS_JSON")"
 [[ "$READY_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
 PRIVATE_TPM_PACKAGE_DIR=/private/path/to/tpm-authored-package
@@ -30,10 +32,27 @@ python3 deploy/engine/release_notes_workflow.py dispatch \
   --retention-days 90
 ```
 
-The parent supplies those exact IDs from a completed successful run and the private directory for the TPM-authored package. The package directory must contain `release-notes-manifest.json` plus exactly the locale bodies listed by its `files` map; the manifest must already bind to the ready plan's SHA. The `gh` CLI must already be authenticated for the repository with permission to dispatch the workflow and read its run/artifact receipts. This command acquires no credentials. Do not put the package body or base64 payload in the terminal command, shell history, logs, or a tracker comment.
+The helper reads only allowlisted package files, rejects symlinks, extra paths, invalid manifests, and oversized archives, then sends the bounded ZIP to `gh api` through stdin. It does not print package contents or place the payload in shell history or command arguments. The workflow reads `package_zip_base64` directly from the runner event file; it is not interpolated into a step environment, run script, argument, or diagnostic. It safely extracts to private staging, validates against the exact Ready plan, uploads a closed-name private Actions artifact with 30 or 90 day retention, and checks the pinned uploader's raw 64-hex output against the API's normalized `sha256:<hex>` digest before returning a receipt.
 
-On success the helper prints a receipt containing the exact private package artifact ID, closed artifact name, SHA-256 digest, retention expiry, producer workflow run/attempt, product version, and ready-plan artifact ID. Supply that artifact ID to the normal Deploy Development workflow as `release_notes_artifact_id` with `release_notes_action=run` or `retry` and the same canonical BFF-selected plan. The existing deployment engine remains responsible for release-time validation, original publication-time capture, product/runtime operation, and Notes publication; a failed Notes publication continues to use the existing Owner retry, explicit skip, or stop disposition, and resend remains an independent no-redeploy operation.
+## Resume the same release plan
 
-The existing workflow selection gate reads `plan.json` after release preparation and runs Notes failure disposition, package validation, publication-time capture, content publication, or explicit skip marker only when `plan.selected` contains `bff`. Frontend-only and worker-only plans therefore proceed with the default `release_notes_action=run` without a Notes artifact, a BFF marker, or a false BFF success receipt. Recovery marker publication reads the downloaded canonical plan in the same way. Component selection remains explicit in the deployment engine; this preparation flow invents no empty-component default.
+After package preparation succeeds, the `Verify the uploaded artifact and emit its exact receipt` step prints a safe `resume_inputs` object alongside the package artifact receipt. It contains the exact Ready artifact ID as `artifact_id`, the original source SHA, release tag, selected components, release-source mode, DEV artifact reference, Auth schema/source tuple when present, and the new Notes package artifact ID. Those values are plan metadata, not Notes content. Use them for the normal Deploy Development release dispatch on `develop`:
 
-No real artifact upload was run while implementing or testing this path. Test packages are synthetic fixtures only and are not historical DEV notes or product acceptance evidence.
+```sh
+gh workflow run deploy-dev.yml --ref develop \
+  -f operation=release \
+  -f source_sha="$LWC_478_SOURCE_SHA" \
+  -f release_tag="$LWC_478_RELEASE_TAG" \
+  -f components="$LWC_478_COMPONENTS" \
+  -f artifact_id="$LWC_478_READY_ARTIFACT_ID" \
+  -f release_notes_artifact_id="$LWC_478_PACKAGE_ARTIFACT_ID" \
+  -f release_notes_action=run \
+  -f release_source_mode="$LWC_478_RELEASE_SOURCE_MODE" \
+  -f auth_schema_version="$LWC_478_AUTH_SCHEMA_VERSION"
+```
+
+Pass the returned `dev_artifact_id` and Auth source fields when they are present in `resume_inputs`. Do not substitute a new source, tag, component selection, Auth tuple, or different Ready artifact. The existing wrapper passes `artifact_id` to the deployment engine as retained Stage 1 input. The engine admits the new invocation, checks the complete compatible release identity against that Ready artifact, requires an untouched `ready` checkpoint with empty runtime components, and restores the original plan bytes and build handles before execution. A mismatch or a checkpoint that has progressed into runtime is rejected by the native engine; it cannot silently create a new Notes-bound plan.
+
+The initial missing-package run does not create the release `published_at` record. On the resumed release, existing native fences run first; the original publication time is captured only after the runtime operation succeeds, and then the Notes package and marker are published. If Notes publication fails after runtime, the existing explicit Owner retry, skip, or stop disposition applies; resend remains an independent no-redeploy action.
+
+No real artifact upload was run while implementing or testing this path, and no manual workflow dispatch was performed. Unit fixtures are synthetic and do not represent genuine historical DEV notes or product acceptance evidence.

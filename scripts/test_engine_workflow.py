@@ -301,25 +301,58 @@ class EngineWorkflowContract(unittest.TestCase):
         self.assertEqual(job['permissions'], {'contents': 'read', 'actions': 'write'})
         manual_steps = job['steps']
         self.assertEqual(manual_steps[0]['uses'], 'actions/checkout@11d5960a326750d5838078e36cf38b85af677262')
-        download = next(step for step in manual_steps if step.get('uses', '').startswith('actions/download-artifact@'))
+        downloads = [step for step in manual_steps if step.get('uses', '').startswith('actions/download-artifact@')]
+        self.assertEqual(len(downloads), 2)
+        download = downloads[0]
         upload = next(step for step in manual_steps if step.get('uses', '').startswith('actions/upload-artifact@'))
         self.assertEqual(download['uses'], 'actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093')
         self.assertIn('artifact-ids', download['with'])
         self.assertEqual(download['with']['merge-multiple'], True)
+        self.assertEqual(download['with']['artifact-ids'], '${{ inputs.ready_artifact_id }}')
+        self.assertEqual(downloads[1]['with']['artifact-ids'], '${{ steps.ready.outputs.result_artifact_id }}')
+        self.assertEqual(downloads[1]['with']['run-id'], '${{ steps.ready.outputs.run_id }}')
         self.assertEqual(upload['uses'], 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02')
         self.assertIn('lwc-release-notes-${{ steps.prepare.outputs.product_version }}-development-${{ github.run_id }}-${{ github.run_attempt }}',
                       upload['with']['name'])
         self.assertEqual(upload['with']['retention-days'], '${{ inputs.retention_days }}')
         prepare = next(step for step in manual_steps if step.get('id') == 'prepare')
-        self.assertEqual(prepare['env']['LWC_RELEASE_NOTES_PACKAGE_B64'], '${{ inputs.package_zip_base64 }}')
+        self.assertEqual(prepare['env']['REQUEST_ID'], '${{ inputs.request_id }}')
+        self.assertNotIn('LWC_RELEASE_NOTES_PACKAGE_B64', prepare.get('env', {}))
+        self.assertNotIn('${{ inputs.package_zip_base64 }}', str(manual))
+        self.assertIn('--event-path "$GITHUB_EVENT_PATH"', prepare['run'])
         self.assertNotIn('echo ', prepare['run'])
         self.assertNotIn('eval ', prepare['run'])
         self.assertIn('--request-id "$REQUEST_ID"', prepare['run'])
+        locate = next(step for step in manual_steps if step.get('id') == 'ready')
+        self.assertIn('find-ready-result', locate['run'])
+        ready_plan = next(step for step in manual_steps if step.get('id') == 'ready-plan')
+        self.assertIn('validate-ready', ready_plan['run'])
+        self.assertIn('"release-notes-evidence.json"',
+                      (ROOT / 'deploy/engine/release_notes_workflow.py').read_text())
         verify = next(step for step in manual_steps if step.get('name') == 'Verify the uploaded artifact and emit its exact receipt')
         self.assertIn('verify-upload', verify['run'])
-        self.assertIn('artifact-digest', verify['env']['ACTION_DIGEST'])
+        self.assertIn('artifact-digest', verify['env']['ACTION_DIGEST_RAW'])
+        self.assertIn('"$ACTION_DIGEST_RAW" =~ ^[0-9a-f]{64}$', verify['run'])
+        helper = (ROOT / 'deploy/engine/release_notes_workflow.py').read_text()
+        self.assertIn('normalize_action_digest(action_digest)', helper)
+        self.assertIn('"artifact_id": ready_artifact_id', helper)
+        self.assertIn('inputs["release_notes_artifact_id"] = notes_artifact_id', helper)
+        self.assertIn('"resume_inputs": resume_inputs', helper)
         self.assertNotIn('VERCEL', str(manual))
         self.assertNotIn('WIF_', str(manual))
+
+        shared_job = release
+        self.assertEqual(shared_job['env']['REUSE_ID'], '${{ inputs.artifact_id }}')
+        deploy_wrapper = yaml.safe_load((ROOT / '.github/workflows/deploy-dev.yml').read_text())
+        self.assertEqual(deploy_wrapper['jobs']['release']['with']['artifact_id'], '${{ inputs.artifact_id }}')
+        action_source = (ROOT / '.github/actions/deployment-engine/index.cjs').read_text()
+        self.assertIn("retainedDirectory(process.env.REUSE_ID,'reuse')", action_source)
+        self.assertIn("args.push('--reuse',reuse)", action_source)
+        engine_source = (ROOT / 'deploy/engine/engine.py').read_text()
+        for invariant in ("compatible_release_identity(retained_plan) == compatible_release_identity(self.plan)",
+                          "retained_state.get('status') not in ('prepared', 'ready')",
+                          "if retained_state['components']:", "self.plan = copy.deepcopy(retained_plan)"):
+            self.assertIn(invariant, engine_source)
 
     def test_manual_notes_package_operator_command_is_documented_without_content_logging(self):
         doc = (ROOT / 'docs/lwc-478/operator-package-preparation.md').read_text()

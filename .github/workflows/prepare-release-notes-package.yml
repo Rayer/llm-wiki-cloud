@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       ready_artifact_id:
-        description: Exact successful Deploy Development ready artifact for the selected BFF plan
+        description: Exact retained Ready artifact from a DEV release stopped because its selected BFF Notes package ID was missing
         required: true
         type: string
       package_zip_base64:
-        description: Base64 ZIP (at most 40 KiB compressed) of the existing TPM-authored manifest and locale JSON files; contents are never logged
+        description: Private base64 ZIP (at most 40 KiB compressed) of the existing TPM-authored manifest and locale JSON files; read from the event file, never a step environment
         required: true
         type: string
       retention_days:
@@ -45,7 +45,7 @@ jobs:
           set -Eeuo pipefail
           test "$GITHUB_REF" = refs/heads/develop
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-      - name: Inspect exact ready-plan artifact and successful producer run
+      - name: Locate the exact prepared Ready run and its final result artifact
         id: ready
         env:
           GH_TOKEN: ${{ github.token }}
@@ -60,9 +60,11 @@ jobs:
             --artifact-id "$READY_ARTIFACT_ID")"
           [[ "$run_id" =~ ^[1-9][0-9]*$ ]]
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" > "$RUNNER_TEMP/ready-workflow-run.json"
-          python3 deploy/engine/release_notes_workflow.py validate-ready \
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/artifacts?per_page=100" > "$RUNNER_TEMP/ready-run-artifacts.json"
+          python3 deploy/engine/release_notes_workflow.py find-ready-result \
             --metadata "$RUNNER_TEMP/ready-artifact-metadata.json" \
-            --run "$RUNNER_TEMP/ready-workflow-run.json" --artifact-id "$READY_ARTIFACT_ID" \
+            --run "$RUNNER_TEMP/ready-workflow-run.json" \
+            --artifacts "$RUNNER_TEMP/ready-run-artifacts.json" --artifact-id "$READY_ARTIFACT_ID" \
             --output "$GITHUB_OUTPUT"
       - name: Download the exact ready-plan artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.1.8
@@ -72,17 +74,42 @@ jobs:
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/ready-plan
           merge-multiple: true
+      - name: Download the exact final result from the same producer attempt
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.1.8
+        with:
+          artifact-ids: ${{ steps.ready.outputs.result_artifact_id }}
+          run-id: ${{ steps.ready.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/ready-result
+          merge-multiple: true
+      - name: Validate the exact pre-runtime Notes gate and same-plan resume inputs
+        id: ready-plan
+        env:
+          READY_ARTIFACT_ID: ${{ inputs.ready_artifact_id }}
+          RESULT_ARTIFACT_ID: ${{ steps.ready.outputs.result_artifact_id }}
+        run: |
+          set -Eeuo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$RESULT_ARTIFACT_ID" > "$RUNNER_TEMP/ready-result-metadata.json"
+          python3 deploy/engine/release_notes_workflow.py validate-ready \
+            --metadata "$RUNNER_TEMP/ready-artifact-metadata.json" \
+            --run "$RUNNER_TEMP/ready-workflow-run.json" \
+            --artifacts "$RUNNER_TEMP/ready-run-artifacts.json" \
+            --result-metadata "$RUNNER_TEMP/ready-result-metadata.json" \
+            --ready-directory "$RUNNER_TEMP/ready-plan" \
+            --result-directory "$RUNNER_TEMP/ready-result" \
+            --artifact-id "$READY_ARTIFACT_ID" --result-artifact-id "$RESULT_ARTIFACT_ID" \
+            --output "$GITHUB_OUTPUT"
       - name: Validate and safely stage the existing TPM package
         id: prepare
         env:
-          LWC_RELEASE_NOTES_PACKAGE_B64: ${{ inputs.package_zip_base64 }}
           REQUEST_ID: ${{ inputs.request_id }}
         run: |
           set -Eeuo pipefail
           python3 deploy/engine/release_notes_workflow.py prepare-package \
             --plan "$RUNNER_TEMP/ready-plan/plan.json" \
             --package-dir "$RUNNER_TEMP/release-notes-input" \
-            --environment dev --request-id "$REQUEST_ID"
+            --environment dev --request-id "$REQUEST_ID" \
+            --event-path "$GITHUB_EVENT_PATH"
       - name: Upload the validated package as the exact private runtime artifact
         id: upload
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -98,7 +125,7 @@ jobs:
           PLAN_PATH: ${{ runner.temp }}/ready-plan/plan.json
           ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
           ARTIFACT_NAME: lwc-release-notes-${{ steps.prepare.outputs.product_version }}-development-${{ github.run_id }}-${{ github.run_attempt }}
-          ACTION_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+          ACTION_DIGEST_RAW: ${{ steps.upload.outputs.artifact-digest }}
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
           READY_ARTIFACT_ID: ${{ inputs.ready_artifact_id }}
@@ -106,11 +133,11 @@ jobs:
           set -Eeuo pipefail
           [[ "$ARTIFACT_ID" =~ ^[1-9][0-9]*$ && "$RUN_ID" =~ ^[1-9][0-9]*$ &&
              "$RUN_ATTEMPT" =~ ^[1-9][0-9]*$ && "$READY_ARTIFACT_ID" =~ ^[1-9][0-9]*$ &&
-             "$ACTION_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+             "$ACTION_DIGEST_RAW" =~ ^[0-9a-f]{64}$ ]]
           gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID" > "$RUNNER_TEMP/release-notes-upload-metadata.json"
           python3 deploy/engine/release_notes_workflow.py verify-upload \
             --package-dir "$PACKAGE_DIR" --plan "$PLAN_PATH" \
             --metadata "$RUNNER_TEMP/release-notes-upload-metadata.json" \
             --artifact-id "$ARTIFACT_ID" --artifact-name "$ARTIFACT_NAME" \
-            --action-digest "$ACTION_DIGEST" --run-id "$RUN_ID" --run-attempt "$RUN_ATTEMPT" \
+            --action-digest "$ACTION_DIGEST_RAW" --run-id "$RUN_ID" --run-attempt "$RUN_ATTEMPT" \
             --ready-artifact-id "$READY_ARTIFACT_ID"
