@@ -251,7 +251,7 @@ func taggingInventoryFixture(t *testing.T) (*taggingSnapshotFake, generation.Man
 	rawDigest := generation.Digest(raw)
 	ann := strings.Repeat("a", 64)
 	receipts, _ := json.Marshal(sourcestatus.Artifact{Version: 1, Sources: map[string]sourcestatus.Receipt{sourceID: {RawPath: "raw/source.md", LastIngestedRawSHA256: rawDigest, LastIngestedAnnSHA256: ann, LastIngestFingerprint: sourcestatus.Fingerprint(rawDigest, ann), LastSuccessAt: "2026-09-25T00:00:00Z"}}})
-	files := map[string][]byte{"cache/id_map.json": []byte(`{"concept":{"` + id + `":"alpha"},"source":{"` + sourceID + `":"source"}}`), "cache/concepts.jsonl": []byte(`{"slug":"alpha","title":"Alpha","frontmatter":{"id":"` + id + `"}}` + "\n"), "cache/source_status.json": receipts}
+	files := map[string][]byte{"cache/id_map.json": []byte(`{"concept":{"` + id + `":"alpha"},"source":{"` + sourceID + `":"source"}}`), "cache/concepts.jsonl": []byte(`{"slug":"alpha","title":"Alpha","frontmatter":{"id":"` + id + `"},"content_sha256":"` + strings.Repeat("c", 64) + `","content_updated_at":"2026-10-01T02:03:04Z"}` + "\n"), "cache/source_status.json": receipts}
 	manifest := generation.Manifest{Version: generation.Version, GenerationID: "generation-1", CreatedAt: "2026-09-25T00:00:00Z", InputFingerprint: "fixture"}
 	for _, p := range []string{"cache/concepts.jsonl", "cache/id_map.json"} {
 		b := files[p]
@@ -276,6 +276,9 @@ func TestProfileTagInventoryUsesOnlyExactImmutableInputs(t *testing.T) {
 	}
 	if len(inventory.Items) != 2 || inventory.Items[0].Kind != profiletags.Source || inventory.Items[1].Kind != profiletags.Concept {
 		t.Fatalf("inventory=%+v", inventory)
+	}
+	if !strings.Contains(string(inventory.Items[1].Content), `"content_sha256":"`+strings.Repeat("c", 64)+`"`) || !strings.Contains(string(inventory.Items[1].Content), `"content_updated_at":"2026-10-01T02:03:04Z"`) {
+		t.Fatalf("Profile tag inventory lost typed semantic recency fields: %s", inventory.Items[1].Content)
 	}
 	for p, count := range reader.reads {
 		if count != 1 || p == "cache/source_status.json" || strings.HasPrefix(p, "raw/") || strings.HasPrefix(p, "wiki/") {

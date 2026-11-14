@@ -5,8 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -18,7 +22,106 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/profileartifacts"
 	"github.com/rayer/llm-wiki-bff/internal/profilederive"
 	"github.com/rayer/llm-wiki-bff/internal/profilelimits"
+	"github.com/rayer/llm-wiki-bff/internal/wikiindex"
 )
+
+type profileWikiIndexStore struct{ root string }
+
+func (s profileWikiIndexStore) ListMarkdownFiles(ctx context.Context, dir string) ([]wikiindex.MarkdownFile, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(filepath.Join(s.root, filepath.FromSlash(dir)))
+	if errors.Is(err, fs.ErrNotExist) {
+		return []wikiindex.MarkdownFile{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	files := make([]wikiindex.MarkdownFile, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".md" {
+			continue
+		}
+		rel := filepath.ToSlash(filepath.Join(dir, entry.Name()))
+		data, err := os.ReadFile(filepath.Join(s.root, filepath.FromSlash(rel)))
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, wikiindex.MarkdownFile{Slug: strings.TrimSuffix(entry.Name(), ".md"), Path: rel, Data: data})
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].Slug < files[j].Slug })
+	return files, nil
+}
+
+func (s profileWikiIndexStore) ReadFile(ctx context.Context, rel string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(filepath.Join(s.root, filepath.FromSlash(rel)))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, wikiindex.ErrNotFound
+	}
+	return data, err
+}
+
+func (s profileWikiIndexStore) WriteBytesAtomic(ctx context.Context, data []byte, tmpRel, finalRel string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	tmp, final := filepath.Join(s.root, filepath.FromSlash(tmpRel)), filepath.Join(s.root, filepath.FromSlash(finalRel))
+	if err := os.MkdirAll(filepath.Dir(final), 0o700); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return "", err
+	}
+	if err := os.Rename(tmp, final); err != nil {
+		return "", err
+	}
+	return "test-digest", nil
+}
+
+func TestCanonicalWriterRecencyRowPassesStrictProfileReader(t *testing.T) {
+	const conceptID = "01JAZ5N7Y3K8M2Q4R6T9VWXABC"
+	root := t.TempDir()
+	projectRoot := filepath.Join(root, "users", "owner", "projects", "alpha")
+	if err := os.MkdirAll(filepath.Join(projectRoot, "wiki"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectRoot, "wiki", "alpha.md"), []byte("---\nid: "+conceptID+"\ntitle: Alpha\ndescription: Profile reader fixture\n---\nCanonical body.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := profileWikiIndexStore{root: projectRoot}
+	if _, err := wikiindex.Rebuild(context.Background(), store); err != nil {
+		t.Fatalf("canonical Rebuild(): %v", err)
+	}
+	concepts, err := os.ReadFile(filepath.Join(projectRoot, "cache", "concepts.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids wikiindex.IDMap
+	mapBytes, err := os.ReadFile(filepath.Join(projectRoot, "cache", "id_map.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(mapBytes, &ids); err != nil {
+		t.Fatal(err)
+	}
+	rows, digest, err := profilederive.ValidateConceptSnapshot(concepts, ids)
+	if err != nil || len(rows) != 1 || digest != profileartifacts.SHA256(concepts) {
+		t.Fatalf("strict Profile reader rows=%+v digest=%s err=%v", rows, digest, err)
+	}
+	var row map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(rows[0].Row), &row); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"content_sha256", "content_updated_at"} {
+		if len(row[field]) == 0 || string(row[field]) == "null" {
+			t.Fatalf("actual canonical writer output omitted %s: %s", field, rows[0].Row)
+		}
+	}
+}
 
 func TestProfileCompileSuccessCarriesOnlySuccessfulCommittedManifest(t *testing.T) {
 	concepts := []byte("{\"slug\":\"alpha\",\"title\":\"Alpha\",\"frontmatter\":{\"id\":\"01JAZ5N7Y3K8M2Q4R6T9VWXABC\"}}\n")

@@ -86,7 +86,7 @@ function SourceListSession() {
   const defaults = useMemo<ListViewState>(() => ({
     search: '',
     filters: { lifecycle: 'all', annotation: 'all' },
-    order: 'title',
+    order: 'added-desc',
     page: 1,
   }), []);
   const validation = useMemo(() => ({
@@ -94,7 +94,7 @@ function SourceListSession() {
       lifecycle: ['all', 'new', 'synced', 'notes_pending', 'content_pending', 'error'],
       annotation: ['all', 'present', 'empty'],
     },
-    orders: ['title', 'title-desc', 'path'],
+    orders: ['added-desc', 'title', 'title-desc', 'path'],
   }), []);
   const view = useListViewState({
     list: 'sources',
@@ -226,7 +226,7 @@ function SourceListSession() {
   const filtered = useMemo(() => selectSources(sources, search, lifecycleFilter, annotationFilter, order), [search, sources, lifecycleFilter, annotationFilter, order]);
   const page = useMemo(() => paginate(filtered, requestedPage, LIST_VIEW_PAGE_SIZE), [filtered, requestedPage]);
   const updateView = view.update;
-  const active = Boolean(search.trim() || lifecycleFilter !== 'all' || annotationFilter !== 'all' || order !== 'title');
+  const active = Boolean(search.trim() || lifecycleFilter !== 'all' || annotationFilter !== 'all' || order !== 'added-desc');
 
   useLayoutEffect(() => {
     if (view.ready && !loading && !error && page.page !== requestedPage) {
@@ -381,7 +381,7 @@ function SourceListSession() {
           ] },
         ]}
         order={{ label: t('List.orderBy'), value: order, onChange: (value) => changeControl('order', value), options: [
-          { value: 'title', label: t('List.titleAsc') }, { value: 'title-desc', label: t('List.titleDesc') }, { value: 'path', label: t('List.pathOrder') },
+          { value: 'added-desc', label: t('List.addedDesc') }, { value: 'title', label: t('List.titleAsc') }, { value: 'title-desc', label: t('List.titleDesc') }, { value: 'path', label: t('List.pathOrder') },
         ] }} />
 
 
@@ -434,6 +434,9 @@ function SourceListSession() {
                     {importedRecord.pipeline_ref?.status ? ` · ${t('Source.documentImport.pipelineState', { state: t(documentImportPipelineStatusKey(importedRecord.pipeline_ref.status)) })}` : ''}
                   </p>
                 ) : null}
+                <p className="mt-3 text-xs text-zinc-500">
+                  {t('Source.addedAt')}: {source.addedAt ?? t('Source.addedAtMissing')}
+                </p>
                 {source.lifecycle === 'error' ? (
                   <p role="alert" className="mt-3 text-sm text-red-200">{source.error ?? t('Source.lifecycleError')}</p>
                 ) : null}

@@ -64,9 +64,10 @@ const (
 )
 
 type conceptCacheEntry struct {
-	Slug        string                 `json:"slug"`
-	Title       string                 `json:"title"`
-	Frontmatter map[string]interface{} `json:"frontmatter"`
+	Slug             string                 `json:"slug"`
+	Title            string                 `json:"title"`
+	Frontmatter      map[string]interface{} `json:"frontmatter"`
+	ContentUpdatedAt json.RawMessage        `json:"content_updated_at"`
 }
 
 type wikiIDMap struct {
@@ -1061,6 +1062,7 @@ func (c *Client) ListRawFiles(ctx context.Context) ([]store.RawFile, error) {
 			Path:    "raw/" + rel,
 			Size:    attrs.Size,
 			Updated: attrs.Updated.UTC(),
+			Created: attrs.Created.UTC(),
 			SHA256:  attrs.Metadata["sha256"],
 		})
 	}
@@ -1188,18 +1190,35 @@ func WikiPagesFromConceptsJSONL(data []byte) ([]WikiPage, error) {
 			title = slug
 		}
 		pages = append(pages, WikiPage{
-			Slug:    slug,
-			Title:   title,
-			ID:      frontmatterStringValue(entry.Frontmatter, "id"),
-			Path:    fmt.Sprintf("wiki/%s.md", slug),
-			Status:  "published",
-			Sources: stringSliceValue(entry.Frontmatter["sources"]),
+			Slug:             slug,
+			Title:            title,
+			ID:               frontmatterStringValue(entry.Frontmatter, "id"),
+			Path:             fmt.Sprintf("wiki/%s.md", slug),
+			Status:           "published",
+			Sources:          stringSliceValue(entry.Frontmatter["sources"]),
+			ContentUpdatedAt: optionalRecencyTime(entry.ContentUpdatedAt),
 		})
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("scan concepts cache: %w", err)
 	}
 	return pages, nil
+}
+
+func optionalRecencyTime(raw json.RawMessage) *string {
+	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return nil
+	}
+	var value string
+	if json.Unmarshal(raw, &value) != nil || strings.TrimSpace(value) == "" {
+		return nil
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return nil
+	}
+	canonical := parsed.UTC().Format(time.RFC3339Nano)
+	return &canonical
 }
 
 func stringSliceValue(value any) []string {

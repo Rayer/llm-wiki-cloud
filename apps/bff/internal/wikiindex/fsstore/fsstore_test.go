@@ -1,13 +1,16 @@
 package fsstore
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/rayer/llm-wiki-bff/internal/wikiindex"
 )
@@ -167,6 +170,164 @@ func TestWriteBytesAtomicCleansUpTempFileOnCanceledContext(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Fatalf("cache entries after canceled write = %d, want 0", len(entries))
+	}
+}
+
+func TestRebuildOnRealFSStoreAcceptsManualEditAndPreservesThirdRun(t *testing.T) {
+	const conceptID = "a3f7b2c01d9d"
+	for _, unknownPriorTime := range []bool{false, true} {
+		name := "known prior time"
+		if unknownPriorTime {
+			name = "unknown prior time"
+		}
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			oldPage := []byte("---\nid: " + conceptID + "\ntitle: Alpha\n---\ninitial body\n")
+			writeTestFile(t, filepath.Join(root, "wiki", "alpha.md"), oldPage)
+			store := New(root)
+			if _, err := wikiindex.Rebuild(context.Background(), store); err != nil {
+				t.Fatalf("gen1 Rebuild(): %v", err)
+			}
+			first := readConceptRow(t, filepath.Join(root, "cache", "concepts.jsonl"))
+			firstTime := stringField(first, "content_updated_at")
+			if firstTime == "" || stringField(first, "content_sha256") == "" {
+				t.Fatalf("gen1 row lacks recency: %#v", first)
+			}
+			if unknownPriorTime {
+				delete(first, "content_updated_at")
+				writeTestFile(t, filepath.Join(root, "cache", "concepts.jsonl"), encodeConceptRow(t, first))
+				firstTime = ""
+			}
+
+			newPage := []byte("---\nid: " + conceptID + "\ntitle: Alpha\n---\nmanual user edit\n")
+			writeTestFile(t, filepath.Join(root, "wiki", "alpha.md"), newPage)
+			if _, err := wikiindex.Rebuild(context.Background(), store); err != nil {
+				t.Fatalf("gen2 manual-edit Rebuild(): %v", err)
+			}
+			second := readConceptRow(t, filepath.Join(root, "cache", "concepts.jsonl"))
+			secondTime := stringField(second, "content_updated_at")
+			if secondTime == "" || secondTime == firstTime || stringField(second, "content_sha256") == stringField(first, "content_sha256") {
+				t.Fatalf("gen2 failed to establish one changed-content time: first=%#v second=%#v", first, second)
+			}
+			if _, err := time.Parse(time.RFC3339Nano, secondTime); err != nil {
+				t.Fatalf("gen2 content_updated_at=%q: %v", secondTime, err)
+			}
+
+			if _, err := wikiindex.Rebuild(context.Background(), store); err != nil {
+				t.Fatalf("gen3 no-op Rebuild(): %v", err)
+			}
+			third := readConceptRow(t, filepath.Join(root, "cache", "concepts.jsonl"))
+			if got := stringField(third, "content_updated_at"); got != secondTime {
+				t.Fatalf("gen3 no-op time=%q, want exact gen2 value %q", got, secondTime)
+			}
+		})
+	}
+}
+
+func TestCaptureSnapshotKeepsVerifiedPageWithoutCacheRow(t *testing.T) {
+	const conceptID = "a3f7b2c01d9d"
+	oldPage := []byte("---\nid: " + conceptID + "\ntitle: Alpha\n---\nlegacy visible body\n")
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, "cache", "id_map.json"), []byte(`{"concept":{"`+conceptID+`":"alpha"},"source":{},"redirects":{}}`))
+	writeTestFile(t, filepath.Join(root, "cache", "concepts.jsonl"), nil)
+	writeTestFile(t, filepath.Join(root, "wiki", "alpha.md"), oldPage)
+	prior, err := wikiindex.CaptureConceptRecencySnapshot(context.Background(), New(root))
+	if err != nil {
+		t.Fatalf("CaptureConceptRecencySnapshot(): %v", err)
+	}
+	if !bytes.Equal(prior.ActivePages[conceptID], oldPage) {
+		t.Fatalf("verified legacy page = %q, want %q", prior.ActivePages[conceptID], oldPage)
+	}
+
+	for _, tc := range []struct {
+		name     string
+		current  []byte
+		wantTime bool
+	}{
+		{name: "unchanged legacy page remains unknown", current: oldPage, wantTime: false},
+		{name: "changed legacy page gets first observed time", current: []byte("---\nid: " + conceptID + "\ntitle: Alpha\n---\nlegacy visible edit\n"), wantTime: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			row := []byte(`{"slug":"alpha","title":"Alpha","frontmatter":{"id":"` + conceptID + `"}}` + "\n")
+			current := wikiindex.ConceptRecencySnapshot{
+				IDMap:         wikiindex.IDMap{Concept: map[string]string{conceptID: "alpha"}, DormantConcept: map[string]string{}, IDRedirects: map[string]string{}},
+				IDMapVerified: true, ActiveJSONL: row,
+				ActivePages: map[string][]byte{conceptID: tc.current}, DormantPages: map[string][]byte{},
+			}
+			active, _, err := wikiindex.EnrichConceptRecency(current, prior, time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC))
+			if err != nil {
+				t.Fatalf("EnrichConceptRecency(): %v", err)
+			}
+			got := decodeConceptRow(t, active)
+			if stringField(got, "content_sha256") == "" {
+				t.Fatalf("legacy page fallback did not seed current hash: %#v", got)
+			}
+			if hasTime := stringField(got, "content_updated_at") != ""; hasTime != tc.wantTime {
+				t.Fatalf("content_updated_at presence=%t, want %t: %#v", hasTime, tc.wantTime, got)
+			}
+		})
+	}
+}
+
+func TestRebuildUsesVerifiedPageWhenPriorCacheRowIsMissing(t *testing.T) {
+	const conceptID = "a3f7b2c01d9d"
+	root := t.TempDir()
+	page := []byte("---\nid: " + conceptID + "\ntitle: Alpha\n---\nlegacy visible body\n")
+	writeTestFile(t, filepath.Join(root, "cache", "id_map.json"), []byte(`{"concept":{"`+conceptID+`":"alpha"},"source":{},"redirects":{}}`))
+	writeTestFile(t, filepath.Join(root, "cache", "concepts.jsonl"), nil)
+	writeTestFile(t, filepath.Join(root, "wiki", "alpha.md"), page)
+	if _, err := wikiindex.Rebuild(context.Background(), New(root)); err != nil {
+		t.Fatalf("Rebuild(): %v", err)
+	}
+	row := readConceptRow(t, filepath.Join(root, "cache", "concepts.jsonl"))
+	if stringField(row, "content_sha256") == "" {
+		t.Fatalf("legacy fallback did not seed hash: %#v", row)
+	}
+	if stringField(row, "content_updated_at") != "" {
+		t.Fatalf("equal legacy page should not invent a birth time: %#v", row)
+	}
+}
+
+func readConceptRow(t *testing.T, path string) map[string]json.RawMessage {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return decodeConceptRow(t, data)
+}
+
+func decodeConceptRow(t *testing.T, data []byte) map[string]json.RawMessage {
+	t.Helper()
+	var row map[string]json.RawMessage
+	if err := json.Unmarshal(bytes.TrimSpace(data), &row); err != nil {
+		t.Fatalf("decode concept row %q: %v", data, err)
+	}
+	return row
+}
+
+func encodeConceptRow(t *testing.T, row map[string]json.RawMessage) []byte {
+	t.Helper()
+	data, err := json.Marshal(row)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return append(data, '\n')
+}
+
+func stringField(row map[string]json.RawMessage, key string) string {
+	var value string
+	_ = json.Unmarshal(row[key], &value)
+	return value
+}
+
+func writeTestFile(t *testing.T, path string, data []byte) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 

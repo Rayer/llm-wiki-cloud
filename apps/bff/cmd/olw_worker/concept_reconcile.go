@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	fm "github.com/adrg/frontmatter"
 	"github.com/rayer/llm-wiki-bff/internal/annotation"
@@ -29,6 +30,7 @@ type conceptSnapshot struct {
 	CacheRow    []byte
 	SourcePaths []string
 	IDRedirects map[string]string
+	Recency     *wikiindex.ConceptRecencySnapshot
 }
 
 type reconciledConcept struct {
@@ -57,9 +59,34 @@ func validateConceptEntityMap(ids wikiindex.IDMap) error {
 }
 
 func snapshotConcepts(vault string, priorSources ...[]sourceSnapshot) ([]conceptSnapshot, error) {
+	recency, err := wikiindex.CaptureConceptRecencySnapshot(context.Background(), wikiindexFSStore(vault))
+	if err != nil {
+		return nil, fmt.Errorf("capture prior concept recency: %w", err)
+	}
+	var sources []sourceSnapshot
+	if len(priorSources) > 0 {
+		sources = priorSources[0]
+	}
+	return snapshotConceptsWithRecency(vault, sources, &recency)
+}
+
+func snapshotConceptsWithRecency(vault string, priorSources []sourceSnapshot, committedRecency *wikiindex.ConceptRecencySnapshot) ([]conceptSnapshot, error) {
+	recency := wikiindex.ConceptRecencySnapshot{ActivePages: map[string][]byte{}, DormantPages: map[string][]byte{}}
+	if committedRecency != nil {
+		recency = *committedRecency
+	} else {
+		var err error
+		recency, err = wikiindex.CaptureConceptRecencySnapshot(context.Background(), wikiindexFSStore(vault))
+		if err != nil {
+			return nil, fmt.Errorf("capture prior concept recency: %w", err)
+		}
+	}
 	data, err := readBoundedRegularFileWithin(vault, "cache/id_map.json")
 	if errors.Is(err, os.ErrNotExist) {
-		return []conceptSnapshot{}, nil
+		if !recency.IDMapVerified {
+			return []conceptSnapshot{{Recency: &recency}}, nil
+		}
+		data, err = json.Marshal(recency.IDMap)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("read prior concept map: %w", err)
@@ -113,6 +140,11 @@ func snapshotConcepts(vault string, priorSources ...[]sourceSnapshot) ([]concept
 		page, err := readBoundedRegularFileWithin(vault, filepath.ToSlash(pagePath))
 		if errors.Is(err, os.ErrNotExist) {
 			page = nil
+			if dormant {
+				page = append([]byte(nil), recency.DormantPages[conceptID]...)
+			} else {
+				page = append([]byte(nil), recency.ActivePages[conceptID]...)
+			}
 		} else if err != nil {
 			return nil, fmt.Errorf("read prior concept page %q: %w", slug, err)
 		}
@@ -120,10 +152,18 @@ func snapshotConcepts(vault string, priorSources ...[]sourceSnapshot) ([]concept
 		if err != nil {
 			return nil, err
 		}
-		var sourcePaths []string
-		if len(priorSources) > 0 {
-			sourcePaths = exactConceptSourcePaths(page, priorSources[0])
+		if len(row) == 0 {
+			cache := recency.ActiveJSONL
+			if dormant {
+				cache = recency.DormantJSONL
+			}
+			row, err = readConceptCacheRowBytes(cache, slug)
+			if err != nil {
+				return nil, fmt.Errorf("decode committed prior concept cache: %w", err)
+			}
 		}
+		var sourcePaths []string
+		sourcePaths = exactConceptSourcePaths(page, priorSources)
 		// Keep the immutable redirect table once per snapshot set, not once per
 		// concept. The direct-entity planner consumes it from the first row.
 		redirects := map[string]string(nil)
@@ -132,8 +172,31 @@ func snapshotConcepts(vault string, priorSources ...[]sourceSnapshot) ([]concept
 		}
 		out = append(out, conceptSnapshot{ConceptID: conceptID, Slug: slug, EntityID: ids.ConceptEntityID[conceptID], Dormant: dormant, Page: page, CacheRow: row, SourcePaths: sourcePaths, IDRedirects: redirects})
 	}
+	if len(out) == 0 {
+		return []conceptSnapshot{{Recency: &recency}}, nil
+	}
+	out[0].Recency = &recency
 	return out, nil
 }
+
+func readConceptCacheRowBytes(data []byte, slug string) ([]byte, error) {
+	for _, line := range bytes.Split(data, []byte{'\n'}) {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+		row, err := decodeStrictConceptCacheRow(line)
+		if err != nil {
+			return nil, err
+		}
+		if value, ok := row["slug"].(string); ok && value == slug {
+			return append([]byte(nil), line...), nil
+		}
+	}
+	return nil, nil
+}
+
+func wikiindexFSStore(vault string) wikiindex.Store { return fsstore.New(vault) }
 
 const maxConceptSourceRefs = 64
 
@@ -786,6 +849,20 @@ func planConceptLifecycle(workspace string, data []byte, concepts []reconciledCo
 }
 
 func reconcileWorkspaceConcepts(workspace string, prior []conceptSnapshot, currentSources ...[]sourceSnapshot) error {
+	priorRecency := wikiindex.ConceptRecencySnapshot{ActivePages: map[string][]byte{}, DormantPages: map[string][]byte{}}
+	hasPriorRecencySnapshot := false
+	identityPrior := make([]conceptSnapshot, 0, len(prior))
+	for _, snapshot := range prior {
+		if snapshot.Recency != nil {
+			priorRecency = *snapshot.Recency
+			hasPriorRecencySnapshot = true
+		}
+		if snapshot.ConceptID != "" {
+			identityPrior = append(identityPrior, snapshot)
+		}
+	}
+	prior = identityPrior
+	runAt := time.Now().UTC()
 	// Plan/validate every output first, then apply. Input validation errors
 	// must leave the live vault byte-identical (zero writes).
 	data, err := readBoundedRegularFileWithin(workspace, "cache/id_map.json")
@@ -840,6 +917,16 @@ func reconcileWorkspaceConcepts(workspace string, prior []conceptSnapshot, curre
 		if err != nil {
 			return wrapConceptReconciliationError(conceptDetailEntityMerge, err)
 		}
+		if hasPriorRecencySnapshot {
+			currentRecency, err := conceptRecencySnapshotForWorkspace(workspace, generated, cacheData, nil, pageWrites, priorRecency)
+			if err != nil {
+				return wrapConceptReconciliationError(conceptDetailCacheRewrite, err)
+			}
+			cacheData, _, err = wikiindex.EnrichConceptRecency(currentRecency, priorRecency, runAt)
+			if err != nil {
+				return wrapConceptReconciliationError(conceptDetailCacheRewrite, err)
+			}
+		}
 		if err := writeFileAtomicWithin(workspace, "cache/id_map.json", generatedData); err != nil {
 			return wrapConceptReconciliationError(conceptDetailArtifactWrite, err)
 		}
@@ -891,7 +978,7 @@ func reconcileWorkspaceConcepts(workspace string, prior []conceptSnapshot, curre
 	if err != nil {
 		return wrapConceptReconciliationError(conceptDetailEntityMerge, err)
 	}
-	identityPrior := prior
+	identityPrior = prior
 	if entityIDs != nil {
 		omitted := make([]reconciledConcept, 0, len(omittedSlugs))
 		for _, proof := range omittedSlugs {
@@ -966,6 +1053,7 @@ func reconcileWorkspaceConcepts(workspace string, prior []conceptSnapshot, curre
 		return wrapConceptReconciliationError(conceptDetailLinkRewrite, err)
 	}
 	writes = append(writes, otherWrites...)
+	writes = append(writes, lifecycleWrites...)
 
 	cacheData, cachePresent, err := planConceptCacheIDs(workspace, concepts, translations, entityIDs != nil, omittedSlugs)
 	if err != nil {
@@ -978,12 +1066,39 @@ func reconcileWorkspaceConcepts(workspace string, prior []conceptSnapshot, curre
 			if err != nil {
 				return wrapConceptReconciliationError(conceptDetailCacheRewrite, err)
 			}
+			currentIDs, err := wikiindex.DecodeIDMap(reconciledMap)
+			if err != nil {
+				return wrapConceptReconciliationError(conceptDetailEntityMerge, err)
+			}
+			if hasPriorRecencySnapshot {
+				currentRecency, err := conceptRecencySnapshotForWorkspace(workspace, currentIDs, cacheData, dormantData, writes, priorRecency)
+				if err != nil {
+					return wrapConceptReconciliationError(conceptDetailCacheRewrite, err)
+				}
+				cacheData, dormantData, err = wikiindex.EnrichConceptRecency(currentRecency, priorRecency, runAt)
+				if err != nil {
+					return wrapConceptReconciliationError(conceptDetailCacheRewrite, err)
+				}
+			}
 			writes = append(writes, plannedWrite{rel: "cache/dormant_concepts.jsonl", data: dormantData})
+		} else {
+			currentIDs, err := wikiindex.DecodeIDMap(reconciledMap)
+			if err != nil {
+				return wrapConceptReconciliationError(conceptDetailEntityMerge, err)
+			}
+			if hasPriorRecencySnapshot {
+				currentRecency, err := conceptRecencySnapshotForWorkspace(workspace, currentIDs, cacheData, nil, writes, priorRecency)
+				if err != nil {
+					return wrapConceptReconciliationError(conceptDetailCacheRewrite, err)
+				}
+				cacheData, _, err = wikiindex.EnrichConceptRecency(currentRecency, priorRecency, runAt)
+				if err != nil {
+					return wrapConceptReconciliationError(conceptDetailCacheRewrite, err)
+				}
+			}
 		}
 		writes = append(writes, plannedWrite{rel: "cache/concepts.jsonl", data: cacheData})
 	}
-	writes = append(writes, lifecycleWrites...)
-
 	// Deterministic apply order: id_map, concept pages (slug-sorted already),
 	// other pages (walk order collected deterministically), then cache.
 	for _, w := range writes {
@@ -1020,6 +1135,57 @@ func planSyntoEntityPageRewrites(workspace string, plan wikiindex.SyntoIdentityP
 		}
 	}
 	return writes, nil
+}
+
+func conceptRecencySnapshotForWorkspace(workspace string, ids wikiindex.IDMap, active, dormant []byte, writes []plannedWrite, prior wikiindex.ConceptRecencySnapshot) (wikiindex.ConceptRecencySnapshot, error) {
+	snapshot := wikiindex.ConceptRecencySnapshot{
+		IDMap: ids, IDMapVerified: true, ActiveJSONL: active, DormantJSONL: dormant,
+		ActivePages: map[string][]byte{}, DormantPages: map[string][]byte{},
+	}
+	writeByPath := make(map[string][]byte, len(writes))
+	for _, write := range writes {
+		writeByPath[filepath.ToSlash(write.rel)] = write.data
+	}
+	load := func(id, slug string, isDormant bool) error {
+		rel := filepath.ToSlash(filepath.Join("wiki", slug+".md"))
+		if isDormant {
+			rel = filepath.ToSlash(filepath.Join("wiki", ".dormant", slug+".md"))
+		}
+		page, exists := writeByPath[rel]
+		if !exists {
+			data, err := readBoundedRegularFileWithin(workspace, rel)
+			if errors.Is(err, os.ErrNotExist) {
+				if isDormant {
+					data = prior.DormantPages[id]
+				} else {
+					data = prior.ActivePages[id]
+				}
+				if len(data) == 0 {
+					return nil
+				}
+			} else if err != nil {
+				return err
+			}
+			page = data
+		}
+		if isDormant {
+			snapshot.DormantPages[id] = append([]byte(nil), page...)
+		} else {
+			snapshot.ActivePages[id] = append([]byte(nil), page...)
+		}
+		return nil
+	}
+	for id, slug := range ids.Concept {
+		if err := load(id, slug, false); err != nil {
+			return snapshot, fmt.Errorf("read candidate concept %q: %w", id, err)
+		}
+	}
+	for id, slug := range ids.DormantConcept {
+		if err := load(id, slug, true); err != nil {
+			return snapshot, fmt.Errorf("read candidate dormant concept %q: %w", id, err)
+		}
+	}
+	return snapshot, nil
 }
 
 func isSyntoDirectEntityCandidate(generated wikiindex.IDMap, index syntoIndexTruth) bool {

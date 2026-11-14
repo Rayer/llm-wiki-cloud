@@ -443,8 +443,11 @@ func TestFirestoreRepositoryProducerStateFlowsThroughContentContextAPI(t *testin
 	staleResponse := serveContentContext(h, owner, projectID, projectID)
 	var staleBody contentContextResponse
 	if staleResponse.Code != http.StatusOK || json.Unmarshal(staleResponse.Body.Bytes(), &staleBody) != nil ||
-		!staleBody.Stale || staleBody.DeclaredPurposeContextStatus != "stale" || staleBody.PurposeComparisonStatus != "stale" {
-		t.Fatalf("old companion remained current after description save: status=%d body=%+v", staleResponse.Code, staleBody)
+		staleBody.Stale || staleBody.Status != contentcontext.StatusReady || staleBody.CurrentGeneration == nil || *staleBody.CurrentGeneration != "published-G1" ||
+		staleBody.Summary == nil || staleBody.Summary.Text != completion.Text || staleBody.Summary.SourceGeneration != "published-G1" ||
+		staleBody.DeclaredPurposeContextStatus != "stale" || staleBody.DeclaredPurposeContext == nil || staleBody.DeclaredPurposeContext.Description != "Published engineering research" ||
+		staleBody.PurposeComparisonStatus != "stale" || staleBody.PurposeComparison == nil || staleBody.PurposeComparison.ConfirmationID != readyComparison.ConfirmationID {
+		t.Fatalf("description edit should stale only the purpose companion while the published summary remains current: status=%d body=%+v", staleResponse.Code, staleBody)
 	}
 }
 

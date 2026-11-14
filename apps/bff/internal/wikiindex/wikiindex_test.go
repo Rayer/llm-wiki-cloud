@@ -644,6 +644,129 @@ func TestRebuildWritesIDMapAndConceptsJSONL(t *testing.T) {
 	}
 }
 
+func TestRebuildPreservesSemanticRecencyAndAdvancesOnlyForContentChange(t *testing.T) {
+	const conceptID = "a3f7b2c01d9d"
+	priorTime := "2026-02-03T04:05:06Z"
+	priorPage := []byte("---\nid: " + conceptID + "\ntitle: Alpha\n---\nunchanged body\n")
+	priorHash, err := fingerprintConcept(priorPage, nil, "alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	newStore := func(page []byte) *fakeStore {
+		return &fakeStore{
+			files: map[string][]MarkdownFile{
+				"wiki/":         {{Slug: "alpha", Path: "wiki/alpha.md", Data: page}},
+				"wiki/sources/": {},
+			},
+			reads: map[string][]byte{
+				IDMapPath:         []byte(`{"concept":{"` + conceptID + `":"alpha"},"source":{},"redirects":{}}`),
+				ConceptsJSONLPath: []byte(`{"slug":"alpha","title":"Alpha","body":"unchanged body","frontmatter":{"id":"` + conceptID + `"},"content_sha256":"` + priorHash + `","content_updated_at":"` + priorTime + `"}` + "\n"),
+				"wiki/alpha.md":   priorPage,
+			},
+		}
+	}
+	readRow := func(t *testing.T, data []byte) map[string]json.RawMessage {
+		t.Helper()
+		var rows []map[string]json.RawMessage
+		for _, line := range bytes.Split(data, []byte{'\n'}) {
+			if len(bytes.TrimSpace(line)) == 0 {
+				continue
+			}
+			var row map[string]json.RawMessage
+			if err := json.Unmarshal(line, &row); err != nil {
+				t.Fatal(err)
+			}
+			rows = append(rows, row)
+		}
+		if len(rows) != 1 {
+			t.Fatalf("concept rows=%d, want one", len(rows))
+		}
+		return rows[0]
+	}
+
+	t.Run("unchanged rebuild preserves exact prior timestamp", func(t *testing.T) {
+		store := newStore(priorPage)
+		if _, err := Rebuild(context.Background(), store); err != nil {
+			t.Fatalf("Rebuild(): %v", err)
+		}
+		row := readRow(t, store.writes[ConceptsJSONLPath])
+		var gotTime, gotHash string
+		if err := json.Unmarshal(row["content_updated_at"], &gotTime); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(row["content_sha256"], &gotHash); err != nil {
+			t.Fatal(err)
+		}
+		if gotTime != priorTime {
+			t.Fatalf("content_updated_at=%q, want preserved %q", gotTime, priorTime)
+		}
+		if gotHash != priorHash {
+			t.Fatalf("content_sha256=%q, want preserved %q", gotHash, priorHash)
+		}
+	})
+	t.Run("changed content receives a new semantic timestamp", func(t *testing.T) {
+		changed := []byte("---\nid: " + conceptID + "\ntitle: Alpha\n---\nsubstantive edit\n")
+		store := newStore(changed)
+		if _, err := Rebuild(context.Background(), store); err != nil {
+			t.Fatalf("Rebuild(): %v", err)
+		}
+		row := readRow(t, store.writes[ConceptsJSONLPath])
+		var gotTime, gotHash string
+		if err := json.Unmarshal(row["content_updated_at"], &gotTime); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(row["content_sha256"], &gotHash); err != nil {
+			t.Fatal(err)
+		}
+		if gotTime == priorTime || !validRecencyTime(gotTime) {
+			t.Fatalf("content_updated_at=%q, want a new valid UTC semantic timestamp", gotTime)
+		}
+		if want := mustFingerprint(changed, nil, "alpha"); gotHash != want {
+			t.Fatalf("content_sha256=%q, want %q", gotHash, want)
+		}
+	})
+}
+
+func TestRebuildWithSyntoIdentityCarriesKnownSemanticRecency(t *testing.T) {
+	const (
+		conceptID = "01JAZ5N7Y3K8M2Q4R6T9VWXABC"
+		priorTime = "2026-02-03T04:05:06Z"
+	)
+	page := []byte("---\nid: " + conceptID + "\ntitle: Alpha\n---\nunchanged body\n")
+	hash, err := fingerprintConcept(page, nil, "alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &fakeStore{
+		files: map[string][]MarkdownFile{
+			"wiki/":         {{Slug: "alpha", Path: "wiki/alpha.md", Data: page}},
+			"wiki/sources/": {},
+		},
+		reads: map[string][]byte{
+			IDMapPath:         []byte(`{"concept":{"` + conceptID + `":"alpha"},"source":{},"redirects":{}}`),
+			ConceptsJSONLPath: []byte(`{"slug":"alpha","title":"Alpha","body":"unchanged body","frontmatter":{"id":"` + conceptID + `"},"content_sha256":"` + hash + `","content_updated_at":"` + priorTime + `"}` + "\n"),
+			"wiki/alpha.md":   page,
+		},
+	}
+	if _, err := RebuildWithSyntoIdentity(context.Background(), store, SyntoIdentityPlan{
+		ByPath:         map[string]string{"wiki/alpha.md": conceptID},
+		ActiveEntities: map[string]bool{conceptID: true},
+	}); err != nil {
+		t.Fatalf("RebuildWithSyntoIdentity(): %v", err)
+	}
+	var row map[string]json.RawMessage
+	if err := json.Unmarshal(bytes.TrimSpace(store.writes[ConceptsJSONLPath]), &row); err != nil {
+		t.Fatal(err)
+	}
+	var got string
+	if err := json.Unmarshal(row["content_updated_at"], &got); err != nil {
+		t.Fatalf("content_updated_at=%s: %v", row["content_updated_at"], err)
+	}
+	if got != priorTime {
+		t.Fatalf("content_updated_at=%q, want preserved %q", got, priorTime)
+	}
+}
+
 func TestRebuildWritesSyntoNestedFrontmatter(t *testing.T) {
 	store := &fakeStore{
 		files: map[string][]MarkdownFile{

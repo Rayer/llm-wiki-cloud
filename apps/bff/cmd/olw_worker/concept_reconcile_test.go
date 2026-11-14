@@ -341,8 +341,348 @@ func TestSnapshotConceptsReadsPriorIDMap(t *testing.T) {
 
 func TestSnapshotConceptsMissingMapIsEmpty(t *testing.T) {
 	got, err := snapshotConcepts(t.TempDir())
-	if err != nil || len(got) != 0 {
+	if err != nil || len(got) != 1 || got[0].ConceptID != "" || got[0].Recency == nil || got[0].Recency.IDMapVerified {
 		t.Fatalf("snapshot=%#v err=%v", got, err)
+	}
+}
+
+func TestWorkerConceptWriterThreeGenerationRecencyEvidence(t *testing.T) {
+	const (
+		legacyA = "a3f7b2c01d9d"
+		legacyB = "b7e2c9a4d113"
+		entityA = "01JAZ5N7Y3K8M2Q4R6T9VWXAC0"
+		entityB = "01JAZ5N7Y3K8M2Q4R6T9VWXAC1"
+	)
+	seedGeneratedLegacy := func(root string) {
+		mustWriteFile(t, filepath.Join(root, "cache", "id_map.json"), []byte(`{"concept":{"`+legacyA+`":"alpha","`+legacyB+`":"beta"},"source":{},"source_meta":{},"redirects":{},"id_redirects":{}}`))
+		mustWriteFile(t, filepath.Join(root, "cache", "concepts.jsonl"), []byte(
+			`{"slug":"alpha","title":"Alpha","frontmatter":{"id":"`+legacyA+`"}}`+"\n"+
+				`{"slug":"beta","title":"Beta","frontmatter":{"id":"`+legacyB+`"}}`+"\n",
+		))
+		mustWriteFile(t, filepath.Join(root, "wiki", "alpha.md"), []byte("---\nid: "+legacyA+"\ntitle: Alpha\n---\nSee [[concepts/"+legacyB+"-beta#section|Visible B]]\n"))
+		mustWriteFile(t, filepath.Join(root, "wiki", "beta.md"), []byte("---\nid: "+legacyB+"\ntitle: Beta\n---\nBeta body\n"))
+	}
+	seedGeneratedEntity := func(root string, visibleEdit bool, explicitRedirects bool, targetSlugs ...string) {
+		redirects := `"id_redirects":{}`
+		if explicitRedirects {
+			redirects = `"id_redirects":{"` + legacyA + `":"` + entityA + `","` + legacyB + `":"` + entityB + `"}`
+		}
+		mustWriteFile(t, filepath.Join(root, "cache", "id_map.json"), []byte(`{"concept":{"`+entityA+`":"alpha","`+entityB+`":"beta"},"source":{},"source_meta":{},"redirects":{},`+redirects+`}`))
+		mustWriteFile(t, filepath.Join(root, "cache", "concepts.jsonl"), []byte(
+			`{"slug":"alpha","title":"Alpha","frontmatter":{"id":"`+entityA+`"}}`+"\n"+
+				`{"slug":"beta","title":"Beta","frontmatter":{"id":"`+entityB+`"}}`+"\n",
+		))
+		targetSlug := "beta"
+		if len(targetSlugs) > 0 {
+			targetSlug = targetSlugs[0]
+		}
+		target := `[[concepts/` + entityB + `-` + targetSlug + `#section|Visible B]]`
+		if visibleEdit {
+			target = `[[concepts/` + entityB + `-beta#section|Visible B edited]]`
+		}
+		mustWriteFile(t, filepath.Join(root, "wiki", "alpha.md"), []byte("---\nid: "+entityA+"\ntitle: Alpha\n---\nSee "+target+"\n"))
+		mustWriteFile(t, filepath.Join(root, "wiki", "beta.md"), []byte("---\nid: "+entityB+"\ntitle: Beta\n---\nBeta body\n"))
+		mustWriteFile(t, filepath.Join(root, ".synto", "INDEX.json"), []byte(syntoIndexFixtureWithEntities([]string{
+			"article-alpha:" + entityA + ":alpha",
+			"article-beta:" + entityB + ":beta",
+		}, nil)))
+	}
+	cacheValues := func(root string) map[string]map[string]any {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join(root, "cache", "concepts.jsonl"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]map[string]any{}
+		for _, line := range bytes.Split(data, []byte{'\n'}) {
+			if len(bytes.TrimSpace(line)) == 0 {
+				continue
+			}
+			var row map[string]any
+			if err := json.Unmarshal(line, &row); err != nil {
+				t.Fatal(err)
+			}
+			out[row["slug"].(string)] = row
+		}
+		return out
+	}
+
+	// Gen1 is the actual reconciliation writer persisting H1 and its first
+	// timestamp, starting from a verified absent prior map.
+	gen1 := t.TempDir()
+	priorAbsent, err := snapshotConcepts(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedGeneratedLegacy(gen1)
+	if err := reconcileWorkspaceConcepts(gen1, priorAbsent); err != nil {
+		t.Fatalf("gen1 reconcile: %v", err)
+	}
+	gen1Rows := cacheValues(gen1)
+	firstTime, ok := gen1Rows["alpha"]["content_updated_at"].(string)
+	if !ok || firstTime == "" || gen1Rows["alpha"]["content_sha256"] == nil {
+		t.Fatalf("gen1 writer did not persist H1/time: %#v", gen1Rows["alpha"])
+	}
+
+	// Gen2 with a technical redirect rewrite but a missing prior page is
+	// UNKNOWN. The real writer must reject before mutating candidate outputs.
+	gen2MissingPage := t.TempDir()
+	copyConceptCommit(t, gen1, gen2MissingPage, false)
+	priorMissingPage, err := snapshotConcepts(gen2MissingPage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedGeneratedEntity(gen2MissingPage, false, false)
+	before := snapshotRelevantVaultBytes(t, gen2MissingPage,
+		"cache/id_map.json", "cache/concepts.jsonl", "wiki/alpha.md", "wiki/beta.md", ".synto/INDEX.json")
+	if err := reconcileWorkspaceConcepts(gen2MissingPage, priorMissingPage); err == nil || !strings.Contains(err.Error(), "basis UNKNOWN") {
+		t.Fatalf("missing-page technical rewrite error=%v, want UNKNOWN basis rejection", err)
+	}
+	assertVaultBytesUnchanged(t, gen2MissingPage, before)
+
+	// A missing prior map is also UNKNOWN despite the exact ID embedded in the
+	// prior H1 row; generation 2 must not promote that row to a new Concept.
+	gen2MissingMap := t.TempDir()
+	copyConceptCommit(t, gen1, gen2MissingMap, true)
+	const dormantID = "c9d8e7f6a5b4"
+	idMapWithDormant, err := os.ReadFile(filepath.Join(gen2MissingMap, "cache", "id_map.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var priorMapWithDormant map[string]json.RawMessage
+	if err := json.Unmarshal(idMapWithDormant, &priorMapWithDormant); err != nil {
+		t.Fatal(err)
+	}
+	priorDormant := map[string]string{}
+	_ = json.Unmarshal(priorMapWithDormant["dormant_concept"], &priorDormant)
+	priorDormant[dormantID] = "dormant"
+	priorMapWithDormant["dormant_concept"], _ = json.Marshal(priorDormant)
+	idMapWithDormant, err = json.Marshal(priorMapWithDormant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWriteFile(t, filepath.Join(gen2MissingMap, "cache", "id_map.json"), idMapWithDormant)
+	mustWriteFile(t, filepath.Join(gen2MissingMap, "cache", "dormant_concepts.jsonl"), []byte(`{"slug":"dormant","frontmatter":{"id":"`+dormantID+`"},"content_sha256":"`+strings.Repeat("0", 64)+`","content_updated_at":"2026-01-01T00:00:00Z"}`+"\n"))
+	mustWriteFile(t, filepath.Join(gen2MissingMap, "wiki", ".dormant", "dormant.md"), []byte("---\nid: "+dormantID+"\ntitle: Dormant\n---\nDormant historical body\n"))
+	if err := os.Remove(filepath.Join(gen2MissingMap, "cache", "id_map.json")); err != nil {
+		t.Fatal(err)
+	}
+	priorMissingMap, err := snapshotConcepts(gen2MissingMap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedGeneratedEntity(gen2MissingMap, false, false)
+	before = snapshotRelevantVaultBytes(t, gen2MissingMap,
+		"cache/id_map.json", "cache/concepts.jsonl", "cache/dormant_concepts.jsonl", "wiki/alpha.md", "wiki/beta.md", "wiki/.dormant/dormant.md", ".synto/INDEX.json")
+	if err := reconcileWorkspaceConcepts(gen2MissingMap, priorMissingMap); err == nil || !strings.Contains(err.Error(), "basis UNKNOWN") {
+		t.Fatalf("missing-map H1 rewrite error=%v, want UNKNOWN basis rejection", err)
+	}
+	assertVaultBytesUnchanged(t, gen2MissingMap, before)
+
+	// With both pinned pages present, gen2 is a proven redirect-only rewrite:
+	// the real writer preserves the known time, and gen3 no-op stays idempotent.
+	gen2 := t.TempDir()
+	copyConceptCommit(t, gen1, gen2, true)
+	priorGen2, err := snapshotConcepts(gen2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedGeneratedEntity(gen2, false, false)
+	if err := reconcileWorkspaceConcepts(gen2, priorGen2); err != nil {
+		t.Fatalf("gen2 full-witness reconcile: %v", err)
+	}
+	gen2Rows := cacheValues(gen2)
+	if got := gen2Rows["alpha"]["content_updated_at"]; got != firstTime {
+		t.Fatalf("gen2 technical rewrite changed known semantic time: got %v want %s", got, firstTime)
+	}
+
+	// The canonical identity, anchor and alias are unchanged even though the
+	// technical suffix changes; the actual Worker writer must preserve time.
+	gen2AliasSuffix := t.TempDir()
+	copyConceptCommit(t, gen1, gen2AliasSuffix, true)
+	priorAliasSuffix, err := snapshotConcepts(gen2AliasSuffix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedGeneratedEntity(gen2AliasSuffix, false, false, "new-technical-suffix")
+	if err := reconcileWorkspaceConcepts(gen2AliasSuffix, priorAliasSuffix); err != nil {
+		t.Fatalf("gen2 fixed-alias technical suffix reconcile: %v", err)
+	}
+	if got := cacheValues(gen2AliasSuffix)["alpha"]["content_updated_at"]; got != firstTime {
+		t.Fatalf("technical target suffix changed semantic time: got %v want %s", got, firstTime)
+	}
+
+	// A valid H1 with unknown prior time still replays the complete technical
+	// rewrite without inventing a timestamp.
+	gen2UnknownTime := t.TempDir()
+	copyConceptCommit(t, gen1, gen2UnknownTime, true)
+	cacheWithoutTime, err := os.ReadFile(filepath.Join(gen2UnknownTime, "cache", "concepts.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rewrittenCache bytes.Buffer
+	for _, line := range bytes.Split(cacheWithoutTime, []byte{'\n'}) {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var row map[string]json.RawMessage
+		if err := json.Unmarshal(line, &row); err != nil {
+			t.Fatal(err)
+		}
+		var slug string
+		if err := json.Unmarshal(row["slug"], &slug); err != nil {
+			t.Fatal(err)
+		}
+		if slug == "alpha" {
+			delete(row, "content_updated_at")
+		}
+		encoded, err := json.Marshal(row)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rewrittenCache.Write(encoded)
+		rewrittenCache.WriteByte('\n')
+	}
+	mustWriteFile(t, filepath.Join(gen2UnknownTime, "cache", "concepts.jsonl"), rewrittenCache.Bytes())
+	priorUnknownTime, err := snapshotConcepts(gen2UnknownTime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedGeneratedEntity(gen2UnknownTime, false, false)
+	if err := reconcileWorkspaceConcepts(gen2UnknownTime, priorUnknownTime); err != nil {
+		t.Fatalf("gen2 unknown-time full-witness reconcile: %v", err)
+	}
+	alphaUnknownTime := cacheValues(gen2UnknownTime)["alpha"]
+	if alphaUnknownTime["content_sha256"] == nil || alphaUnknownTime["content_updated_at"] != nil {
+		t.Fatalf("gen2 unknown-time migration invented or lost evidence: %#v", alphaUnknownTime)
+	}
+
+	gen3 := t.TempDir()
+	copyConceptCommit(t, gen2, gen3, true)
+	priorGen3, err := snapshotConcepts(gen3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cacheBeforeGen3, err := os.ReadFile(filepath.Join(gen3, "cache", "concepts.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcileWorkspaceConcepts(gen3, priorGen3); err != nil {
+		t.Fatalf("gen3 no-op reconcile: %v", err)
+	}
+	cacheAfterGen3, err := os.ReadFile(filepath.Join(gen3, "cache", "concepts.jsonl"))
+	if err != nil || !bytes.Equal(cacheAfterGen3, cacheBeforeGen3) {
+		t.Fatalf("gen3 no-op changed semantic cache: before=%s after=%s err=%v", cacheBeforeGen3, cacheAfterGen3, err)
+	}
+
+	// Verified equal redirect maps prove SAME even without the prior page, so a
+	// real H1->H2 body/visible edit still receives a new time.
+	sameBasisMissingPage := t.TempDir()
+	copyConceptCommit(t, gen1, sameBasisMissingPage, false)
+	priorSameBasis, err := snapshotConcepts(sameBasisMissingPage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changedPage := []byte("---\nid: " + legacyA + "\ntitle: Alpha\n---\nVisible body edit\n")
+	mustWriteFile(t, filepath.Join(sameBasisMissingPage, "wiki", "alpha.md"), changedPage)
+	if err := reconcileWorkspaceConcepts(sameBasisMissingPage, priorSameBasis); err != nil {
+		t.Fatalf("same-basis missing-page H1->H2 reconcile: %v", err)
+	}
+	changedTime := cacheValues(sameBasisMissingPage)["alpha"]["content_updated_at"]
+	if changedTime == nil || changedTime == firstTime {
+		t.Fatalf("same-basis missing-page real edit time=%v, want new run time after %s", changedTime, firstTime)
+	}
+
+	for _, tc := range []struct {
+		name string
+		old  string
+		new  string
+	}{
+		{name: "visible label", old: "Visible B", new: "Different visible B"},
+		{name: "unaliased visible slug", old: "beta#section|Visible B", new: "visible-slug-change#section"},
+		{name: "anchor", old: "#section", new: "#other-section"},
+		{name: "different unredirected ULID at same slug", old: legacyB + "-beta", new: "01JAZ5N7Y3K8M2Q4R6T9VWXAC9-beta"},
+		{name: "body", old: "See [[", new: "Changed prose [["},
+	} {
+		t.Run("writer detects "+tc.name, func(t *testing.T) {
+			workspace := t.TempDir()
+			copyConceptCommit(t, gen1, workspace, true)
+			prior, err := snapshotConcepts(workspace)
+			if err != nil {
+				t.Fatal(err)
+			}
+			page, err := os.ReadFile(filepath.Join(workspace, "wiki", "alpha.md"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			changed := strings.Replace(string(page), tc.old, tc.new, 1)
+			if changed == string(page) {
+				t.Fatalf("fixture did not contain %q", tc.old)
+			}
+			mustWriteFile(t, filepath.Join(workspace, "wiki", "alpha.md"), []byte(changed))
+			if err := reconcileWorkspaceConcepts(workspace, prior); err != nil {
+				t.Fatalf("reconcile visible-content edit: %v", err)
+			}
+			got := cacheValues(workspace)["alpha"]["content_updated_at"]
+			if got == nil || got == firstTime {
+				t.Fatalf("visible-content edit time=%v, want new time after %s", got, firstTime)
+			}
+		})
+	}
+
+	// A redirect that cannot resolve any target on Alpha's prior or current
+	// page must not rebase Alpha's row, even though the generation map differs.
+	unrelatedRedirect := t.TempDir()
+	copyConceptCommit(t, gen1, unrelatedRedirect, true)
+	priorUnrelated, err := snapshotConcepts(unrelatedRedirect)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mapBytes, err := os.ReadFile(filepath.Join(unrelatedRedirect, "cache", "id_map.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentMap, err := wikiindex.DecodeIDMap(mapBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const entityGamma = "01JAZ5N7Y3K8M2Q4R6T9VWXACD"
+	currentMap.Concept[entityGamma] = "gamma"
+	currentMap.IDRedirects["c9d8e7f6a5b4"] = entityGamma
+	mapBytes, err = wikiindex.EncodeIDMap(currentMap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWriteFile(t, filepath.Join(unrelatedRedirect, "cache", "id_map.json"), mapBytes)
+	cacheBytes, err := os.ReadFile(filepath.Join(unrelatedRedirect, "cache", "concepts.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWriteFile(t, filepath.Join(unrelatedRedirect, "cache", "concepts.jsonl"), append(cacheBytes, []byte(`{"slug":"gamma","title":"Gamma","frontmatter":{"id":"`+entityGamma+`"}}`+"\n")...))
+	mustWriteFile(t, filepath.Join(unrelatedRedirect, "wiki", "gamma.md"), []byte("---\nid: "+entityGamma+"\ntitle: Gamma\n---\nGamma body.\n"))
+	if err := reconcileWorkspaceConcepts(unrelatedRedirect, priorUnrelated); err != nil {
+		t.Fatalf("reconcile unrelated redirect: %v", err)
+	}
+	if got := cacheValues(unrelatedRedirect)["alpha"]["content_updated_at"]; got != firstTime {
+		t.Fatalf("unrelated redirect changed Alpha recency: got=%v want=%s", got, firstTime)
+	}
+}
+
+func copyConceptCommit(t *testing.T, source, target string, includeAlpha bool) {
+	t.Helper()
+	for _, rel := range []string{"cache/id_map.json", "cache/concepts.jsonl", "wiki/beta.md"} {
+		data, err := os.ReadFile(filepath.Join(source, filepath.FromSlash(rel)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		mustWriteFile(t, filepath.Join(target, filepath.FromSlash(rel)), data)
+	}
+	if includeAlpha {
+		data, err := os.ReadFile(filepath.Join(source, "wiki", "alpha.md"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		mustWriteFile(t, filepath.Join(target, "wiki", "alpha.md"), data)
 	}
 }
 

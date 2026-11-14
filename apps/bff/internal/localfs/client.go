@@ -832,6 +832,7 @@ func (c *Client) ListRawFiles(ctx context.Context) ([]store.RawFile, error) {
 			Path:    rawPath,
 			Size:    info.Size(),
 			Updated: info.ModTime().UTC(),
+			Created: info.ModTime().UTC(),
 			SHA256:  sha256,
 		})
 		return nil

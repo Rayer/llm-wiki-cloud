@@ -131,6 +131,7 @@ export type WikiEntry = {
   description?: string;
   date?: string;
   objectUpdatedAt?: string | null;
+  contentUpdatedAt?: string | null;
   rawPath?: string | null;
   relatedConcepts?: WikiReference[];
   relatedSources?: WikiReference[];
@@ -149,6 +150,7 @@ export type SourceListItem = {
   slug: string;
   title: string;
   rawPath: string;
+  addedAt?: string | null;
   lifecycle: SourceLifecycle;
   annotationPresent: boolean;
   annotationAllowed: boolean;
@@ -1178,6 +1180,7 @@ export function normalizeEntry(item: unknown): WikiEntry {
     date: firstString(record, ['date', 'createdAt']) ??
       firstString(frontmatter ?? {}, ['date', 'createdAt']),
     objectUpdatedAt: typeof record.updated_at === 'string' && record.updated_at.trim() ? record.updated_at : null,
+    contentUpdatedAt: optionalTime(record.content_updated_at),
     rawPath: typeof record.raw_path === 'string' && record.raw_path.trim() ? record.raw_path : null,
     relatedConcepts: normalizeWikiReferences(record.related_concepts, 'concept'),
     relatedSources: normalizeWikiReferences(record.related_sources, 'source'),
@@ -1220,12 +1223,18 @@ export function normalizeSourceListItem(item: unknown): SourceListItem {
     slug: entry.slug,
     title: firstString(record, ['title', 'name']) ?? rawPath,
     rawPath,
+    addedAt: optionalTime(record.added_at),
     lifecycle: normalizeSourceLifecycle(firstString(record, ['lifecycle_status', 'lifecycleStatus', 'lifecycle', 'lifecycle_state', 'lifecycleState', 'state', 'status'])),
     annotationPresent: asBoolean(record.annotation_present) ?? asBoolean(record.annotationPresent) ?? asBoolean(record.has_annotation) ?? false,
     annotationAllowed: asBoolean(record.annotation_allowed) ?? asBoolean(record.annotationAllowed) ?? false,
     error: firstString(record, ['error', 'error_message', 'errorMessage']),
     raw: item,
   };
+}
+
+function optionalTime(value: unknown): string | null {
+  if (typeof value !== 'string' || !value.trim() || !Number.isFinite(Date.parse(value))) return null;
+  return value;
 }
 
 function normalizeAnnotation(payload: unknown): SourceAnnotation {
