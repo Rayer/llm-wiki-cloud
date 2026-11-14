@@ -992,6 +992,19 @@ definitions:
       guidance_artifact:
         $ref: '#/definitions/v1.profileGuidanceArtifactData'
     type: object
+  v1.profilePutErrorResponse:
+    properties:
+      actual:
+        type: integer
+      code:
+        type: string
+      error:
+        type: string
+      max:
+        type: integer
+      violation:
+        type: string
+    type: object
   v1.profilePutRequest:
     properties:
       expected_revision:
@@ -1003,6 +1016,15 @@ definitions:
     required:
     - expected_revision
     - requirements
+    type: object
+  v1.profileRequestBodyTooLargeResponse:
+    properties:
+      code:
+        type: string
+      error:
+        type: string
+      max_bytes:
+        type: integer
     type: object
   v1.profileRevisionRequest:
     properties:
@@ -2158,7 +2180,7 @@ paths:
         "400":
           description: Bad Request
           schema:
-            $ref: '#/definitions/handler.ErrorResponse'
+            $ref: '#/definitions/v1.profilePutErrorResponse'
         "401":
           description: Unauthorized
           schema:
@@ -2171,6 +2193,10 @@ paths:
           description: Conflict
           schema:
             $ref: '#/definitions/v1.profileConflictResponse'
+        "413":
+          description: Request Entity Too Large
+          schema:
+            $ref: '#/definitions/v1.profileRequestBodyTooLargeResponse'
         "428":
           description: Precondition Required
           schema:

@@ -8,6 +8,7 @@ import (
 
 	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"github.com/rayer/llm-wiki-bff/internal/profileartifacts"
+	"github.com/rayer/llm-wiki-bff/internal/profilelimits"
 	"github.com/rayer/llm-wiki-bff/internal/wikiindex"
 )
 
@@ -95,7 +96,12 @@ func (e *Executor) Run(ctx context.Context, attempt Attempt) (result Result, res
 		return Result{}, e.fail(ctx, attempt, inputDigest, "profile_revision_stale", errors.New("claimed Profile revision mismatch"))
 	}
 	if err := validateRequirements(profile.Requirements); err != nil {
-		return Result{}, e.fail(ctx, attempt, inputDigest, "profile_requirements_invalid", err)
+		code := "profile_requirements_invalid"
+		var limitViolation *profilelimits.Violation
+		if errors.As(err, &limitViolation) {
+			code = "profile_requirements_over_limit"
+		}
+		return Result{}, e.fail(ctx, attempt, inputDigest, code, err)
 	}
 	needsConcepts := len(profile.Requirements) > 0 || profile.HasActive
 	contentCtx, contentSpan := observability.StartProfileSpan(ctx, "profile.derive.content_pin")
@@ -250,6 +256,10 @@ func failureCode(err error) string {
 	if errors.As(err, &diagnosticError) && diagnosticError.cause != nil {
 		err = diagnosticError.cause
 	}
+	var limitViolation *profilelimits.Violation
+	if errors.As(err, &limitViolation) && limitViolation.Kind == profilelimits.ViolationCompileGuidance {
+		return "profile_guidance_too_long"
+	}
 	if strings.Contains(err.Error(), "provider_model_unreported") {
 		return "provider_model_unreported"
 	}
@@ -268,6 +278,8 @@ func failureDiagnosticForCode(code string) FailureDiagnostic {
 	case "profile_revision_stale":
 		diagnostic = FailureDiagnostic{Stage: FailureStageRevisionClaim, Class: FailureClassStaleRevision}
 	case "profile_requirements_invalid":
+		diagnostic = FailureDiagnostic{Stage: FailureStageRequirements, Class: FailureClassInputInvalid}
+	case "profile_requirements_over_limit":
 		diagnostic = FailureDiagnostic{Stage: FailureStageRequirements, Class: FailureClassInputInvalid}
 	case "profile_generation_unavailable":
 		diagnostic = FailureDiagnostic{Stage: FailureStageContentPin, Class: FailureClassContentUnavailable}

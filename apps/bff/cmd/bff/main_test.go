@@ -629,6 +629,70 @@ func TestSwaggerQueryRequestDoesNotExposeProjectField(t *testing.T) {
 	}
 }
 
+func TestSwaggerProfilePutLimitResponsesAreAccurateAcrossArtifacts(t *testing.T) {
+	data, err := os.ReadFile("../../docs/swagger.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document struct {
+		Paths       map[string]map[string]json.RawMessage `json:"paths"`
+		Definitions map[string]struct {
+			Properties map[string]struct {
+				Type string `json:"type"`
+			} `json:"properties"`
+		} `json:"definitions"`
+	}
+	if err := json.Unmarshal(data, &document); err != nil {
+		t.Fatal(err)
+	}
+	var put struct {
+		Responses map[string]struct {
+			Schema struct {
+				Ref string `json:"$ref"`
+			} `json:"schema"`
+		} `json:"responses"`
+	}
+	if err := json.Unmarshal(document.Paths["/api/v1/projects/{projectID}/profile"]["put"], &put); err != nil {
+		t.Fatal(err)
+	}
+	if got := put.Responses["400"].Schema.Ref; got != "#/definitions/v1.profilePutErrorResponse" {
+		t.Fatalf("Profile PUT 400 schema=%q, want limit-aware error schema", got)
+	}
+	if got := put.Responses["413"].Schema.Ref; got != "#/definitions/v1.profileRequestBodyTooLargeResponse" {
+		t.Fatalf("Profile PUT 413 schema=%q, want bounded-body error schema", got)
+	}
+	for name, expected := range map[string]map[string]string{
+		"v1.profilePutErrorResponse": {
+			"error": "string", "code": "string", "violation": "string", "max": "integer", "actual": "integer",
+		},
+		"v1.profileRequestBodyTooLargeResponse": {
+			"error": "string", "code": "string", "max_bytes": "integer",
+		},
+	} {
+		model, ok := document.Definitions[name]
+		if !ok {
+			t.Fatalf("Swagger is missing definition %q", name)
+		}
+		for field, want := range expected {
+			if got := model.Properties[field].Type; got != want {
+				t.Fatalf("%s.%s type=%q, want %q", name, field, got, want)
+			}
+		}
+	}
+	for _, path := range []string{"../../docs/swagger.yaml", "../../docs/docs.go"} {
+		artifact, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(artifact)
+		for _, value := range []string{"v1.profilePutErrorResponse", "v1.profileRequestBodyTooLargeResponse", "profilePutErrorResponse", "profileRequestBodyTooLargeResponse"} {
+			if !strings.Contains(text, value) {
+				t.Fatalf("%s is missing Profile PUT response contract marker %q", path, value)
+			}
+		}
+	}
+}
+
 func TestSwaggerOwnerRenameContractIsExactAcrossArtifacts(t *testing.T) {
 	data, err := os.ReadFile("../../docs/swagger.json")
 	if err != nil {

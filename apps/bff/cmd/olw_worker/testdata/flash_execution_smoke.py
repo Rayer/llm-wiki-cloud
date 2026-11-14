@@ -95,7 +95,7 @@ socket.socket.connect = _loopback_only
     return result
 
 
-def exercise(config, expected, filename="synto.toml", migrate=False, model="deepseek-flash", preserved=None, profile_schema=None, profile_guidance=None, concepts=None):
+def exercise(config, expected, filename="synto.toml", migrate=False, model="deepseek-flash", preserved=None, profile_base_schema=None, profile_guidance=None, concepts=None):
     global article_concepts
     article_concepts = concepts or ["Alpha"]
     with tempfile.TemporaryDirectory(prefix="lwc331-wire-") as temp:
@@ -108,10 +108,10 @@ def exercise(config, expected, filename="synto.toml", migrate=False, model="deep
         path = vault / filename
         path.write_text(config + policy)
         extra_env = None
-        if profile_schema is not None:
-            schema_path = temp_root / "pinned-profile-vault-schema.md"
-            schema_path.write_text(profile_schema, encoding="utf-8")
-            extra_env = {"LWC_PROFILE_SCHEMA_PATH": str(schema_path)}
+        if profile_base_schema is not None:
+            schema_path = temp_root / "pinned-base-vault-schema.md"
+            schema_path.write_text(profile_base_schema, encoding="utf-8")
+            extra_env = {"LWC_BASE_SCHEMA_PATH": str(schema_path)}
             if profile_guidance is not None:
                 extra_env["LWC_PROFILE_GUIDANCE"] = profile_guidance
         before = path.read_bytes()
@@ -125,16 +125,22 @@ def exercise(config, expected, filename="synto.toml", migrate=False, model="deep
         result = run(vault, "run", "--auto-approve", extra_env=extra_env)
         assert requests, result.stdout + result.stderr
         assert all((vault / "wiki" / f"{name}.md").is_file() for name in article_concepts), "CLI failed to compile/publish every synthetic article"
-        if profile_schema is not None:
+        if profile_base_schema is not None:
             prompts = [message.get("content", "") for body in requests for message in body.get("messages", [])]
             article_prompts = [prompt for prompt in prompts if 'Write the wiki article: "' in prompt]
-            guidance = "Write article bodies in Traditional Chinese; proper nouns may remain in their original language."
+            sentinel = "LWC483_FINAL_TAIL_SENTINEL"
+            guidance = ("Review source evidence, preserve exact names, and use concise dated explanations. " * 35) + sentinel
             assert len(article_prompts) == len(article_concepts), (len(article_prompts), article_concepts, result.stdout, result.stderr)
-            assert all(guidance in prompt for prompt in article_prompts), f"Profile guidance missing from an article prompt: {article_prompts}"
+            assert len(guidance) > 1500, len(guidance)
+            assert all(prompt.count(guidance) == 1 for prompt in article_prompts), f"Profile guidance must appear once in each article prompt: {article_prompts}"
+            assert all(prompt.count(sentinel) == 1 and prompt.endswith(sentinel) for prompt in article_prompts), f"Profile tail sentinel was missing, truncated, or duplicated: {article_prompts}"
             assert all("Output language: en (ISO 639-1)." in prompt for prompt in article_prompts), f"fixture did not resolve source language to English: {article_prompts}"
             assert all(prompt.rfind(guidance) > prompt.rfind("Output language: en (ISO 639-1).") for prompt in article_prompts), f"Profile guidance follows inferred language in fewer than all article prompts: {article_prompts}"
-            assert all("Use `[[Article Title]]` wikilinks between notes." in prompt for prompt in article_prompts), f"mandatory vault schema missing: {article_prompts}"
+            assert all("Use `[[Article Title]]` wikilinks between notes." in prompt for prompt in article_prompts), f"mandatory base schema missing: {article_prompts}"
             assert all("Use [[wikilinks]] inline in prose to link to related concepts." in prompt for prompt in article_prompts), f"mandatory Synto link convention missing: {article_prompts}"
+            non_article_prompts = [prompt for prompt in prompts if 'Write the wiki article: "' not in prompt]
+            assert all(guidance not in prompt and sentinel not in prompt for prompt in non_article_prompts), f"Profile guidance leaked to a non-compile_article prompt: {non_article_prompts}"
+            assert "Project Profile Compile Guidance" not in profile_base_schema and sentinel not in profile_base_schema
             capture_path = os.environ.get("LWC_PROFILE_PROMPT_CAPTURE_PATH")
             if capture_path:
                 captures = [
@@ -142,7 +148,7 @@ def exercise(config, expected, filename="synto.toml", migrate=False, model="deep
                     for prompt in article_prompts
                 ]
                 Path(capture_path).write_text(json.dumps(captures, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            print(f"PASS pinned Synto compile prompts: Profile guidance follows inferred language for all {len(article_prompts)} concepts")
+            print(f"PASS pinned Synto compile prompts: {len(guidance)} scalar guidance and final sentinel appear once after language guidance for all {len(article_prompts)} concepts")
         observed = tuple(body.get("thinking", {}).get("type") for body in requests)
         if profile_guidance is not None and len(article_concepts) > 1:
             assert observed and observed[0] == expected[0] and all(policy == expected[1] for policy in observed[1:]), (expected, observed, result.stdout, result.stderr)
@@ -194,13 +200,12 @@ exercise(precedence, ("disabled", "disabled"), preserved={"max_tokens": 777, "to
 exercise(legacy.replace('fast = "deepseek-chat"', 'fast = "deepseek-reasoner"').replace('heavy = "deepseek-reasoner"', 'heavy = "deepseek-chat"'), ("enabled", "disabled"))
 # Aliased modern V4 models preserve their explicitly disabled/enabled policies.
 exercise(modern.replace('model = "deepseek-flash"', 'model = "deepseek-v4-pro"'), ("disabled", "enabled"))
-profile_guidance = "Write article bodies in Traditional Chinese; proper nouns may remain in their original language."
-profile_schema = (
+profile_guidance = ("Review source evidence, preserve exact names, and use concise dated explanations. " * 35) + "LWC483_FINAL_TAIL_SENTINEL"
+profile_base_schema = (
     "# Vault Schema\n\n## Folder Structure\n- `raw/` — immutable inputs\n- `wiki/` — generated articles\n\n"
-    "## Links\nUse `[[Article Title]]` wikilinks between notes.\n\n"
-    "## Project Profile Compile Guidance\n" + profile_guidance + "\n"
+    "## Links\nUse `[[Article Title]]` wikilinks between notes.\n"
 )
-exercise(modern, ("disabled", "enabled"), profile_schema=profile_schema, profile_guidance=profile_guidance, concepts=["Alpha", "Beta", "Gamma", "Delta"])
+exercise(modern, ("disabled", "enabled"), profile_base_schema=profile_base_schema, profile_guidance=profile_guidance, concepts=["Alpha", "Beta", "Gamma", "Delta"])
 # Other OpenAI-compatible providers are byte-for-byte unaffected by this policy.
 foreign = legacy.replace('name = "deepseek"', 'name = "openai"').replace('deepseek-chat', 'foreign-model').replace('deepseek-reasoner', 'foreign-model')
 exercise(foreign, (None, None), model="foreign-model")

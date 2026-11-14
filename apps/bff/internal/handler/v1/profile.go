@@ -21,13 +21,14 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"github.com/rayer/llm-wiki-bff/internal/profileartifacts"
 	"github.com/rayer/llm-wiki-bff/internal/profilederive"
+	"github.com/rayer/llm-wiki-bff/internal/profilelimits"
 	"github.com/rayer/llm-wiki-bff/internal/profileruntime"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
 const profileDebounce = 3 * time.Minute
-const maxProfileRequestBytes = 1 << 20
+const maxProfileRequestBytes = profilelimits.MaxProfileRequestBodyBytes
 
 const (
 	profileDerivationPending     = "pending"
@@ -249,6 +250,13 @@ func saveProfileState(current ProfileState, expected int64, requirements []Profi
 }
 
 func validateProfileRequirements(requirements []ProfileRequirement) error {
+	texts := make([]string, len(requirements))
+	for index, requirement := range requirements {
+		texts[index] = requirement.Text
+	}
+	if violation := profilelimits.ValidateRequirementTexts(texts); violation != nil {
+		return violation
+	}
 	seen := make(map[string]struct{}, len(requirements))
 	for _, requirement := range requirements {
 		if requirement.ID == "" {
@@ -1745,6 +1753,22 @@ type profilePutRequest struct {
 	Requirements     *[]ProfileRequirement `json:"requirements" binding:"required"`
 }
 
+type profilePutErrorResponse struct {
+	Error     string `json:"error"`
+	Code      string `json:"code,omitempty"`
+	Violation string `json:"violation,omitempty"`
+	Max       int    `json:"max,omitempty"`
+	Actual    int    `json:"actual,omitempty"`
+}
+
+type profileRequestBodyTooLargeResponse struct {
+	Error    string `json:"error"`
+	Code     string `json:"code"`
+	MaxBytes int    `json:"max_bytes"`
+}
+
+var errProfileRequestBodyTooLarge = errors.New("profile request body too large")
+
 type profileRevisionRequest struct {
 	ExpectedRevision *int64 `json:"expected_revision" binding:"required"`
 }
@@ -1785,7 +1809,7 @@ func decodeProfileJSON(c *gin.Context, target any) error {
 		return err
 	}
 	if len(data) > maxProfileRequestBytes {
-		return errors.New("profile request body too large")
+		return errProfileRequestBodyTooLarge
 	}
 	if !utf8.Valid(data) {
 		return errors.New("profile request body is not valid UTF-8")
@@ -1814,6 +1838,14 @@ func (h *Handler) writeProfileError(c *gin.Context, userID, projectID string, er
 	}
 	if errors.Is(err, errInvalidProfileRequirements) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid profile requirements"})
+		return
+	}
+	var limitViolation *profilelimits.Violation
+	if errors.As(err, &limitViolation) {
+		c.JSON(http.StatusBadRequest, profilePutErrorResponse{
+			Error: "Profile input exceeds a supported limit", Code: "profile_limit_exceeded",
+			Violation: limitViolation.Kind, Max: limitViolation.Max, Actual: limitViolation.Actual,
+		})
 		return
 	}
 	c.JSON(http.StatusInternalServerError, gin.H{"error": "profile storage unavailable"})
@@ -1853,10 +1885,11 @@ func (h *Handler) GetProfile(c *gin.Context) {
 //	@Param		X-Project-ID	header	string	true	"Project ID; must match the URL"
 //	@Param		request	body	profilePutRequest	true	"Expected revision and complete requirements"
 //	@Success	200	{object}	ProfileState
-//	@Failure	400	{object}	handler.ErrorResponse
+//	@Failure	400	{object}	profilePutErrorResponse
 //	@Failure	401	{object}	handler.ErrorResponse
 //	@Failure	404	{object}	handler.ErrorResponse
 //	@Failure	409	{object}	profileConflictResponse
+//	@Failure	413	{object}	profileRequestBodyTooLargeResponse
 //	@Failure	428	{object}	handler.ErrorResponse
 //	@Failure	500	{object}	handler.ErrorResponse
 //	@Router		/api/v1/projects/{projectID}/profile [put]
@@ -1867,6 +1900,13 @@ func (h *Handler) PutProfile(c *gin.Context) {
 	}
 	var request profilePutRequest
 	if err := decodeProfileJSON(c, &request); err != nil {
+		if errors.Is(err, errProfileRequestBodyTooLarge) {
+			c.JSON(http.StatusRequestEntityTooLarge, profileRequestBodyTooLargeResponse{
+				Error: "Profile request body exceeds the maximum size", Code: "profile_request_body_too_large",
+				MaxBytes: maxProfileRequestBytes,
+			})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON body"})
 		return
 	}

@@ -13,6 +13,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/llm"
 	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"github.com/rayer/llm-wiki-bff/internal/profileartifacts"
+	"github.com/rayer/llm-wiki-bff/internal/profilelimits"
 	"github.com/rayer/llm-wiki-bff/internal/wikiindex"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -281,6 +282,80 @@ func TestProviderOutputMustAccountForAllRequirementsAndUseStrictJSON(t *testing.
 	}
 	if _, err := NewProvider(&fakeChat{err: errors.New("timeout")}).DeriveBootstrap(context.Background(), 1, []Requirement{{ID: "r1"}}); err == nil {
 		t.Fatal("provider failure accepted")
+	}
+}
+
+func TestDerivationInputLimitsRejectBeforeProviderCalls(t *testing.T) {
+	fake := &fakeChat{model: "fixture", text: `{}`}
+	provider := NewProvider(fake)
+	oversized := []Requirement{{ID: "r1", Text: strings.Repeat("x", profilelimits.MaxRequirementTextScalars+1)}}
+	if _, err := provider.DeriveBootstrap(context.Background(), 1, oversized); err == nil {
+		t.Fatal("bootstrap accepted an over-limit requirement")
+	}
+	if _, err := provider.DeriveManual(context.Background(), 1, oversized, "g1", strings.Repeat("a", 64), nil); err == nil {
+		t.Fatal("manual accepted an over-limit requirement")
+	}
+	if _, err := provider.DeriveCompileAuto(context.Background(), 1, oversized, "g1", strings.Repeat("a", 64), nil); err == nil {
+		t.Fatal("compile-auto accepted an over-limit requirement")
+	}
+	if fake.calls != 0 {
+		t.Fatalf("over-limit input reached provider %d times", fake.calls)
+	}
+}
+
+func TestBootstrapAndManualGuidanceOutputBoundaries(t *testing.T) {
+	for _, mode := range []string{"bootstrap", "manual"} {
+		for _, overLimit := range []bool{false, true} {
+			name := "exact"
+			count := profilelimits.MaxGuidanceScalars
+			if overLimit {
+				name = "plus-one"
+				count++
+			}
+			t.Run(mode+"/"+name, func(t *testing.T) {
+				requirements := []Requirement{{ID: "r1", Text: "write clearly"}}
+				guidance := strings.Repeat("🙂", count)
+				var output []byte
+				var err error
+				if mode == "bootstrap" {
+					output, err = json.Marshal(BootstrapOutput{
+						CompileGuidance: guidance, GuidanceDiff: "bounded output",
+						Requirements: []RequirementAccounting{{ID: "r1", Disposition: "compile_guidance", Explanation: "Applied to writing."}},
+					})
+				} else {
+					output, err = json.Marshal(ManualOutput{
+						Tags: []profileartifacts.Tag{}, CompileGuidance: guidance, DictionaryDiff: "none", GuidanceDiff: "bounded output",
+						Requirements: []RequirementAccounting{{ID: "r1", Disposition: "compile_guidance", Explanation: "Applied to writing."}},
+					})
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				fake := &fakeChat{model: "fixture-model", text: string(output)}
+				provider := NewProvider(fake)
+				if mode == "bootstrap" {
+					_, err = provider.DeriveBootstrap(context.Background(), 1, requirements)
+				} else {
+					_, err = provider.DeriveManual(context.Background(), 1, requirements, "g1", strings.Repeat("a", 64), nil)
+				}
+				if overLimit {
+					var violation *profilelimits.Violation
+					if !errors.As(err, &violation) || violation.Kind != profilelimits.ViolationCompileGuidance || violation.Actual != count {
+						t.Fatalf("over-limit output error = %v, want guidance violation at %d", err, count)
+					}
+					stage := FailureStageBootstrapValidate
+					if mode == "manual" {
+						stage = FailureStageManualValidate
+					}
+					diagnostic, ok := FailureDiagnosticFromError(err)
+					if !ok || diagnostic != (FailureDiagnostic{Stage: stage, Class: FailureClassModelAccountingInvalid}) {
+						t.Fatalf("over-limit diagnostic = %+v ok=%v", diagnostic, ok)
+					}
+				} else if err != nil {
+					t.Fatalf("exact guidance boundary rejected: %v", err)
+				}
+			})
+		}
 	}
 }
 
