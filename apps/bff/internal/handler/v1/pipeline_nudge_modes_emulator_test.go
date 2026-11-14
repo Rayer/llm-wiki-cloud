@@ -234,3 +234,178 @@ func TestPipelineNudgeAllAcceptedProducerModesUseDiscoveredEvidence(t *testing.T
 		})
 	}
 }
+
+func TestPipelineNudgeRejectsMismatchedCloudRunReservationIdentity(t *testing.T) {
+	if !requireLoopbackEmulator(t, "FIRESTORE_EMULATOR_HOST") {
+		t.Skip("requires loopback Firestore emulator")
+	}
+	t.Setenv("GCE_METADATA_HOST", "127.0.0.1:9")
+	t.Setenv("HTTP_PROXY", "")
+	t.Setenv("HTTPS_PROXY", "")
+	t.Setenv("ALL_PROXY", "")
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	fsClient := newContentContextEmulator(t)
+	defer fsClient.Close()
+	const ownerID = "pipeline-identity-owner"
+	actualExecutions := make(map[string]cloudRunExecution)
+	listedExecutions := make(map[string][]cloudRunExecution)
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/token" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"access_token":"fixture-token"}`))
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/executions") {
+			jobID := strings.TrimSuffix(r.URL.Path, "/executions")
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(cloudRunExecutionsResponse{Executions: listedExecutions[jobID]})
+			return
+		}
+		if strings.Contains(r.URL.Path, "/executions/") {
+			runID := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+			if execution, ok := actualExecutions[runID]; ok {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(execution)
+				return
+			}
+		}
+		http.NotFound(w, r)
+	}))
+	defer provider.Close()
+
+	for _, tc := range []struct {
+		name             string
+		status           string
+		publication      string
+		candidatePending bool
+		includeList      bool
+		diagnosticStage  string
+	}{
+		{name: "known candidate cannot upsert failure with another execution reservation", status: "FAILED", publication: "confirmed_not_published", diagnosticStage: "postprocess"},
+		{name: "listed pending candidate cannot clear failure with another execution reservation", status: "SUCCEEDED", publication: "confirmed_published", candidatePending: true, includeList: true, diagnosticStage: "lease_cleanup"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			projectID := fmt.Sprintf("identity-%d", time.Now().UnixNano())
+			runID := "run-" + projectID
+			reservationA, attemptA := "reservation-a-"+projectID, "attempt-a-"+projectID
+			reservationB, attemptB := "reservation-b-"+projectID, "attempt-b-"+projectID
+			projectRef := scopedfirestore.Collection(fsClient.Raw(), "projects").Doc(ownerID + "_" + projectID)
+			if _, err := projectRef.Set(ctx, map[string]interface{}{"user_id": ownerID, "project_id": projectID, "name": "Identity Project"}); err != nil {
+				t.Fatalf("seed Project identity: %v", err)
+			}
+			defer func() { _, _ = projectRef.Delete(context.Background()) }()
+
+			repository := nudge.NewRepository(fsClient.Raw())
+			previous := pipelineEventRunRecord{id: "prior-" + projectID, status: "FAILED", publication: "confirmed_not_published",
+				reservationID: "prior-reservation-" + projectID, attemptID: "prior-attempt-" + projectID,
+				trigger: string(pipelinequota.TriggerManual), mode: string(pipelinequota.ModeFull), sequence: 1, sequenceSet: true}
+			initial, err := pipelineFailureObservation(projectID, "Identity Project", previous, nudge.ProducerWitness{})
+			if err != nil {
+				t.Fatalf("build prior source observation: %v", err)
+			}
+			if applied, err := repository.ApplyObservation(ctx, ownerID, initial); err != nil || !applied {
+				t.Fatalf("seed prior active source applied=%t err=%v", applied, err)
+			}
+			before, err := repository.ReadSourceSlot(ctx, ownerID, nudge.CategoryPipelineFailure, "pipeline-fail:"+projectID)
+			if err != nil || !before.Active || before.SourceRevision != 1 || before.ProducerWitness.ExecutionID != previous.id {
+				t.Fatalf("read seeded prior source slot=%+v err=%v", before, err)
+			}
+
+			quotaFields := map[string]interface{}{
+				"user_id": ownerID, "project_id": projectID, "project_pipeline_sequence": int64(2),
+				"last_pipeline_intent_id": reservationA,
+			}
+			reservationAExecution := runID
+			reservationAStatus, reservationASettlement := "failed", "refunded"
+			if tc.candidatePending {
+				quotaFields["active_reservation_id"] = reservationA
+				reservationAExecution = ""
+				reservationAStatus, reservationASettlement = "invocation_unknown", "pending"
+			}
+			if _, err := scopedfirestore.Collection(fsClient.Raw(), "pipeline_quota").Doc(scopedfirestore.QuotaDocID(ownerID, projectID)).Set(ctx, quotaFields); err != nil {
+				t.Fatalf("seed scoped quota pointer: %v", err)
+			}
+			if _, err := scopedfirestore.Collection(fsClient.Raw(), "pipeline_quota_reservations").Doc(reservationA).Set(ctx, map[string]interface{}{
+				"user_id": ownerID, "project_id": projectID, "attempt_id": attemptA, "execution_id": reservationAExecution,
+				"intent_status": reservationAStatus, "settlement_status": reservationASettlement, "trigger": "manual",
+				"mode": "full", "project_pipeline_sequence": int64(2),
+			}); err != nil {
+				t.Fatalf("seed candidate reservation A: %v", err)
+			}
+			// Reservation B belongs to the same owner and Project but points to a
+			// different run. The exact Cloud Run template for runID names B.
+			if _, err := scopedfirestore.Collection(fsClient.Raw(), "pipeline_quota_reservations").Doc(reservationB).Set(ctx, map[string]interface{}{
+				"user_id": ownerID, "project_id": projectID, "attempt_id": attemptB, "execution_id": "other-" + projectID,
+				"intent_status": "succeeded", "settlement_status": "charged", "trigger": "manual",
+				"mode": "full", "project_pipeline_sequence": int64(3),
+			}); err != nil {
+				t.Fatalf("seed actual execution reservation B: %v", err)
+			}
+			actualReservation, exists, err := scopedfirestore.GetQuotaReservationFromFirestore(ctx, fsClient.Raw(), reservationB)
+			if err != nil || !exists || actualReservation.AttemptID != attemptB || actualReservation.ExecutionID != "other-"+projectID {
+				t.Fatalf("read actual reservation B identity=%+v exists=%t err=%v", actualReservation, exists, err)
+			}
+
+			start := time.Now().UTC().Truncate(time.Microsecond)
+			end := start.Add(time.Minute)
+			detail := cloudEventExecution(runID, ownerID, projectID, start.Format(time.RFC3339Nano), end.Format(time.RFC3339Nano))
+			detail.RunningCount, detail.CompletionStatus = 0, tc.status
+			if tc.status == "FAILED" {
+				detail.FailedCount = 1
+			} else {
+				detail.SucceededCount = 1
+			}
+			detail.Template.Containers[0].Env = append(detail.Template.Containers[0].Env, cloudRunEnv{Name: pipelineReservationEnvName, Value: reservationB})
+			actualExecutions[runID] = detail
+			jobID := "/jobs/pipeline"
+			if tc.includeList {
+				listed := cloudEventExecution(runID, ownerID, projectID, start.Format(time.RFC3339Nano), end.Format(time.RFC3339Nano))
+				listed.RunningCount, listed.CompletionStatus = 0, tc.status
+				if tc.status == "FAILED" {
+					listed.FailedCount = 1
+				} else {
+					listed.SucceededCount = 1
+				}
+				listed.Template.Containers[0].Env = append(listed.Template.Containers[0].Env, cloudRunEnv{Name: pipelineReservationEnvName, Value: reservationA})
+				listedExecutions[jobID] = []cloudRunExecution{listed}
+			}
+
+			root := &pipelineNudgeEvidenceRoot{RootStore: localfs.New(t.TempDir()), diagnostics: map[string][]byte{
+				runID: []byte(fmt.Sprintf(`{"version":1,"status":"failed","stage":%q,"error_class":"io","execution":%q,"message":"safe identity fixture"}`, tc.diagnosticStage, runID)),
+			}}
+			h := &Handler{store: root, firestore: fsClient, metadataTokenURL: provider.URL + "/token", httpClient: provider.Client()}
+			h.SetPipelineJobURL(provider.URL + "/jobs/pipeline:run")
+
+			snapshot, err := h.readCloudPipelineEventSnapshot(ctx, ownerID, projectID)
+			if err != nil {
+				t.Fatalf("discover exact Cloud Run reservation identity: %v", err)
+			}
+			record, exists := snapshot.records[runID]
+			if snapshot.Coverage.State != "partial" || !exists || !record.reservationMissing || record.reservationID != reservationB ||
+				record.status != tc.status || record.publication != tc.publication || record.attemptID != "" || record.sequenceSet {
+				t.Fatalf("mismatched execution identity was accepted: coverage=%+v record=%+v exists=%t", snapshot.Coverage, record, exists)
+			}
+			if tc.candidatePending {
+				if len(snapshot.candidates.Pending) != 1 || snapshot.candidates.Pending[0].ReservationID != reservationA || snapshot.candidates.Pending[0].AttemptID != attemptA {
+					t.Fatalf("pending candidate A identity changed across exact discovery: %+v", snapshot.candidates.Pending)
+				}
+			} else if len(snapshot.candidates.Known) != 1 || snapshot.candidates.Known[0].ReservationID != reservationA ||
+				snapshot.candidates.Known[0].AttemptID != attemptA || snapshot.candidates.Known[0].ExecutionID != runID {
+				t.Fatalf("known candidate A identity changed across exact discovery: %+v", snapshot.candidates.Known)
+			}
+
+			failures, notices := h.reconcilePipelineProjectFailure(ctx, repository, ownerID, projectID, "Identity Project", before)
+			if len(failures) != 1 || failures[0].SafeClass != "pipeline_history_partial" || len(notices) != 1 ||
+				notices[0].State != "stale" || notices[0].SafeClass != "pipeline_history_partial" {
+				t.Fatalf("mismatched execution identity was not surfaced as partial: failures=%+v notices=%+v", failures, notices)
+			}
+			after, err := repository.ReadSourceSlot(ctx, ownerID, nudge.CategoryPipelineFailure, "pipeline-fail:"+projectID)
+			if err != nil || !after.Active || after.SourceRevision != before.SourceRevision || after.ProducerWitness != before.ProducerWitness ||
+				after.PayloadDigest != before.PayloadDigest || after.AttentionMaterialRevision != before.AttentionMaterialRevision ||
+				after.Observation == nil || after.Observation.ExecutionID != previous.id {
+				t.Fatalf("identity mismatch changed the prior source slot: before=%+v after=%+v err=%v", before, after, err)
+			}
+		})
+	}
+}

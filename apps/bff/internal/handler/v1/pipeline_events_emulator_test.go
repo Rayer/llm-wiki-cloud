@@ -155,7 +155,14 @@ func TestCloudPipelineEventsBoundedGlobalScanAndExactRunOverlay(t *testing.T) {
 			if wrongOwner {
 				ownerProject = "foreign-project"
 			}
-			writeCloudEventExecution(w, id, "user-a", ownerProject, "2026-10-25T01:00:00Z", "")
+			execution := cloudEventExecution(id, "user-a", ownerProject, "2026-10-25T01:00:00Z", "")
+			reservationID := "res-exact"
+			if id == "exact-list-run" {
+				reservationID = "res-list"
+			}
+			execution.Template.Containers[0].Env = append(execution.Template.Containers[0].Env, cloudRunEnv{Name: pipelineReservationEnvName, Value: reservationID})
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(execution)
 			return
 		}
 		if !strings.HasSuffix(r.URL.Path, "/executions") {
@@ -174,7 +181,9 @@ func TestCloudPipelineEventsBoundedGlobalScanAndExactRunOverlay(t *testing.T) {
 			executions = append(executions, cloudEventExecution(id, "other-user", "other-project", "2026-10-25T00:00:00Z", ""))
 		}
 		if includeOwnedInList && pageNumber == 1 {
-			executions[0] = cloudEventExecution("exact-list-run", "user-a", "project-a", "2026-10-25T01:00:00Z", "")
+			owned := cloudEventExecution("exact-list-run", "user-a", "project-a", "2026-10-25T01:00:00Z", "")
+			owned.Template.Containers[0].Env = append(owned.Template.Containers[0].Env, cloudRunEnv{Name: pipelineReservationEnvName, Value: "res-list"})
+			executions[0] = owned
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(cloudRunExecutionsResponse{Executions: executions, NextPageToken: fmt.Sprintf("page-%d", pageNumber+1)})
