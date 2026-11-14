@@ -98,6 +98,12 @@ func TestHTTPToRunnerPublishesDigestVerifiedCanonicalArchiveLocally(t *testing.T
 	storageAPI.put(projectPrefix+"raw/original.md", []byte("raw source bytes"), 3)
 	storageAPI.put(projectPrefix+"wiki/stale-top-level.md", []byte("must not be exported"), 4)
 	storageAPI.put(projectPrefix+"vault-schema.md", []byte("schema from project storage"), 6)
+	foreignProjectPath := "users/" + userID + "/projects/other-project/wiki/foreign-project-sentinel.md"
+	foreignProjectMarker := []byte("LWC486_FOREIGN_PROJECT_SENTINEL_880303")
+	foreignOwnerPath := "users/other-user/projects/" + projectID + "/wiki/foreign-owner-sentinel.md"
+	foreignOwnerMarker := []byte("LWC486_FOREIGN_OWNER_SENTINEL_880304")
+	storageAPI.put(foreignProjectPath, foreignProjectMarker, 7)
+	storageAPI.put(foreignOwnerPath, foreignOwnerMarker, 8)
 	if _, err := fs.Collection("projects").Doc(userID+"_"+projectID).Set(ctx, map[string]any{
 		"user_id": userID, "project_id": projectID, "name": "Integration Project", "description": "local fixture",
 		"profile":  map[string]any{"language": "zh-TW"},
@@ -164,6 +170,20 @@ func TestHTTPToRunnerPublishesDigestVerifiedCanonicalArchiveLocally(t *testing.T
 	for _, path := range []string{"wiki/stale-top-level.md"} {
 		if entries[path] != nil {
 			t.Errorf("archive included noncanonical or credential-bearing source %q", path)
+		}
+	}
+	for _, path := range []string{"wiki/foreign-project-sentinel.md", "wiki/foreign-owner-sentinel.md", foreignProjectPath, foreignOwnerPath} {
+		if entries[path] != nil {
+			t.Errorf("archive included a foreign-owner or foreign-Project sentinel entry %q", path)
+		}
+	}
+	for name, entry := range entries {
+		if strings.Contains(name, "foreign-project-sentinel.md") || strings.Contains(name, "foreign-owner-sentinel.md") {
+			t.Errorf("archive contains a foreign-owner or foreign-Project sentinel path %q", name)
+		}
+		contents := readZipEntry(t, entry)
+		if bytes.Contains(contents, foreignProjectMarker) || bytes.Contains(contents, foreignOwnerMarker) {
+			t.Errorf("archive entry %q contains foreign-owner or foreign-Project sentinel contents", name)
 		}
 	}
 	var metadata ExportMeta
