@@ -269,8 +269,12 @@ jobs:
           path: ${{ runner.temp }}/release
           retention-days: 90
           if-no-files-found: error
+      - name: Resolve canonical BFF selection from the prepared release plan
+        if: inputs.operation == 'release'
+        id: release-notes-selection
+        run: python3 deploy/engine/release_notes_workflow.py select-bff --plan "$RUNNER_TEMP/release/plan.json"
       - name: Record missing Notes artifact ID against exact plan
-        if: inputs.operation == 'release' && (inputs.release_notes_action == 'run' || inputs.release_notes_action == 'retry') && inputs.release_notes_artifact_id == ''
+        if: inputs.operation == 'release' && steps.release-notes-selection.outputs.bff_selected == 'true' && (inputs.release_notes_action == 'run' || inputs.release_notes_action == 'retry') && inputs.release_notes_artifact_id == ''
         run: |
           set -Eeuo pipefail
           python3 deploy/engine/release_notes_publish.py --action artifact-failure \
@@ -282,7 +286,7 @@ jobs:
           exit 1
       - name: Inspect exact TPM Release Notes artifact
         id: release-notes-artifact
-        if: inputs.operation == 'release' && (inputs.release_notes_action == 'run' || inputs.release_notes_action == 'retry') && inputs.release_notes_artifact_id != ''
+        if: inputs.operation == 'release' && steps.release-notes-selection.outputs.bff_selected == 'true' && (inputs.release_notes_action == 'run' || inputs.release_notes_action == 'retry') && inputs.release_notes_artifact_id != ''
         env:
           GH_TOKEN: ${{ github.token }}
           ARTIFACT_ID: ${{ inputs.release_notes_artifact_id }}
@@ -315,7 +319,7 @@ jobs:
           printf 'run_id=%s\ndigest=%s\n' "$run_id" "$digest" >> "$GITHUB_OUTPUT"
       - name: Download exact TPM Release Notes artifact
         id: release-notes-download
-        if: inputs.operation == 'release' && (inputs.release_notes_action == 'run' || inputs.release_notes_action == 'retry') && inputs.release_notes_artifact_id != ''
+        if: inputs.operation == 'release' && steps.release-notes-selection.outputs.bff_selected == 'true' && (inputs.release_notes_action == 'run' || inputs.release_notes_action == 'retry') && inputs.release_notes_artifact_id != ''
         continue-on-error: true
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
@@ -325,7 +329,7 @@ jobs:
           path: ${{ runner.temp }}/release-notes-package
           merge-multiple: true
       - name: Record exact TPM artifact download failure
-        if: inputs.operation == 'release' && (inputs.release_notes_action == 'run' || inputs.release_notes_action == 'retry') && inputs.release_notes_artifact_id != '' && steps.release-notes-download.outcome != 'success'
+        if: inputs.operation == 'release' && steps.release-notes-selection.outputs.bff_selected == 'true' && (inputs.release_notes_action == 'run' || inputs.release_notes_action == 'retry') && inputs.release_notes_artifact_id != '' && steps.release-notes-download.outcome != 'success'
         run: |
           set -Eeuo pipefail
           python3 deploy/engine/release_notes_publish.py --action artifact-failure \
@@ -336,7 +340,7 @@ jobs:
             --operation "$OPERATION" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT"
           exit 1
       - name: Record explicit Notes stop
-        if: inputs.operation == 'release' && inputs.release_notes_action == 'stop'
+        if: inputs.operation == 'release' && steps.release-notes-selection.outputs.bff_selected == 'true' && inputs.release_notes_action == 'stop'
         run: |
           set -Eeuo pipefail
           python3 deploy/engine/release_notes_publish.py --action stop \
@@ -348,7 +352,7 @@ jobs:
           echo "Explicit Notes stop selected; no product mutation will run." >&2
           exit 1
       - name: Record explicit Notes skip before release
-        if: inputs.operation == 'release' && inputs.release_notes_action == 'skip'
+        if: inputs.operation == 'release' && steps.release-notes-selection.outputs.bff_selected == 'true' && inputs.release_notes_action == 'skip'
         run: |
           set -Eeuo pipefail
           python3 deploy/engine/release_notes_publish.py --action skip-before-release \
@@ -358,7 +362,7 @@ jobs:
             --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
             --artifact-id "$RELEASE_NOTES_ARTIFACT_ID" --product-status not_started
       - name: Validate and store immutable Release Notes content before product release
-        if: inputs.operation == 'release' && (inputs.release_notes_action == 'run' || inputs.release_notes_action == 'retry')
+        if: inputs.operation == 'release' && steps.release-notes-selection.outputs.bff_selected == 'true' && (inputs.release_notes_action == 'run' || inputs.release_notes_action == 'retry')
         env:
           NOTES_ARTIFACT_DIGEST: ${{ steps.release-notes-artifact.outputs.digest }}
         run: |
@@ -404,9 +408,13 @@ jobs:
               assert os.environ['TARGET'] == 'development'
               assert os.environ['OPERATION'] in ('release','deploy')
           PY
+      - name: Resolve canonical BFF selection for recovery marker
+        if: inputs.operation != 'release'
+        id: recovery-notes-selection
+        run: python3 deploy/engine/release_notes_workflow.py select-bff --plan "$RUNNER_TEMP/release/plan.json"
       - name: Execute bounded runtime or explicit recovery
         id: deployment
-        if: inputs.release_notes_action != 'stop'
+        if: (inputs.operation == 'release' && steps.release-notes-selection.outputs.bff_selected != 'true') || inputs.release_notes_action != 'stop'
         uses: ./.github/actions/deployment-engine
         env:
           GH_TOKEN: ${{ github.token }}
@@ -417,7 +425,7 @@ jobs:
           operation: runtime
           force: ${{ inputs.force }}
       - name: Retain original product publication time
-        if: inputs.operation == 'release' && steps.deployment.outcome == 'success' && (inputs.release_notes_action == 'run' || inputs.release_notes_action == 'retry')
+        if: inputs.operation == 'release' && steps.release-notes-selection.outputs.bff_selected == 'true' && steps.deployment.outcome == 'success' && (inputs.release_notes_action == 'run' || inputs.release_notes_action == 'retry')
         run: |
           set -Eeuo pipefail
           python3 deploy/engine/release_notes_publish.py --action record-publication \
@@ -427,7 +435,7 @@ jobs:
             --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
             --product-status released --published-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
       - name: Publish Notes content and exact current-operation marker
-        if: inputs.operation == 'release' && steps.deployment.outcome == 'success' && (inputs.release_notes_action == 'run' || inputs.release_notes_action == 'retry')
+        if: inputs.operation == 'release' && steps.release-notes-selection.outputs.bff_selected == 'true' && steps.deployment.outcome == 'success' && (inputs.release_notes_action == 'run' || inputs.release_notes_action == 'retry')
         env:
           NOTES_ARTIFACT_DIGEST: ${{ steps.release-notes-artifact.outputs.digest }}
         run: |
@@ -446,7 +454,7 @@ jobs:
             --operation "$OPERATION" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
             --product-status released
       - name: Publish current-operation marker after explicit Notes skip
-        if: inputs.operation == 'release' && steps.deployment.outcome == 'success' && inputs.release_notes_action == 'skip'
+        if: inputs.operation == 'release' && steps.release-notes-selection.outputs.bff_selected == 'true' && steps.deployment.outcome == 'success' && inputs.release_notes_action == 'skip'
         run: |
           set -Eeuo pipefail
           python3 deploy/engine/release_notes_capture.py --directory "$RUNNER_TEMP/release" \
@@ -460,7 +468,7 @@ jobs:
             --operation "$OPERATION" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
             --product-status released
       - name: Publish marker for explicit BFF deploy, rollback, or reactivation
-        if: (inputs.operation == 'deploy' || inputs.operation == 'rollback' || inputs.operation == 'reactivate') && contains(format(',{0},', inputs.components), ',bff,') && steps.deployment.outcome == 'success'
+        if: (inputs.operation == 'deploy' || inputs.operation == 'rollback' || inputs.operation == 'reactivate') && steps.recovery-notes-selection.outputs.bff_selected == 'true' && steps.deployment.outcome == 'success'
         run: |
           set -Eeuo pipefail
           python3 deploy/engine/release_notes_capture.py --directory "$RUNNER_TEMP/release" \

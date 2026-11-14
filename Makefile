@@ -63,7 +63,7 @@ smoke: ensure-pkl
 	bash scripts/local-vertical-smoke.sh
 
 workflow-yaml:
-	ruby -e 'require "yaml"; files=%w[ci.yml cd.yml deploy-dev.yml promote-production.yml generate-frontend-config.yml verify-request-id-trace-dev.yml]; workflows=files.to_h { |file| [file, YAML.load_file(".github/workflows/"+file)] }; abort "invalid CI workflow" unless workflows["ci.yml"]["jobs"].key?("bff"); abort "invalid config-only workflow branch" unless workflows["cd.yml"]["jobs"].key?("pipeline-config-only") && workflows["cd.yml"]["jobs"]["release"]["if"].include?("config-only"); abort "invalid Frontend config generator" unless workflows["generate-frontend-config.yml"]["jobs"].key?("generate"); files.each { |file| puts ".github/workflows/#{file}: valid YAML" }'
+	ruby -e 'require "yaml"; files=%w[ci.yml cd.yml deploy-dev.yml promote-production.yml generate-frontend-config.yml prepare-release-notes-package.yml verify-request-id-trace-dev.yml]; workflows=files.to_h { |file| [file, YAML.load_file(".github/workflows/"+file)] }; abort "invalid CI workflow" unless workflows["ci.yml"]["jobs"].key?("bff"); abort "invalid config-only workflow branch" unless workflows["cd.yml"]["jobs"].key?("pipeline-config-only") && workflows["cd.yml"]["jobs"]["release"]["if"].include?("config-only"); abort "invalid Frontend config generator" unless workflows["generate-frontend-config.yml"]["jobs"].key?("generate"); abort "invalid private Notes package workflow" unless workflows["prepare-release-notes-package.yml"]["jobs"].key?("package"); files.each { |file| puts ".github/workflows/#{file}: valid YAML" }'
 
 ifeq ($(CONFIG_TARGET),frontend)
 config-local:

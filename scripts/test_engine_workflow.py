@@ -244,8 +244,124 @@ class EngineWorkflowContract(unittest.TestCase):
         self.assertEqual(prepare[1]['if'],"inputs.operation == 'release'")
         self.assertEqual(next(step for step in steps if step.get('id')=='ready')['if'],
                          "inputs.operation == 'release'")
+        selection = next((index, step) for index, step in enumerate(steps)
+                         if step.get('id') == 'release-notes-selection')
+        self.assertEqual(selection[1]['if'], "inputs.operation == 'release'")
+        self.assertLess(next(i for i, step in enumerate(steps) if step.get('id') == 'ready'), selection[0])
+        missing_notes_id = next(i for i, step in enumerate(steps)
+                                if step.get('name') == 'Record missing Notes artifact ID against exact plan')
+        self.assertLess(selection[0], missing_notes_id)
         self.assertEqual(job['environment'],
                          "${{ inputs.environment == 'production' && 'Production' || 'Development' }}")
+
+    def test_release_notes_delivery_seams_use_canonical_plan_and_private_manual_transport(self):
+        workflow = yaml.safe_load((ROOT / '.github/workflows/cd.yml').read_text())
+        release = workflow['jobs']['release']
+        steps = release['steps']
+        by_name = {step.get('name'): step for step in steps if step.get('name')}
+        notes_names = (
+            'Record missing Notes artifact ID against exact plan',
+            'Inspect exact TPM Release Notes artifact',
+            'Download exact TPM Release Notes artifact',
+            'Record exact TPM artifact download failure',
+            'Record explicit Notes stop',
+            'Record explicit Notes skip before release',
+            'Validate and store immutable Release Notes content before product release',
+            'Retain original product publication time',
+            'Publish Notes content and exact current-operation marker',
+            'Publish current-operation marker after explicit Notes skip',
+        )
+        for name in notes_names:
+            self.assertIn("steps.release-notes-selection.outputs.bff_selected == 'true'",
+                          by_name[name]['if'], name)
+            self.assertNotIn('inputs.components', by_name[name]['if'], name)
+        runtime = by_name['Execute bounded runtime or explicit recovery']
+        self.assertEqual(runtime['if'],
+                         "(inputs.operation == 'release' && steps.release-notes-selection.outputs.bff_selected != 'true') || inputs.release_notes_action != 'stop'")
+        recovery_selection = next(step for step in steps if step.get('id') == 'recovery-notes-selection')
+        self.assertEqual(recovery_selection['if'], "inputs.operation != 'release'")
+        marker = by_name['Publish marker for explicit BFF deploy, rollback, or reactivation']
+        self.assertIn("steps.recovery-notes-selection.outputs.bff_selected == 'true'", marker['if'])
+        self.assertNotIn('inputs.components', marker['if'])
+        self.assertNotIn("contains(format(',{0},', inputs.components), ',bff,')", marker['if'])
+
+        dev = yaml.safe_load((ROOT / '.github/workflows/deploy-dev.yml').read_text())
+        dev_inputs = dev.get('on', dev.get(True, {}))['workflow_dispatch']['inputs']
+        self.assertEqual(dev_inputs['release_notes_action']['default'], 'run')
+        self.assertNotIn('default', dev_inputs['components'])
+        self.assertEqual(dev['jobs']['release']['with']['components'], '${{ inputs.components }}')
+
+        manual_path = ROOT / '.github/workflows/prepare-release-notes-package.yml'
+        manual = yaml.safe_load(manual_path.read_text())
+        trigger = manual.get('on', manual.get(True, {}))
+        self.assertEqual(set(trigger), {'workflow_dispatch'})
+        self.assertEqual(manual['permissions'], {'contents': 'read', 'actions': 'write'})
+        job = manual['jobs']['package']
+        self.assertEqual(job['if'], "github.ref == 'refs/heads/develop'")
+        self.assertEqual(job['permissions'], {'contents': 'read', 'actions': 'write'})
+        manual_steps = job['steps']
+        self.assertEqual(manual_steps[0]['uses'], 'actions/checkout@11d5960a326750d5838078e36cf38b85af677262')
+        downloads = [step for step in manual_steps if step.get('uses', '').startswith('actions/download-artifact@')]
+        self.assertEqual(len(downloads), 2)
+        download = downloads[0]
+        upload = next(step for step in manual_steps if step.get('uses', '').startswith('actions/upload-artifact@'))
+        self.assertEqual(download['uses'], 'actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093')
+        self.assertIn('artifact-ids', download['with'])
+        self.assertEqual(download['with']['merge-multiple'], True)
+        self.assertEqual(download['with']['artifact-ids'], '${{ inputs.ready_artifact_id }}')
+        self.assertEqual(downloads[1]['with']['artifact-ids'], '${{ steps.ready.outputs.result_artifact_id }}')
+        self.assertEqual(downloads[1]['with']['run-id'], '${{ steps.ready.outputs.run_id }}')
+        self.assertEqual(upload['uses'], 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02')
+        self.assertIn('lwc-release-notes-${{ steps.prepare.outputs.product_version }}-development-${{ github.run_id }}-${{ github.run_attempt }}',
+                      upload['with']['name'])
+        self.assertEqual(upload['with']['retention-days'], '${{ inputs.retention_days }}')
+        prepare = next(step for step in manual_steps if step.get('id') == 'prepare')
+        self.assertEqual(prepare['env']['REQUEST_ID'], '${{ inputs.request_id }}')
+        self.assertNotIn('LWC_RELEASE_NOTES_PACKAGE_B64', prepare.get('env', {}))
+        self.assertNotIn('${{ inputs.package_zip_base64 }}', str(manual))
+        self.assertIn('--event-path "$GITHUB_EVENT_PATH"', prepare['run'])
+        self.assertNotIn('echo ', prepare['run'])
+        self.assertNotIn('eval ', prepare['run'])
+        self.assertIn('--request-id "$REQUEST_ID"', prepare['run'])
+        locate = next(step for step in manual_steps if step.get('id') == 'ready')
+        self.assertIn('find-ready-result', locate['run'])
+        ready_plan = next(step for step in manual_steps if step.get('id') == 'ready-plan')
+        self.assertEqual(ready_plan['env']['GH_TOKEN'], '${{ github.token }}')
+        self.assertIn('validate-ready', ready_plan['run'])
+        self.assertIn('"release-notes-evidence.json"',
+                      (ROOT / 'deploy/engine/release_notes_workflow.py').read_text())
+        verify = next(step for step in manual_steps if step.get('name') == 'Verify the uploaded artifact and emit its exact receipt')
+        self.assertIn('verify-upload', verify['run'])
+        self.assertIn('artifact-digest', verify['env']['ACTION_DIGEST_RAW'])
+        self.assertIn('"$ACTION_DIGEST_RAW" =~ ^[0-9a-f]{64}$', verify['run'])
+        helper = (ROOT / 'deploy/engine/release_notes_workflow.py').read_text()
+        self.assertIn('normalize_action_digest(action_digest)', helper)
+        self.assertIn('"artifact_id": ready_artifact_id', helper)
+        self.assertIn('inputs["release_notes_artifact_id"] = notes_artifact_id', helper)
+        self.assertIn('"resume_inputs": resume_inputs', helper)
+        self.assertNotIn('VERCEL', str(manual))
+        self.assertNotIn('WIF_', str(manual))
+
+        shared_job = release
+        self.assertEqual(shared_job['env']['REUSE_ID'], '${{ inputs.artifact_id }}')
+        deploy_wrapper = yaml.safe_load((ROOT / '.github/workflows/deploy-dev.yml').read_text())
+        self.assertEqual(deploy_wrapper['jobs']['release']['with']['artifact_id'], '${{ inputs.artifact_id }}')
+        action_source = (ROOT / '.github/actions/deployment-engine/index.cjs').read_text()
+        self.assertIn("retainedDirectory(process.env.REUSE_ID,'reuse')", action_source)
+        self.assertIn("args.push('--reuse',reuse)", action_source)
+        engine_source = (ROOT / 'deploy/engine/engine.py').read_text()
+        for invariant in ("compatible_release_identity(retained_plan) == compatible_release_identity(self.plan)",
+                          "retained_state.get('status') not in ('prepared', 'ready')",
+                          "if retained_state['components']:", "self.plan = copy.deepcopy(retained_plan)"):
+            self.assertIn(invariant, engine_source)
+
+    def test_manual_notes_package_operator_command_is_documented_without_content_logging(self):
+        doc = (ROOT / 'docs/lwc-478/operator-package-preparation.md').read_text()
+        self.assertIn('release_notes_workflow.py dispatch', doc)
+        self.assertIn('--ready-artifact-id "$READY_ARTIFACT_ID"', doc)
+        self.assertIn('--package-dir "$PRIVATE_TPM_PACKAGE_DIR"', doc)
+        self.assertIn('does not print package contents', doc.lower())
+        self.assertIn('no real artifact upload was run', doc.lower())
 
     def test_pinned_recovery_download_has_effective_github_token(self):
         workflow=yaml.safe_load((ROOT/'.github/workflows/cd.yml').read_text())
