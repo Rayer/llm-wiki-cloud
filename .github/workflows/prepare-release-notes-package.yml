@@ -85,6 +85,7 @@ jobs:
       - name: Validate the exact pre-runtime Notes gate and same-plan resume inputs
         id: ready-plan
         env:
+          GH_TOKEN: ${{ github.token }}
           READY_ARTIFACT_ID: ${{ inputs.ready_artifact_id }}
           RESULT_ARTIFACT_ID: ${{ steps.ready.outputs.result_artifact_id }}
         run: |

@@ -326,6 +326,7 @@ class EngineWorkflowContract(unittest.TestCase):
         locate = next(step for step in manual_steps if step.get('id') == 'ready')
         self.assertIn('find-ready-result', locate['run'])
         ready_plan = next(step for step in manual_steps if step.get('id') == 'ready-plan')
+        self.assertEqual(ready_plan['env']['GH_TOKEN'], '${{ github.token }}')
         self.assertIn('validate-ready', ready_plan['run'])
         self.assertIn('"release-notes-evidence.json"',
                       (ROOT / 'deploy/engine/release_notes_workflow.py').read_text())

@@ -1,4 +1,5 @@
 import base64
+import http.server
 import hashlib
 import json
 import os
@@ -6,12 +7,14 @@ import shutil
 import sys
 import subprocess
 import textwrap
+import threading
 import unittest
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
+import urllib.request
 import zipfile
 
 import yaml
@@ -21,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import release_notes
 import release_notes_workflow
 import release_notes_publish
+import engine
 from test_release_notes import canonical, note, operation_fixture, plan_fixture, run_capture_cli_with_service_url_failure
 
 
@@ -617,6 +621,223 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
                 "artifact_list": artifact_list, "result_metadata": result_metadata,
                 "ready_id": str(ready_id), "result_id": str(result_id),
                 "ready_dir": ready_dir, "result_dir": result_dir}
+
+    def make_native_ready_handoff(self, root):
+        producer_sha = "b" * 40
+        plan = {
+            "schema": 3, "tag": "v2026.11.5", "source": "a" * 40,
+            "branch": "develop", "executor_sha": producer_sha,
+            "normalized": {"environment": "development", "gcp": {"project_id": "fixture-project"}},
+            "identities": {"bff": {"profile": "bff", "digest": "native-fixture-inputs"}},
+            "dev_reference": None, "selected": ["bff"],
+            "release_source_mode": "legacy_monorepo",
+        }
+        plan["id"] = engine.plan_id(plan)
+        ready_dir = root / "native-ready"
+        ready_dir.mkdir()
+        engine.write(ready_dir / "plan.json", plan)
+        native = engine.Engine(ready_dir, executor_sha=producer_sha)
+
+        def prepare_container(component):
+            self.assertEqual(component, "bff")
+            native.state["builds"][component] = {
+                "project_id": "fixture-project", "location": engine.CLOUD_BUILD_LOCATION,
+                "build_id": "11111111-1111-1111-1111-111111111111",
+                "identity_verified": True, "status": "SUCCESS",
+                "last_observed_status": "SUCCESS", "poll_outcome": "success",
+                "reported_project_id": "fixture-project", "reported_location": engine.CLOUD_BUILD_LOCATION,
+            }
+            native.save()
+            return {"image": "us-docker.pkg.dev/fixture/bff@sha256:" + "c" * 64}
+
+        native.prepare_container = prepare_container
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "false"}, clear=False), \
+                patch.object(engine.Providers, "usable", lambda _provider, _component, _artifact: None):
+            native.prepare()
+            native.result()
+        plan_bytes = (ready_dir / "plan.json").read_bytes()
+        state_bytes = (ready_dir / "state.json").read_bytes()
+        result_bytes = (ready_dir / "result.json").read_bytes()
+        self.assertEqual(native.state["status"], "ready")
+        self.assertEqual(native.state["components"], {})
+
+        failure_args = release_notes_publish.parser().parse_args([
+            "--action", "artifact-failure", "--directory", str(ready_dir),
+            "--environment", "dev", "--bucket", "lwc-wiki-data-dev",
+            "--plan", str(ready_dir / "plan.json"), "--operation", "release",
+            "--run-id", "600", "--run-attempt", "1", "--failure-class", "artifact-id-required",
+        ])
+        evidence = release_notes_publish.execute(failure_args)
+        self.assertEqual((evidence["safe_class"], evidence["product_status"]),
+                         ("artifact-id-required", "not_started"))
+
+        result_dir = root / "native-result"
+        result_dir.mkdir()
+        for name in ("plan.json", "state.json", "result.json"):
+            shutil.copyfile(ready_dir / name, result_dir / name)
+        shutil.copyfile(ready_dir / "release-notes-evidence.json",
+                        result_dir / "release-notes-evidence.json")
+        ready_id, result_id, run_id, attempt = 701, 702, 600, 1
+        ready_name = f"lwc-ready-development-{run_id}-{attempt}"
+        result_name = f"lwc-result-development-{run_id}-{attempt}"
+        ready_digest = "sha256:" + "d" * 64
+        result_digest = "sha256:" + "e" * 64
+        metadata = {"id": ready_id, "name": ready_name, "expired": False,
+                    "digest": ready_digest, "expires_at": "2027-02-12T00:00:00Z",
+                    "workflow_run": {"id": run_id}}
+        run = {"id": run_id, "run_attempt": attempt, "event": "workflow_dispatch",
+               "path": ".github/workflows/deploy-dev.yml", "status": "completed",
+               "conclusion": "failure", "head_branch": "develop", "head_sha": producer_sha}
+        artifact_list = {"artifacts": [{
+            "id": result_id, "name": result_name, "expired": False,
+            "digest": result_digest, "expires_at": "2027-02-12T00:00:00Z",
+            "workflow_run": {"id": run_id},
+        }]}
+        return {"plan": plan, "plan_bytes": plan_bytes, "state_bytes": state_bytes,
+                "result_bytes": result_bytes, "metadata": metadata, "run": run,
+                "artifact_list": artifact_list,
+                "result_metadata": artifact_list["artifacts"][0],
+                "ready_id": str(ready_id), "result_id": str(result_id),
+                "ready_dir": ready_dir, "result_dir": result_dir}
+
+    def test_ready_plan_workflow_shell_token_transport_and_native_same_plan_resume(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fixture = self.make_native_ready_handoff(root)
+            workflow = yaml.safe_load((ROOT / ".github/workflows/prepare-release-notes-package.yml").read_text())
+            job = workflow["jobs"]["package"]
+            step = next(item for item in job["steps"] if item.get("id") == "ready-plan")
+            self.assertEqual(job["permissions"], {"contents": "read", "actions": "write"})
+            self.assertEqual(step["env"]["GH_TOKEN"], "${{ github.token }}")
+
+            runner = root / "runner"
+            runner.mkdir()
+            ready_plan_dir = runner / "ready-plan"
+            result_dir = runner / "ready-result"
+            shutil.copytree(fixture["ready_dir"], ready_plan_dir)
+            shutil.copytree(fixture["result_dir"], result_dir)
+            (runner / "ready-artifact-metadata.json").write_bytes(canonical(fixture["metadata"]))
+            (runner / "ready-workflow-run.json").write_bytes(canonical(fixture["run"]))
+            (runner / "ready-run-artifacts.json").write_bytes(canonical(fixture["artifact_list"]))
+            github_output = runner / "github-output"
+            github_output.write_text("")
+
+            expected_path = f"/repos/test/repo/actions/artifacts/{fixture['result_id']}"
+            expected_token = "token synthetic-github-token"
+
+            class MetadataHandler(http.server.BaseHTTPRequestHandler):
+                def do_GET(self):
+                    self.server.requests.append((self.path, self.headers.get("Authorization")))
+                    if self.path != expected_path or self.headers.get("Authorization") != expected_token:
+                        self.send_error(403)
+                        return
+                    payload = canonical(fixture["result_metadata"])
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+
+                def log_message(self, *_args):
+                    pass
+
+            server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), MetadataHandler)
+            server.requests = []
+            server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+            server_thread.start()
+            self.addCleanup(server_thread.join)
+            self.addCleanup(server.server_close)
+            self.addCleanup(server.shutdown)
+
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            gh = fake_bin / "gh"
+            gh.write_text(textwrap.dedent("""\
+                #!/usr/bin/env python3
+                import os, sys, urllib.request
+                token = os.environ.get("GH_TOKEN", "")
+                if not token:
+                    sys.stderr.write("To use GitHub CLI in a GitHub Actions workflow, set the GH_TOKEN environment variable\\n")
+                    raise SystemExit(4)
+                if sys.argv[1:] != ["api", os.environ["EXPECTED_ENDPOINT"]]:
+                    raise SystemExit(2)
+                request = urllib.request.Request(
+                    os.environ["CONTROLLED_API_BASE"] + "/" + sys.argv[2],
+                    headers={"Authorization": "token " + token, "Accept": "application/vnd.github+json"})
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    sys.stdout.buffer.write(response.read())
+                """))
+            gh.chmod(0o755)
+
+            expression_values = {
+                "${{ github.token }}": "synthetic-github-token",
+                "${{ inputs.ready_artifact_id }}": fixture["ready_id"],
+                "${{ steps.ready.outputs.result_artifact_id }}": fixture["result_id"],
+            }
+            effective_env = {
+                "PATH": str(fake_bin) + os.pathsep + os.environ.get("PATH", ""),
+                "HOME": str(root / "home"), "GH_CONFIG_DIR": str(root / "gh-config"),
+                "GITHUB_ACTIONS": "true", "GITHUB_REPOSITORY": "test/repo",
+                "RUNNER_TEMP": str(runner), "GITHUB_OUTPUT": str(github_output),
+                "EXPECTED_ENDPOINT": f"repos/test/repo/actions/artifacts/{fixture['result_id']}",
+                "CONTROLLED_API_BASE": f"http://127.0.0.1:{server.server_port}",
+                "GH_NO_UPDATE_NOTIFIER": "1", "GH_PROMPT_DISABLED": "1",
+                "HTTP_PROXY": "http://127.0.0.1:9", "HTTPS_PROXY": "http://127.0.0.1:9",
+                "NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost",
+            }
+            for name, value in step["env"].items():
+                self.assertIn(value, expression_values, name)
+                effective_env[name] = expression_values[value]
+            self.assertNotIn("GITHUB_TOKEN", effective_env)
+            completed = subprocess.run(["bash", "-c", step["run"]], cwd=ROOT,
+                                       env=effective_env, text=True, capture_output=True, check=False)
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+            self.assertEqual(server.requests, [(expected_path, expected_token)])
+            self.assertIn(f"resume_artifact_id={fixture['ready_id']}\n", github_output.read_text())
+
+            # Verify a synthetic package receipt and resume the exact retained Ready ID.
+            package_dir = root / "package"
+            package_dir.mkdir()
+            body = note("1.2.3", "en", "Local synthetic package receipt fixture")
+            manifest = {
+                "schema_version": 1, "product": "llm-wiki-cloud", "product_version": "1.2.3",
+                "environment": "dev", "release_plan_sha256": hashlib.sha256(fixture["plan_bytes"]).hexdigest(),
+                "release_note_snapshot_ref": "LWC-A-62:test-only",
+                "release_note_snapshot_sha256": "sha256:" + "f" * 64,
+                "delivered_scope_evidence_sha256": "sha256:" + "e" * 64,
+                "files": {"en": {"path": "en.json", "sha256": hashlib.sha256(body).hexdigest()}},
+            }
+            (package_dir / "release-notes-manifest.json").write_bytes(canonical(manifest))
+            (package_dir / "en.json").write_bytes(body)
+            raw_digest = "f" * 64
+            upload_metadata = {
+                "id": 803, "name": "lwc-release-notes-1.2.3-development-604-1", "expired": False,
+                "digest": "sha256:" + raw_digest, "expires_at": "2027-02-12T00:00:00Z",
+                "workflow_run": {"id": 604},
+            }
+            package_receipt = release_notes_workflow.verify_uploaded_package(
+                package_dir, ready_plan_dir / "plan.json", upload_metadata,
+                expected_artifact_id="803", expected_name=upload_metadata["name"],
+                action_digest=raw_digest, run_id="604", run_attempt="1",
+                ready_artifact_id=fixture["ready_id"], output_path=str(runner / "package-receipt"))
+            resume_inputs = package_receipt["resume_inputs"]
+            self.assertEqual(resume_inputs["artifact_id"], fixture["ready_id"])
+            self.assertEqual(resume_inputs["release_notes_artifact_id"], "803")
+
+            resumed_plan = dict(fixture["plan"], executor_sha="c" * 40)
+            resumed_plan["id"] = engine.plan_id(resumed_plan)
+            resumed_dir = root / "resumed"
+            resumed_dir.mkdir()
+            engine.write(resumed_dir / "plan.json", resumed_plan)
+            resumed = engine.Engine(resumed_dir, executor_sha=resumed_plan["executor_sha"])
+            with patch.dict(os.environ, {"GITHUB_ACTIONS": "false"}, clear=False), \
+                    patch.object(engine.Providers, "usable", lambda _provider, _component, _artifact: None):
+                ready_artifacts = {fixture["ready_id"]: fixture["ready_dir"]}
+                resumed.prepare(reuse=str(ready_artifacts[resume_inputs["artifact_id"]]))
+                resumed.result()
+            self.assertEqual((resumed_dir / "plan.json").read_bytes(), fixture["plan_bytes"])
+            self.assertEqual(resumed.state["status"], "ready")
+            self.assertEqual(resumed.state["components"], {})
 
     def test_canonical_plan_selection_distinguishes_bff_frontend_worker_and_full_input(self):
         self.assertTrue(release_notes_workflow.bff_selected_from_plan(self.plan_bytes))
