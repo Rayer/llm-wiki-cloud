@@ -577,7 +577,10 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/syssettings.Settings"
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
                         }
                     },
                     "400": {
@@ -2123,6 +2126,138 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/v1/public/release-notes": {
+            "get": {
+                "description": "Returns validated current/missing/unavailable state and the indexed version history. It exposes no publisher provenance.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "public"
+                ],
+                "summary": "Published Release Notes index",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/releasenotes.IndexResponse"
+                        },
+                        "headers": {
+                            "Cache-Control": {
+                                "type": "string",
+                                "description": "no-store"
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        },
+                        "headers": {
+                            "Cache-Control": {
+                                "type": "string",
+                                "description": "no-store"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/public/release-notes/{product_version}": {
+            "get": {
+                "description": "Returns the exact indexed version and requested locale, or an exact English fallback when that version has no translation.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "public"
+                ],
+                "summary": "Published Release Notes version",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Exact SemVer version",
+                        "name": "product_version",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "enum": [
+                            "en",
+                            "zh-TW"
+                        ],
+                        "type": "string",
+                        "description": "Requested UI locale",
+                        "name": "locale",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/releasenotes.ContentResponse"
+                        },
+                        "headers": {
+                            "Cache-Control": {
+                                "type": "string",
+                                "description": "no-store"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        },
+                        "headers": {
+                            "Cache-Control": {
+                                "type": "string",
+                                "description": "no-store"
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        },
+                        "headers": {
+                            "Cache-Control": {
+                                "type": "string",
+                                "description": "no-store"
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        },
+                        "headers": {
+                            "Cache-Control": {
+                                "type": "string",
+                                "description": "no-store"
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/public/version": {
             "get": {
                 "description": "Returns allowlisted product build metadata and Cloud Run identity. This response never includes image digests, environment variables, credentials, project IDs, or user IDs.",
@@ -2159,7 +2294,7 @@ const docTemplate = `{
                         "ProjectHeader": []
                     }
                 ],
-                "description": "Full-text search across sources and concepts. Mode \"wiki\" returns raw results, \"full\" adds AI-synthesized answer. Model-prior full responses with insufficient_evidence/no_qualified_evidence include citations:[] and the model-prior evidence metadata; legacy nil citations remain omitted.",
+                "description": "Full-text search across sources and concepts. Mode \"wiki\" returns raw results, \"full\" adds AI-synthesized answer. Recovered optional AI failures include bounded ai_operation_failures with the source resolved for this request while retaining retrieval results. Model-prior full responses with insufficient_evidence/no_qualified_evidence include citations:[] and the model-prior evidence metadata; legacy nil citations remain omitted.",
                 "consumes": [
                     "application/json"
                 ],
@@ -2679,6 +2814,12 @@ const docTemplate = `{
                 "id": {
                     "type": "string"
                 },
+                "management_scopes": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
                 "role": {
                     "type": "string"
                 }
@@ -2691,6 +2832,9 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "commit": {
+                    "type": "string"
+                },
+                "environment": {
                     "type": "string"
                 },
                 "image_tag": {
@@ -2706,6 +2850,65 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "tag": {
+                    "type": "string"
+                }
+            }
+        },
+        "firestore.ScheduledPipelineStatus": {
+            "type": "object",
+            "properties": {
+                "annotation_dirty_files": {
+                    "type": "integer"
+                },
+                "availability": {
+                    "type": "string"
+                },
+                "budget_used": {
+                    "type": "boolean"
+                },
+                "day_key": {
+                    "type": "string"
+                },
+                "last_attempt_at": {
+                    "type": "string"
+                },
+                "last_attempt_id": {
+                    "type": "string"
+                },
+                "last_check_at": {
+                    "type": "string"
+                },
+                "last_execution_id": {
+                    "type": "string"
+                },
+                "last_result": {
+                    "type": "string"
+                },
+                "new_raw_files": {
+                    "type": "integer"
+                },
+                "next_check_at": {
+                    "type": "string"
+                },
+                "pending_work": {
+                    "type": "integer"
+                },
+                "project_id": {
+                    "type": "string"
+                },
+                "raw_dirty_files": {
+                    "type": "integer"
+                },
+                "schedule": {
+                    "type": "string"
+                },
+                "skip_reason": {
+                    "type": "string"
+                },
+                "timezone": {
+                    "type": "string"
+                },
+                "user_id": {
                     "type": "string"
                 }
             }
@@ -2761,10 +2964,19 @@ const docTemplate = `{
                 "source_url": {
                     "type": "string"
                 },
+                "sources": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
                 "status": {
                     "type": "string"
                 },
                 "title": {
+                    "type": "string"
+                },
+                "updated_at": {
                     "type": "string"
                 }
             }
@@ -2839,6 +3051,18 @@ const docTemplate = `{
                 },
                 "raw": {
                     "type": "string"
+                },
+                "related_concepts": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/handler.WikiReference"
+                    }
+                },
+                "related_sources": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/handler.WikiReference"
+                    }
                 },
                 "slug": {
                     "type": "string"
@@ -2930,6 +3154,36 @@ const docTemplate = `{
                 "revision": {
                     "type": "string"
                 },
+                "saved_profile_input_digest": {
+                    "type": "string"
+                },
+                "saved_profile_revision": {
+                    "type": "integer"
+                },
+                "source_candidate_id": {
+                    "type": "string"
+                },
+                "source_content_generation": {
+                    "type": "string"
+                },
+                "source_model_version": {
+                    "type": "string"
+                },
+                "source_profile_input_digest": {
+                    "type": "string"
+                },
+                "source_profile_revision": {
+                    "type": "integer"
+                },
+                "source_prompt_version": {
+                    "type": "string"
+                },
+                "source_schema_version": {
+                    "type": "string"
+                },
+                "source_status": {
+                    "type": "string"
+                },
                 "status": {
                     "type": "string"
                 }
@@ -3014,13 +3268,98 @@ const docTemplate = `{
                 }
             }
         },
+        "handler.PipelineIntentStatus": {
+            "type": "object",
+            "properties": {
+                "compile_mode": {
+                    "type": "string"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "error_code": {
+                    "type": "string"
+                },
+                "error_message": {
+                    "type": "string"
+                },
+                "error_stage": {
+                    "type": "string"
+                },
+                "execution_id": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "prepared_guidance": {
+                    "$ref": "#/definitions/handler.PipelinePreparedGuidance"
+                },
+                "saved_profile_input_digest": {
+                    "type": "string"
+                },
+                "saved_profile_revision": {
+                    "type": "integer"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
+                }
+            }
+        },
+        "handler.PipelinePreparedGuidance": {
+            "type": "object",
+            "properties": {
+                "candidate_id": {
+                    "type": "string"
+                },
+                "content_generation": {
+                    "type": "string"
+                },
+                "kind": {
+                    "type": "string"
+                },
+                "model_version": {
+                    "type": "string"
+                },
+                "prompt_version": {
+                    "type": "string"
+                },
+                "revision": {
+                    "type": "string"
+                },
+                "schema_version": {
+                    "type": "string"
+                },
+                "source_input_digest": {
+                    "type": "string"
+                },
+                "source_profile_revision": {
+                    "type": "integer"
+                },
+                "status": {
+                    "type": "string"
+                }
+            }
+        },
         "handler.ProjectResponse": {
             "type": "object",
             "properties": {
                 "created_at": {
                     "type": "string"
                 },
+                "description": {
+                    "type": "string"
+                },
+                "description_revision": {
+                    "type": "integer"
+                },
                 "id": {
+                    "type": "string"
+                },
+                "last_used_at": {
                     "type": "string"
                 },
                 "name": {
@@ -3042,6 +3381,12 @@ const docTemplate = `{
         "handler.QueryResponse": {
             "type": "object",
             "properties": {
+                "ai_operation_failures": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/query.AIOperationFailure"
+                    }
+                },
                 "ai_synth": {
                     "type": "string"
                 },
@@ -3053,6 +3398,9 @@ const docTemplate = `{
                     "items": {
                         "$ref": "#/definitions/search.Citation"
                     }
+                },
+                "content_generation": {
+                    "type": "string"
                 },
                 "disclosure_required": {
                     "type": "boolean"
@@ -3106,6 +3454,12 @@ const docTemplate = `{
         "handler.ScrapeRequest": {
             "type": "object",
             "properties": {
+                "candidate_id": {
+                    "type": "string"
+                },
+                "candidate_revision": {
+                    "type": "string"
+                },
                 "confirmation_ref": {
                     "type": "string"
                 },
@@ -3115,6 +3469,9 @@ const docTemplate = `{
                         "type": "string"
                     }
                 },
+                "title": {
+                    "type": "string"
+                },
                 "url": {
                     "type": "string"
                 }
@@ -3123,6 +3480,12 @@ const docTemplate = `{
         "handler.ScrapeResponse": {
             "type": "object",
             "properties": {
+                "candidate_id": {
+                    "type": "string"
+                },
+                "candidate_revision": {
+                    "type": "string"
+                },
                 "confirmation_ref": {
                     "type": "string"
                 },
@@ -3131,6 +3494,9 @@ const docTemplate = `{
                 },
                 "failure_diagnostic": {
                     "$ref": "#/definitions/urlintake.FailureDiagnostic"
+                },
+                "failure_stage": {
+                    "type": "string"
                 },
                 "message": {
                     "type": "string"
@@ -3192,6 +3558,18 @@ const docTemplate = `{
                 "raw_path": {
                     "type": "string"
                 },
+                "related_concepts": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/handler.WikiReference"
+                    }
+                },
+                "related_sources": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/handler.WikiReference"
+                    }
+                },
                 "slug": {
                     "type": "string"
                 },
@@ -3250,6 +3628,12 @@ const docTemplate = `{
                 "running_pipelines": {
                     "type": "integer"
                 },
+                "scheduled_execution": {
+                    "$ref": "#/definitions/handler.PipelineExecutionResponse"
+                },
+                "scheduled_pipeline": {
+                    "$ref": "#/definitions/firestore.ScheduledPipelineStatus"
+                },
                 "sources_count": {
                     "type": "integer"
                 },
@@ -3258,6 +3642,23 @@ const docTemplate = `{
                     "items": {
                         "type": "string"
                     }
+                }
+            }
+        },
+        "handler.WikiReference": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string"
+                },
+                "slug": {
+                    "type": "string"
+                },
+                "title": {
+                    "type": "string"
+                },
+                "type": {
+                    "type": "string"
                 }
             }
         },
@@ -3315,7 +3716,8 @@ const docTemplate = `{
                 "daily_limit",
                 "cooldown",
                 "already_running",
-                "no_new_raw"
+                "no_new_raw",
+                "scheduled_daily_used"
             ],
             "x-enum-varnames": [
                 "ReasonNone",
@@ -3323,7 +3725,8 @@ const docTemplate = `{
                 "ReasonDailyLimit",
                 "ReasonCooldown",
                 "ReasonAlreadyRunning",
-                "ReasonNoNewRaw"
+                "ReasonNoNewRaw",
+                "ReasonEntitlementUsed"
             ]
         },
         "pipelinequota.Snapshot": {
@@ -3370,6 +3773,141 @@ const docTemplate = `{
                 },
                 "runs_today": {
                     "type": "integer"
+                }
+            }
+        },
+        "profilederive.FailureDiagnostic": {
+            "type": "object",
+            "properties": {
+                "class": {
+                    "type": "string"
+                },
+                "decode_reason": {
+                    "type": "string"
+                },
+                "stage": {
+                    "type": "string"
+                }
+            }
+        },
+        "query.AIOperationFailure": {
+            "type": "object",
+            "properties": {
+                "class": {
+                    "type": "string"
+                },
+                "fallback": {
+                    "type": "string"
+                },
+                "source": {
+                    "type": "string"
+                },
+                "stage": {
+                    "type": "string"
+                }
+            }
+        },
+        "releasenotes.ContentResponse": {
+            "type": "object",
+            "properties": {
+                "entries": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/releasenotes.Entry"
+                    }
+                },
+                "is_current": {
+                    "type": "boolean"
+                },
+                "locale": {
+                    "type": "string"
+                },
+                "locale_fallback": {
+                    "type": "boolean"
+                },
+                "product": {
+                    "type": "string"
+                },
+                "product_version": {
+                    "type": "string"
+                },
+                "published_at": {
+                    "type": "string"
+                },
+                "requested_locale": {
+                    "type": "string"
+                },
+                "schema_version": {
+                    "type": "integer"
+                }
+            }
+        },
+        "releasenotes.Entry": {
+            "type": "object",
+            "properties": {
+                "limitations": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "title": {
+                    "type": "string"
+                },
+                "user_benefit": {
+                    "type": "string"
+                },
+                "what_changed": {
+                    "type": "string"
+                },
+                "where_to_use": {
+                    "type": "string"
+                }
+            }
+        },
+        "releasenotes.IndexResponse": {
+            "type": "object",
+            "properties": {
+                "current": {
+                    "$ref": "#/definitions/releasenotes.VersionSummary"
+                },
+                "current_product_version": {
+                    "type": "string"
+                },
+                "current_status": {
+                    "type": "string"
+                },
+                "environment": {
+                    "type": "string"
+                },
+                "history": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/releasenotes.VersionSummary"
+                    }
+                },
+                "runtime_product_version": {
+                    "type": "string"
+                },
+                "schema_version": {
+                    "type": "integer"
+                }
+            }
+        },
+        "releasenotes.VersionSummary": {
+            "type": "object",
+            "properties": {
+                "locales": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "product_version": {
+                    "type": "string"
+                },
+                "published_at": {
+                    "type": "string"
                 }
             }
         },
@@ -3505,6 +4043,12 @@ const docTemplate = `{
                 "provider_truncated": {
                     "type": "boolean"
                 },
+                "quality_checked": {
+                    "type": "boolean"
+                },
+                "quality_status": {
+                    "type": "string"
+                },
                 "reason": {
                     "type": "string"
                 },
@@ -3540,6 +4084,26 @@ const docTemplate = `{
                 "invalid_response",
                 "content_too_large",
                 "unknown"
+            ],
+            "x-enum-varnames": [
+                "FailureCategoryNotConfigured",
+                "FailureCategoryInvalidURL",
+                "FailureCategoryAuthentication",
+                "FailureCategoryBalance",
+                "FailureCategorySecurityPolicy",
+                "FailureCategoryContentUnavailable",
+                "FailureCategoryRateLimited",
+                "FailureCategoryProviderTimeout",
+                "FailureCategoryProviderError",
+                "FailureCategoryInvalidRequest",
+                "FailureCategoryRequestTooLarge",
+                "FailureCategoryUnexpectedStatus",
+                "FailureCategoryTransportTimeout",
+                "FailureCategoryTransportCancelled",
+                "FailureCategoryTransportError",
+                "FailureCategoryInvalidResponse",
+                "FailureCategoryContentTooLarge",
+                "FailureCategoryUnknown"
             ]
         },
         "urlintake.FailureDiagnostic": {
@@ -3847,6 +4411,7 @@ const docTemplate = `{
                 "bootstrap_guidance",
                 "candidate",
                 "confirmed_candidate_id",
+                "derivation_diagnostic",
                 "derivation_error_code",
                 "derivation_status",
                 "job",
@@ -3867,6 +4432,9 @@ const docTemplate = `{
                 },
                 "confirmed_candidate_id": {
                     "type": "string"
+                },
+                "derivation_diagnostic": {
+                    "$ref": "#/definitions/profilederive.FailureDiagnostic"
                 },
                 "derivation_error_code": {
                     "type": "string"
@@ -3962,11 +4530,20 @@ const docTemplate = `{
                 "last_execution": {
                     "$ref": "#/definitions/handler.PipelineExecutionResponse"
                 },
+                "pipeline_intent": {
+                    "$ref": "#/definitions/handler.PipelineIntentStatus"
+                },
                 "project_id": {
                     "type": "string"
                 },
                 "quota": {
                     "$ref": "#/definitions/pipelinequota.Snapshot"
+                },
+                "scheduled_execution": {
+                    "$ref": "#/definitions/handler.PipelineExecutionResponse"
+                },
+                "scheduled_pipeline": {
+                    "$ref": "#/definitions/firestore.ScheduledPipelineStatus"
                 },
                 "suggested_queries": {
                     "type": "array",

@@ -119,7 +119,7 @@ class EngineWorkflowContract(unittest.TestCase):
     def test_single_runtime_authority_stays_in_release_workflow(self):
         s=(ROOT/'.github/workflows/cd.yml').read_text()
         parsed=yaml.safe_load(s)
-        self.assertEqual(set(parsed['jobs']),{'release','pipeline-config-only','frontend-config-only'})
+        self.assertEqual(set(parsed['jobs']),{'release','pipeline-config-only','frontend-config-only','notes-resend'})
         self.assertEqual(parsed['jobs']['release']['environment'],
                          "${{ inputs.environment == 'production' && 'Production' || 'Development' }}")
         prepare=next(step for step in parsed['jobs']['release']['steps']
@@ -134,6 +134,12 @@ class EngineWorkflowContract(unittest.TestCase):
         self.assertIn('cancel-in-progress: false',s)
         self.assertLess(s.index('Publish ready stage barrier'),s.index('Execute bounded runtime'))
         self.assertIn("if: inputs.operation == 'release'",s)
+        notes_resend=parsed['jobs']['notes-resend']
+        self.assertEqual(notes_resend['if'],"inputs.operation == 'notes-resend'")
+        notes_resend_steps=notes_resend['steps']
+        self.assertTrue(any(step.get('name') == 'Resend Notes without product deployment' and
+                            '--action resend' in step.get('run','') for step in notes_resend_steps))
+        self.assertFalse(any(step.get('uses') == './.github/actions/deployment-engine' for step in notes_resend_steps))
         config_only=parsed['jobs']['pipeline-config-only']
         self.assertEqual(config_only['if'],"inputs.operation == 'config-only'")
         self.assertEqual(config_only['permissions'],{'contents':'read','id-token':'write'})
@@ -244,7 +250,7 @@ class EngineWorkflowContract(unittest.TestCase):
     def test_pinned_recovery_download_has_effective_github_token(self):
         workflow=yaml.safe_load((ROOT/'.github/workflows/cd.yml').read_text())
         release=workflow['jobs']['release']
-        self.assertEqual(release['if'],"inputs.operation != 'diagnose-auth-image' && inputs.operation != 'config-only' && inputs.operation != 'frontend-config-only'")
+        self.assertEqual(release['if'],"inputs.operation != 'diagnose-auth-image' && inputs.operation != 'config-only' && inputs.operation != 'frontend-config-only' && inputs.operation != 'notes-resend'")
         downloads=[step for step in release['steps']
                    if step.get('name') == 'Download pinned ready artifact or checkpoint']
         self.assertEqual(len(downloads),1)
@@ -269,7 +275,7 @@ class EngineWorkflowContract(unittest.TestCase):
         dev_operation=dev_trigger['workflow_dispatch']['inputs']['operation']
         self.assertEqual(dev_operation['type'],'choice')
         self.assertEqual(dev_operation['default'],'release')
-        self.assertEqual(dev_operation['options'],['release','config-only','frontend-config-only','frontend-config-generate','deploy','rollback','reactivate','tag','readback','diagnose-auth-image'])
+        self.assertEqual(dev_operation['options'],['release','config-only','frontend-config-only','frontend-config-generate','deploy','rollback','reactivate','tag','readback','notes-resend','diagnose-auth-image'])
         self.assertEqual(dev['jobs']['release']['if'],
                          "github.ref == 'refs/heads/develop' && inputs.operation != 'diagnose-auth-image' && inputs.operation != 'frontend-config-generate'")
         self.assertEqual(dev['jobs']['release']['with'],{
@@ -285,6 +291,10 @@ class EngineWorkflowContract(unittest.TestCase):
             'auth_run_id':'${{ fromJSON(inputs.auth_run_id) }}',
             'auth_run_attempt':'${{ fromJSON(inputs.auth_run_attempt) }}',
             'artifact_id':'${{ inputs.artifact_id }}','dev_artifact_id':'${{ inputs.dev_artifact_id }}',
+            'release_notes_artifact_id':'${{ inputs.release_notes_artifact_id }}',
+            'release_notes_result_artifact_id':'${{ inputs.release_notes_result_artifact_id }}',
+            'release_notes_action':'${{ inputs.release_notes_action }}',
+            'release_notes_operation':'${{ inputs.release_notes_operation }}',
             'frontend_config_artifact_id':'${{ inputs.frontend_config_artifact_id }}',
             'operation':'${{ inputs.operation }}',
             'force':'${{ inputs.force }}',
@@ -313,7 +323,7 @@ class EngineWorkflowContract(unittest.TestCase):
         production=yaml.safe_load((ROOT/'.github/workflows/promote-production.yml').read_text())
         prod_trigger=production.get('on',production.get(True,{}))
         self.assertEqual(prod_trigger['workflow_dispatch']['inputs']['operation']['options'],
-                         ['release','config-only','frontend-config-only','frontend-config-generate'])
+                         ['release','config-only','frontend-config-only','frontend-config-generate','notes-resend'])
         self.assertIn("inputs.operation != 'frontend-config-generate'",production['jobs']['release']['if'])
         prod_generator=production['jobs']['frontend-config-generate']
         self.assertEqual(prod_generator['if'],"github.ref == 'refs/heads/develop' && inputs.operation == 'frontend-config-generate'")
@@ -353,10 +363,13 @@ class EngineWorkflowContract(unittest.TestCase):
         self.assertEqual(diagnostic_wrapper['with'],{'source_sha':'${{ inputs.source_sha }}'})
 
         shared=yaml.safe_load((ROOT/'.github/workflows/cd.yml').read_text())
-        self.assertEqual(set(shared['jobs']),{'release','pipeline-config-only','frontend-config-only'})
+        self.assertEqual(set(shared['jobs']),{'release','notes-resend','pipeline-config-only','frontend-config-only'})
         job=shared['jobs']['release'];steps=job['steps']
         by_name={step.get('name'): (index,step) for index,step in enumerate(steps) if step.get('name')}
-        self.assertEqual(job['if'],"inputs.operation != 'diagnose-auth-image' && inputs.operation != 'config-only' && inputs.operation != 'frontend-config-only'")
+        self.assertEqual(job['if'],"inputs.operation != 'diagnose-auth-image' && inputs.operation != 'config-only' && inputs.operation != 'frontend-config-only' && inputs.operation != 'notes-resend'")
+        notes_resend=shared['jobs']['notes-resend']
+        self.assertEqual(notes_resend['if'],"inputs.operation == 'notes-resend'")
+        self.assertNotIn('needs',notes_resend)
         self.assertEqual(job['env']['SOURCE'],'${{ inputs.source_sha }}')
         self.assertEqual(job['env']['EXECUTOR_SHA'],'${{ inputs.executor_sha }}')
         self.assertEqual(job['env']['FORCE'],'${{ inputs.force }}')
@@ -405,6 +418,42 @@ class EngineWorkflowContract(unittest.TestCase):
                          ['lwc-auth-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}'])
         self.assertEqual(diag_by_name['Retain redacted diagnostic result'][1]['if'],'always()')
         self.assertIn('lwc-auth-diagnostic-',diag_by_name['Retain redacted diagnostic result'][1]['with']['name'])
+
+    def test_notes_resend_is_a_no_deploy_branch_with_explicit_dispositions(self):
+        shared=yaml.safe_load((ROOT/'.github/workflows/cd.yml').read_text())
+        release=shared['jobs']['release']
+        release_steps={step.get('name'):step for step in release['steps'] if step.get('name')}
+        missing=release_steps['Record missing Notes artifact ID against exact plan']['run']
+        self.assertIn('--failure-class artifact-id-required',missing)
+        self.assertTrue(missing.rstrip().endswith('exit 1'))
+        metadata_failure=release_steps['Inspect exact TPM Release Notes artifact']['run']
+        self.assertEqual(metadata_failure.count('exit 1'),2)
+        self.assertTrue(release_steps['Record exact TPM artifact download failure']['run'].rstrip().endswith('exit 1'))
+        self.assertLess(next(i for i,s in enumerate(release['steps']) if s.get('name') == 'Validate and store immutable Release Notes content before product release'),
+                        next(i for i,s in enumerate(release['steps']) if s.get('name') == 'Execute bounded runtime or explicit recovery'))
+        job=shared['jobs']['notes-resend']
+        self.assertEqual(job['if'],"inputs.operation == 'notes-resend'")
+        self.assertNotIn('needs',job)
+        steps={step.get('name'):step for step in job['steps'] if step.get('name')}
+        self.assertIn('(.conclusion == "success" or .conclusion == "failure")',
+                      steps['Inspect exact prior release result artifact']['run'])
+        verify=steps['Verify the retained product operation succeeded']['run']
+        self.assertIn('--action verify-operation',verify)
+        self.assertLess(next(i for i,s in enumerate(job['steps']) if s.get('name') == 'Download exact prior release result and retained operation evidence'),
+                        next(i for i,s in enumerate(job['steps']) if s.get('name') == 'Verify the retained product operation succeeded'))
+        self.assertEqual(steps['Resend Notes without product deployment']['if'],
+                         "inputs.release_notes_action == 'run' || inputs.release_notes_action == 'retry'")
+        self.assertIn('--action resend',steps['Resend Notes without product deployment']['run'])
+        self.assertNotIn('./.github/actions/deployment-engine',
+                         '\n'.join(step.get('uses','') for step in job['steps']))
+        self.assertEqual(steps['Record explicit Notes skip without product deployment']['if'],
+                         "inputs.release_notes_action == 'skip'")
+        self.assertEqual(steps['Record explicit Notes stop without product deployment']['if'],
+                         "inputs.release_notes_action == 'stop'")
+        for name in ('google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093',
+                     'google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f'):
+            auth=next(step for step in job['steps'] if step.get('uses','').endswith(name))
+            self.assertEqual(auth['if'], "inputs.release_notes_action == 'run' || inputs.release_notes_action == 'retry'")
 
     def test_profiles_and_real_component_operations(self):
         profiles=json.loads((ROOT/'deploy/engine/profiles.json').read_text())

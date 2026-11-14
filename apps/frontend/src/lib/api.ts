@@ -5,6 +5,8 @@ import { getRuntimeConfig } from './runtime-config.ts';
 import { normalizeAnnotationBody, normalizeAnnotationGeneration } from './source-annotation.ts';
 import { recordRequestIDHeader, recordRequestResponse } from './request-ids.ts';
 
+const RELEASE_NOTES_VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+
 export type PipelineDiagnostic = {
 	stage?: string | null;
 	error_class?: string | null;
@@ -267,6 +269,42 @@ export type BuildInfo = {
   image_tag: string;
   service: string;
   revision: string;
+};
+
+export type ReleaseNoteEntry = {
+  title: string;
+  what_changed: string;
+  user_benefit: string;
+  where_to_use: string;
+  limitations: string[];
+};
+
+export type ReleaseNotesVersionSummary = {
+  product_version: string;
+  published_at: string;
+  locales: string[];
+};
+
+export type ReleaseNotesIndex = {
+  schema_version: 1;
+  environment: BuildInfo['environment'];
+  runtime_product_version: string;
+  current_status: 'available' | 'missing' | 'unavailable';
+  current_product_version?: string;
+  current?: ReleaseNotesVersionSummary;
+  history: ReleaseNotesVersionSummary[];
+};
+
+export type ReleaseNoteDocument = {
+  schema_version: 1;
+  product: 'llm-wiki-cloud';
+  product_version: string;
+  published_at: string;
+  locale: 'en' | 'zh-TW';
+  requested_locale: 'en' | 'zh-TW';
+  locale_fallback: boolean;
+  is_current: boolean;
+  entries: ReleaseNoteEntry[];
 };
 
 export class ApiError extends Error {
@@ -2371,6 +2409,93 @@ export async function getBuildInfo(): Promise<BuildInfo> {
     image_tag: field('image_tag'),
     service: field('service'),
     revision: field('revision'),
+  };
+}
+
+async function getPublicReleaseNotes(path: string): Promise<unknown> {
+  let response: Response;
+  try {
+    response = await fetch(`${getRuntimeConfig().api_url}${path}`, {
+      method: 'GET', credentials: 'omit', cache: 'no-store',
+    });
+    recordRequestResponse(response);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'unknown network error';
+    throw new Error(`Release notes request failed: ${message}`);
+  }
+  if (!response.ok) {
+    throw new ApiError(`Release notes request failed (${response.status})`, response.status, undefined, response.headers.get('X-Request-ID'));
+  }
+  try {
+    return await response.json();
+  } catch {
+    throw new Error('Invalid release notes response JSON');
+  }
+}
+
+function releaseNotesVersionSummary(value: unknown): ReleaseNotesVersionSummary {
+  if (!isRecord(value) || typeof value.product_version !== 'string' ||
+      !RELEASE_NOTES_VERSION_PATTERN.test(value.product_version) ||
+      typeof value.published_at !== 'string' || !Number.isFinite(Date.parse(value.published_at)) ||
+      !Array.isArray(value.locales) || value.locales.some((locale) => locale !== 'en' && locale !== 'zh-TW') ||
+      new Set(value.locales).size !== value.locales.length) {
+    throw new Error('Invalid release notes version summary');
+  }
+  return { product_version: value.product_version, published_at: value.published_at, locales: value.locales as string[] };
+}
+
+export async function getReleaseNotesIndex(): Promise<ReleaseNotesIndex> {
+  const payload = await getPublicReleaseNotes('/api/v1/public/release-notes');
+  if (!isRecord(payload) || payload.schema_version !== 1 || typeof payload.runtime_product_version !== 'string' ||
+      !['local', 'dev', 'prod', 'unknown'].includes(String(payload.environment)) ||
+      !['available', 'missing', 'unavailable'].includes(String(payload.current_status)) || !Array.isArray(payload.history)) {
+    throw new Error('Invalid release notes index response');
+  }
+  const current = payload.current === undefined ? undefined : releaseNotesVersionSummary(payload.current);
+  const currentProductVersion = payload.current_product_version;
+  if (currentProductVersion !== undefined &&
+      (typeof currentProductVersion !== 'string' || !RELEASE_NOTES_VERSION_PATTERN.test(currentProductVersion))) {
+    throw new Error('Invalid release notes current version');
+  }
+  return {
+    schema_version: 1,
+    environment: payload.environment as BuildInfo['environment'],
+    runtime_product_version: payload.runtime_product_version,
+    current_status: payload.current_status as ReleaseNotesIndex['current_status'],
+    ...(currentProductVersion !== undefined ? { current_product_version: currentProductVersion } : {}),
+    ...(current ? { current } : {}),
+    history: payload.history.map(releaseNotesVersionSummary),
+  };
+}
+
+export async function getReleaseNote(version: string, locale: 'en' | 'zh-TW'): Promise<ReleaseNoteDocument> {
+  if (!RELEASE_NOTES_VERSION_PATTERN.test(version)) {
+    throw new Error('Invalid release notes version');
+  }
+  const payload = await getPublicReleaseNotes(`/api/v1/public/release-notes/${encodeURIComponent(version)}?locale=${encodeURIComponent(locale)}`);
+  if (!isRecord(payload) || payload.schema_version !== 1 || payload.product !== 'llm-wiki-cloud' ||
+      payload.product_version !== version || typeof payload.published_at !== 'string' || !Number.isFinite(Date.parse(payload.published_at)) ||
+      (payload.locale !== 'en' && payload.locale !== 'zh-TW') || payload.requested_locale !== locale ||
+      typeof payload.locale_fallback !== 'boolean' ||
+      (payload.locale_fallback ? !(locale === 'zh-TW' && payload.locale === 'en') : payload.locale !== locale) ||
+      typeof payload.is_current !== 'boolean' || !Array.isArray(payload.entries)) {
+    throw new Error('Invalid release note response');
+  }
+  const entries = payload.entries.map((entry): ReleaseNoteEntry => {
+    if (!isRecord(entry) || ['title', 'what_changed', 'user_benefit', 'where_to_use'].some((key) => typeof entry[key] !== 'string') ||
+        !Array.isArray(entry.limitations) || entry.limitations.some((limitation) => typeof limitation !== 'string')) {
+      throw new Error('Invalid release note entry');
+    }
+    return {
+      title: entry.title as string, what_changed: entry.what_changed as string,
+      user_benefit: entry.user_benefit as string, where_to_use: entry.where_to_use as string,
+      limitations: entry.limitations as string[],
+    };
+  });
+  return {
+    schema_version: 1, product: 'llm-wiki-cloud', product_version: payload.product_version,
+    published_at: payload.published_at, locale: payload.locale, requested_locale: locale,
+    locale_fallback: payload.locale_fallback, is_current: payload.is_current, entries,
   };
 }
 

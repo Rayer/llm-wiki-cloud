@@ -19,6 +19,8 @@ import {
   getAdminManagementCatalog,
   getAdminPipelineAutomation,
   getBuildInfo,
+  getReleaseNotesIndex,
+  getReleaseNote,
   getConcept,
   getConcepts,
   getSource,
@@ -199,6 +201,73 @@ test('getBuildInfo rejects a public version network failure', async () => {
 
   try {
     await assert.rejects(() => getBuildInfo(), /Build info request failed: network unavailable/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('Release Notes public readers omit credentials, avoid caching, and validate the selected version response', async () => {
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  const index = {
+    schema_version: 1, environment: 'dev', runtime_product_version: '1.2.3', current_status: 'available',
+    current_product_version: '1.2.3',
+    current: { product_version: '1.2.3', published_at: '2026-11-13T04:00:00Z', locales: ['en'] },
+    history: [],
+  };
+  const note = {
+    schema_version: 1, product: 'llm-wiki-cloud', product_version: '1.2.3', published_at: '2026-11-13T04:00:00Z',
+    locale: 'en', requested_locale: 'en', locale_fallback: false, is_current: true,
+    entries: [{ title: 'Title', what_changed: 'Changed', user_benefit: 'Benefit', where_to_use: 'Workspace', limitations: [] }],
+  };
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url: String(url), init });
+    return Response.json(requests.length === 1 ? index : note);
+  };
+  try {
+    assert.deepEqual(await getReleaseNotesIndex(), index);
+    assert.deepEqual(await getReleaseNote('1.2.3', 'en'), note);
+    assert.deepEqual(requests.map(({ url }) => url), [
+      'https://api.runtime.test/api/v1/public/release-notes',
+      'https://api.runtime.test/api/v1/public/release-notes/1.2.3?locale=en',
+    ]);
+    for (const request of requests) {
+      assert.deepEqual(request.init, { method: 'GET', credentials: 'omit', cache: 'no-store' });
+      assert.equal(request.init.headers?.Authorization, undefined);
+      assert.equal(request.init.headers?.['X-Project-ID'], undefined);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('Release Notes client rejects arbitrary exact version paths and malformed entry fields', async () => {
+  await assert.rejects(() => getReleaseNote('../current', 'en'), /Invalid release notes version/);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => Response.json({
+    schema_version: 1, product: 'llm-wiki-cloud', product_version: '1.2.3', published_at: '2026-11-13T04:00:00Z',
+    locale: 'en', requested_locale: 'en', locale_fallback: false, is_current: false,
+    entries: [{ title: 'Title', what_changed: 'Changed', user_benefit: 'Benefit', where_to_use: 'Workspace', limitations: [false] }],
+  });
+  try {
+    await assert.rejects(() => getReleaseNote('1.2.3', 'en'), /Invalid release note entry/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('Release Notes client rejects mismatched versions and unsupported locale fallback claims', async () => {
+  const originalFetch = globalThis.fetch;
+  const base = {
+    schema_version: 1, product: 'llm-wiki-cloud', product_version: '1.2.4', published_at: '2026-11-13T04:00:00Z',
+    locale: 'en', requested_locale: 'en', locale_fallback: false, is_current: false,
+    entries: [{ title: 'Title', what_changed: 'Changed', user_benefit: 'Benefit', where_to_use: 'Workspace', limitations: [] }],
+  };
+  globalThis.fetch = async () => Response.json(base);
+  try {
+    await assert.rejects(() => getReleaseNote('1.2.3', 'en'), /Invalid release note response/);
+    globalThis.fetch = async () => Response.json({ ...base, product_version: '1.2.3', locale: 'zh-TW', requested_locale: 'zh-TW', locale_fallback: true });
+    await assert.rejects(() => getReleaseNote('1.2.3', 'zh-TW'), /Invalid release note response/);
   } finally {
     globalThis.fetch = originalFetch;
   }
