@@ -17,6 +17,7 @@ import { CommandPalette, useCommandPalette } from './ui/CommandPalette';
 import { NavigationBlockerProvider, NavigationLink } from './NavigationBlocker';
 import { AccountSettingsModal } from './AccountSettingsModal';
 import { RequestIDPanel } from './RequestIDPanel';
+import { NudgePanel } from './NudgePanel';
 import { LocaleControl } from './LocaleControl';
 import { dailyBriefSignedOutLandingURL } from '@/lib/mcp-oauth';
 import { getBuildInfo, type BuildInfo } from '@/lib/api';
@@ -67,6 +68,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
   const [versionDialogOpen, setVersionDialogOpen] = useState(false);
   const [versionCopied, setVersionCopied] = useState(false);
   const [versionCopyFailed, setVersionCopyFailed] = useState(false);
+  const [nudgeOpen, setNudgeOpen] = useState(false);
   const versionButtonRef = useRef<HTMLButtonElement>(null);
   const dialogCloseRef = useRef<HTMLButtonElement>(null);
   const versionWasOpenRef = useRef(false);
@@ -330,6 +332,12 @@ function ShellContent({ children }: { children: React.ReactNode }) {
                   </NavigationLink>
                 );
               })}
+              {!isDemoSession ? (
+                <button type="button" onClick={() => setNudgeOpen(true)} className="relative flex min-h-11 items-center gap-3 rounded px-3 py-2.5 text-left text-sm font-medium text-zinc-400 transition hover:bg-white/5 hover:text-zinc-200">
+                  <Activity className="size-4 shrink-0 text-zinc-500" />
+                  <span className="min-w-0 flex-1 truncate">{t('Nudge.open')}</span>
+                </button>
+              ) : null}
             </nav>
 
             <div className="mx-3 my-2 border-t border-white/8" />
@@ -528,6 +536,8 @@ function ShellContent({ children }: { children: React.ReactNode }) {
           </section>
         </div>
       ) : null}
+
+      {nudgeOpen ? <NudgePanel onClose={() => setNudgeOpen(false)} /> : null}
 
     </div>
   );

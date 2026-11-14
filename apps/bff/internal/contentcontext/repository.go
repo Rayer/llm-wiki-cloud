@@ -101,6 +101,15 @@ func NewFirestoreRepository(client *firestore.Client) *FirestoreRepository {
 	return &FirestoreRepository{client: client, now: func() time.Time { return time.Now().UTC() }}
 }
 
+// FirestoreClient returns the repository's existing client for additive
+// domain companions that share this repository's transaction boundary.
+func (r *FirestoreRepository) FirestoreClient() *firestore.Client {
+	if r == nil {
+		return nil
+	}
+	return r.client
+}
+
 func (r *FirestoreRepository) SetClockForTest(now func() time.Time) {
 	if now != nil {
 		r.now = now
