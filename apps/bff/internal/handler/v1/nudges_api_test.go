@@ -78,6 +78,11 @@ func TestGetNudgesPreservesNestedSDKObservationForActionResolver(t *testing.T) {
 	}
 
 	handler := &Handler{firestore: fsClient}
+	handler.pipelineEventSource = func(_ context.Context, _, currentProject string) (pipelineEventSnapshot, error) {
+		snapshot := makePipelineEventSnapshot(currentProject, map[string]pipelineEventRunRecord{}, nil, nil, false, pipelineEventGlobalLimit, 0, false, nil, 0)
+		snapshot.records = map[string]pipelineEventRunRecord{}
+		return snapshot, nil
+	}
 	router := gin.New()
 	router.GET("/api/v1/nudges", func(c *gin.Context) {
 		c.Set("userID", ownerID)
@@ -142,6 +147,13 @@ func TestGetNudgesPreservesNestedSDKObservationForActionResolver(t *testing.T) {
 	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &reconciled) != nil || !reconciled.Partial ||
 		len(reconciled.Failures) != 2 || len(reconciled.Items) != 1 {
 		t.Fatalf("real reconcile HTTP response did not preserve source qualification and item: status=%d body=%s", response.Code, response.Body.String())
+	}
+	classes := map[string]bool{}
+	for _, failure := range reconciled.Failures {
+		classes[failure.SafeClass] = true
+	}
+	if !classes["pipeline_history_missing"] || !classes["release_adapter_not_qualified"] {
+		t.Fatalf("reconcile did not report unavailable current Pipeline evidence and missing Release adapter: %+v", reconciled.Failures)
 	}
 }
 

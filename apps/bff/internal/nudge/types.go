@@ -84,6 +84,8 @@ type ProducerWitness struct {
 	Kind                    string    `json:"kind" firestore:"kind"`
 	ProjectID               string    `json:"project_id,omitempty" firestore:"project_id,omitempty"`
 	ProjectPipelineSequence int64     `json:"project_pipeline_sequence,omitempty" firestore:"project_pipeline_sequence,omitempty"`
+	BootstrapFloor          int64     `json:"bootstrap_floor,omitempty" firestore:"bootstrap_floor,omitempty"`
+	BootstrapDigest         string    `json:"bootstrap_digest,omitempty" firestore:"bootstrap_digest,omitempty"`
 	ReservationID           string    `json:"reservation_id,omitempty" firestore:"reservation_id,omitempty"`
 	AttemptID               string    `json:"attempt_id,omitempty" firestore:"attempt_id,omitempty"`
 	ExecutionID             string    `json:"execution_id,omitempty" firestore:"execution_id,omitempty"`
@@ -314,7 +316,12 @@ func validateObservation(value Observation) error {
 func validateWitness(category, sourceKey string, w ProducerWitness) error {
 	switch category {
 	case CategoryPipelineFailure:
-		if w.Kind != "pipeline-run" || !validID(w.ProjectID) || w.ProjectPipelineSequence < 1 || !validID(w.ReservationID) || !validID(w.AttemptID) || !validID(w.ExecutionID) || w.Trigger == "" || (w.Mode != "full" && w.Mode != "incremental") || (w.TerminalClass != "failed" && w.TerminalClass != "recovered") || sourceKey != "pipeline-fail:"+w.ProjectID {
+		legacyBootstrap := w.BootstrapDigest != "" && w.ProjectPipelineSequence == w.BootstrapFloor && w.BootstrapFloor >= 0
+		sequenced := w.ProjectPipelineSequence >= 1 && w.ProjectPipelineSequence > w.BootstrapFloor
+		if w.Kind != "pipeline-run" || !validID(w.ProjectID) || (!legacyBootstrap && !sequenced) ||
+			!validID(w.ExecutionID) || (!legacyBootstrap && (!validID(w.ReservationID) || !validID(w.AttemptID) || w.Trigger == "" || (w.Mode != "full" && w.Mode != "incremental"))) ||
+			(w.BootstrapDigest != "" && (len(w.BootstrapDigest) != 64 || !isHex(w.BootstrapDigest))) ||
+			(w.TerminalClass != "failed" && w.TerminalClass != "recovered") || sourceKey != "pipeline-fail:"+w.ProjectID {
 			return ErrInvalidInput
 		}
 	case CategoryPurposeGap:
@@ -337,6 +344,10 @@ func CompareWitness(category string, incoming, current ProducerWitness) int {
 	}
 	switch category {
 	case CategoryPipelineFailure:
+		if current.BootstrapDigest != "" && incoming.ProjectPipelineSequence <= current.BootstrapFloor &&
+			(incoming.BootstrapDigest != current.BootstrapDigest || incoming.ExecutionID != current.ExecutionID) {
+			return -1
+		}
 		if incoming.ProjectPipelineSequence < current.ProjectPipelineSequence {
 			return -1
 		}

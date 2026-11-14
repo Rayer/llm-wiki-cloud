@@ -60,6 +60,28 @@ func (r *Repository) ReadSourceRevision(ctx context.Context, userID, category, s
 	return slot.SourceRevision, nil
 }
 
+func (r *Repository) ReadSourceSlot(ctx context.Context, userID, category, sourceKey string) (Slot, error) {
+	ref, err := r.slotRef(userID, category, sourceKey)
+	if err != nil {
+		return Slot{}, err
+	}
+	snapshot, err := ref.Get(ctx)
+	if status.Code(err) == codes.NotFound {
+		return Slot{SchemaVersion: SchemaVersion, SourceKey: sourceKey}, nil
+	}
+	if err != nil {
+		return Slot{}, err
+	}
+	slot, err := decodeSlot(snapshot.Data())
+	if err != nil {
+		return Slot{}, err
+	}
+	if slot.SourceKey != sourceKey || slot.SchemaVersion != SchemaVersion || slot.SourceRevision < 0 {
+		return Slot{}, errors.New("invalid nudge source slot")
+	}
+	return slot, nil
+}
+
 func (r *Repository) ApplyObservation(ctx context.Context, userID string, input ObservationInput) (bool, error) {
 	if err := ValidateObservationInput(input); err != nil {
 		return false, err
@@ -68,6 +90,18 @@ func (r *Repository) ApplyObservation(ctx context.Context, userID string, input 
 		return false, ErrInvalidInput
 	}
 	return r.apply(ctx, userID, input.Category, input.SourceKey, input.ExpectedSourceRevision, input.ProducerWitness, &input, nil, false)
+}
+
+// ApplyPipelineLegacyBootstrap commits the first exact legacy failure and its
+// quota sequence floor inside the same Firestore transaction as the common
+// source slot and attention material. The fence must complete all of its reads
+// before it stages its quota write.
+func (r *Repository) ApplyPipelineLegacyBootstrap(ctx context.Context, userID string, input ObservationInput, fence func(context.Context, *firestore.Transaction) error) (bool, error) {
+	if err := ValidateObservationInput(input); err != nil || input.Category != CategoryPipelineFailure ||
+		input.ProducerWitness.BootstrapDigest == "" || input.ProducerWitness.ProjectPipelineSequence != input.ProducerWitness.BootstrapFloor || fence == nil {
+		return false, ErrInvalidInput
+	}
+	return r.applyWithFence(ctx, userID, input.Category, input.SourceKey, input.ExpectedSourceRevision, input.ProducerWitness, &input, nil, false, fence, true)
 }
 
 func (r *Repository) ApplyClear(ctx context.Context, userID string, input ClearInput) (bool, error) {
@@ -111,6 +145,10 @@ func (r *Repository) ApplyPurposeConfirmation(ctx context.Context, userID string
 }
 
 func (r *Repository) apply(ctx context.Context, userID, category, sourceKey string, expected int64, witness ProducerWitness, upsert *ObservationInput, clear *ClearInput, requirePurposeEvidence bool) (bool, error) {
+	return r.applyWithFence(ctx, userID, category, sourceKey, expected, witness, upsert, clear, requirePurposeEvidence, nil, false)
+}
+
+func (r *Repository) applyWithFence(ctx context.Context, userID, category, sourceKey string, expected int64, witness ProducerWitness, upsert *ObservationInput, clear *ClearInput, requirePurposeEvidence bool, fence func(context.Context, *firestore.Transaction) error, requireAbsent bool) (bool, error) {
 	slotRef, err := r.slotRef(userID, category, sourceKey)
 	if err != nil {
 		return false, err
@@ -123,8 +161,10 @@ func (r *Repository) apply(ctx context.Context, userID, category, sourceKey stri
 	err = r.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
 		accepted = false
 		slot := Slot{SchemaVersion: SchemaVersion, SourceKey: sourceKey}
+		slotExists := false
 		slotSnap, slotErr := tx.Get(slotRef)
 		if slotErr == nil {
+			slotExists = true
 			slot, slotErr = decodeSlot(slotSnap.Data())
 		} else if status.Code(slotErr) != codes.NotFound {
 			return slotErr
@@ -142,6 +182,13 @@ func (r *Repository) apply(ctx context.Context, userID, category, sourceKey stri
 		if slot.LastAppliedConfirmationID != "" && clear != nil && clear.ConfirmationID != "" && slot.LastAppliedConfirmationID == clear.ConfirmationID {
 			accepted = true
 			return nil
+		}
+		if upsert != nil && witness.BootstrapDigest != "" && slot.Active && slot.ProducerWitness == witness && slot.PayloadDigest == upsert.PayloadDigest {
+			accepted = true
+			return nil
+		}
+		if requireAbsent && slotExists {
+			return ErrSourceRevisionConflict
 		}
 		if slot.SourceRevision != expected {
 			return ErrSourceRevisionConflict
@@ -171,6 +218,11 @@ func (r *Repository) apply(ctx context.Context, userID, category, sourceKey stri
 		}
 		if cat.SchemaVersion != SchemaVersion || cat.Category != category {
 			return errors.New("invalid nudge category state")
+		}
+		if fence != nil {
+			if err := fence(ctx, tx); err != nil {
+				return err
+			}
 		}
 		if requirePurposeEvidence {
 			confirmationID := witness.ConfirmationID

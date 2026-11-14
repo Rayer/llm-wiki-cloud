@@ -65,3 +65,24 @@ func TestIntFromFirestore(t *testing.T) {
 		}
 	}
 }
+
+func TestQuotaReservationPipelineSequenceAndModeReadback(t *testing.T) {
+	reservation := quotaReservationFromData("reservation-8", map[string]interface{}{
+		"user_id": "owner", "project_id": "project-a", "attempt_id": "attempt-8", "execution_id": "run-8",
+		"project_pipeline_sequence": int64(8), "mode": "incremental", "trigger": "source_commit",
+	})
+	if reservation.ProjectPipelineSequence != 8 || !reservation.ProjectPipelineSequencePresent ||
+		reservation.Mode != "incremental" || reservation.Trigger != "source_commit" || reservation.AttemptID != "attempt-8" {
+		t.Fatalf("sequence reservation readback lost source witness: %+v", reservation)
+	}
+	legacy := quotaReservationFromData("legacy", map[string]interface{}{"intent_mode": "full", "trigger": "manual"})
+	if legacy.ProjectPipelineSequencePresent || legacy.ProjectPipelineSequence != 0 || legacy.Mode != "full" {
+		t.Fatalf("legacy reservation did not remain explicitly unsequenced: %+v", legacy)
+	}
+	for _, value := range []interface{}{"8", int64(-1), float64(8)} {
+		malformed := quotaReservationFromData("malformed", map[string]interface{}{"project_pipeline_sequence": value})
+		if !malformed.ProjectPipelineSequencePresent || malformed.ProjectPipelineSequence >= 0 {
+			t.Fatalf("malformed sequence %T(%v) was trusted: %+v", value, value, malformed)
+		}
+	}
+}

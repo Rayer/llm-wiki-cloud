@@ -51,16 +51,23 @@ func (h *Handler) ReconcileNudges(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "nudge state unavailable"})
 		return
 	}
-	view, err := h.readNudgeView(c.Request.Context(), userID)
+	repository := nudge.NewRepository(h.firestore.Raw())
+	failures, notices := h.reconcilePipelineFailureNudges(c.Request.Context(), userID, repository)
+	view, err := repository.ReadWithPublicationVerifier(c.Request.Context(), userID, failures, notices,
+		func(ctx context.Context, ownerID, projectID string, witness nudge.ProducerWitness) (bool, error) {
+			identity, missing, err := currentContentContextPublication(ctx, h.store, ownerID, projectID)
+			if err != nil {
+				return false, err
+			}
+			return !missing && identity.GenerationID == witness.PublicationGeneration &&
+				contentcontext.NormalizeDigest(identity.ConceptsDigest) == contentcontext.NormalizeDigest(witness.ConceptsDigest), nil
+		})
 	if err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "nudge state unavailable"})
 		return
 	}
 	view.Partial = true
-	view.Failures = []nudge.SourceFailure{
-		{SafeClass: "pipeline_observer_not_qualified"},
-		{SafeClass: "release_adapter_not_qualified"},
-	}
+	view.Failures = append(view.Failures, nudge.SourceFailure{SafeClass: "release_adapter_not_qualified"})
 	c.JSON(http.StatusOK, view)
 }
 
