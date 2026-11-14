@@ -461,6 +461,12 @@
         "error"
       ]
     },
+    "Profile.errors.requestBodyTooLarge": {
+      "kind": "literal",
+      "params": [
+        "max"
+      ]
+    },
     "Profile.errors.saveUnconfirmed": {
       "kind": "literal",
       "params": [
@@ -473,6 +479,13 @@
         "error"
       ]
     },
+    "Profile.guidanceCharacterCount": {
+      "kind": "literal",
+      "params": [
+        "count",
+        "max"
+      ]
+    },
     "Profile.guidanceReadError": {
       "kind": "literal",
       "params": [
@@ -483,6 +496,13 @@
       "kind": "literal",
       "params": [
         "count"
+      ]
+    },
+    "Profile.limitExceeded": {
+      "kind": "literal",
+      "params": [
+        "actual",
+        "max"
       ]
     },
     "Profile.localUx.guide.next": {
@@ -510,6 +530,13 @@
         "index"
       ]
     },
+    "Profile.profileCharacterCount": {
+      "kind": "literal",
+      "params": [
+        "count",
+        "max"
+      ]
+    },
     "Profile.removeRequirement": {
       "kind": "literal",
       "params": [
@@ -520,6 +547,27 @@
       "kind": "literal",
       "params": [
         "index"
+      ]
+    },
+    "Profile.requirementCharacterCount": {
+      "kind": "literal",
+      "params": [
+        "count",
+        "max"
+      ]
+    },
+    "Profile.requirementCountExceeded": {
+      "kind": "literal",
+      "params": [
+        "actual",
+        "max"
+      ]
+    },
+    "Profile.requirementRowCount": {
+      "kind": "literal",
+      "params": [
+        "count",
+        "max"
       ]
     },
     "Profile.taggingWork": {

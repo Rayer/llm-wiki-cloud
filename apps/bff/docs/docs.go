@@ -1733,7 +1733,7 @@ const docTemplate = `{
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/handler.ErrorResponse"
+                            "$ref": "#/definitions/v1.profilePutErrorResponse"
                         }
                     },
                     "401": {
@@ -1752,6 +1752,12 @@ const docTemplate = `{
                         "description": "Conflict",
                         "schema": {
                             "$ref": "#/definitions/v1.profileConflictResponse"
+                        }
+                    },
+                    "413": {
+                        "description": "Request Entity Too Large",
+                        "schema": {
+                            "$ref": "#/definitions/v1.profileRequestBodyTooLargeResponse"
                         }
                     },
                     "428": {
@@ -4035,6 +4041,26 @@ const docTemplate = `{
                 }
             }
         },
+        "v1.profilePutErrorResponse": {
+            "type": "object",
+            "properties": {
+                "actual": {
+                    "type": "integer"
+                },
+                "code": {
+                    "type": "string"
+                },
+                "error": {
+                    "type": "string"
+                },
+                "max": {
+                    "type": "integer"
+                },
+                "violation": {
+                    "type": "string"
+                }
+            }
+        },
         "v1.profilePutRequest": {
             "type": "object",
             "required": [
@@ -4050,6 +4076,20 @@ const docTemplate = `{
                     "items": {
                         "$ref": "#/definitions/v1.ProfileRequirement"
                     }
+                }
+            }
+        },
+        "v1.profileRequestBodyTooLargeResponse": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string"
+                },
+                "error": {
+                    "type": "string"
+                },
+                "max_bytes": {
+                    "type": "integer"
                 }
             }
         },

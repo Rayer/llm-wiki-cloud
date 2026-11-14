@@ -8,6 +8,7 @@ import (
 
 	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"github.com/rayer/llm-wiki-bff/internal/profileartifacts"
+	"github.com/rayer/llm-wiki-bff/internal/profilelimits"
 	"github.com/rayer/llm-wiki-bff/internal/wikiindex"
 )
 
@@ -61,6 +62,33 @@ type Executor struct {
 	Provider  *Provider
 }
 
+const (
+	FailureCodeRequirementsOverLimit = "profile_requirements_over_limit"
+	FailureCodeGuidanceTooLong       = "profile_guidance_too_long"
+)
+
+// committedLimitFailure marks an over-limit rejection only after its Profile
+// failure transition was durably committed. Callers may use the marker to
+// stop runtime retries without mistaking an uncertain failure write for a
+// recorded user-visible rejection.
+type committedLimitFailure struct {
+	code  string
+	cause error
+}
+
+func (e *committedLimitFailure) Error() string { return e.cause.Error() }
+func (e *committedLimitFailure) Unwrap() error { return e.cause }
+
+// CommittedLimitFailureCode returns the specific over-limit code only when
+// FailProfileDerivation completed successfully for that failure.
+func CommittedLimitFailureCode(err error) (string, bool) {
+	var failure *committedLimitFailure
+	if !errors.As(err, &failure) {
+		return "", false
+	}
+	return failure.code, true
+}
+
 func (e *Executor) Run(ctx context.Context, attempt Attempt) (result Result, resultErr error) {
 	ctx, runSpan := observability.StartProfileSpan(ctx, "profile.derive")
 	defer func() {
@@ -95,7 +123,12 @@ func (e *Executor) Run(ctx context.Context, attempt Attempt) (result Result, res
 		return Result{}, e.fail(ctx, attempt, inputDigest, "profile_revision_stale", errors.New("claimed Profile revision mismatch"))
 	}
 	if err := validateRequirements(profile.Requirements); err != nil {
-		return Result{}, e.fail(ctx, attempt, inputDigest, "profile_requirements_invalid", err)
+		code := "profile_requirements_invalid"
+		var limitViolation *profilelimits.Violation
+		if errors.As(err, &limitViolation) {
+			code = FailureCodeRequirementsOverLimit
+		}
+		return Result{}, e.fail(ctx, attempt, inputDigest, code, err)
 	}
 	needsConcepts := len(profile.Requirements) > 0 || profile.HasActive
 	contentCtx, contentSpan := observability.StartProfileSpan(ctx, "profile.derive.content_pin")
@@ -242,6 +275,9 @@ func (e *Executor) fail(ctx context.Context, attempt Attempt, requirementsDigest
 	if err != nil {
 		return errors.Join(cause, err)
 	}
+	if code == FailureCodeRequirementsOverLimit || code == FailureCodeGuidanceTooLong {
+		return &committedLimitFailure{code: code, cause: cause}
+	}
 	return cause
 }
 
@@ -249,6 +285,10 @@ func failureCode(err error) string {
 	var diagnosticError *failureDiagnosticError
 	if errors.As(err, &diagnosticError) && diagnosticError.cause != nil {
 		err = diagnosticError.cause
+	}
+	var limitViolation *profilelimits.Violation
+	if errors.As(err, &limitViolation) && limitViolation.Kind == profilelimits.ViolationCompileGuidance {
+		return FailureCodeGuidanceTooLong
 	}
 	if strings.Contains(err.Error(), "provider_model_unreported") {
 		return "provider_model_unreported"
@@ -268,6 +308,8 @@ func failureDiagnosticForCode(code string) FailureDiagnostic {
 	case "profile_revision_stale":
 		diagnostic = FailureDiagnostic{Stage: FailureStageRevisionClaim, Class: FailureClassStaleRevision}
 	case "profile_requirements_invalid":
+		diagnostic = FailureDiagnostic{Stage: FailureStageRequirements, Class: FailureClassInputInvalid}
+	case FailureCodeRequirementsOverLimit:
 		diagnostic = FailureDiagnostic{Stage: FailureStageRequirements, Class: FailureClassInputInvalid}
 	case "profile_generation_unavailable":
 		diagnostic = FailureDiagnostic{Stage: FailureStageContentPin, Class: FailureClassContentUnavailable}

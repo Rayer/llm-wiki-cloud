@@ -273,13 +273,29 @@ export class ApiError extends Error {
   status: number;
   diagnosticId?: string;
   requestId?: string;
+  code?: string;
+  violation?: string;
+  max?: number;
+  actual?: number;
+  maxBytes?: number;
 
-  constructor(message: string, status: number, diagnosticId?: string, requestId?: string | null) {
+  constructor(
+    message: string,
+    status: number,
+    diagnosticId?: string,
+    requestId?: string | null,
+    details?: { code?: string; violation?: string; max?: number; actual?: number; maxBytes?: number },
+  ) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     this.diagnosticId = normalizeDiagnosticId(diagnosticId);
     this.requestId = normalizeRequestId(requestId);
+    this.code = details?.code;
+    this.violation = details?.violation;
+    this.max = details?.max;
+    this.actual = details?.actual;
+    this.maxBytes = details?.maxBytes;
   }
 }
 
@@ -721,6 +737,23 @@ function profileApiError(payload: unknown, fallback: string): string {
   return asString(payload.error) ?? asString(payload.message) ?? asString(payload.detail) ?? fallback;
 }
 
+function profileApiErrorDetails(payload: unknown): {
+  code?: string;
+  violation?: string;
+  max?: number;
+  actual?: number;
+  maxBytes?: number;
+} {
+  if (!isRecord(payload)) return {};
+  const details: ReturnType<typeof profileApiErrorDetails> = {};
+  if (typeof payload.code === 'string') details.code = payload.code;
+  if (typeof payload.violation === 'string') details.violation = payload.violation;
+  if (typeof payload.max === 'number' && Number.isSafeInteger(payload.max)) details.max = payload.max;
+  if (typeof payload.actual === 'number' && Number.isSafeInteger(payload.actual)) details.actual = payload.actual;
+  if (typeof payload.max_bytes === 'number' && Number.isSafeInteger(payload.max_bytes)) details.maxBytes = payload.max_bytes;
+  return details;
+}
+
 async function profileRequest<T>(projectId: string, suffix = '', options: {
   method?: string;
   body?: unknown;
@@ -735,7 +768,13 @@ async function profileRequest<T>(projectId: string, suffix = '', options: {
   });
   const payload: unknown = await response.json().catch(() => null);
   if (!response.ok) {
-    throw new ApiError(profileApiError(payload, `Profile request failed (${response.status})`), response.status, undefined, response.headers.get('X-Request-ID'));
+    throw new ApiError(
+      profileApiError(payload, `Profile request failed (${response.status})`),
+      response.status,
+      undefined,
+      response.headers.get('X-Request-ID'),
+      profileApiErrorDetails(payload),
+    );
   }
   return payload as T;
 }

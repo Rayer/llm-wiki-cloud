@@ -3,6 +3,7 @@ package profileartifacts
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -121,6 +122,55 @@ func TestCreateOnlyAcceptsOnlyExactExistingBytes(t *testing.T) {
 	objects.existing[BootstrapObjectPath(ref.Revision)] = mutated
 	if err := WriteBootstrapGuidance(context.Background(), objects, ref, data); err == nil {
 		t.Fatal("different existing bytes accepted")
+	}
+}
+
+func TestGuidanceCreationLimitsDoNotTightenLegacyReaders(t *testing.T) {
+	bootstrap := BootstrapGuidanceEnvelope{
+		SchemaVersion: BootstrapGuidanceSchema, ProfileRevision: 1, InputDigest: strings.Repeat("1", 64),
+		ModelVersion: "model", PromptVersion: "prompt", CompileGuidance: strings.Repeat("🙂", 6_001),
+	}
+	bootstrapData, err := json.Marshal(bootstrap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bootstrapRef := BootstrapGuidanceRef{
+		Revision: SHA256(bootstrapData), ProfileRevision: bootstrap.ProfileRevision, InputDigest: bootstrap.InputDigest,
+		ModelVersion: bootstrap.ModelVersion, PromptVersion: bootstrap.PromptVersion, SchemaVersion: bootstrap.SchemaVersion,
+	}
+	if _, err := ValidateBootstrapGuidance(bootstrapData, bootstrapRef); err != nil {
+		t.Fatalf("legacy bootstrap reader rejected over-limit guidance: %v", err)
+	}
+	if _, _, err := EncodeBootstrapGuidance(bootstrap); err == nil {
+		t.Fatal("bootstrap encoder accepted over-limit guidance")
+	}
+
+	generation := GenerationGuidanceEnvelope{
+		SchemaVersion: GuidanceSchema, InputDigest: strings.Repeat("2", 64), SourceContentGeneration: "g1",
+		CanonicalConceptsDigest: strings.Repeat("3", 64), ModelVersion: "model", PromptVersion: "prompt",
+		CompileGuidance: strings.Repeat("🙂", 6_001),
+	}
+	generationData, err := json.Marshal(generation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	generationRef := DerivedRef{
+		Revision: SHA256(generationData), InputDigest: generation.InputDigest, ModelVersion: generation.ModelVersion,
+		PromptVersion: generation.PromptVersion, SchemaVersion: generation.SchemaVersion,
+	}
+	if _, err := ValidateGuidance(generationData, generationRef); err != nil {
+		t.Fatalf("legacy guidance reader rejected over-limit guidance: %v", err)
+	}
+	if _, _, err := EncodeGuidance(generation); err == nil {
+		t.Fatal("guidance encoder accepted over-limit guidance")
+	}
+
+	objects := &objectStoreStub{existing: map[string][]byte{}}
+	if err := WriteBootstrapGuidance(context.Background(), objects, bootstrapRef, bootstrapData); err == nil || objects.writes != 0 {
+		t.Fatalf("direct bootstrap write error=%v writes=%d, want reject before write", err, objects.writes)
+	}
+	if err := WriteGuidance(context.Background(), objects, generationRef, generationData); err == nil || objects.writes != 0 {
+		t.Fatalf("direct guidance write error=%v writes=%d, want reject before write", err, objects.writes)
 	}
 }
 
