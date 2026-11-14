@@ -134,14 +134,14 @@ func (h *Handler) GetContentContext(c *gin.Context) {
 	response.DeclaredPurposeContext = readback.Declaration
 	response.PurposeComparisonStatus = readback.ComparisonStatus
 	response.PurposeComparison = readback.Comparison
-	verifiedIdentity, stillPublished, identityErr := currentContentContextPublication(c.Request.Context(), h.store, userID, projectID)
+	verifiedIdentity, publicationMissing, identityErr := currentContentContextPublication(c.Request.Context(), h.store, userID, projectID)
 	verifiedProjectSnapshot, projectErr := scopedfirestore.Collection(h.firestore.Raw(), "projects").Doc(projectDocID(userID, projectID)).Get(c.Request.Context())
 	verifiedDescriptionRevision, verifiedProjectID, verifiedOwner, validVerifiedProject := int64(-1), "", "", false
 	if projectErr == nil {
 		verifiedProject, owner, valid := projectResponseFromFirestoreDoc(projectDocID(userID, projectID), verifiedProjectSnapshot.Data())
 		verifiedDescriptionRevision, verifiedProjectID, verifiedOwner, validVerifiedProject = verifiedProject.DescriptionRevision, verifiedProject.ID, owner, valid
 	}
-	if identityErr != nil || !stillPublished || verifiedIdentity.GenerationID != identity.GenerationID ||
+	if identityErr != nil || publicationMissing || verifiedIdentity.GenerationID != identity.GenerationID ||
 		contentcontext.NormalizeDigest(verifiedIdentity.ConceptsDigest) != contentcontext.NormalizeDigest(identity.ConceptsDigest) ||
 		projectErr != nil || !validVerifiedProject || verifiedOwner != userID || verifiedProjectID != projectID || verifiedDescriptionRevision != project.DescriptionRevision {
 		response.Stale = true

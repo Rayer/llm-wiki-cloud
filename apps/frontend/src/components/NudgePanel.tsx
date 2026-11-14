@@ -15,8 +15,12 @@ export function NudgePanel({ onClose }: { onClose: () => void }) {
   const { confirmNavigation } = useNavigationBlocker();
   const requestIdentity = JSON.stringify([user?.id ?? null, sessionIdentityEpoch, sessionEpoch, isDemoSession]);
   const requestIdentityRef = useRef(requestIdentity);
+  const reconcileSequenceRef = useRef(0);
   useLayoutEffect(() => { requestIdentityRef.current = requestIdentity; }, [requestIdentity]);
   const [viewState, setViewState] = useState<{ identity: string; value: NudgeView } | null>(null);
+  const [sourceStatusState, setSourceStatusState] = useState<{
+    identity: string; value: Pick<NudgeView, 'partial' | 'failures' | 'notices'>;
+  } | null>(null);
   const [errorState, setErrorState] = useState<{ identity: string; value: string } | null>(null);
   const [busyState, setBusyState] = useState<{ identity: string; value: boolean } | null>(null);
   const [copiedState, setCopiedState] = useState<{ identity: string; actionId: string } | null>(null);
@@ -24,6 +28,7 @@ export function NudgePanel({ onClose }: { onClose: () => void }) {
     identity: string; text: string; href: string; action: NudgeAction; item: NudgeItem;
   } | null>(null);
   const view = viewState?.identity === requestIdentity ? viewState.value : null;
+  const sourceStatus = sourceStatusState?.identity === requestIdentity ? sourceStatusState.value : null;
   const error = errorState?.identity === requestIdentity ? errorState.value : '';
   const busy = busyState?.identity === requestIdentity && busyState.value;
   const copied = copiedState?.identity === requestIdentity ? copiedState.actionId : '';
@@ -31,25 +36,46 @@ export function NudgePanel({ onClose }: { onClose: () => void }) {
 
   const refresh = async (identity = requestIdentity, reconcile = false) => {
     if (requestIdentityRef.current !== identity) return;
+    const reconcileSequence = reconcile ? ++reconcileSequenceRef.current : null;
     setBusyState({ identity, value: true });
     try {
       const saved = reconcile ? await reconcileNudges() : await getNudges();
-      if (requestIdentityRef.current !== identity) return;
+      if (requestIdentityRef.current !== identity || (reconcileSequence !== null && reconcileSequenceRef.current !== reconcileSequence)) return;
       setViewState({ identity, value: saved });
+      if (reconcile) {
+        setSourceStatusState({
+          identity,
+          value: { partial: saved.partial, failures: saved.failures, notices: saved.notices },
+        });
+      } else if (saved.partial) {
+        setSourceStatusState({
+          identity,
+          value: { partial: true, failures: saved.failures, notices: saved.notices },
+        });
+      }
       setErrorState({ identity, value: '' });
     } catch {
-      if (requestIdentityRef.current === identity) setErrorState({ identity, value: t('Nudge.loadFailed') });
+      if (requestIdentityRef.current === identity && (reconcileSequence === null || reconcileSequenceRef.current === reconcileSequence)) {
+        setErrorState({ identity, value: t('Nudge.loadFailed') });
+      }
     } finally {
-      if (requestIdentityRef.current === identity) setBusyState({ identity, value: false });
+      if (requestIdentityRef.current === identity && (reconcileSequence === null || reconcileSequenceRef.current === reconcileSequence)) {
+        setBusyState({ identity, value: false });
+      }
     }
   };
 
   useEffect(() => {
     let active = true;
     if (!user || isDemoSession) return () => { active = false; };
+    const reconcileSequence = ++reconcileSequenceRef.current;
     void reconcileNudges().then((saved) => {
-      if (!active || requestIdentityRef.current !== requestIdentity) return;
+      if (!active || requestIdentityRef.current !== requestIdentity || reconcileSequenceRef.current !== reconcileSequence) return;
       setViewState({ identity: requestIdentity, value: saved });
+      setSourceStatusState({
+        identity: requestIdentity,
+        value: { partial: saved.partial, failures: saved.failures, notices: saved.notices },
+      });
       setErrorState({ identity: requestIdentity, value: '' });
     }).catch(() => {
       if (active && requestIdentityRef.current === requestIdentity) setErrorState({ identity: requestIdentity, value: t('Nudge.loadFailed') });
@@ -175,7 +201,7 @@ export function NudgePanel({ onClose }: { onClose: () => void }) {
           <button type="button" onClick={onClose} aria-label={t('Nudge.close')} className="min-h-11 min-w-11 rounded text-zinc-400 hover:bg-white/8 hover:text-white"><X className="mx-auto size-5" /></button>
         </div>
         {error ? <p role="alert" className="mt-5 rounded border border-amber-300/30 bg-amber-400/8 p-3 text-sm text-amber-100">{error}</p> : null}
-        {view?.partial ? <p role="status" className="mt-4 text-sm text-amber-100">{t('Nudge.partial')}</p> : null}
+        {(sourceStatus?.partial ?? view?.partial) ? <p role="status" className="mt-4 text-sm text-amber-100">{t('Nudge.partial')}</p> : null}
         {!view && !error ? <p role="status" className="mt-5 text-sm text-zinc-400">{t('Nudge.loading')}</p> : null}
         {view?.items.length === 0 ? <p className="mt-5 text-sm text-zinc-400">{t('Nudge.empty')}</p> : null}
         <div className="mt-5 space-y-4">

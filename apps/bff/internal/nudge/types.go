@@ -41,42 +41,42 @@ const (
 )
 
 type Target struct {
-	Kind        string `json:"kind"`
-	ProjectID   string `json:"project_id,omitempty"`
-	ExecutionID string `json:"execution_id,omitempty"`
-	Mode        string `json:"mode,omitempty"`
-	Version     string `json:"version,omitempty"`
+	Kind        string `json:"kind" firestore:"kind"`
+	ProjectID   string `json:"project_id,omitempty" firestore:"project_id,omitempty"`
+	ExecutionID string `json:"execution_id,omitempty" firestore:"execution_id,omitempty"`
+	Mode        string `json:"mode,omitempty" firestore:"mode,omitempty"`
+	Version     string `json:"version,omitempty" firestore:"version,omitempty"`
 }
 
 type Action struct {
-	ID       string  `json:"id"`
-	Kind     string  `json:"kind"`
-	Label    string  `json:"label"`
-	CopyText string  `json:"copy_text,omitempty"`
-	Target   *Target `json:"target,omitempty"`
+	ID       string  `json:"id" firestore:"id"`
+	Kind     string  `json:"kind" firestore:"kind"`
+	Label    string  `json:"label" firestore:"label"`
+	CopyText string  `json:"copy_text,omitempty" firestore:"copy_text,omitempty"`
+	Target   *Target `json:"target,omitempty" firestore:"target,omitempty"`
 }
 
 type Observation struct {
-	ProjectID        string     `json:"project_id,omitempty"`
-	ProjectName      string     `json:"project_name,omitempty"`
-	ExecutionID      string     `json:"execution_id,omitempty"`
-	Title            string     `json:"title"`
-	Body             string     `json:"body"`
-	DeclaredPurpose  string     `json:"declared_purpose,omitempty"`
-	PublishedSummary string     `json:"published_summary,omitempty"`
-	Coverage         Coverage   `json:"coverage,omitempty"`
-	Severity         Severity   `json:"severity"`
-	Actions          []Action   `json:"actions"`
-	Stale            bool       `json:"stale,omitempty"`
-	ObservedAt       *time.Time `json:"observed_at,omitempty"`
+	ProjectID        string     `json:"project_id,omitempty" firestore:"project_id,omitempty"`
+	ProjectName      string     `json:"project_name,omitempty" firestore:"project_name,omitempty"`
+	ExecutionID      string     `json:"execution_id,omitempty" firestore:"execution_id,omitempty"`
+	Title            string     `json:"title" firestore:"title"`
+	Body             string     `json:"body" firestore:"body"`
+	DeclaredPurpose  string     `json:"declared_purpose,omitempty" firestore:"declared_purpose,omitempty"`
+	PublishedSummary string     `json:"published_summary,omitempty" firestore:"published_summary,omitempty"`
+	Coverage         Coverage   `json:"coverage,omitempty" firestore:"coverage"`
+	Severity         Severity   `json:"severity" firestore:"severity"`
+	Actions          []Action   `json:"actions" firestore:"actions"`
+	Stale            bool       `json:"stale,omitempty" firestore:"stale,omitempty"`
+	ObservedAt       *time.Time `json:"observed_at,omitempty" firestore:"observed_at,omitempty"`
 }
 
 type Coverage struct {
-	TotalConcepts          int  `json:"total_concepts,omitempty"`
-	SelectedConcepts       int  `json:"selected_concepts,omitempty"`
-	Sampled                bool `json:"sampled,omitempty"`
-	TitleTruncatedConcepts int  `json:"title_truncated_concepts,omitempty"`
-	BodyTruncatedConcepts  int  `json:"body_truncated_concepts,omitempty"`
+	TotalConcepts          int  `json:"total_concepts" firestore:"total_concepts"`
+	SelectedConcepts       int  `json:"selected_concepts" firestore:"selected_concepts"`
+	Sampled                bool `json:"sampled" firestore:"sampled"`
+	TitleTruncatedConcepts int  `json:"title_truncated_concepts" firestore:"title_truncated_concepts"`
+	BodyTruncatedConcepts  int  `json:"body_truncated_concepts" firestore:"body_truncated_concepts"`
 }
 
 // ProducerWitness is a tagged union. Fields irrelevant to Kind must remain empty.

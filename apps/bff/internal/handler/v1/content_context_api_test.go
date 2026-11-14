@@ -119,9 +119,17 @@ func TestContentContextProjectReadAuthorizationHidesCrossOwner(t *testing.T) {
 }
 
 func TestCurrentContentContextPublicationHandlesLegacyAndReadFailure(t *testing.T) {
+	currentRoot := newContentContextTestRoot(t, storage.QueryGenerationIdentity{
+		ProjectID: "project", GenerationID: "generation-current", ConceptsDigest: testContentContextDigest('a'),
+	}, nil)
+	_, missing, err := currentContentContextPublication(context.Background(), currentRoot, "owner", "project")
+	if err != nil || missing {
+		t.Fatalf("current publication = missing:%t err:%v, want present without error", missing, err)
+	}
+
 	root := newContentContextTestRoot(t, storage.QueryGenerationIdentity{}, storage.ErrQueryGenerationUnpinned)
 	root.viewToken = "legacy"
-	_, missing, err := currentContentContextPublication(context.Background(), root, "owner", "project")
+	_, missing, err = currentContentContextPublication(context.Background(), root, "owner", "project")
 	if err != nil || !missing {
 		t.Fatalf("legacy publication = missing:%t err:%v, want missing without error", missing, err)
 	}
@@ -177,9 +185,20 @@ func TestGetContentContextReadsOnlyPersistedStateAndPinnedIdentity(t *testing.T)
 		body.CurrentConceptsSHA256 == nil || *body.CurrentConceptsSHA256 != strings.TrimPrefix(currentDigest, "sha256:") || body.Summary == nil || body.Summary.Text != "same digest summary" || body.Stale {
 		t.Fatalf("same-digest carry-forward response = %+v", body)
 	}
-	if root.pinCalls != 1 || root.identityCalls != 1 || root.writeCalls != 0 || executor.calls != 0 {
-		t.Fatalf("pin=%d identity=%d writes=%d query=%d; want 1, 1, 0, 0", root.pinCalls, root.identityCalls, root.writeCalls, executor.calls)
+	if root.pinCalls != 2 || root.identityCalls != 2 || root.writeCalls != 0 || executor.calls != 0 {
+		t.Fatalf("pin=%d identity=%d writes=%d query=%d; want 2, 2, 0, 0", root.pinCalls, root.identityCalls, root.writeCalls, executor.calls)
 	}
+
+	changedIdentity := root.identity
+	changedIdentity.GenerationID = "generation-replaced"
+	changedIdentity.ConceptsDigest = strings.Repeat("d", 64)
+	root.identityCalls = 0
+	root.identitySequence = []storage.QueryGenerationIdentity{root.identity, changedIdentity}
+	response = serveContentContext(h, owner, projectID, projectID)
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil || response.Code != http.StatusOK || !body.Stale {
+		t.Fatalf("publication changed between reads: status=%d body=%+v err=%v, want stale", response.Code, body, err)
+	}
+	root.identitySequence = nil
 
 	root.identity.ConceptsDigest = testContentContextDigest('b')
 	response = serveContentContext(h, owner, projectID, projectID)
@@ -533,12 +552,13 @@ func newContentContextTestRoot(t *testing.T, identity storage.QueryGenerationIde
 
 type contentContextTestRoot struct {
 	storage.RootStore
-	identity      storage.QueryGenerationIdentity
-	identityErr   error
-	viewToken     string
-	pinCalls      int
-	identityCalls int
-	writeCalls    int
+	identity         storage.QueryGenerationIdentity
+	identitySequence []storage.QueryGenerationIdentity
+	identityErr      error
+	viewToken        string
+	pinCalls         int
+	identityCalls    int
+	writeCalls       int
 }
 
 func (r *contentContextTestRoot) Scope(userID, projectID string) storage.Store {
@@ -557,6 +577,13 @@ func (s *contentContextTestStore) Pin(context.Context) (storage.Store, error) {
 
 func (s *contentContextTestStore) QueryGenerationIdentity(context.Context) (storage.QueryGenerationIdentity, error) {
 	s.root.identityCalls++
+	if len(s.root.identitySequence) > 0 {
+		index := s.root.identityCalls - 1
+		if index >= len(s.root.identitySequence) {
+			index = len(s.root.identitySequence) - 1
+		}
+		return s.root.identitySequence[index], s.root.identityErr
+	}
 	return s.root.identity, s.root.identityErr
 }
 

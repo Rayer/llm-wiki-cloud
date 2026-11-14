@@ -23,6 +23,11 @@ type Repository struct {
 	now    func() time.Time
 }
 
+// PublicationVerifier confirms the externally pinned publication identity for
+// a stored purpose observation. It is read-only and must not run comparison or
+// source reconciliation work.
+type PublicationVerifier func(context.Context, string, string, ProducerWitness) (bool, error)
+
 func NewRepository(client *firestore.Client) *Repository {
 	return &Repository{client: client, now: func() time.Time { return time.Now().UTC() }}
 }
@@ -307,6 +312,13 @@ func (r *Repository) PatchAttention(ctx context.Context, userID, category, atten
 }
 
 func (r *Repository) Read(ctx context.Context, userID string, failures []SourceFailure, notices []SourceNotice) (View, error) {
+	return r.ReadWithPublicationVerifier(ctx, userID, failures, notices, nil)
+}
+
+// ReadWithPublicationVerifier returns persisted Nudge state while rechecking
+// Project ownership and the source pair used by actions. It never mutates
+// source rows or invokes a producer.
+func (r *Repository) ReadWithPublicationVerifier(ctx context.Context, userID string, failures []SourceFailure, notices []SourceNotice, verifyPublication PublicationVerifier) (View, error) {
 	view := View{SchemaVersion: SchemaVersion, Partial: len(failures) > 0, Failures: failures, Notices: notices, Items: []Item{}}
 	if r == nil || r.client == nil || !auth.ValidPathSegment(userID) {
 		return view, errors.New("nudge store unavailable")
@@ -330,11 +342,43 @@ func (r *Repository) Read(ctx context.Context, userID string, failures []SourceF
 			if err != nil {
 				return view, err
 			}
-			if slot.SchemaVersion != SchemaVersion || slot.SourceKey == "" || observationSnapshot.Ref.ID != sourceDocumentID(slot.SourceKey) {
+			if slot.SchemaVersion != SchemaVersion || !validSourceKey(cat.Category, slot.SourceKey) || observationSnapshot.Ref.ID != sourceDocumentID(slot.SourceKey) {
 				return view, errors.New("invalid nudge source slot")
 			}
-			if !slot.Active || slot.Observation == nil {
+			if !slot.Active {
 				continue
+			}
+			if slot.Observation == nil || validateWitness(cat.Category, slot.SourceKey, slot.ProducerWitness) != nil || validateObservation(*slot.Observation) != nil {
+				return view, errors.New("invalid active nudge source slot")
+			}
+			projectID := slot.ProducerWitness.ProjectID
+			if projectID == "" {
+				projectID = slot.Observation.ProjectID
+			}
+			if projectID != "" {
+				owned, current, err := r.projectProjectionCurrent(ctx, userID, cat.Category, projectID, slot)
+				if err != nil {
+					appendProjectionFailure(&view, "project_context_unavailable")
+					continue
+				}
+				if !owned {
+					appendProjectionFailure(&view, "project_unavailable")
+					continue
+				}
+				if cat.Category == CategoryPurposeGap && verifyPublication != nil {
+					published, err := verifyPublication(ctx, userID, projectID, slot.ProducerWitness)
+					if err != nil {
+						appendProjectionFailure(&view, "project_publication_unavailable")
+						current = false
+					} else if !published {
+						current = false
+					}
+				}
+				if !current {
+					slot.Observation.Stale = true
+					slot.Observation.Actions = []Action{}
+					appendProjectionNotice(&view, slot.SourceKey, "project_context_changed")
+				}
 			}
 			item.Observations = append(item.Observations, slot)
 			if slot.Observation.Severity == SeverityUrgent {
@@ -357,6 +401,146 @@ func (r *Repository) Read(ctx context.Context, userID string, failures []SourceF
 	}
 	sort.Slice(view.Items, func(i, j int) bool { return view.Items[i].Category < view.Items[j].Category })
 	return view, nil
+}
+
+func appendProjectionFailure(view *View, safeClass string) {
+	for _, failure := range view.Failures {
+		if failure.SafeClass == safeClass && failure.ProjectID == "" {
+			view.Partial = true
+			return
+		}
+	}
+	view.Partial = true
+	view.Failures = append(view.Failures, SourceFailure{SafeClass: safeClass})
+}
+
+func appendProjectionNotice(view *View, sourceKey, safeClass string) {
+	for _, notice := range view.Notices {
+		if notice.SourceKey == sourceKey && notice.State == "stale" {
+			return
+		}
+	}
+	view.Notices = append(view.Notices, SourceNotice{SourceKey: sourceKey, State: "stale", SafeClass: safeClass})
+}
+
+func (r *Repository) projectProjectionCurrent(ctx context.Context, userID, category, projectID string, slot Slot) (owned, current bool, err error) {
+	if !auth.ValidPathSegment(projectID) {
+		return false, false, nil
+	}
+	projectRef := scopedfirestore.Collection(r.client, "projects").Doc(userID + "_" + projectID)
+	refs := []*firestore.DocumentRef{projectRef}
+	if category == CategoryPurposeGap {
+		contextRef := projectRef.Collection("content_context")
+		refs = append(refs, contextRef.Doc("state"), contextRef.Doc("declaration"), contextRef.Doc("comparison"))
+	}
+	data := make([]map[string]interface{}, len(refs))
+	found := make([]bool, len(refs))
+	err = r.client.RunTransaction(ctx, func(txctx context.Context, tx *firestore.Transaction) error {
+		for index, ref := range refs {
+			snapshot, readErr := tx.Get(ref)
+			if status.Code(readErr) == codes.NotFound {
+				continue
+			}
+			if readErr != nil {
+				return readErr
+			}
+			found[index] = true
+			data[index] = snapshot.Data()
+		}
+		return nil
+	}, firestore.ReadOnly)
+	if err != nil {
+		return false, false, err
+	}
+	if !found[0] {
+		return false, false, nil
+	}
+	project := data[0]
+	storedProjectID, _ := project["project_id"].(string)
+	if storedProjectID == "" {
+		storedProjectID = strings.TrimPrefix(projectRef.ID, userID+"_")
+	}
+	if project["user_id"] != userID || storedProjectID != projectID {
+		return false, false, nil
+	}
+	owned, current = true, true
+	projectName, _ := project["name"].(string)
+	if strings.TrimSpace(projectName) == "" {
+		projectName = projectID
+	}
+	observation := slot.Observation
+	if observation == nil || observation.ProjectID != projectID || observation.ProjectName != projectName {
+		current = false
+	}
+	if category == CategoryPurposeGap {
+		current = current && found[1] && found[2] && found[3] && purposeProjectionMatches(userID, projectID, project, data[1], data[2], data[3], slot)
+		return owned, current, nil
+	}
+	if category == CategoryPipelineFailure {
+		witness := slot.ProducerWitness
+		if witness.ProjectID != projectID || observation.ExecutionID == "" || observation.ExecutionID != witness.ExecutionID || len(observation.Actions) == 0 {
+			current = false
+		}
+		for _, action := range observation.Actions {
+			if action.Target == nil || ValidateTarget(*action.Target) != nil || action.Target.Kind != "pipeline-run" ||
+				action.Target.ProjectID != projectID || action.Target.ExecutionID != observation.ExecutionID {
+				current = false
+			}
+		}
+	}
+	return owned, current, nil
+}
+
+func purposeProjectionMatches(userID, projectID string, project, state, declaration, comparison map[string]interface{}, slot Slot) bool {
+	witness, observation := slot.ProducerWitness, slot.Observation
+	if observation == nil || witness.Kind != "purpose-comparison" || witness.ProjectID != projectID ||
+		project["user_id"] != userID || projectDescriptionRevision(project) != witness.DescriptionRevision ||
+		slot.LastAppliedConfirmationID == "" || slot.LastAppliedConfirmationID != witness.ConfirmationID {
+		return false
+	}
+	publication, _ := state["latest_publication"].(map[string]interface{})
+	lastGood, _ := state["last_good"].(map[string]interface{})
+	summarySourceGeneration, _ := lastGood["source_generation"].(string)
+	if publication == nil || lastGood == nil || publication["generation"] != witness.PublicationGeneration ||
+		!sameDigestValue(publication["concepts_sha256"], witness.ConceptsDigest) ||
+		!sameDigestValue(lastGood["concepts_sha256"], witness.ConceptsDigest) ||
+		!sameDigestValue(lastGood["input_digest"], witness.SummaryInputDigest) ||
+		summarySourceGeneration == "" {
+		return false
+	}
+	summary, _ := lastGood["text"].(string)
+	summaryHash := sha256.Sum256([]byte(summary))
+	summaryDigest := hex.EncodeToString(summaryHash[:])
+	if declaration["owner_id"] != userID || declaration["project_id"] != projectID || declaration["pair_key"] != witness.PairKey ||
+		firestoreInt(declaration["description_revision"]) != witness.DescriptionRevision ||
+		declaration["publication_generation"] != witness.PublicationGeneration ||
+		declaration["summary_source_generation"] != summarySourceGeneration ||
+		!sameDigestValue(declaration["concepts_sha256"], witness.ConceptsDigest) ||
+		!sameDigestValue(declaration["summary_input_digest"], witness.SummaryInputDigest) ||
+		declaration["summary_text_digest"] != summaryDigest || declaration["description"] != observation.DeclaredPurpose ||
+		observation.PublishedSummary != summary {
+		return false
+	}
+	comparisonDeclarationID, _ := declaration["declaration_id"].(string)
+	if comparison["owner_id"] != userID || comparison["project_id"] != projectID || comparison["pair_key"] != witness.PairKey ||
+		comparison["declaration_id"] != comparisonDeclarationID || comparison["publication_generation"] != witness.PublicationGeneration ||
+		!sameDigestValue(comparison["concepts_digest"], witness.ConceptsDigest) ||
+		!sameDigestValue(comparison["summary_input_digest"], witness.SummaryInputDigest) ||
+		comparison["summary_source_generation"] != summarySourceGeneration ||
+		comparison["summary_text_digest"] != summaryDigest || firestoreInt(comparison["description_revision"]) != witness.DescriptionRevision {
+		return false
+	}
+	projectName, _ := project["name"].(string)
+	if strings.TrimSpace(projectName) == "" {
+		projectName = projectID
+	}
+	if observation.ProjectName != projectName || len(observation.Actions) != 1 {
+		return false
+	}
+	action := observation.Actions[0]
+	return action.Kind == "copy-then-link" && action.CopyText == summary &&
+		action.Target != nil && action.Target.Kind == "project-description" && action.Target.ProjectID == projectID &&
+		ValidateTarget(*action.Target) == nil && action.Label == "Copy overview and open "+projectName+" description settings"
 }
 
 func (r *Repository) slotRef(userID, category, key string) (*firestore.DocumentRef, error) {

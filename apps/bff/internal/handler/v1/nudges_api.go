@@ -1,6 +1,7 @@
 package v1
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -8,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/rayer/llm-wiki-bff/internal/contentcontext"
 	"github.com/rayer/llm-wiki-bff/internal/handler"
 	"github.com/rayer/llm-wiki-bff/internal/nudge"
 )
@@ -28,7 +30,7 @@ func (h *Handler) GetNudges(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "nudge state unavailable"})
 		return
 	}
-	view, err := nudge.NewRepository(h.firestore.Raw()).Read(c.Request.Context(), userID, nil, nil)
+	view, err := h.readNudgeView(c.Request.Context(), userID)
 	if err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "nudge state unavailable"})
 		return
@@ -49,7 +51,7 @@ func (h *Handler) ReconcileNudges(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "nudge state unavailable"})
 		return
 	}
-	view, err := nudge.NewRepository(h.firestore.Raw()).Read(c.Request.Context(), userID, nil, nil)
+	view, err := h.readNudgeView(c.Request.Context(), userID)
 	if err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "nudge state unavailable"})
 		return
@@ -60,6 +62,18 @@ func (h *Handler) ReconcileNudges(c *gin.Context) {
 		{SafeClass: "release_adapter_not_qualified"},
 	}
 	c.JSON(http.StatusOK, view)
+}
+
+func (h *Handler) readNudgeView(ctx context.Context, userID string) (nudge.View, error) {
+	return nudge.NewRepository(h.firestore.Raw()).ReadWithPublicationVerifier(ctx, userID, nil, nil,
+		func(ctx context.Context, ownerID, projectID string, witness nudge.ProducerWitness) (bool, error) {
+			identity, missing, err := currentContentContextPublication(ctx, h.store, ownerID, projectID)
+			if err != nil {
+				return false, err
+			}
+			return !missing && identity.GenerationID == witness.PublicationGeneration &&
+				contentcontext.NormalizeDigest(identity.ConceptsDigest) == contentcontext.NormalizeDigest(witness.ConceptsDigest), nil
+		})
 }
 
 // PatchNudgeAttention updates interaction state only, with an exact revision

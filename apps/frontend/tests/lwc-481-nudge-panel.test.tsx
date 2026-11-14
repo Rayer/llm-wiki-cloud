@@ -1,6 +1,6 @@
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { NudgeView } from '@/lib/nudges';
 
 const mocks = vi.hoisted(() => ({
@@ -146,6 +146,85 @@ describe('LWC-481 Nudge action navigation', () => {
     expect(await screen.findByText('Nudge.partial')).toBeTruthy();
     expect(mocks.reconcileNudges).toHaveBeenCalledTimes(1);
     expect(mocks.getNudges).not.toHaveBeenCalled();
+  });
+
+  it.each(['read', 'navigation-read', 'dismiss'] as const)(
+    'keeps source-unavailable status after a %s attention GET',
+    async (attentionPath) => {
+      const partialView = structuredClone(view);
+      partialView.partial = true;
+      partialView.failures = [{ safe_class: 'pipeline_observer_not_qualified' }];
+      if (attentionPath === 'navigation-read') {
+        const action = partialView.items[0]?.observations[0]?.observation?.actions[0];
+        if (!action) throw new Error('test fixture is missing its action');
+        action.kind = 'link';
+      }
+      mocks.reconcileNudges.mockResolvedValueOnce(partialView);
+
+      const attentionRead = structuredClone(view);
+      if (attentionPath === 'dismiss') {
+        attentionRead.items = [];
+      } else {
+        const refreshedObservation = attentionRead.items[0]?.observations[0]?.observation;
+        if (!refreshedObservation) throw new Error('test fixture is missing its observation');
+        refreshedObservation.title = 'Refreshed after attention GET';
+      }
+      mocks.getNudges.mockResolvedValueOnce(attentionRead);
+      render(<NudgePanel onClose={vi.fn()} />);
+      expect(await screen.findByText('Nudge.partial')).toBeTruthy();
+
+      if (attentionPath === 'read') {
+        fireEvent.click(screen.getByRole('button', { name: 'Nudge.markRead' }));
+      } else if (attentionPath === 'navigation-read') {
+        fireEvent.click(await screen.findByRole('button', { name: 'Copy and open description' }));
+      } else {
+        fireEvent.click(screen.getByRole('button', { name: 'Nudge.dismiss' }));
+      }
+
+      await waitFor(() => expect(mocks.setNudgeAttention).toHaveBeenCalledWith(
+        'content-purpose-gap', 'attention-a', attentionPath === 'dismiss' ? 'dismiss' : 'read',
+      ));
+      await waitFor(() => expect(mocks.getNudges).toHaveBeenCalledTimes(1));
+      expect(await screen.findByText('Nudge.partial')).toBeTruthy();
+      if (attentionPath === 'dismiss') {
+        expect(await screen.findByText('Nudge.empty')).toBeTruthy();
+      } else {
+        expect(await screen.findByText('Refreshed after attention GET')).toBeTruthy();
+      }
+    },
+  );
+
+  it('clears source-unavailable status only after a successful manual reconciliation', async () => {
+    const partialView = structuredClone(view);
+    partialView.partial = true;
+    partialView.failures = [{ safe_class: 'pipeline_observer_not_qualified' }];
+    mocks.reconcileNudges.mockResolvedValueOnce(partialView);
+    render(<NudgePanel onClose={vi.fn()} />);
+    expect(await screen.findByText('Nudge.partial')).toBeTruthy();
+
+    mocks.reconcileNudges.mockResolvedValueOnce(view);
+    fireEvent.click(screen.getByRole('button', { name: 'Nudge.refresh' }));
+
+    await waitFor(() => expect(mocks.reconcileNudges).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByText('Nudge.partial')).toBeNull());
+  });
+
+  it('does not let an older reconciliation overwrite a later successful source status', async () => {
+    let resolveInitial!: (value: NudgeView) => void;
+    const initialReconciliation = new Promise<NudgeView>((resolve) => { resolveInitial = resolve; });
+    mocks.reconcileNudges.mockReset().mockReturnValueOnce(initialReconciliation).mockResolvedValueOnce(view);
+    render(<NudgePanel onClose={vi.fn()} />);
+    await waitFor(() => expect(mocks.reconcileNudges).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Nudge.refresh' }));
+    await waitFor(() => expect(mocks.reconcileNudges).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByText('Nudge.partial')).toBeNull());
+
+    const latePartial = structuredClone(view);
+    latePartial.partial = true;
+    latePartial.failures = [{ safe_class: 'pipeline_observer_not_qualified' }];
+    await act(async () => { resolveInitial(latePartial); await initialReconciliation; });
+    expect(screen.queryByText('Nudge.partial')).toBeNull();
   });
 
   it('suppresses an old account read after the session identity changes', async () => {
