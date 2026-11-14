@@ -48,7 +48,7 @@ export function EntryCard({
         </div>
         {entryType === 'concept' ? (
           <p className="mt-3 text-xs text-zinc-500">
-            {t('List.objectUpdated')}: {entry.objectUpdatedAt ?? t('List.objectUpdatedMissing')}
+            {t('List.contentUpdated')}: {entry.contentUpdatedAt ?? t('List.contentUpdatedMissing')}
           </p>
         ) : null}
         {entry.description ? (

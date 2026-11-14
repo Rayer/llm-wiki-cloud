@@ -254,6 +254,15 @@
         "name"
       ]
     },
+    "List.addedDesc": {
+      "kind": "literal"
+    },
+    "List.contentUpdated": {
+      "kind": "literal"
+    },
+    "List.contentUpdatedMissing": {
+      "kind": "literal"
+    },
     "List.goToPage": {
       "kind": "literal",
       "params": [
@@ -768,6 +777,12 @@
       "params": [
         "state"
       ]
+    },
+    "Source.addedAt": {
+      "kind": "literal"
+    },
+    "Source.addedAtMissing": {
+      "kind": "literal"
     },
     "Source.previewRawAria": {
       "kind": "literal",

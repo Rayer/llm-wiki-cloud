@@ -116,6 +116,8 @@ type WikiPage struct {
 	Sources           []string `json:"sources,omitempty"`
 	Status            string   `json:"status"`
 	UpdatedAt         *string  `json:"updated_at"`
+	AddedAt           *string  `json:"added_at,omitempty"`
+	ContentUpdatedAt  *string  `json:"content_updated_at"`
 	Quality           string   `json:"quality,omitempty"`
 	Concepts          []string `json:"concepts,omitempty"`
 	SourceURL         string   `json:"source_url,omitempty"`
@@ -149,6 +151,7 @@ type RawFile struct {
 	Path    string
 	Size    int64
 	Updated time.Time
+	Created time.Time
 	SHA256  string
 }
 

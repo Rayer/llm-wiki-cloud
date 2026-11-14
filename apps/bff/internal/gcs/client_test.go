@@ -135,7 +135,7 @@ func TestConditionalRawWritePersistsDigestForListing(t *testing.T) {
 		t.Fatalf("ListRawFiles() error = %v", err)
 	}
 	wantDigest := fmt.Sprintf("%x", sha256.Sum256(content))
-	if len(files) != 1 || files[0].Name != "topic/note.md" || files[0].Path != "raw/topic/note.md" || files[0].SHA256 != wantDigest {
+	if len(files) != 1 || files[0].Name != "topic/note.md" || files[0].Path != "raw/topic/note.md" || files[0].SHA256 != wantDigest || files[0].Created.IsZero() {
 		t.Fatalf("raw files = %#v, want nested entry with digest %q", files, wantDigest)
 	}
 }
@@ -668,8 +668,10 @@ func TestApplyWikiPageFrontmatterIncludesID(t *testing.T) {
 
 func TestWikiPagesFromConceptsJSONLReturnsConceptPages(t *testing.T) {
 	data := []byte(strings.Join([]string{
-		`{"slug":"alpha","title":"Alpha","frontmatter":{"id":"concept-id"},"sources":["source-one"]}`,
+		`{"slug":"alpha","title":"Alpha","frontmatter":{"id":"concept-id"},"sources":["source-one"],"content_updated_at":"2026-11-14T08:00:00Z"}`,
 		`{"slug":"beta","title":"","frontmatter":{}}`,
+		`{"slug":"legacy","title":"Legacy","frontmatter":{},"content_updated_at":"bad"}`,
+		`{"slug":"wrong-type","frontmatter":{},"content_updated_at":42}`,
 		``,
 	}, "\n"))
 
@@ -678,14 +680,17 @@ func TestWikiPagesFromConceptsJSONLReturnsConceptPages(t *testing.T) {
 		t.Fatalf("wikiPagesFromConceptsJSONL: %v", err)
 	}
 
-	if len(pages) != 2 {
-		t.Fatalf("len(pages) = %d, want 2", len(pages))
+	if len(pages) != 4 {
+		t.Fatalf("len(pages) = %d, want 4", len(pages))
 	}
 	if pages[0].Slug != "alpha" || pages[0].Title != "Alpha" || pages[0].ID != "concept-id" || pages[0].Path != "wiki/alpha.md" || pages[0].Status != "published" {
 		t.Fatalf("alpha page = %#v", pages[0])
 	}
 	if pages[1].Slug != "beta" || pages[1].Title != "beta" || pages[1].Path != "wiki/beta.md" {
 		t.Fatalf("beta page = %#v", pages[1])
+	}
+	if pages[0].ContentUpdatedAt == nil || *pages[0].ContentUpdatedAt != "2026-11-14T08:00:00Z" || pages[1].ContentUpdatedAt != nil || pages[2].ContentUpdatedAt != nil || pages[3].ContentUpdatedAt != nil {
+		t.Fatalf("semantic recency decode = %#v", pages)
 	}
 }
 

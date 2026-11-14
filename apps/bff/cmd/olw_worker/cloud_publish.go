@@ -402,7 +402,7 @@ func runCloudSuggestedQueries(ctx context.Context, cfg workerConfig, objects obj
 	}()
 
 	// Suggest-only always needs the current generation (never CLEAN_REBUILD).
-	snapshots, manifestData, manifestAttrs, err := materializeCloudWorkspace(materializeCtx, objects, prefix, workspace, false)
+	snapshots, manifestData, manifestAttrs, _, err := materializeCloudWorkspace(materializeCtx, objects, prefix, workspace, false)
 	if err != nil {
 		observability.FinishPipelineSpan(materializeSpan, workerTraceOutcome(err))
 		failure := preserveWorkerFailure(err, failureStageInputMaterialization, failureClassUnknown)
@@ -604,7 +604,7 @@ func runCloudWorkerBatch(ctx context.Context, cfg workerConfig, commands [][]str
 		log.Printf("worker: clean_rebuild=true; skipping prior generation materialization (raw/annotations retained)")
 	}
 	materializeCtx, materializeSpan := observability.StartWorkerSpan(ctx, "pipeline.worker.workspace")
-	snapshots, manifestData, manifestAttrs, err := materializeCloudWorkspace(materializeCtx, objects, prefix, workspace, cfg.CleanRebuild)
+	snapshots, manifestData, manifestAttrs, priorRecency, err := materializeCloudWorkspace(materializeCtx, objects, prefix, workspace, cfg.CleanRebuild)
 	if err != nil {
 		observability.FinishPipelineSpan(materializeSpan, workerTraceOutcome(err))
 		failure := preserveWorkerFailure(err, failureStageInputMaterialization, failureClassUnknown)
@@ -626,7 +626,7 @@ func runCloudWorkerBatch(ctx context.Context, cfg workerConfig, commands [][]str
 	}
 	// Capture concept IDs from the immediately prior committed/materialized
 	// workspace id_map before OLW regenerates transient concept identities.
-	priorConcepts, err := snapshotConcepts(workspace, snapshots)
+	priorConcepts, err := snapshotConceptsWithRecency(workspace, snapshots, priorRecency)
 	if err != nil {
 		observability.FinishPipelineSpan(materializeSpan, workerTraceOutcome(err))
 		failure := preserveWorkerFailure(err, failureStageInputMaterialization, failureClassUnknown)
@@ -745,30 +745,37 @@ func runCloudWorkerBatch(ctx context.Context, cfg workerConfig, commands [][]str
 	return nil
 }
 
-func materializeCloudWorkspace(ctx context.Context, objects objectStore, prefix, workspace string, cleanRebuild bool) ([]sourceSnapshot, []byte, objectAttrs, error) {
+func materializeCloudWorkspace(ctx context.Context, objects objectStore, prefix, workspace string, cleanRebuild bool) ([]sourceSnapshot, []byte, objectAttrs, *wikiindex.ConceptRecencySnapshot, error) {
 	budget := cloudMaterializationBudget{}
 	snapshots, err := materializeCanonicalCloudInputs(ctx, objects, prefix, workspace, &budget)
 	if err != nil {
-		return snapshots, nil, objectAttrs{}, err
+		return snapshots, nil, objectAttrs{}, nil, err
 	}
 	reservations := cloudTombstones(snapshots)
 	manifestData, manifestAttrs, err := objects.Read(ctx, prefix+generation.ManifestPath, 0, generation.MaxManifestBytes)
 	manifestExists := err == nil
 	if err != nil && !isObjectNotFound(err) {
-		return snapshots, nil, objectAttrs{}, err
+		return snapshots, nil, objectAttrs{}, nil, err
 	}
+	var priorRecency *wikiindex.ConceptRecencySnapshot
 	// Always retain current manifest bytes/attrs for CAS publish even when
 	// clean rebuild skips installing prior generation outputs into the workspace.
 	if cleanRebuild {
 		if manifestExists {
-			if _, err := generation.Decode(manifestData); err != nil {
-				return snapshots, nil, objectAttrs{}, err
+			m, err := generation.Decode(manifestData)
+			if err != nil {
+				return snapshots, nil, objectAttrs{}, nil, err
 			}
+			committed, err := readCloudManifestConceptRecency(ctx, objects, prefix, m, &budget)
+			if err != nil {
+				return snapshots, nil, objectAttrs{}, nil, fmt.Errorf("read prior concept recency from committed generation: %w", err)
+			}
+			priorRecency = &committed
 		}
 	} else if manifestExists {
 		m, err := generation.Decode(manifestData)
 		if err != nil {
-			return snapshots, nil, objectAttrs{}, err
+			return snapshots, nil, objectAttrs{}, nil, err
 		}
 		for _, f := range m.Files {
 			if f.Path == "synto.toml" {
@@ -776,17 +783,17 @@ func materializeCloudWorkspace(ctx context.Context, objects objectStore, prefix,
 			}
 			b, a, err := readCloudMaterializedObject(ctx, objects, prefix+m.ObjectPath(f), f.Generation, f.Size, &budget)
 			if err != nil {
-				return snapshots, nil, objectAttrs{}, fmt.Errorf("generation object fails manifest validation: %w", err)
+				return snapshots, nil, objectAttrs{}, nil, fmt.Errorf("generation object fails manifest validation: %w", err)
 			}
 			if a.Size != f.Size || digestBytes(b) != f.SHA256 {
-				return snapshots, nil, objectAttrs{}, fmt.Errorf("generation object fails manifest validation: size/digest mismatch path=%s", f.Path)
+				return snapshots, nil, objectAttrs{}, nil, fmt.Errorf("generation object fails manifest validation: size/digest mismatch path=%s", f.Path)
 			}
 			if err := writeCloudFile(workspace, f.Path, b); err != nil {
-				return snapshots, nil, objectAttrs{}, err
+				return snapshots, nil, objectAttrs{}, nil, err
 			}
 		}
 	} else if err := materializeLegacyCloudOutputs(ctx, objects, prefix, workspace, &budget); err != nil {
-		return snapshots, nil, objectAttrs{}, err
+		return snapshots, nil, objectAttrs{}, nil, err
 	}
 	err = nil
 	if len(snapshots) == 0 {
@@ -801,7 +808,62 @@ func materializeCloudWorkspace(ctx context.Context, objects objectStore, prefix,
 	} else if len(mapped) > 0 {
 		snapshots = appendCloudReservations(mapped, reservations)
 	}
-	return snapshots, manifestData, manifestAttrs, err
+	return snapshots, manifestData, manifestAttrs, priorRecency, err
+}
+
+// readCloudManifestConceptRecency reads only the prior generation artifacts
+// needed for semantic recency. Every declared object is pinned to its manifest
+// generation, bounded by the shared workspace budget, and digest-checked; the
+// bytes are never installed in a CLEAN_REBUILD workspace.
+func readCloudManifestConceptRecency(ctx context.Context, objects objectStore, prefix string, m generation.Manifest, budget *cloudMaterializationBudget) (wikiindex.ConceptRecencySnapshot, error) {
+	read := func(path string) ([]byte, bool, error) {
+		file, declared := m.File(path)
+		if !declared {
+			return nil, false, nil
+		}
+		data, attrs, err := readCloudMaterializedObject(ctx, objects, prefix+m.ObjectPath(file), file.Generation, file.Size, budget)
+		if err != nil {
+			return nil, true, fmt.Errorf("read %s: %w", path, err)
+		}
+		if attrs.Size != file.Size || digestBytes(data) != file.SHA256 {
+			return nil, true, fmt.Errorf("manifest digest mismatch path=%s", path)
+		}
+		return data, true, nil
+	}
+	idMapData, idMapVerified, err := read(wikiindex.IDMapPath)
+	if err != nil {
+		return wikiindex.ConceptRecencySnapshot{}, err
+	}
+	active, _, err := read(wikiindex.ConceptsJSONLPath)
+	if err != nil {
+		return wikiindex.ConceptRecencySnapshot{}, err
+	}
+	dormant, _, err := read(wikiindex.DormantConceptsJSONLPath)
+	if err != nil {
+		return wikiindex.ConceptRecencySnapshot{}, err
+	}
+	ids := wikiindex.IDMap{}
+	if idMapVerified {
+		ids, err = wikiindex.DecodeIDMap(idMapData)
+		if err != nil {
+			return wikiindex.ConceptRecencySnapshot{}, fmt.Errorf("decode committed ID map: %w", err)
+		}
+	}
+	refs, err := wikiindex.ConceptRecencyPageRefs(ids, idMapVerified, active, dormant)
+	if err != nil {
+		return wikiindex.ConceptRecencySnapshot{}, err
+	}
+	pages := make(map[string][]byte, len(refs))
+	for _, ref := range refs {
+		page, declared, err := read(ref.Path)
+		if err != nil {
+			return wikiindex.ConceptRecencySnapshot{}, err
+		}
+		if declared {
+			pages[ref.Path] = page
+		}
+	}
+	return wikiindex.ConceptRecencySnapshotFromCommittedFiles(idMapData, idMapVerified, active, dormant, pages)
 }
 
 func captureCloudRawInputs(ctx context.Context, workspace string, snapshots []sourceSnapshot) (map[string][]byte, error) {

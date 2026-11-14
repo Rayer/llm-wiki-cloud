@@ -180,7 +180,7 @@ func TestListRawFilesReturnsNestedRawMetadata(t *testing.T) {
 	if len(files) != 3 {
 		t.Fatalf("len(files) = %d, want 3: %#v", len(files), files)
 	}
-	if files[0].Name != "alpha.txt" || files[0].Path != "raw/alpha.txt" || files[0].Size != int64(len("alpha")) || files[0].SHA256 == "" || files[0].Updated.IsZero() {
+	if files[0].Name != "alpha.txt" || files[0].Path != "raw/alpha.txt" || files[0].Size != int64(len("alpha")) || files[0].SHA256 == "" || files[0].Updated.IsZero() || files[0].Created.IsZero() || !files[0].Created.Equal(files[0].Updated) {
 		t.Fatalf("files[0] = %#v", files[0])
 	}
 	if files[1].Name != "beta.md" || files[1].Path != "raw/beta.md" || files[1].Size != int64(len("beta")) || files[1].SHA256 == "" || files[1].Updated.IsZero() {
