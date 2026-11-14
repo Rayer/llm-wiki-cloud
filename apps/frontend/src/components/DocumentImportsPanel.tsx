@@ -7,6 +7,7 @@ import { useT } from '@/lib/i18n';
 import { useWorkspace } from './WorkspaceProvider';
 import { Surface } from './ui/Surface';
 import { NavigationLink } from './NavigationBlocker';
+import { pushDocumentFocusEntry } from '@/lib/list-navigation';
 import { useSearchParams } from 'next/navigation';
 
 type Props = {
@@ -317,7 +318,14 @@ export function DocumentImportsPanel({ projectId, sourcePaths, onRecordsChange }
                     <p className={`mt-2 text-sm ${conversionFailed ? 'text-red-200' : 'text-zinc-300'}`}>{status}</p>
                     {record.conversion_state === 'succeeded' && record.pipeline_ref?.status ? <p className="mt-1 text-xs text-zinc-400">{t('Source.documentImport.pipelineState', { state: t(documentImportPipelineStatusKey(record.pipeline_ref.status)) })}</p> : null}
                     {record.source_ref?.raw_path && sourcePaths.includes(record.source_ref.raw_path) ? (
-                      <NavigationLink href={`/sources?document_id=${encodeURIComponent(record.document_id)}`} className="mt-2 inline-block text-sm text-emerald-200 underline underline-offset-2 hover:text-emerald-100">
+                      <NavigationLink
+                        href={`/sources?document_id=${encodeURIComponent(record.document_id)}`}
+                        onNavigate={(event) => {
+                          event.preventDefault();
+                          pushDocumentFocusEntry(record.document_id);
+                        }}
+                        className="mt-2 inline-block text-sm text-emerald-200 underline underline-offset-2 hover:text-emerald-100"
+                      >
                         {t('Source.documentImport.viewSource')}
                       </NavigationLink>
                     ) : null}

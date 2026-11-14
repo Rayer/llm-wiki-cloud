@@ -4,7 +4,15 @@ import { cleanup, fireEvent, render, screen, within } from '@testing-library/rea
 import { configureApiAuth } from '@/lib/api';
 import { SourceListClient } from '@/components/SourceListClient';
 
-const workspace = vi.hoisted(() => ({ currentProject: { id: 'main-synthetic-project' }, token: 'synthetic-token' }));
+const workspace = vi.hoisted(() => ({
+  currentProject: { id: 'main-synthetic-project' },
+  token: 'synthetic-token',
+  user: { id: 'synthetic-user' },
+  hydrated: true,
+  listViewSessionId: 'synthetic-list-session',
+  listViewGeneration: 1,
+  isListViewSessionCurrent: () => true,
+}));
 vi.mock('@/components/WorkspaceProvider', () => ({ useWorkspace: () => workspace }));
 vi.mock('@/lib/i18n', () => ({ useT: () => ({ t: (key: string) => key }) }));
 vi.mock('@/components/NavigationBlocker', () => ({ NavigationLink: ({ children }: { children: React.ReactNode }) => <span>{children}</span> }));

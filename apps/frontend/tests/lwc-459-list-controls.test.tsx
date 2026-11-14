@@ -1,12 +1,23 @@
 import React from 'react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { entryDate, selectEntries, selectSources } from '@/lib/list-controls';
 import type { SourceListItem, WikiEntry } from '@/lib/api';
 import { ListClient } from '@/components/ListClient';
 import { SourceListClient } from '@/components/SourceListClient';
 
-const workspace = vi.hoisted(() => ({ currentProject: { id: 'list-459-a' }, token: 'synthetic-session-a', sessionEpoch: 1, projects: [], projectsLoading: false }));
+const workspace = vi.hoisted(() => ({
+  currentProject: { id: 'list-459-a' },
+  token: 'synthetic-session-a',
+  sessionEpoch: 1,
+  user: { id: 'list-user' },
+  hydrated: true,
+  listViewSessionId: 'list-session-459',
+  listViewGeneration: 1,
+  isListViewSessionCurrent: vi.fn(() => true),
+  projects: [],
+  projectsLoading: false,
+}));
 const api = vi.hoisted(() => ({ sources: vi.fn() }));
 vi.mock('@/components/WorkspaceProvider', () => ({ useWorkspace: () => workspace }));
 vi.mock('@/components/NavigationBlocker', () => ({ NavigationLink: ({ href, children }: { href: string; children: React.ReactNode }) => <a href={href}>{children}</a> }));
@@ -26,7 +37,14 @@ const sources: SourceListItem[] = [
   { title: 'Gamma notes', slug: 'c', rawPath: 'raw/b.md', lifecycle: 'synced', annotationPresent: false, annotationAllowed: true, raw: {} },
 ];
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
-beforeEach(() => { workspace.currentProject = { id: 'list-459-a' }; workspace.token = 'synthetic-session-a'; workspace.sessionEpoch += 1; api.sources.mockResolvedValue(sources); });
+beforeEach(() => {
+  window.sessionStorage.clear();
+  workspace.currentProject = { id: 'list-459-a' };
+  workspace.token = 'synthetic-session-a';
+  workspace.sessionEpoch += 1;
+  workspace.listViewSessionId = `list-session-459-${workspace.sessionEpoch}`;
+  api.sources.mockResolvedValue(sources);
+});
 
 it('combines entry search, status, date and order without mutating input', () => {
   expect(selectEntries(entries, 'a', 'published', 'dated', 'date-desc').map((entry) => entry.title)).toEqual(['Alpha']);
@@ -70,6 +88,61 @@ it('resets entry filters and cache across project and session changes', async ()
   await screen.findByRole('heading', { name: 'Separate project' });
   expect(load).toHaveBeenCalledTimes(3);
 });
+
+it('paginates the complete sorted match set without another list read and resets after filter changes', async () => {
+  const manyEntries = Array.from({ length: 25 }, (_, index): WikiEntry => ({
+    title: `Entry ${String(index + 1).padStart(2, '0')}`,
+    slug: `entry-${index + 1}`,
+    status: index < 15 ? 'published' : 'draft',
+    raw: {},
+  }));
+  const load = vi.fn(async () => manyEntries);
+  render(<ListClient title="Entries" description="" basePath="/concepts" entryType="concept" load={load} />);
+  await screen.findByRole('heading', { name: 'Entry 01' });
+  expect(screen.getByRole('status').textContent).toBe('25/25');
+  expect(document.querySelectorAll('.lwc-entry')).toHaveLength(12);
+
+  fireEvent.click(screen.getByRole('button', { name: 'List.nextPage' }));
+  expect(await screen.findByRole('heading', { name: 'Entry 13' })).toBeTruthy();
+  expect(document.querySelectorAll('.lwc-entry')).toHaveLength(12);
+  fireEvent.click(screen.getByRole('button', { name: 'List.nextPage' }));
+  expect(await screen.findByRole('heading', { name: 'Entry 25' })).toBeTruthy();
+  expect(document.querySelectorAll('.lwc-entry')).toHaveLength(1);
+  expect(load).toHaveBeenCalledTimes(1);
+
+  fireEvent.change(screen.getByLabelText('List.filterStatus'), { target: { value: 'draft' } });
+  await waitFor(() => expect(screen.getByRole('heading', { name: 'Entry 16' })).toBeTruthy());
+  expect(screen.getByRole('status').textContent).toBe('10/25');
+  expect(document.querySelectorAll('.lwc-entry')).toHaveLength(10);
+  expect(screen.queryByRole('button', { name: 'List.nextPage' })).toBeNull();
+  expect(load).toHaveBeenCalledTimes(1);
+});
+
+it('clamps a restored later page when the newly loaded collection shrinks', async () => {
+  const fullEntries = Array.from({ length: 25 }, (_, index): WikiEntry => ({
+    title: `Shrink ${String(index + 1).padStart(2, '0')}`,
+    slug: `shrink-${index + 1}`,
+    status: 'published',
+    raw: {},
+  }));
+  const load = vi.fn(async () => fullEntries);
+  const props = { title: 'Entries', description: '', basePath: '/concepts', entryType: 'concept' as const, load };
+  const view = render(<ListClient {...props} />);
+  await screen.findByRole('heading', { name: 'Shrink 01' });
+  fireEvent.click(screen.getByRole('button', { name: 'List.nextPage' }));
+  fireEvent.click(screen.getByRole('button', { name: 'List.nextPage' }));
+  await screen.findByRole('heading', { name: 'Shrink 25' });
+
+  const shorterEntries = fullEntries.slice(0, 13);
+  load.mockResolvedValue(shorterEntries);
+  workspace.token = 'synthetic-session-a-refreshed';
+  workspace.sessionEpoch += 1;
+  view.rerender(<ListClient {...props} />);
+  await screen.findByRole('heading', { name: 'Shrink 13' });
+  await waitFor(() => expect(screen.getByText('List.pageStatus')).toBeTruthy());
+  expect(document.querySelectorAll('.lwc-entry')).toHaveLength(1);
+  expect(document.querySelector('[aria-current="page"]')?.textContent).toBe('2');
+});
 it('operates source filters, search, order, empty state and project reset', async () => {
   const view = render(<SourceListClient />);
   await screen.findByRole('heading', { name: 'Alpha notes' });
@@ -86,4 +159,33 @@ it('operates source filters, search, order, empty state and project reset', asyn
   view.rerender(<SourceListClient />);
   await screen.findByRole('heading', { name: 'Separate source' });
   expect(screen.queryByRole('heading', { name: 'Alpha notes' })).toBeNull();
+});
+
+it('paginates source metadata on the client and preserves full-list counts without another source request', async () => {
+  const manySources: SourceListItem[] = Array.from({ length: 25 }, (_, index) => ({
+    title: `Source ${String(index + 1).padStart(2, '0')}`,
+    slug: `source-${index + 1}`,
+    rawPath: `raw/source-${index + 1}.md`,
+    lifecycle: 'synced',
+    annotationPresent: false,
+    annotationAllowed: true,
+    raw: {},
+  }));
+  api.sources.mockResolvedValue(manySources);
+  render(<SourceListClient />);
+  await screen.findByRole('heading', { name: 'Source 01' });
+  expect(screen.getByRole('status').textContent).toBe('25/25');
+  expect(document.querySelectorAll('.lwc-data-list > div')).toHaveLength(12);
+  expect(api.sources).toHaveBeenCalledTimes(1);
+
+  fireEvent.click(screen.getByRole('button', { name: 'List.nextPage' }));
+  await screen.findByRole('heading', { name: 'Source 13' });
+  expect(document.querySelectorAll('.lwc-data-list > div')).toHaveLength(12);
+  expect(api.sources).toHaveBeenCalledTimes(1);
+
+  fireEvent.change(screen.getByLabelText('List.searchPlaceholder'), { target: { value: 'Source 25' } });
+  await screen.findByRole('heading', { name: 'Source 25' });
+  expect(document.querySelectorAll('.lwc-data-list > div')).toHaveLength(1);
+  expect(screen.queryByRole('button', { name: 'List.nextPage' })).toBeNull();
+  expect(api.sources).toHaveBeenCalledTimes(1);
 });

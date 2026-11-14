@@ -9,6 +9,11 @@ const state = vi.hoisted(() => ({
   projects: [{ id: 'project-1' }],
   projectsLoading: false,
   token: 'session-1',
+  user: { id: 'user-1' },
+  hydrated: true,
+  listViewSessionId: 'source-list-session-test',
+  listViewGeneration: 1,
+  isListViewSessionCurrent: vi.fn(() => true),
   selectProject: vi.fn(),
   refreshNavCounts: vi.fn(),
   search: 'document_id=document-1',
@@ -55,6 +60,9 @@ beforeEach(() => {
   pendingPolls = new Map();
   let nextPollId = 0;
   state.search = 'document_id=document-1';
+  state.listViewSessionId = `source-list-session-${Math.random().toString(36).slice(2)}`;
+  window.sessionStorage.clear();
+  window.history.replaceState({}, '', '/sources?document_id=document-1');
   window.localStorage.setItem('llm-wiki-last-project', 'project-1');
   configureApiAuth({ getAccessToken: () => state.token, refreshAccessToken: async () => null, onUnauthorized: () => undefined });
   Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() });
@@ -71,6 +79,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  window.sessionStorage.clear();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   vi.clearAllMocks();

@@ -1311,7 +1311,12 @@
     "objectUpdatedMissing": "未提供",
     "resultCount": "{count} / {total} 筆",
     "clearControls": "清除條件",
-    "noFilterMatches": "沒有符合條件的資料，請調整搜尋或篩選。"
+    "noFilterMatches": "沒有符合條件的資料，請調整搜尋或篩選。",
+    "paginationLabel": "列表頁碼",
+    "previousPage": "上一頁",
+    "nextPage": "下一頁",
+    "goToPage": "前往第 {page} 頁",
+    "pageStatus": "第 {page} 頁，共 {pageCount} 頁"
   },
   "Status": {
     "title": "Pipeline Status",
