@@ -646,6 +646,41 @@ describe('LWC-211 Project Profile', () => {
     expect(await screen.findByText(/scheduled by the server/i)).toBeDefined();
   });
 
+  it('keeps legacy over-limit requirements on the edit-and-save recovery action', async () => {
+    mocks.getProfile.mockResolvedValue({
+      ...emptyProfile('project-a', 3),
+      requirements: [{ id: 'req-1', text: 'historically oversized' }],
+      derivation_status: 'failed',
+      derivation_error_code: 'profile_requirements_over_limit',
+    });
+
+    await renderProfile('project-a', null);
+    expect(await screen.findByText(/Saved Profile requirements exceed the current size limits/i)).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Edit requirements' })).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Retry preview generation' })).toBeNull();
+  });
+
+  it('keeps oversized generated guidance on the explicit preview retry action', async () => {
+    mocks.getProfile.mockResolvedValue({
+      ...emptyProfile('project-a', 3),
+      requirements: [{ id: 'req-1', text: 'invoice source' }],
+      derivation_status: 'failed',
+      derivation_error_code: 'profile_guidance_too_long',
+    });
+    mocks.retryProfileDerivation.mockResolvedValue({
+      ...emptyProfile('project-a', 3),
+      requirements: [{ id: 'req-1', text: 'invoice source' }],
+      derivation_status: 'pending',
+      scheduled_for: '2026-09-25T03:05:00Z',
+    });
+
+    await renderProfile('project-a', null);
+    expect(await screen.findByText(/Generated Profile guidance exceeds the 6,000-character limit/i)).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Retry preview generation' })).toBeDefined();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry preview generation' }));
+    await waitFor(() => expect(mocks.retryProfileDerivation).toHaveBeenCalledWith('project-a', 3));
+  });
+
   it('exposes exhausted Profile runtime work and retries it at the current revision', async () => {
     const active = {
       candidate_id: 'active-candidate',

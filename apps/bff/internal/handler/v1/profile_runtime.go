@@ -216,7 +216,9 @@ func (d *ProfileDispatcher) Dispatch(ctx context.Context, limit int) (processed 
 		if finishErr == nil {
 			commitOutcome := "committed"
 			attemptOutcome := "success"
-			if finishStatus != "complete" {
+			if finishStatus == "failed" {
+				attemptOutcome = "failure"
+			} else if finishStatus != "complete" {
 				commitOutcome, attemptOutcome = "no_op", "no_op"
 				if finishStatus == "retry_wait" {
 					commitOutcome = "not_committed"
@@ -405,6 +407,14 @@ func (d *ProfileDispatcher) finish(ctx context.Context, repo *firestoreProfileRe
 				w.Pending = false
 				w.Status = "complete"
 			}
+		} else if _, committed := profilederive.CommittedLimitFailureCode(cause); w.Kind == "derive" && committed {
+			// The derivation executor already committed the specific rejected
+			// intent/history/Profile state. Settle only this leased queue row so
+			// it cannot clear that error on another attempt or replace it with
+			// runtime_retry_exhausted; an uncommitted/unknown failure has no marker.
+			w.Pending = false
+			w.Status = "failed"
+			w.Due = repo.now()
 		} else if errors.As(cause, &conflict) || errors.Is(cause, errProfileCandidateNotCurrent) || errors.Is(cause, errProfileProjectNotFound) {
 			if w.Kind == "compile" {
 				if err := clearSupersededProfileCompileRetry(ctx, tx, repo, w); err != nil {
