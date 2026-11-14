@@ -1,10 +1,11 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { CheckCircle2, Circle, Loader2, XCircle } from 'lucide-react';
 import {
   getBuildInfo,
   getPipelineLog,
+  getPipelineStatus,
   getStatus,
   type ApiStatus,
   type BuildInfo,
@@ -41,11 +42,99 @@ type StatusScope = {
   pollingExhausted?: boolean;
 };
 
-export function StatusClient() {
+type StatusQueryValue = string | string[] | undefined;
+
+type RequestedPipelineRun =
+  | { kind: 'none' }
+  | { kind: 'invalid' }
+  | { kind: 'pipeline-run'; projectId: string; executionId: string };
+
+type RequestedPipelineRunState =
+  | { identity: string; phase: 'loading' | 'unavailable' }
+  | { identity: string; phase: 'ready'; execution: PipelineExecution };
+
+function parseRequestedPipelineRun(
+  projectValue: StatusQueryValue,
+  executionValue: StatusQueryValue,
+): RequestedPipelineRun {
+  if (projectValue === undefined && executionValue === undefined) return { kind: 'none' };
+  if (typeof projectValue !== 'string' || typeof executionValue !== 'string') return { kind: 'invalid' };
+  const validProjectId = projectValue.length <= 256 && safeRouteSegment(projectValue);
+  const validExecutionId = executionValue.length <= 256
+    && safeRouteSegment(executionValue)
+    && executionValue !== '.'
+    && executionValue !== '..'
+    && !executionValue.includes('..');
+  if (!validProjectId || !validExecutionId) return { kind: 'invalid' };
+  return { kind: 'pipeline-run', projectId: projectValue, executionId: executionValue };
+}
+
+function safeRouteSegment(value: string): boolean {
+  return value.length > 0 && value.trim() === value && !/[\\/\u0000-\u001f\u007f]/.test(value);
+}
+
+function pipelineExecutionNameMatchesRequestedId(name: unknown, requestedId: string): boolean {
+  if (typeof name !== 'string') return false;
+  if (name === requestedId) return true;
+
+  const resource = name.split('/');
+  if (
+    resource.length !== 8
+    || resource[0] !== 'projects'
+    || resource[2] !== 'locations'
+    || resource[4] !== 'jobs'
+    || resource[6] !== 'executions'
+  ) return false;
+
+  const resourceSegments = resource.slice(1);
+  if (resourceSegments.some((segment) => !safeRouteSegment(segment) || segment === '.' || segment === '..')) {
+    return false;
+  }
+  return resource[7] === requestedId;
+}
+
+function publicationOutcomeText(execution: PipelineExecution, t: (key: string) => string): string {
+  switch (execution.publication_outcome) {
+    case 'confirmed_published': return t('Pipeline.publicationPublished');
+    case 'confirmed_not_published': return t('Pipeline.publicationNotPublished');
+    default: return t('Pipeline.publicationUnknown');
+  }
+}
+
+export function StatusClient({
+  requestedProjectId,
+  requestedExecutionId,
+}: {
+  requestedProjectId?: StatusQueryValue;
+  requestedExecutionId?: StatusQueryValue;
+} = {}) {
   const { t, locale } = useT();
   const { user } = useAuth();
-  const { currentProject } = useWorkspace();
+  const {
+    currentProject,
+    projects = [],
+    projectsLoading = false,
+    token = null,
+    hydrated = true,
+    sessionIdentityEpoch = 0,
+    isDemoSession = false,
+  } = useWorkspace();
   const projectId = currentProject?.id ?? null;
+  const requestedRun = useMemo(
+    () => parseRequestedPipelineRun(requestedProjectId, requestedExecutionId),
+    [requestedProjectId, requestedExecutionId],
+  );
+  const requestedRunIdentity = JSON.stringify([
+    requestedProjectId ?? null,
+    requestedExecutionId ?? null,
+    user?.id ?? null,
+    sessionIdentityEpoch,
+    Boolean(token),
+    isDemoSession,
+  ]);
+  const requestedProject = requestedRun.kind === 'pipeline-run'
+    ? projects.find((project) => project.id === requestedRun.projectId) ?? null
+    : null;
   const [statusScope, setStatusScope] = useState<StatusScope>(() => ({
     projectId,
     status: null,
@@ -57,7 +146,9 @@ export function StatusClient() {
   const [showRaw, setShowRaw] = useState(false);
   const [buildInfo, setBuildInfo] = useState<BuildInfo | null>(null);
   const [buildInfoError, setBuildInfoError] = useState('');
+  const [requestedRunState, setRequestedRunState] = useState<RequestedPipelineRunState | null>(null);
   const statusRequestNonce = useRef(0);
+  const requestedRunRequestNonce = useRef(0);
   const retryStatusRefresh = useRef<(() => void) | null>(null);
   const logRequestNonce = useRef(0);
   const activeLogRequest = useRef<PipelineLogRequestIdentity | null>(null);
@@ -66,6 +157,69 @@ export function StatusClient() {
   const loading = statusScope.projectId === projectId ? statusScope.loading : Boolean(projectId);
   const error = statusScope.projectId === projectId ? statusScope.error : '';
   const pollingExhausted = statusScope.projectId === projectId && statusScope.pollingExhausted;
+  const requestedRunUnavailable = requestedRun.kind === 'invalid'
+    || (requestedRun.kind === 'pipeline-run'
+      && hydrated
+      && !projectsLoading
+      && (!token || !user?.id || isDemoSession || !requestedProject));
+  const currentRequestedRunState = requestedRunUnavailable
+    ? { identity: requestedRunIdentity, phase: 'unavailable' as const }
+    : !projectsLoading && requestedRunState?.identity === requestedRunIdentity
+      ? requestedRunState
+      : null;
+
+  useEffect(() => {
+    const requestNonce = ++requestedRunRequestNonce.current;
+    let cancelled = false;
+    const isCurrentRequest = () => !cancelled && requestNonce === requestedRunRequestNonce.current;
+
+    if (
+      requestedRun.kind !== 'pipeline-run'
+      || !hydrated
+      || projectsLoading
+      || !token
+      || !user?.id
+      || isDemoSession
+      || !requestedProject
+    ) {
+      return () => { cancelled = true; };
+    }
+
+    getPipelineStatus(requestedRun.projectId, requestedRun.executionId)
+      .then((result) => {
+        if (!isCurrentRequest()) return;
+        const execution = result.last_execution;
+        if (
+          result.project_id !== requestedRun.projectId
+          || !execution
+          || !pipelineExecutionNameMatchesRequestedId(execution.name, requestedRun.executionId)
+        ) {
+          setRequestedRunState({ identity: requestedRunIdentity, phase: 'unavailable' });
+          return;
+        }
+        setRequestedRunState({
+          identity: requestedRunIdentity,
+          phase: 'ready',
+          execution,
+        });
+      })
+      .catch(() => {
+        if (isCurrentRequest()) {
+          setRequestedRunState({ identity: requestedRunIdentity, phase: 'unavailable' });
+        }
+      });
+
+    return () => { cancelled = true; };
+  }, [
+    hydrated,
+    isDemoSession,
+    projectsLoading,
+    requestedProject,
+    requestedRun,
+    requestedRunIdentity,
+    token,
+    user?.id,
+  ]);
 
   useEffect(() => {
     let cancelled = false;
@@ -202,6 +356,33 @@ export function StatusClient() {
           {t('Status.description')}
         </p>
       </header>
+
+      {requestedRun.kind !== 'none' ? (
+        <section
+          aria-label={t('Status.pipelineTimeline')}
+          data-testid="status-requested-pipeline-run"
+          className="space-y-4 rounded border border-white/10 bg-zinc-900/40 p-5"
+        >
+          {currentRequestedRunState?.phase === 'ready' && requestedRun.kind === 'pipeline-run' && requestedProject ? (
+            <>
+              <div>
+                <h2 className="text-xl font-semibold text-white">{requestedProject.name}</h2>
+                <p className="mt-2 break-all text-sm text-zinc-400">
+                  {t('Pipeline.scheduledExecution')}: <code className="font-sans text-zinc-200">{requestedRun.executionId}</code>
+                </p>
+                <p className="mt-1 text-sm text-zinc-400">
+                  {t('Pipeline.publicationOutcome')}: {publicationOutcomeText(currentRequestedRunState.execution, t)}
+                </p>
+              </div>
+              <PipelineTimeline execution={currentRequestedRunState.execution} />
+            </>
+          ) : currentRequestedRunState?.phase === 'unavailable' ? (
+            <ErrorState message={t('Status.noStatus')} />
+          ) : (
+            <LoadingState label={t('Status.loading')} />
+          )}
+        </section>
+      ) : null}
 
       {loading ? <LoadingState label={t('Status.loading')} /> : null}
       {error ? <ErrorState message={error} /> : null}

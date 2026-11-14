@@ -1074,6 +1074,45 @@ test('getPipelineStatus reads the project scoped pipeline status endpoint', asyn
   }
 });
 
+test('getPipelineStatus can read one exact prior execution under the requested Project', async () => {
+  configureApiAuth({
+    getAccessToken: () => 'jwt-token',
+    refreshAccessToken: async () => null,
+    onUnauthorized: () => undefined,
+  });
+  const originalFetch = globalThis.fetch;
+  let requestedUrl = '';
+  let requestedInit;
+  globalThis.fetch = async (url, init) => {
+    requestedUrl = String(url);
+    requestedInit = init;
+    return Response.json({
+      project_id: 'project-b',
+      last_execution: {
+        name: 'older-failed-run',
+        status: 'FAILED',
+        publication_outcome: 'confirmed_not_published',
+        diagnostic: { message: 'safe failure detail' },
+      },
+    });
+  };
+
+  try {
+    const status = await getPipelineStatus('project-b', 'older-failed-run');
+
+    assert.equal(requestedUrl, 'https://api.runtime.test/api/v1/pipeline/status?execution_id=older-failed-run');
+    assert.equal(requestedInit.headers.Authorization, 'Bearer jwt-token');
+    assert.equal(requestedInit.headers['X-Project-ID'], 'project-b');
+    assert.equal(status.project_id, 'project-b');
+    assert.equal(status.last_execution.name, 'older-failed-run');
+    assert.equal(status.last_execution.status, 'FAILED');
+    assert.equal(status.last_execution.publication_outcome, 'confirmed_not_published');
+    assert.equal(status.last_execution.diagnostic.message, 'safe failure detail');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('full recompile capability uses the full-mode quota snapshot for the scoped project', async () => {
   configureApiAuth({
     getAccessToken: () => 'jwt-token',

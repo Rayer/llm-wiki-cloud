@@ -3222,7 +3222,7 @@ func TestPipelineStatusProjectsOwnedFailureDiagnostic(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte(`{"version":1,"status":"failed","stage":"concept_reconciliation","error_class":"child_exit","detail_code":"entity_mapping_article_source_missing","child_command":"run","exit_code":23}`), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(`{"version":1,"status":"failed","stage":"concept_reconciliation","error_class":"child_exit","detail_code":"entity_mapping_article_source_missing","child_command":"run","exit_code":23,"message":"A readable Cloud Run failure"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "users", "request-user", "projects", "demo-project", "cache", "pipeline-owned-failure.log"), []byte("child stderr: source missing\n"), 0o644); err != nil {
@@ -3251,9 +3251,14 @@ func TestPipelineStatusProjectsOwnedFailureDiagnostic(t *testing.T) {
 		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
 	}
 	var body struct {
+		ProjectID     string `json:"project_id"`
 		LastExecution *struct {
-			LogState   string `json:"log_state"`
-			Diagnostic *struct {
+			Name            string `json:"name"`
+			Status          string `json:"status"`
+			LogState        string `json:"log_state"`
+			DiagnosticState string `json:"diagnostic_state"`
+			FailureReason   string `json:"failure_reason"`
+			Diagnostic      *struct {
 				Version    int    `json:"version"`
 				Status     string `json:"status"`
 				Stage      string `json:"stage"`
@@ -3261,17 +3266,41 @@ func TestPipelineStatusProjectsOwnedFailureDiagnostic(t *testing.T) {
 				DetailCode string `json:"detail_code"`
 				Child      string `json:"child_command"`
 				ExitCode   int    `json:"exit_code"`
+				Message    string `json:"message"`
 			} `json:"diagnostic"`
 		} `json:"last_execution"`
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if body.LastExecution == nil || body.LastExecution.LogState != "available" || body.LastExecution.Diagnostic == nil {
-		t.Fatalf("last_execution = %#v, want available diagnostic", body.LastExecution)
+	fixtureBytes, err := os.ReadFile("testdata/pipeline-status-cloud-run-failure.json")
+	if err != nil {
+		t.Fatalf("read native Cloud Run status fixture: %v", err)
+	}
+	var fixture struct {
+		ProjectID     string `json:"project_id"`
+		LastExecution struct {
+			Name            string `json:"name"`
+			Status          string `json:"status"`
+			DiagnosticState string `json:"diagnostic_state"`
+			FailureReason   string `json:"failure_reason"`
+			Diagnostic      struct {
+				Message string `json:"message"`
+			} `json:"diagnostic"`
+		} `json:"last_execution"`
+	}
+	if err := json.Unmarshal(fixtureBytes, &fixture); err != nil {
+		t.Fatalf("decode native Cloud Run status fixture: %v", err)
+	}
+	if body.ProjectID != fixture.ProjectID || body.LastExecution == nil ||
+		body.LastExecution.Name != fixture.LastExecution.Name || body.LastExecution.Status != fixture.LastExecution.Status ||
+		body.LastExecution.LogState != "available" || body.LastExecution.DiagnosticState != fixture.LastExecution.DiagnosticState ||
+		body.LastExecution.FailureReason != fixture.LastExecution.FailureReason ||
+		body.LastExecution.Diagnostic == nil {
+		t.Fatalf("actual BFF Cloud Run status does not match frontend wire fixture: body=%#v fixture=%s", body.LastExecution, fixtureBytes)
 	}
 	diagnostic := body.LastExecution.Diagnostic
-	if diagnostic.Version != 1 || diagnostic.Status != "failed" || diagnostic.Stage != "concept_reconciliation" || diagnostic.ErrorClass != "child_exit" || diagnostic.DetailCode != "entity_mapping_article_source_missing" || diagnostic.Child != "run" || diagnostic.ExitCode != 23 {
+	if diagnostic.Version != 1 || diagnostic.Status != "failed" || diagnostic.Stage != "concept_reconciliation" || diagnostic.ErrorClass != "child_exit" || diagnostic.DetailCode != "entity_mapping_article_source_missing" || diagnostic.Child != "run" || diagnostic.ExitCode != 23 || diagnostic.Message != fixture.LastExecution.Diagnostic.Message {
 		t.Fatalf("diagnostic = %#v", diagnostic)
 	}
 }

@@ -20,11 +20,12 @@ test('status client wiring keeps log access behind the explicit open handler', a
   assert.match(statusClient, /getStatus/);
   assert.equal((statusClient.match(/getPipelineLog\(/g) ?? []).length, 1);
   assert.match(statusClient, /getPipelineLog\(logUrl, projectId\)/);
-  assert.doesNotMatch(statusClient, /getPipelineStatus/);
+  assert.match(statusClient, /getPipelineStatus\(requestedRun\.projectId, requestedRun\.executionId\)/);
   const handlerStart = statusClient.indexOf('const onOpenLog');
   const handlerEnd = statusClient.indexOf('\n\n  return (', handlerStart);
   assert.ok(handlerStart >= 0 && handlerEnd > handlerStart);
   assert.match(statusClient.slice(handlerStart, handlerEnd), /getPipelineLog\(/);
+  assert.doesNotMatch(statusClient.slice(handlerStart, handlerEnd), /getPipelineStatus/);
   assert.match(statusClient, /LOG_PREVIEW_BYTES\s*=\s*10 \* 1024/);
   assert.match(statusClient, /LOG_PREVIEW_LINES\s*=\s*50/);
   assert.match(statusClient, /slice\(-LOG_PREVIEW_LINES\)/);
