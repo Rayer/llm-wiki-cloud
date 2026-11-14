@@ -979,7 +979,9 @@ func (r *firestoreProfileRepository) ProfileDerivationSucceeded(ctx context.Cont
 	return result, err
 }
 
-// ProfileDerivationFailed records a retryable worker failure without replacing requirements or active state.
+// ProfileDerivationFailed records a worker failure without replacing requirements or active state.
+// With a current runtime lease, committed size-limit rejections also settle the
+// derive work row in this same transaction; other failures remain retryable.
 func (r *firestoreProfileRepository) ProfileDerivationFailed(ctx context.Context, userID, projectID string, revision int64, attemptID, requirementsDigest, errorCode string, diagnostic profilederive.FailureDiagnostic) (ProfileState, error) {
 	var result ProfileState
 	err := r.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
@@ -1006,6 +1008,37 @@ func (r *firestoreProfileRepository) ProfileDerivationFailed(ctx context.Context
 		if history.Revision != revision || history.RequirementsDigest != requirementsDigest || history.Status != "running" {
 			return errors.New("profile derivation attempt history status mismatch")
 		}
+		var failedWorkRef *firestore.DocumentRef
+		var failedWork profileruntime.Work
+		if errorCode == profilederive.FailureCodeRequirementsOverLimit || errorCode == profilederive.FailureCodeGuidanceTooLong {
+			if lease, leased := ctx.Value(profileRuntimeLeaseKey{}).(profileRuntimeLease); leased {
+				workIdentity := profileruntime.Work{UserID: userID, ProjectID: projectID, Kind: "derive", Revision: revision, ID: attemptID}
+				expectedWorkRef := scopedfirestore.Collection(r.client, profileruntime.WorkCollection).Doc(profileruntime.WorkID(workIdentity))
+				if !validProfileRuntimeIdentity(workIdentity) || lease.ref == nil || lease.ref.Path != expectedWorkRef.Path ||
+					lease.token == "" || lease.userID != userID || lease.projectID != projectID {
+					return errProfileRuntimeLease
+				}
+				workSnapshot, readErr := tx.Get(expectedWorkRef)
+				if readErr != nil {
+					return readErr
+				}
+				if err := workSnapshot.DataTo(&failedWork); err != nil {
+					return err
+				}
+				now := r.now()
+				if failedWork.UserID != userID || failedWork.ProjectID != projectID || failedWork.Kind != "derive" ||
+					failedWork.Revision != revision || failedWork.ID != attemptID || failedWork.Status != "running" ||
+					!failedWork.Pending || failedWork.Token != lease.token || !failedWork.LeaseUntil.After(now) {
+					return errProfileRuntimeLease
+				}
+				failedWork.Pending = false
+				failedWork.Status = "failed"
+				failedWork.Due = now
+				failedWork.LeaseUntil = time.Time{}
+				failedWork.Token = ""
+				failedWorkRef = expectedWorkRef
+			}
+		}
 		result, err = failProfileDerivation(current, revision, requirementsDigest, errorCode, diagnostic)
 		if err != nil {
 			return err
@@ -1022,7 +1055,13 @@ func (r *firestoreProfileRepository) ProfileDerivationFailed(ctx context.Context
 		if err := tx.Set(profileDerivationIntentRef(stateRef), intent); err != nil {
 			return err
 		}
-		return setProfileState(tx, stateRef, result)
+		if err := setProfileState(tx, stateRef, result); err != nil {
+			return err
+		}
+		if failedWorkRef != nil {
+			return tx.Set(failedWorkRef, failedWork)
+		}
+		return nil
 	})
 	return result, err
 }

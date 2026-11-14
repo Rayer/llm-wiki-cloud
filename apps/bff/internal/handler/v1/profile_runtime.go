@@ -313,6 +313,16 @@ func (d *ProfileDispatcher) finish(ctx context.Context, repo *firestoreProfileRe
 			return err
 		}
 		if w.Token != claimed.Token {
+			if _, committed := profilederive.CommittedLimitFailureCode(cause); committed && claimed.Kind == "derive" &&
+				w.UserID == claimed.UserID && w.ProjectID == claimed.ProjectID && w.Kind == claimed.Kind &&
+				w.Revision == claimed.Revision && w.ID == claimed.ID && w.Attempts == claimed.Attempts &&
+				!w.Pending && w.Status == "failed" && w.Token == "" && w.LeaseUntil.IsZero() {
+				// Profile failure, attempt history and queue settlement committed
+				// atomically in ProfileDerivationFailed; accept that exact terminal
+				// row after re-reading it, without attempting a second settlement.
+				settledStatus = "failed"
+				return nil
+			}
 			return errProfileRuntimeLease
 		}
 		w.LeaseUntil = time.Time{}

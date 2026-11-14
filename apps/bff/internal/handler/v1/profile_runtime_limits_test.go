@@ -3,6 +3,7 @@ package v1
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -185,6 +186,81 @@ func TestProfileRuntimeDurablySettlesOverLimitDerivationFailures(t *testing.T) {
 				t.Fatalf("manual retry did not recover same revision: %+v", recoveredState)
 			}
 		})
+	}
+}
+
+func TestProfileRuntimeOverLimitFailureRejectsStaleLeaseBeforeMutation(t *testing.T) {
+	f := newRuntimeFixture(t)
+	state, workRef := f.save(t, 0, "Preserve concise source notes.")
+	f.clock = f.clock.Add(profileDebounce)
+	work, claimed, err := f.dispatcher.claim(f.ctx, f.repo, workRef)
+	if err != nil || !claimed {
+		t.Fatalf("claim derive work: claimed=%t err=%v", claimed, err)
+	}
+	runCtx := context.WithValue(f.ctx, profileRuntimeLeaseKey{}, profileRuntimeLease{
+		ref: workRef, token: work.Token, userID: work.UserID, projectID: work.ProjectID,
+	})
+	if err := prepareProfileRuntimeAttempt(runCtx, f.repo, work); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.dispatcher.Handler.ClaimProfileDerivation(runCtx, f.user, f.project, work.Revision, work.ID); err != nil {
+		t.Fatalf("claim Profile derivation attempt: %v", err)
+	}
+	staleCtx := context.WithValue(f.ctx, profileRuntimeLeaseKey{}, profileRuntimeLease{
+		ref: workRef, token: "expired-stale-token", userID: work.UserID, projectID: work.ProjectID,
+	})
+	_, err = f.dispatcher.Handler.FailProfileDerivation(staleCtx, f.user, f.project, state.Revision, work.ID,
+		profileRequirementsDigest(state.Requirements), profilederive.FailureCodeRequirementsOverLimit,
+		profilederive.FailureDiagnostic{Stage: profilederive.FailureStageRequirements, Class: profilederive.FailureClassInputInvalid})
+	if !errors.Is(err, errProfileRuntimeLease) {
+		t.Fatalf("stale limit rejection error=%v; want lease fence", err)
+	}
+	storedWork := f.work(t, workRef)
+	storedState, err := f.repo.GetProfile(f.ctx, f.user, f.project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent, history := readRuntimeDerivationIntentAndHistory(t, f, work.ID)
+	if storedWork.Status != "running" || !storedWork.Pending || storedWork.Token != work.Token || storedState.DerivationErrorCode != nil ||
+		storedState.DerivationStatus == nil || *storedState.DerivationStatus != profileDerivationPending ||
+		intent.Status != "running" || intent.ErrorCode != nil || history.Status != "running" || history.ErrorCode != nil {
+		t.Fatalf("stale failure mutated leased work or Profile state: work=%+v state=%+v intent=%+v history=%+v", storedWork, storedState, intent, history)
+	}
+}
+
+func TestProfileRuntimeCommittedLimitFailureAtomicallySettlesLeasedWork(t *testing.T) {
+	f := newRuntimeFixture(t)
+	state, workRef := f.save(t, 0, "Preserve concise source notes.")
+	f.clock = f.clock.Add(profileDebounce)
+	work, claimed, err := f.dispatcher.claim(f.ctx, f.repo, workRef)
+	if err != nil || !claimed {
+		t.Fatalf("claim derive work: claimed=%t err=%v", claimed, err)
+	}
+	runCtx := context.WithValue(f.ctx, profileRuntimeLeaseKey{}, profileRuntimeLease{
+		ref: workRef, token: work.Token, userID: work.UserID, projectID: work.ProjectID,
+	})
+	if err := prepareProfileRuntimeAttempt(runCtx, f.repo, work); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.dispatcher.Handler.ClaimProfileDerivation(runCtx, f.user, f.project, work.Revision, work.ID); err != nil {
+		t.Fatalf("claim Profile derivation attempt: %v", err)
+	}
+	if _, err := f.dispatcher.Handler.FailProfileDerivation(runCtx, f.user, f.project, state.Revision, work.ID,
+		profileRequirementsDigest(state.Requirements), profilederive.FailureCodeRequirementsOverLimit,
+		profilederive.FailureDiagnostic{Stage: profilederive.FailureStageRequirements, Class: profilederive.FailureClassInputInvalid}); err != nil {
+		t.Fatalf("commit fenced over-limit rejection: %v", err)
+	}
+	settled := f.work(t, workRef)
+	failed, err := f.repo.GetProfile(f.ctx, f.user, f.project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent, history := readRuntimeDerivationIntentAndHistory(t, f, work.ID)
+	if settled.Pending || settled.Status != "failed" || settled.Attempts != work.Attempts || settled.Token != "" || !settled.LeaseUntil.IsZero() ||
+		failed.DerivationStatus == nil || *failed.DerivationStatus != profileDerivationFailed || failed.DerivationErrorCode == nil || *failed.DerivationErrorCode != profilederive.FailureCodeRequirementsOverLimit ||
+		intent.Status != profileDerivationFailed || intent.ErrorCode == nil || *intent.ErrorCode != profilederive.FailureCodeRequirementsOverLimit ||
+		history.Status != profileDerivationFailed || history.ErrorCode == nil || *history.ErrorCode != profilederive.FailureCodeRequirementsOverLimit {
+		t.Fatalf("Profile error and its leased work row did not settle together: work=%+v profile=%+v intent=%+v history=%+v", settled, failed, intent, history)
 	}
 }
 
