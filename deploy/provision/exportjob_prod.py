@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+from dataclasses import dataclass
 import json
 import re
 import subprocess
@@ -16,6 +17,8 @@ ROOT = Path(__file__).resolve().parents[2]
 CONTRACT = ROOT / "deploy/provision/exportjob-prod.json"
 EVIDENCE = ROOT / ".provision/exportjob-prod-evidence.json"
 MAX_ETAG_ATTEMPTS = 5
+IAM_POLICY_VERSION = 3
+IAM_POLICY_FIELDS = ["bindings", "etag"]
 ROLE_ID = "lwcExportObjectLister"
 ROLE_NAME = "projects/llm-wiki-cloud/roles/lwcExportObjectLister"
 RUNTIME_SERVICE_ACCOUNT = "lwc-export-worker-prod@llm-wiki-cloud.iam.gserviceaccount.com"
@@ -126,6 +129,78 @@ def _canonical_policy(policy: dict) -> dict:
     return result
 
 
+@dataclass(frozen=True)
+class PolicyReadback:
+    policy: dict
+    wire_policy: dict
+    normalization: dict
+
+
+def normalize_gcloud_policy(raw: object, *, requested_version: int | None) -> PolicyReadback:
+    """Restore the version omitted by gcloud's v3 bindings/etag projection."""
+    if not isinstance(raw, dict):
+        raise ProvisionError("Production bucket IAM policy read returned an invalid shape")
+    if requested_version != IAM_POLICY_VERSION:
+        raise ProvisionError("Production bucket IAM policy cannot be normalized without an explicit v3 request")
+    wire_policy = copy.deepcopy(raw)
+    policy = copy.deepcopy(raw)
+    if "version" not in policy:
+        policy["version"] = requested_version
+        version_source = "inferred_from_explicit_requested_policy_version"
+    elif policy["version"] == requested_version:
+        version_source = "returned_and_verified"
+    else:
+        raise ProvisionError("Production bucket IAM policy readback has an unexpected policy version")
+    _policy_bindings(policy)
+    normalization = {
+        "provider_command": "gcloud storage buckets get-iam-policy",
+        "requested_policy_version": requested_version,
+        "requested_fields": IAM_POLICY_FIELDS.copy(),
+        "version_source": version_source,
+    }
+    return PolicyReadback(policy=policy, wire_policy=wire_policy, normalization=normalization)
+
+
+class GCloudBucketPolicyAdapter:
+    """Version-aware adapter for gcloud's v3 IAM read projection and set serializer."""
+
+    def __init__(self, call: Callable[[list[str]], subprocess.CompletedProcess[str]]):
+        self.call = call
+
+    def read(self, bucket: str) -> PolicyReadback:
+        result = self.call(["storage", "buckets", "get-iam-policy", f"gs://{bucket}", "--format=json", "--quiet"])
+        if result.returncode != 0:
+            raise ProvisionError("Production bucket IAM policy read failed")
+        try:
+            raw = json.loads(result.stdout)
+        except json.JSONDecodeError as error:
+            raise ProvisionError("Production bucket IAM policy read returned invalid JSON") from error
+        return normalize_gcloud_policy(raw, requested_version=IAM_POLICY_VERSION)
+
+    @staticmethod
+    def serialize_for_write(policy: dict) -> dict:
+        if not isinstance(policy, dict) or policy.get("version") != IAM_POLICY_VERSION:
+            raise ProvisionError("Production bucket IAM policy write requires the verified v3 policy version")
+        _policy_bindings(policy)
+        if not has_etag(policy):
+            raise ProvisionError("Production bucket IAM policy write requires the observed etag")
+        serialized = copy.deepcopy(policy)
+        # gcloud's set-iam-policy serializer also forces version 3; make it explicit
+        # before invoking the CLI so the submitted evidence matches its API body.
+        serialized["version"] = IAM_POLICY_VERSION
+        return serialized
+
+    @staticmethod
+    def write_file(policy: dict, path: Path) -> dict:
+        serialized = GCloudBucketPolicyAdapter.serialize_for_write(policy)
+        path.write_text(json.dumps(serialized))
+        return serialized
+
+    @staticmethod
+    def set_args(bucket: str, policy_path: Path) -> list[str]:
+        return ["storage", "buckets", "set-iam-policy", f"gs://{bucket}", str(policy_path), "--quiet"]
+
+
 class Provisioner:
     """One-role, one-member Production bucket IAM change with injectable transport."""
 
@@ -133,6 +208,7 @@ class Provisioner:
                  evidence_path: Path = EVIDENCE):
         self.c = validate_contract(contract)
         self.run = run
+        self.policy_adapter = GCloudBucketPolicyAdapter(self._call)
         self.evidence_path = evidence_path
         self.evidence = self._load_evidence()
         self.invocation = {"role_readback": None, "policy_attempts": [], "status": "started"}
@@ -164,17 +240,8 @@ class Provisioner:
             raise ProvisionError("Production Export IAM provider returned an invalid result")
         return result
 
-    def _read_policy(self) -> dict:
-        args = ["storage", "buckets", "get-iam-policy", f"gs://{self.c['bucket']}", "--format=json", "--quiet"]
-        result = self._call(args)
-        if result.returncode != 0:
-            raise ProvisionError("Production bucket IAM policy read failed")
-        try:
-            policy = json.loads(result.stdout)
-        except json.JSONDecodeError as error:
-            raise ProvisionError("Production bucket IAM policy read returned invalid JSON") from error
-        _policy_bindings(policy)
-        return policy
+    def _read_policy(self) -> PolicyReadback:
+        return self.policy_adapter.read(self.c["bucket"])
 
     def _verify_role(self) -> None:
         args = ["iam", "roles", "describe", ROLE_ID, "--project", self.c["project"], "--format=json", "--quiet"]
@@ -210,7 +277,8 @@ class Provisioner:
         attempt["status"] = "readback_pending"
         self._save()
         try:
-            after = self._read_policy()
+            readback = self._read_policy()
+            after = readback.policy
         except ProvisionError:
             attempt["status"] = "unknown" if ambiguous else "readback_failed"
             self.invocation["status"] = "unknown" if ambiguous else "failed"
@@ -220,6 +288,8 @@ class Provisioner:
             raise
         attempt["after_etag"] = after.get("etag")
         attempt["after_policy"] = after
+        attempt["after_wire_policy"] = readback.wire_policy
+        attempt["after_policy_normalization"] = readback.normalization
         expected = attempt.get("submitted_policy")
         if not has_etag(after):
             attempt["status"] = "unknown" if ambiguous else "readback_mismatch"
@@ -253,13 +323,15 @@ class Provisioner:
 
         for index in range(MAX_ETAG_ATTEMPTS):
             try:
-                before = self._read_policy()
+                readback = self._read_policy()
+                before = readback.policy
             except ProvisionError:
                 self.invocation["status"] = "failed"
                 self._save()
                 raise
             attempt = {"target": target, "binding": desired, "before_etag": before.get("etag"),
-                       "before_policy": before, "status": "prepared"}
+                       "before_policy": before, "before_wire_policy": readback.wire_policy,
+                       "before_policy_normalization": readback.normalization, "status": "prepared"}
             self._record_policy(attempt)
 
             # Reject a second conditioned grant before accepting an exact unconditioned member.
@@ -284,7 +356,9 @@ class Provisioner:
                 self._save()
                 raise ProvisionError("Production bucket policy has duplicate unconditioned list-role bindings")
             if matches and MEMBER in matches[0]["members"]:
-                attempt.update(status="existing_verified", after_etag=before["etag"], after_policy=before)
+                attempt.update(status="existing_verified", after_etag=before["etag"], after_policy=before,
+                               after_wire_policy=readback.wire_policy,
+                               after_policy_normalization=readback.normalization)
                 self.invocation.update(status="verified", result="verified_noop")
                 self._save()
                 return "verified_noop"
@@ -298,10 +372,12 @@ class Provisioner:
 
             with tempfile.TemporaryDirectory(prefix="lwc486-export-iam-") as temp_dir:
                 policy_path = Path(temp_dir) / "policy.json"
-                policy_path.write_text(json.dumps(policy))
-                attempt["submitted_policy"] = policy
-                set_args = ["storage", "buckets", "set-iam-policy", f"gs://{self.c['bucket']}",
-                            str(policy_path), "--quiet"]
+                attempt["submitted_policy"] = self.policy_adapter.write_file(policy, policy_path)
+                attempt["set_policy_serialization"] = {
+                    "version": IAM_POLICY_VERSION,
+                    "provider_command": "gcloud storage buckets set-iam-policy",
+                }
+                set_args = self.policy_adapter.set_args(self.c["bucket"], policy_path)
                 attempt["status"] = "write_pending"
                 self._save()
                 try:
