@@ -1,5 +1,7 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -67,6 +69,11 @@ const selectedProjectStatus = {
   scheduledPipeline: null,
   raw: {},
 };
+
+const nativeCloudRunFailureStatus = JSON.parse(readFileSync(
+  resolve(process.cwd(), '../bff/internal/handler/v1/testdata/pipeline-status-cloud-run-failure.json'),
+  'utf8',
+));
 
 function buildInfo() {
   return {
@@ -140,6 +147,37 @@ describe('LWC-485 exact status route reader', () => {
     expect(mocks.currentProject.id).toBe('project-a');
   });
 
+  it('reads the native BFF Cloud Run full resource name for the exact short route ID', async () => {
+    // This fixture is checked against the native PipelineStatus handler serializer in handler_test.go.
+    const response = structuredClone(nativeCloudRunFailureStatus);
+    mocks.projects = [
+      { id: 'project-a', name: 'Workspace A' },
+      { id: response.project_id, name: 'Project B' },
+    ];
+    mocks.getPipelineStatus.mockResolvedValue(response);
+    const route = await StatusPage({
+      searchParams: Promise.resolve({ project_id: 'demo-project', execution_id: 'owned-failure' }),
+    });
+    expect(route.props).toMatchObject({
+      requestedProjectId: 'demo-project',
+      requestedExecutionId: 'owned-failure',
+    });
+    const { unmount } = render(route);
+
+    const target = await screen.findByTestId('status-requested-pipeline-run');
+    await waitFor(() => expect(target.textContent).toContain('A readable Cloud Run failure'));
+    expect(response.last_execution.name).toBe(
+      'projects/llm-wiki-cloud/locations/asia-east1/jobs/olw-pipeline/executions/owned-failure',
+    );
+    expect(target.textContent).toContain('Project B');
+    expect(target.textContent).toContain('owned-failure');
+    expect(target.textContent).toContain('FAILED');
+    expect(mocks.getPipelineStatus).toHaveBeenCalledWith('demo-project', 'owned-failure');
+    await waitFor(() => expect(mocks.getStatus).toHaveBeenCalledWith('project-a'));
+    expect(mocks.currentProject.id).toBe('project-a');
+    unmount();
+  });
+
   it.each([
     ['missing execution', 'project-b', undefined],
     ['duplicate project parameter', ['project-b', 'project-a'], 'older-failed-run'],
@@ -159,18 +197,41 @@ describe('LWC-485 exact status route reader', () => {
     unmount();
   });
 
-  it('hides mismatched or no-longer-readable executions and does not disclose another Project', async () => {
+  it.each([
+    ['different short ID', 'a-different-execution'],
+    ['different Cloud Run resource ID', 'projects/llm-wiki-cloud/locations/asia-east1/jobs/olw-pipeline/executions/a-different-execution'],
+    ['Cloud Run child resource suffix', 'projects/llm-wiki-cloud/locations/asia-east1/jobs/olw-pipeline/executions/older-failed-run/child'],
+    ['non-Cloud Run resource prefix', 'other/projects/llm-wiki-cloud/locations/asia-east1/jobs/olw-pipeline/executions/older-failed-run'],
+  ])('hides a %s and does not disclose its details', async (_label, executionName) => {
     mocks.getPipelineStatus.mockResolvedValue({
       project_id: 'project-b',
-      last_execution: { name: 'a-different-execution', status: 'FAILED', failure_reason: 'must not appear' },
+      last_execution: { name: executionName, status: 'FAILED', failure_reason: 'must not appear' },
     });
     render(<StatusClient requestedProjectId="project-b" requestedExecutionId="older-failed-run" />);
 
     const target = await screen.findByTestId('status-requested-pipeline-run');
     await waitFor(() => expect(target.textContent).toContain('No pipeline status available.'));
-    expect(target.textContent).not.toContain('a-different-execution');
+    expect(target.textContent).not.toContain(executionName);
     expect(target.textContent).not.toContain('must not appear');
     expect(mocks.getPipelineStatus).toHaveBeenCalledWith('project-b', 'older-failed-run');
+    expect(mocks.currentProject.id).toBe('project-a');
+  });
+
+  it('fails closed when the exact run response belongs to a different Project', async () => {
+    mocks.getPipelineStatus.mockResolvedValue({
+      project_id: 'project-a',
+      last_execution: {
+        name: 'projects/llm-wiki-cloud/locations/asia-east1/jobs/olw-pipeline/executions/older-failed-run',
+        status: 'FAILED',
+        failure_reason: 'another Project failure must not appear',
+      },
+    });
+    render(<StatusClient requestedProjectId="project-b" requestedExecutionId="older-failed-run" />);
+
+    const target = await screen.findByTestId('status-requested-pipeline-run');
+    await waitFor(() => expect(target.textContent).toContain('No pipeline status available.'));
+    expect(target.textContent).not.toContain('Project B');
+    expect(target.textContent).not.toContain('another Project failure');
     expect(mocks.currentProject.id).toBe('project-a');
   });
 

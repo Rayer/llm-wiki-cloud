@@ -1,0 +1,19 @@
+{
+  "project_id": "demo-project",
+  "last_execution": {
+    "name": "projects/llm-wiki-cloud/locations/asia-east1/jobs/olw-pipeline/executions/owned-failure",
+    "status": "FAILED",
+    "diagnostic_state": "available",
+    "failure_reason": "A readable Cloud Run failure",
+    "diagnostic": {
+      "version": 1,
+      "status": "failed",
+      "stage": "concept_reconciliation",
+      "error_class": "child_exit",
+      "detail_code": "entity_mapping_article_source_missing",
+      "child_command": "run",
+      "exit_code": 23,
+      "message": "A readable Cloud Run failure"
+    }
+  }
+}

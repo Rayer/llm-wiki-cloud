@@ -73,6 +73,26 @@ function safeRouteSegment(value: string): boolean {
   return value.length > 0 && value.trim() === value && !/[\\/\u0000-\u001f\u007f]/.test(value);
 }
 
+function pipelineExecutionNameMatchesRequestedId(name: unknown, requestedId: string): boolean {
+  if (typeof name !== 'string') return false;
+  if (name === requestedId) return true;
+
+  const resource = name.split('/');
+  if (
+    resource.length !== 8
+    || resource[0] !== 'projects'
+    || resource[2] !== 'locations'
+    || resource[4] !== 'jobs'
+    || resource[6] !== 'executions'
+  ) return false;
+
+  const resourceSegments = resource.slice(1);
+  if (resourceSegments.some((segment) => !safeRouteSegment(segment) || segment === '.' || segment === '..')) {
+    return false;
+  }
+  return resource[7] === requestedId;
+}
+
 function publicationOutcomeText(execution: PipelineExecution, t: (key: string) => string): string {
   switch (execution.publication_outcome) {
     case 'confirmed_published': return t('Pipeline.publicationPublished');
@@ -169,7 +189,11 @@ export function StatusClient({
       .then((result) => {
         if (!isCurrentRequest()) return;
         const execution = result.last_execution;
-        if (result.project_id !== requestedRun.projectId || !execution || execution.name !== requestedRun.executionId) {
+        if (
+          result.project_id !== requestedRun.projectId
+          || !execution
+          || !pipelineExecutionNameMatchesRequestedId(execution.name, requestedRun.executionId)
+        ) {
           setRequestedRunState({ identity: requestedRunIdentity, phase: 'unavailable' });
           return;
         }
