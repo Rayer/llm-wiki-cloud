@@ -663,8 +663,11 @@ func (m *Manager) Start(ctx context.Context, userID, projectID, stage string, cl
 		beforeID = manifest.GenerationID
 	}
 	intentReservation := false
+	projectPipelineSequence := int64(0)
+	projectPipelineSequenceSet := false
 	err = m.cfg.Firestore.RunTransaction(ctx, func(ctx context.Context, tx *cloudfirestore.Transaction) error {
 		intentReservation = false
+		projectPipelineSequence, projectPipelineSequenceSet = 0, false
 		lock, getErr := tx.Get(lockRef)
 		if getErr == nil {
 			lockData := lock.Data()
@@ -686,6 +689,10 @@ func (m *Manager) Start(ctx context.Context, userID, projectID, stage string, cl
 			}
 			intentMode, _ := data["intent_mode"].(string)
 			intentReservation = intentMode != ""
+			if value, exists := data["project_pipeline_sequence"].(int64); exists {
+				projectPipelineSequence = value
+				projectPipelineSequenceSet = true
+			}
 		}
 		lockRecord := map[string]any{"user_id": userID, "project_id": projectID, "execution_id": executionID, "status": "RUNNING", "updated_at": started}
 		if requestID := observability.RequestIDFromContext(ctx); requestID != "" {
@@ -707,6 +714,9 @@ func (m *Manager) Start(ctx context.Context, userID, projectID, stage string, cl
 		}
 		if requestID := observability.RequestIDFromContext(ctx); requestID != "" {
 			execution["request_id"] = requestID
+		}
+		if projectPipelineSequenceSet {
+			execution["project_pipeline_sequence"] = projectPipelineSequence
 		}
 		if err := tx.Create(executionRef, execution); err != nil {
 			return err

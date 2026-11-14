@@ -255,7 +255,7 @@ func (h *Handler) runScheduledProject(ctx context.Context, qs scheduledPipelineQ
 	executionID, err := h.invokePipelineJobStageWithReservation(ctx, userID, projectID, false, pipelineStageFull, reservationID)
 	if err != nil {
 		if errors.Is(err, errPipelineInvocationOutcomeUnknown) {
-			if attemptErr := qs.RecordScheduledPipelineAttempt(ctx, userID, projectID, dayKey, reservationID, "", "unknown", now); attemptErr != nil {
+			if attemptErr := qs.RecordScheduledPipelineAttempt(ctx, userID, projectID, dayKey, reservationID, attemptID, "", "unknown", now); attemptErr != nil {
 				h.recordScheduledCheckOK(ctx, statusStore, userID, projectID, now, "unavailable", pending, newRaw, rawDirty, annotationDirty)
 			}
 			return false, false, true
@@ -287,7 +287,7 @@ func (h *Handler) runScheduledProject(ctx context.Context, qs scheduledPipelineQ
 			// The execution environment carries the reservation ID for reconciliation.
 		}
 	}
-	if err := qs.RecordScheduledPipelineAttempt(ctx, userID, projectID, dayKey, reservationID, executionID, "accepted", now); err != nil {
+	if err := qs.RecordScheduledPipelineAttempt(ctx, userID, projectID, dayKey, reservationID, attemptID, executionID, "accepted", now); err != nil {
 		return true, false, true
 	}
 	return true, false, false

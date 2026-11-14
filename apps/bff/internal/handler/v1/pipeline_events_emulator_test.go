@@ -193,6 +193,7 @@ func TestCloudPipelineEventsBoundedGlobalScanAndExactRunOverlay(t *testing.T) {
 		if _, err := scopedfirestore.Collection(fsClient.Raw(), "pipeline_quota_reservations").Doc(reservationID).Set(ctx, map[string]any{
 			"user_id": "user-a", "project_id": "project-a", "attempt_id": "attempt-" + reservationID,
 			"execution_id": executionID, "intent_status": "ready", "settlement_status": "pending", "trigger": "manual",
+			"mode": "full", "project_pipeline_sequence": int64(1),
 		}); err != nil {
 			t.Fatalf("seed durable Project intent: %v", err)
 		}
@@ -215,6 +216,10 @@ func TestCloudPipelineEventsBoundedGlobalScanAndExactRunOverlay(t *testing.T) {
 		}
 		if snapshot.Coverage.KnownRunIDs[0] != "exact-run" || len(snapshot.Coverage.UnresolvedKnownRunIDs) != 0 {
 			t.Fatalf("known exact identity coverage=%+v", snapshot.Coverage)
+		}
+		record := snapshot.records["exact-run"]
+		if !record.sequenceSet || record.sequence != 1 || record.attemptID != "attempt-res-exact" || record.reservationID != "res-exact" || record.mode != "full" || record.trigger != "manual" {
+			t.Fatalf("bounded source observer lost exact reservation witness: %+v", record)
 		}
 	})
 

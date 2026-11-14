@@ -62,6 +62,29 @@ func TestPipelineWitnessUsesOneProjectSlotAndRejectsEqualSequenceCollision(t *te
 	}
 }
 
+func TestPipelineLegacyBootstrapWitnessKeepsSequenceFloor(t *testing.T) {
+	witness := ProducerWitness{Kind: "pipeline-run", ProjectID: "project-a", ProjectPipelineSequence: 7,
+		BootstrapFloor: 7, BootstrapDigest: strings.Repeat("a", 64), ExecutionID: "legacy-run", TerminalClass: "failed"}
+	input := ObservationInput{Category: CategoryPipelineFailure, SourceKey: "pipeline-fail:project-a", ExpectedSourceRevision: 0,
+		ProducerWitness: witness, PayloadDigest: strings.Repeat("b", 64), AttentionMaterialRevision: "legacy-failure",
+		Observation: Observation{ProjectID: "project-a", ExecutionID: "legacy-run", Title: "Pipeline did not publish",
+			Body: "A legacy run ended without publishing.", Severity: SeverityAttention}}
+	if err := ValidateObservationInput(input); err != nil {
+		t.Fatalf("valid sequence floor witness rejected: %v", err)
+	}
+	newer := ProducerWitness{Kind: "pipeline-run", ProjectID: "project-a", ProjectPipelineSequence: 8,
+		BootstrapFloor: 7, BootstrapDigest: witness.BootstrapDigest, ReservationID: "reservation-8", AttemptID: "attempt-8",
+		ExecutionID: "run-8", Trigger: "manual", Mode: "full", TerminalClass: "failed"}
+	if CompareWitness(CategoryPipelineFailure, newer, witness) <= 0 {
+		t.Fatal("sequenced run above the bootstrap floor did not win")
+	}
+	legacyReplay := witness
+	legacyReplay.ExecutionID = "other-legacy-run"
+	if CompareWitness(CategoryPipelineFailure, legacyReplay, newer) >= 0 {
+		t.Fatal("legacy replay at the bootstrap floor beat a later sequenced run")
+	}
+}
+
 func TestPurposeCooldownAndWitnessOrderingUseAttemptTime(t *testing.T) {
 	base := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 	older := ProducerWitness{Kind: "purpose-comparison", ProjectID: "project-a", AttemptID: "attempt-a", ConfirmationID: "confirmation-a",

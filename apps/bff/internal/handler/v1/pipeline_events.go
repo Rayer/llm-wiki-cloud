@@ -18,6 +18,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	handlerapi "github.com/rayer/llm-wiki-bff/internal/handler"
+	"github.com/rayer/llm-wiki-bff/internal/nudge"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -26,6 +27,7 @@ const (
 	pipelineEventHistoryLimit = 50
 	pipelineEventGlobalLimit  = 100
 	pipelineEventPageLimit    = 5
+	pipelineNudgeProjectLimit = 100
 	pipelineEventReadTimeout  = 15 * time.Second
 	pipelineEventPollInterval = 10 * time.Second
 	pipelineEventAuthInterval = 20 * time.Second
@@ -188,6 +190,8 @@ type pipelineEventSnapshot struct {
 	ObservedHighWatermark *pipelineEventPosition `json:"observed_high_watermark"`
 	KnownRuns             []pipelineEventRun     `json:"known_runs"`
 	Runs                  []pipelineEventRun     `json:"runs"`
+	records               map[string]pipelineEventRunRecord
+	candidates            scopedfirestore.PipelineEventCandidateSet
 }
 
 type pipelineEventRun struct {
@@ -224,16 +228,24 @@ type pipelineEventResult struct {
 }
 
 type pipelineEventRunRecord struct {
-	id            string
-	status        string
-	startedAt     time.Time
-	actualStarted time.Time
-	endedAt       time.Time
-	publication   string
-	quota         string
-	response      *handlerapi.PipelineExecutionResponse
-	known         bool
-	candidate     bool
+	id                    string
+	status                string
+	startedAt             time.Time
+	actualStarted         time.Time
+	endedAt               time.Time
+	publication           string
+	quota                 string
+	response              *handlerapi.PipelineExecutionResponse
+	known                 bool
+	candidate             bool
+	reservationID         string
+	attemptID             string
+	trigger               string
+	mode                  string
+	sequence              int64
+	sequenceSet           bool
+	reservationUpdateTime time.Time
+	reservationMissing    bool
 }
 
 func pipelineEventsURI(projectID string) string {
@@ -448,7 +460,10 @@ func (h *Handler) readLocalPipelineEventSnapshot(ctx context.Context, userID, pr
 		record.candidate = true
 		records[record.id] = record
 	}
+	candidates = resolveObservedPendingCandidates(candidates, records)
 	snapshot := makePipelineEventSnapshot(projectID, records, candidateIDs(candidates.Known), candidatePending(candidates.Pending), false, pipelineEventGlobalLimit, 0, truncated, unresolved, candidates.UnresolvedCount)
+	snapshot.records = records
+	snapshot.candidates = candidates
 	return snapshot, nil
 }
 
@@ -481,11 +496,21 @@ func (h *Handler) localPipelineEventRecord(ctx context.Context, userID, projectI
 	if response.FailureReason == "" {
 		response.FailureReason = stringData(data, "failure_reason")
 	}
-	return pipelineEventRunRecord{
+	record := pipelineEventRunRecord{
 		id: executionID, status: statusValue, startedAt: startedAt,
 		actualStarted: actualStarted, endedAt: endedAt, publication: publication,
 		quota: quota, response: response, known: known,
-	}, nil
+		reservationID: strings.TrimSpace(stringData(data, "quota_reservation_id")),
+	}
+	if value, ok := data["project_pipeline_sequence"]; ok {
+		record.sequence = firestoreInt64(value)
+		record.sequenceSet = true
+	}
+	record.mode = normalizePipelineMode(stringData(data, "stage"))
+	if err := h.attachPipelineReservation(ctx, userID, projectID, &record, nil); err != nil {
+		return pipelineEventRunRecord{}, err
+	}
+	return record, nil
 }
 
 func (h *Handler) readCloudPipelineEventSnapshot(ctx context.Context, userID, projectID string) (pipelineEventSnapshot, error) {
@@ -563,6 +588,14 @@ func (h *Handler) readCloudPipelineEventSnapshot(ctx context.Context, userID, pr
 	records := make(map[string]pipelineEventRunRecord, len(needed))
 	unresolved := make([]string, 0)
 	owner := &pipelineExecutionOwner{userID: userID, projectID: projectID}
+	candidateByExecution := make(map[string]scopedfirestore.PipelineEventCandidate, len(candidates.Known))
+	candidateByReservation := make(map[string]scopedfirestore.PipelineEventCandidate, len(candidates.Pending))
+	for _, candidate := range candidates.Known {
+		candidateByExecution[candidate.ExecutionID] = candidate
+	}
+	for _, candidate := range candidates.Pending {
+		candidateByReservation[candidate.ReservationID] = candidate
+	}
 	for id := range needed {
 		response, err := h.pipelineExecutionStatusForOwner(ctx, id, userID, projectID)
 		if errors.Is(err, errPipelineExecutionNotFound) || errors.Is(err, handlerapi.ErrPipelineExecutionNotFound) || response == nil && err == nil {
@@ -576,11 +609,31 @@ func (h *Handler) readCloudPipelineEventSnapshot(ctx context.Context, userID, pr
 		endedAt, _ := time.Parse(time.RFC3339Nano, response.EndTime)
 		publication := publicationOutcomeName(h.cloudRunPublicationOutcome(ctx, owner, id))
 		response.PublicationOutcome = publication
-		records[id] = pipelineEventRunRecord{
+		record := pipelineEventRunRecord{
 			id: id, status: strings.ToUpper(response.Status), startedAt: actualStarted,
 			actualStarted: actualStarted, endedAt: endedAt, publication: publication,
-			quota: response.QuotaSettlement, response: response,
+			quota: response.QuotaSettlement, response: response, mode: normalizePipelineMode(response.CompileMode),
 		}
+		if candidate, ok := candidateByExecution[id]; ok {
+			record.reservationID = candidate.ReservationID
+			if err := h.attachPipelineReservation(ctx, userID, projectID, &record, &candidate); err != nil {
+				return pipelineEventSnapshot{}, err
+			}
+		} else if execution, ok := listed[id]; ok {
+			record.reservationID = cloudRunExecutionReservationID(execution, userID, projectID)
+			candidate, pendingMatch := candidateByReservation[record.reservationID]
+			var candidatePtr *scopedfirestore.PipelineEventCandidate
+			if pendingMatch {
+				candidatePtr = &candidate
+			}
+			if err := h.attachPipelineReservation(ctx, userID, projectID, &record, candidatePtr); err != nil {
+				return pipelineEventSnapshot{}, err
+			}
+			if pendingMatch {
+				record.candidate = true
+			}
+		}
+		records[id] = record
 	}
 	for _, candidate := range candidates.Known {
 		if record, ok := records[candidate.ExecutionID]; ok {
@@ -591,8 +644,472 @@ func (h *Handler) readCloudPipelineEventSnapshot(ctx context.Context, userID, pr
 			records[candidate.ExecutionID] = record
 		}
 	}
+	candidates = resolveObservedPendingCandidates(candidates, records)
 	snapshot := makePipelineEventSnapshot(projectID, records, candidateIDs(candidates.Known), candidatePending(candidates.Pending), globalCap, pipelineEventGlobalLimit, globalScanned, historyTruncated || globalCap, unresolved, candidates.UnresolvedCount)
+	snapshot.records = records
+	snapshot.candidates = candidates
 	return snapshot, nil
+}
+
+func (h *Handler) attachPipelineReservation(ctx context.Context, userID, projectID string, record *pipelineEventRunRecord, candidate *scopedfirestore.PipelineEventCandidate) error {
+	if candidate != nil {
+		record.reservationID = candidate.ReservationID
+		record.attemptID, record.trigger, record.mode = candidate.AttemptID, string(candidate.Trigger), string(candidate.Mode)
+		record.sequence, record.sequenceSet = candidate.Sequence, candidate.SequenceSet
+		record.reservationUpdateTime = candidate.UpdateTime
+		return nil
+	}
+	if record.reservationID == "" {
+		return nil
+	}
+	reservation, exists, updateTime, err := scopedfirestore.GetQuotaReservationSnapshotFromFirestore(ctx, h.firestore.Raw(), record.reservationID)
+	if err != nil {
+		return fmt.Errorf("read exact Pipeline reservation evidence: %w", err)
+	}
+	if !exists || reservation.UserID != userID || reservation.ProjectID != projectID ||
+		(reservation.ExecutionID != "" && reservation.ExecutionID != record.id) || (reservation.ExecutionID == "" && reservation.SettlementStatus != "pending") {
+		record.reservationMissing = true
+		return nil
+	}
+	record.attemptID, record.trigger = reservation.AttemptID, string(reservation.Trigger)
+	if record.mode == "" {
+		record.mode = string(reservation.Mode)
+	}
+	if reservation.ProjectPipelineSequencePresent {
+		if record.sequenceSet && record.sequence != reservation.ProjectPipelineSequence {
+			record.reservationMissing = true
+			return nil
+		}
+		record.sequence, record.sequenceSet = reservation.ProjectPipelineSequence, true
+	}
+	record.reservationUpdateTime = updateTime
+	return nil
+}
+
+func resolveObservedPendingCandidates(candidates scopedfirestore.PipelineEventCandidateSet, records map[string]pipelineEventRunRecord) scopedfirestore.PipelineEventCandidateSet {
+	observed := make(map[string]pipelineEventRunRecord, len(records))
+	for _, record := range records {
+		if record.reservationID == "" || record.attemptID == "" {
+			continue
+		}
+		if _, exists := observed[record.reservationID]; exists {
+			observed[record.reservationID] = pipelineEventRunRecord{}
+			continue
+		}
+		observed[record.reservationID] = record
+	}
+	pending := make([]scopedfirestore.PipelineEventCandidate, 0, len(candidates.Pending))
+	for _, candidate := range candidates.Pending {
+		record, exists := observed[candidate.ReservationID]
+		if !exists || record.id == "" || record.attemptID != candidate.AttemptID ||
+			(candidate.ExecutionID != "" && candidate.ExecutionID != record.id) {
+			pending = append(pending, candidate)
+		}
+	}
+	candidates.Pending = pending
+	return candidates
+}
+
+func normalizePipelineMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "full":
+		return "full"
+	case "incremental", "suggested-queries", "suggested_queries":
+		return "incremental"
+	default:
+		return ""
+	}
+}
+
+func (h *Handler) reconcilePipelineFailureNudges(ctx context.Context, userID string, repository *nudge.Repository) ([]nudge.SourceFailure, []nudge.SourceNotice) {
+	failures := make([]nudge.SourceFailure, 0)
+	notices := make([]nudge.SourceNotice, 0)
+	if h.firestore == nil || h.firestore.Raw() == nil {
+		return []nudge.SourceFailure{{SafeClass: "pipeline_source_unavailable"}}, notices
+	}
+	projects, err := scopedfirestore.Collection(h.firestore.Raw(), "projects").Where("user_id", "==", userID).
+		Limit(pipelineNudgeProjectLimit + 1).Documents(ctx).GetAll()
+	if err != nil {
+		return []nudge.SourceFailure{{SafeClass: "pipeline_source_unavailable"}}, notices
+	}
+	projectListTruncated := len(projects) > pipelineNudgeProjectLimit
+	if projectListTruncated {
+		projects = projects[:pipelineNudgeProjectLimit]
+		failures = append(failures, nudge.SourceFailure{SafeClass: "pipeline_project_limit"})
+	}
+	sort.Slice(projects, func(i, j int) bool { return projects[i].Ref.ID < projects[j].Ref.ID })
+	for _, project := range projects {
+		data := project.Data()
+		projectID := strings.TrimSpace(stringData(data, "project_id"))
+		if projectID == "" || data["user_id"] != userID || project.Ref.ID != userID+"_"+projectID {
+			failures = append(failures, nudge.SourceFailure{SafeClass: "project_identity_unavailable"})
+			continue
+		}
+		projectName := strings.TrimSpace(stringData(data, "name"))
+		if projectName == "" {
+			projectName = projectID
+		}
+		key := "pipeline-fail:" + projectID
+		slot, readErr := repository.ReadSourceSlot(ctx, userID, nudge.CategoryPipelineFailure, key)
+		if readErr != nil {
+			failures = append(failures, nudge.SourceFailure{ProjectID: projectID, SafeClass: "pipeline_state_unavailable"})
+			if projectListTruncated && slot.Active {
+				notices = append(notices, nudge.SourceNotice{SourceKey: key, State: "stale", SafeClass: "pipeline_project_limit"})
+			}
+			continue
+		}
+		if projectListTruncated {
+			if slot.Active {
+				notices = append(notices, nudge.SourceNotice{SourceKey: key, State: "stale", SafeClass: "pipeline_project_limit"})
+			}
+			continue
+		}
+		projectFailures, projectNotices := h.reconcilePipelineProjectFailure(ctx, repository, userID, projectID, projectName, slot)
+		failures = append(failures, projectFailures...)
+		notices = append(notices, projectNotices...)
+	}
+	return failures, notices
+}
+
+func (h *Handler) reconcilePipelineProjectFailure(ctx context.Context, repository *nudge.Repository, userID, projectID, projectName string, slot nudge.Slot) ([]nudge.SourceFailure, []nudge.SourceNotice) {
+	return h.reconcilePipelineProjectFailureAttempt(ctx, repository, userID, projectID, projectName, slot, true)
+}
+
+func (h *Handler) reconcilePipelineProjectFailureAttempt(ctx context.Context, repository *nudge.Repository, userID, projectID, projectName string, slot nudge.Slot, retryBootstrapRace bool) ([]nudge.SourceFailure, []nudge.SourceNotice) {
+	key := "pipeline-fail:" + projectID
+	partial := func(safeClass string) ([]nudge.SourceFailure, []nudge.SourceNotice) {
+		failures := []nudge.SourceFailure{{ProjectID: projectID, SafeClass: safeClass}}
+		notices := []nudge.SourceNotice{}
+		if slot.Active {
+			notices = append(notices, nudge.SourceNotice{SourceKey: key, State: "stale", SafeClass: safeClass})
+		}
+		return failures, notices
+	}
+	snapshot, err := h.readPipelineEventSnapshot(ctx, userID, projectID)
+	if err != nil {
+		return partial("pipeline_history_unavailable")
+	}
+	if snapshot.ProjectID != projectID || snapshot.records == nil {
+		return partial("pipeline_history_unavailable")
+	}
+	if snapshot.Coverage.State != "complete" || snapshot.Coverage.HistoryTruncated ||
+		len(snapshot.Coverage.UnresolvedKnownRunIDs) != 0 || len(snapshot.Coverage.PendingAttempts) != 0 ||
+		snapshot.candidates.UnresolvedCount != 0 {
+		return partial("pipeline_history_partial")
+	}
+	records := make([]pipelineEventRunRecord, 0, len(snapshot.records))
+	for _, record := range snapshot.records {
+		if record.reservationMissing || !validPipelineEventRecord(record) {
+			return partial("pipeline_evidence_unavailable")
+		}
+		records = append(records, record)
+	}
+	if len(records) == 0 {
+		if slot.Active {
+			return partial("pipeline_history_missing")
+		}
+		return nil, nil // Absence is not publication recovery.
+	}
+	sequenced, legacy := 0, 0
+	for _, record := range records {
+		if record.sequenceSet {
+			if record.sequence < 1 || !validSequencedPipelineIdentity(record) {
+				return partial("pipeline_evidence_unavailable")
+			}
+			sequenced++
+		} else {
+			legacy++
+		}
+	}
+	if sequenced > 0 && legacy > 0 && slot.ProducerWitness.BootstrapDigest == "" && slot.SourceRevision == 0 {
+		return partial("pipeline_legacy_order_ambiguous")
+	}
+	if sequenced == 0 {
+		if slot.SourceRevision != 0 || legacy != 1 || len(records) != 1 {
+			if legacy > 1 {
+				return partial("pipeline_legacy_order_ambiguous")
+			}
+			return nil, nil
+		}
+		record := records[0]
+		if record.status == "FAILED" && record.publication == "unknown" || record.status == "UNKNOWN" || record.status == "RUNNING" ||
+			record.status == "SUCCEEDED" && record.publication != "confirmed_published" {
+			return partial("pipeline_terminal_unconfirmed")
+		}
+		if record.status != "FAILED" || record.publication != "confirmed_not_published" {
+			return nil, nil
+		}
+		if snapshot.candidates.ActiveReservationID != "" || len(snapshot.candidates.Pending) != 0 {
+			return partial("pipeline_pending_reservation")
+		}
+		failures, notices := h.applyPipelineLegacyBootstrap(ctx, repository, userID, projectID, projectName, slot, snapshot, record)
+		if retryBootstrapRace && len(failures) == 1 && failures[0].SafeClass == "pipeline_bootstrap_raced" {
+			freshSlot, readErr := repository.ReadSourceSlot(ctx, userID, nudge.CategoryPipelineFailure, key)
+			if readErr != nil {
+				return partial("pipeline_state_unavailable")
+			}
+			return h.reconcilePipelineProjectFailureAttempt(ctx, repository, userID, projectID, projectName, freshSlot, false)
+		}
+		return failures, notices
+	}
+	if legacy > 0 && slot.ProducerWitness.BootstrapDigest == "" && slot.SourceRevision == 0 {
+		return partial("pipeline_legacy_order_ambiguous")
+	}
+	sort.Slice(records, func(i, j int) bool {
+		if records[i].sequence == records[j].sequence {
+			return records[i].id < records[j].id
+		}
+		return records[i].sequence < records[j].sequence
+	})
+	for index := 1; index < len(records); index++ {
+		if records[index].sequenceSet && records[index-1].sequenceSet && records[index].sequence == records[index-1].sequence && records[index].id != records[index-1].id {
+			return partial("pipeline_sequence_ambiguous")
+		}
+	}
+	currentSequence := slot.ProducerWitness.ProjectPipelineSequence
+	if slot.ProducerWitness.BootstrapDigest != "" && slot.ProducerWitness.BootstrapFloor > currentSequence {
+		currentSequence = slot.ProducerWitness.BootstrapFloor
+	}
+	var latestFailure, latestRecovery *pipelineEventRunRecord
+	for index := range records {
+		record := &records[index]
+		if !record.sequenceSet {
+			continue
+		}
+		if slot.ProducerWitness.BootstrapDigest != "" && record.sequence <= slot.ProducerWitness.BootstrapFloor {
+			continue
+		}
+		if record.sequence < currentSequence {
+			continue
+		}
+		switch {
+		case record.status == "FAILED" && record.publication == "confirmed_not_published":
+			if record.sequence == currentSequence {
+				continue
+			}
+			latestFailure, latestRecovery = record, nil
+		case (record.status == "FAILED" || record.status == "SUCCEEDED") && record.publication == "confirmed_published":
+			if record.sequence == currentSequence && (slot.ProducerWitness.ExecutionID != record.id || slot.ProducerWitness.TerminalClass != "failed") {
+				continue
+			}
+			latestFailure, latestRecovery = nil, record
+		case record.status == "CANCELLED" || record.status == "RUNNING":
+			// A later cancelled or active attempt does not recover an older failure.
+		case record.publication == "unknown" || record.status == "UNKNOWN":
+			return partial("pipeline_terminal_unconfirmed")
+		default:
+			return partial("pipeline_terminal_unconfirmed")
+		}
+	}
+	if latestFailure != nil {
+		input, buildErr := pipelineFailureObservation(projectID, projectName, *latestFailure, slot.ProducerWitness)
+		if buildErr != nil {
+			return partial("pipeline_evidence_unavailable")
+		}
+		if input.ProducerWitness.ProjectPipelineSequence <= slot.ProducerWitness.ProjectPipelineSequence {
+			return nil, nil
+		}
+		input.ExpectedSourceRevision = slot.SourceRevision
+		if _, err := repository.ApplyObservation(ctx, userID, input); err != nil {
+			return partial("pipeline_state_conflict")
+		}
+		return nil, nil
+	}
+	if latestRecovery != nil {
+		witness, buildErr := pipelineProducerWitness(projectID, *latestRecovery, slot.ProducerWitness, "recovered")
+		if buildErr != nil {
+			return partial("pipeline_evidence_unavailable")
+		}
+		if witness.ProjectPipelineSequence < slot.ProducerWitness.ProjectPipelineSequence ||
+			witness.ProjectPipelineSequence == slot.ProducerWitness.ProjectPipelineSequence &&
+				(slot.ProducerWitness.ExecutionID != witness.ExecutionID || slot.ProducerWitness.TerminalClass != "failed") {
+			return nil, nil
+		}
+		clear := nudge.ClearInput{Category: nudge.CategoryPipelineFailure, SourceKey: key,
+			ExpectedSourceRevision: slot.SourceRevision, ProducerWitness: witness, Proof: "confirmed-recovery"}
+		if _, err := repository.ApplyClear(ctx, userID, clear); err != nil {
+			return partial("pipeline_state_conflict")
+		}
+	}
+	return nil, nil
+}
+
+func validPipelineEventRecord(record pipelineEventRunRecord) bool {
+	if strings.TrimSpace(record.id) == "" || record.id != strings.TrimSpace(record.id) {
+		return false
+	}
+	switch record.status {
+	case "FAILED":
+		return record.publication == "confirmed_not_published" || record.publication == "confirmed_published" || record.publication == "unknown"
+	case "SUCCEEDED":
+		return record.publication == "confirmed_published" || record.publication == "confirmed_not_published" || record.publication == "unknown"
+	case "CANCELLED", "RUNNING", "UNKNOWN":
+		return true
+	default:
+		return false
+	}
+}
+
+func validSequencedPipelineIdentity(record pipelineEventRunRecord) bool {
+	if record.reservationID == "" || record.attemptID == "" || record.trigger == "" || (record.mode != "full" && record.mode != "incremental") {
+		return false
+	}
+	switch record.trigger {
+	case "manual", "scheduled_daily", "admin", "source_commit":
+		return true
+	default:
+		return false
+	}
+}
+
+func (h *Handler) applyPipelineLegacyBootstrap(ctx context.Context, repository *nudge.Repository, userID, projectID, projectName string, slot nudge.Slot, snapshot pipelineEventSnapshot, record pipelineEventRunRecord) ([]nudge.SourceFailure, []nudge.SourceNotice) {
+	key := "pipeline-fail:" + projectID
+	floor := snapshot.candidates.Sequence
+	if !snapshot.candidates.SequenceSet {
+		floor = 0
+	}
+	if snapshot.candidates.BootstrapFloorSet && snapshot.candidates.BootstrapFloor > floor {
+		floor = snapshot.candidates.BootstrapFloor
+	}
+	digest := pipelineLegacySnapshotDigest(userID, projectID, snapshot, record)
+	witness := nudge.ProducerWitness{Kind: "pipeline-run", ProjectID: projectID,
+		ProjectPipelineSequence: floor, BootstrapFloor: floor, BootstrapDigest: digest,
+		ReservationID: record.reservationID, AttemptID: record.attemptID, ExecutionID: record.id,
+		Trigger: record.trigger, Mode: record.mode, TerminalClass: "failed"}
+	observation := pipelineFailureObservationForWitness(projectName, record.id, witness)
+	payload := pipelineFailurePayloadDigest(witness, observation)
+	input := nudge.ObservationInput{Category: nudge.CategoryPipelineFailure, SourceKey: key,
+		ExpectedSourceRevision: slot.SourceRevision, ProducerWitness: witness, PayloadDigest: payload,
+		AttentionMaterialRevision: "pipeline-failure:" + digest, Observation: observation}
+	expected := pipelineBootstrapExpectation(userID, projectID, snapshot.candidates, snapshot.records)
+	_, err := repository.ApplyPipelineLegacyBootstrap(ctx, userID, input, func(ctx context.Context, tx *cloudfirestore.Transaction) error {
+		actualFloor, err := scopedfirestore.StagePipelineBootstrapFloor(ctx, tx, h.firestore.Raw(), expected)
+		if err != nil {
+			return err
+		}
+		if actualFloor != floor {
+			return scopedfirestore.ErrPipelineBootstrapFenceConflict
+		}
+		return nil
+	})
+	if err != nil {
+		class := "pipeline_state_conflict"
+		if errors.Is(err, scopedfirestore.ErrPipelineBootstrapFenceConflict) || errors.Is(err, nudge.ErrSourceRevisionConflict) {
+			class = "pipeline_bootstrap_raced"
+		}
+		notices := []nudge.SourceNotice{}
+		if slot.Active {
+			notices = append(notices, nudge.SourceNotice{SourceKey: key, State: "stale", SafeClass: class})
+		}
+		return []nudge.SourceFailure{{ProjectID: projectID, SafeClass: class}}, notices
+	}
+	return nil, nil
+}
+
+func pipelineBootstrapExpectation(userID, projectID string, candidates scopedfirestore.PipelineEventCandidateSet, records map[string]pipelineEventRunRecord) scopedfirestore.PipelineBootstrapExpectation {
+	expected := scopedfirestore.PipelineBootstrapExpectation{
+		UserID: userID, ProjectID: projectID, QuotaExists: candidates.QuotaExists,
+		QuotaUpdateTime: candidates.QuotaUpdateTime, Sequence: candidates.Sequence, SequenceSet: candidates.SequenceSet,
+		BootstrapFloor: candidates.BootstrapFloor, BootstrapFloorSet: candidates.BootstrapFloorSet,
+		ActiveReservationID: candidates.ActiveReservationID, LastPipelineIntentID: candidates.LastPipelineIntentID,
+		ScheduledExists: candidates.ScheduledExists, ScheduledUpdateTime: candidates.ScheduledUpdateTime,
+		ScheduledLastAttemptID: candidates.ScheduledLastAttemptID, ScheduledReservationID: candidates.ScheduledLastReservationID,
+		ScheduledExecutionID: candidates.ScheduledLastExecutionID,
+	}
+	seen := make(map[string]struct{})
+	for _, candidate := range append(append([]scopedfirestore.PipelineEventCandidate{}, candidates.Known...), candidates.Pending...) {
+		if candidate.ReservationID == "" {
+			continue
+		}
+		if _, exists := seen[candidate.ReservationID]; exists {
+			continue
+		}
+		seen[candidate.ReservationID] = struct{}{}
+		expected.Reservations = append(expected.Reservations, scopedfirestore.PipelineReservationFence{ID: candidate.ReservationID, UpdateTime: candidate.UpdateTime})
+	}
+	for _, record := range records {
+		if record.reservationID == "" || record.reservationUpdateTime.IsZero() {
+			continue
+		}
+		if _, exists := seen[record.reservationID]; exists {
+			continue
+		}
+		seen[record.reservationID] = struct{}{}
+		expected.Reservations = append(expected.Reservations, scopedfirestore.PipelineReservationFence{ID: record.reservationID, UpdateTime: record.reservationUpdateTime})
+	}
+	return expected
+}
+
+func pipelineLegacySnapshotDigest(userID, projectID string, snapshot pipelineEventSnapshot, record pipelineEventRunRecord) string {
+	value := struct {
+		UserID, ProjectID, ExecutionID, ReservationID, AttemptID, Trigger, Mode, Status, Publication string
+		Complete, HistoryTruncated                                                                   bool
+	}{userID, projectID, record.id, record.reservationID, record.attemptID, record.trigger, record.mode,
+		record.status, record.publication, snapshot.Coverage.State == "complete", snapshot.Coverage.HistoryTruncated}
+	data, _ := json.Marshal(value)
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+func pipelineProducerWitness(projectID string, record pipelineEventRunRecord, previous nudge.ProducerWitness, terminal string) (nudge.ProducerWitness, error) {
+	if !record.sequenceSet || record.sequence < 1 || !validSequencedPipelineIdentity(record) {
+		return nudge.ProducerWitness{}, errors.New("invalid sequenced Pipeline identity")
+	}
+	witness := nudge.ProducerWitness{Kind: "pipeline-run", ProjectID: projectID,
+		ProjectPipelineSequence: record.sequence, ReservationID: record.reservationID, AttemptID: record.attemptID,
+		ExecutionID: record.id, Trigger: record.trigger, Mode: record.mode, TerminalClass: terminal}
+	if previous.BootstrapDigest != "" {
+		witness.BootstrapFloor, witness.BootstrapDigest = previous.BootstrapFloor, previous.BootstrapDigest
+	}
+	return witness, nil
+}
+
+func pipelineFailureObservation(projectID, projectName string, record pipelineEventRunRecord, previous nudge.ProducerWitness) (nudge.ObservationInput, error) {
+	witness, err := pipelineProducerWitness(projectID, record, previous, "failed")
+	if err != nil {
+		return nudge.ObservationInput{}, err
+	}
+	observation := pipelineFailureObservationForWitness(projectName, record.id, witness)
+	return nudge.ObservationInput{Category: nudge.CategoryPipelineFailure, SourceKey: "pipeline-fail:" + projectID,
+		ProducerWitness: witness, PayloadDigest: pipelineFailurePayloadDigest(witness, observation),
+		AttentionMaterialRevision: fmt.Sprintf("pipeline-failure:%d:%s", witness.ProjectPipelineSequence, record.id),
+		Observation:               observation}, nil
+}
+
+func pipelineFailureObservationForWitness(projectName, executionID string, witness nudge.ProducerWitness) nudge.Observation {
+	target := &nudge.Target{Kind: "pipeline-run", ProjectID: witness.ProjectID, ExecutionID: executionID}
+	return nudge.Observation{ProjectID: witness.ProjectID, ProjectName: projectName, ExecutionID: executionID,
+		Title:    "Pipeline did not publish",
+		Body:     fmt.Sprintf("%s run %s ended without publishing. Open the run to review its safe diagnostic.", projectName, executionID),
+		Severity: nudge.SeverityAttention,
+		Actions: []nudge.Action{
+			{ID: "open-pipeline-run", Kind: "link", Label: "Open run", Target: target},
+			{ID: "copy-pipeline-run", Kind: "copy", Label: "Copy run ID", CopyText: executionID, Target: target},
+			{ID: "copy-open-pipeline-run", Kind: "copy-then-link", Label: "Copy run ID and open run", CopyText: executionID, Target: target},
+		},
+	}
+}
+
+func pipelineFailurePayloadDigest(witness nudge.ProducerWitness, observation nudge.Observation) string {
+	data, _ := json.Marshal(struct {
+		Witness     nudge.ProducerWitness `json:"witness"`
+		Observation nudge.Observation     `json:"observation"`
+	}{witness, observation})
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+func firestoreInt64(value interface{}) int64 {
+	switch number := value.(type) {
+	case int64:
+		return number
+	case int:
+		return int64(number)
+	case float64:
+		return int64(number)
+	default:
+		return 0
+	}
 }
 
 func makePipelineEventSnapshot(projectID string, records map[string]pipelineEventRunRecord, knownIDs []string, pending []pipelineEventPendingAttempt, partialGlobal bool, globalLimit, globalScanned int, historyTruncated bool, unresolved []string, unresolvedIntents int) pipelineEventSnapshot {
@@ -610,6 +1127,12 @@ func makePipelineEventSnapshot(projectID string, records map[string]pipelineEven
 	}
 	if unresolvedIntents > 0 {
 		coverage.Reasons = append(coverage.Reasons, "unresolved_intent")
+	}
+	for _, record := range records {
+		if record.reservationMissing {
+			coverage.Reasons = append(coverage.Reasons, "unresolved_reservation")
+			break
+		}
 	}
 	if len(coverage.Reasons) > 0 {
 		coverage.State = "partial"
