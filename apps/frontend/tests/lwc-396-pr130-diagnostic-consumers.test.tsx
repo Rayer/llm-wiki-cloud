@@ -6,7 +6,15 @@ import { ListClient } from '@/components/ListClient';
 import { RawClient } from '@/components/RawClient';
 import { SourceListClient } from '@/components/SourceListClient';
 
-const workspace = vi.hoisted(() => ({ currentProject: { id: 'project-a' }, token: 'session-a' }));
+const workspace = vi.hoisted(() => ({
+  currentProject: { id: 'project-a' },
+  token: 'session-a',
+  user: { id: 'user-a' },
+  hydrated: true,
+  listViewSessionId: 'list-session-a',
+  listViewGeneration: 1,
+  isListViewSessionCurrent: () => true,
+}));
 
 vi.mock('@/components/WorkspaceProvider', () => ({ useWorkspace: () => workspace }));
 vi.mock('@/lib/i18n', () => ({ useT: () => ({ t: (key: string) => key }) }));

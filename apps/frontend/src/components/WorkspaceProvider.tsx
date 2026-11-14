@@ -136,6 +136,9 @@ type WorkspaceContextValue = {
   user: AuthUser | null;
   sessionIdentityEpoch: number;
   sessionEpoch: number;
+  listViewSessionId: string | null;
+  listViewGeneration: number;
+  isListViewSessionCurrent: (namespaceId: string, generation: number, ownerId: string) => boolean;
   refreshLoginSession?: () => Promise<string | null>;
   projects: Project[];
   currentProject: Project | null;
@@ -174,6 +177,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     hydrated,
     user,
     sessionIdentityEpoch,
+    listViewSessionId,
+    listViewGeneration,
+    isListViewSessionCurrent,
     login,
     loginAsDemo,
     register,
@@ -616,6 +622,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     user,
     sessionIdentityEpoch,
     sessionEpoch,
+    listViewSessionId,
+    listViewGeneration,
+    isListViewSessionCurrent,
     refreshLoginSession: refreshAccessToken,
     projects,
     currentProject,
@@ -668,6 +677,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     selectProject,
     sessionEpoch,
     sessionIdentityEpoch,
+    listViewGeneration,
+    listViewSessionId,
+    isListViewSessionCurrent,
     signOut,
     token,
     user,

@@ -15,6 +15,21 @@
         "name"
       ]
     },
+    "AccountSettings.projectKeyContentRead": {
+      "kind": "literal"
+    },
+    "AccountSettings.projectKeyContentReadHint": {
+      "kind": "literal"
+    },
+    "AccountSettings.projectKeyPermissions": {
+      "kind": "literal"
+    },
+    "AccountSettings.projectKeyQuery": {
+      "kind": "literal"
+    },
+    "AccountSettings.projectKeyQueryAndContentRead": {
+      "kind": "literal"
+    },
     "AccountSettings.projectKeyUnknownOutcome": {
       "kind": "literal",
       "params": [
@@ -25,6 +40,16 @@
       "kind": "literal",
       "params": [
         "name"
+      ]
+    },
+    "AccountSettings.projectKeysHint": {
+      "kind": "literal"
+    },
+    "Admin.autoPipelineBacklogStatus": {
+      "kind": "literal",
+      "params": [
+        "revision",
+        "status"
       ]
     },
     "Admin.confirmDeleteProject": {
@@ -223,11 +248,46 @@
         "time"
       ]
     },
+    "LLMSource.projectName": {
+      "kind": "literal",
+      "params": [
+        "name"
+      ]
+    },
+    "List.goToPage": {
+      "kind": "literal",
+      "params": [
+        "page"
+      ]
+    },
+    "List.nextPage": {
+      "kind": "literal"
+    },
     "List.noSearchMatches": {
       "kind": "literal",
       "params": [
         "query",
         "title"
+      ]
+    },
+    "List.pageStatus": {
+      "kind": "literal",
+      "params": [
+        "page",
+        "pageCount"
+      ]
+    },
+    "List.paginationLabel": {
+      "kind": "literal"
+    },
+    "List.previousPage": {
+      "kind": "literal"
+    },
+    "List.resultCount": {
+      "kind": "literal",
+      "params": [
+        "count",
+        "total"
       ]
     },
     "List.searchPlaceholder": {
@@ -236,17 +296,52 @@
         "title"
       ]
     },
-    "LLMSource.projectName": {
+    "MCPOAuth.connection.confirmPrompt": {
       "kind": "literal",
+      "context": "Owner-copied one-time Agent connection confirmation prompt; setup ID and confirmation token are scoped to the current Project.",
       "params": [
-        "name"
+        "confirmation_token",
+        "setup_id"
       ]
+    },
+    "MCPOAuth.contentReadScope": {
+      "kind": "literal"
+    },
+    "MCPOAuth.contentReadScopeHint": {
+      "kind": "literal"
+    },
+    "MCPOAuth.queryScopeRequired": {
+      "kind": "literal"
+    },
+    "MCPOAuth.rawWriteScope": {
+      "kind": "literal"
+    },
+    "MCPOAuth.requestedPermissions": {
+      "kind": "literal"
     },
     "MCPOAuth.returnToDailyBrief": {
       "kind": "literal",
       "context": "OAuth consent recovery link to the fixed Daily Brief service root.",
       "protected_literals": [
         "Daily Brief"
+      ]
+    },
+    "MCPOAuth.scopeClientWarning": {
+      "kind": "literal"
+    },
+    "MCPOAuth.scopeContentReadDescription": {
+      "kind": "literal"
+    },
+    "MCPOAuth.scopeQueryDescription": {
+      "kind": "literal"
+    },
+    "MCPOAuth.scopeRawWriteDescription": {
+      "kind": "literal"
+    },
+    "MCPOAuth.scopeSnippetNote": {
+      "kind": "literal",
+      "params": [
+        "scopes"
       ]
     },
     "MCPOAuth.sharedInstructions": {
@@ -272,13 +367,8 @@
         "resourceURL"
       ]
     },
-    "MCPOAuth.connection.confirmPrompt": {
-      "kind": "literal",
-      "context": "Owner-copied one-time Agent connection confirmation prompt; setup ID and confirmation token are scoped to the current Project.",
-      "params": [
-        "confirmation_token",
-        "setup_id"
-      ]
+    "MCPOAuth.unknownScopeDescription": {
+      "kind": "literal"
     },
     "NewProject.navigationFailed": {
       "kind": "literal",
@@ -327,12 +417,6 @@
         "error"
       ]
     },
-    "Profile.contentContext.unknownStatus": {
-      "kind": "literal",
-      "params": [
-        "status"
-      ]
-    },
     "Profile.contentContext.coverage": {
       "kind": "literal",
       "params": [
@@ -345,6 +429,12 @@
       "params": [
         "bodies",
         "titles"
+      ]
+    },
+    "Profile.contentContext.unknownStatus": {
+      "kind": "literal",
+      "params": [
+        "status"
       ]
     },
     "Profile.errors.confirmation": {
@@ -371,6 +461,12 @@
         "error"
       ]
     },
+    "Profile.errors.requestBodyTooLarge": {
+      "kind": "literal",
+      "params": [
+        "max"
+      ]
+    },
     "Profile.errors.saveUnconfirmed": {
       "kind": "literal",
       "params": [
@@ -383,6 +479,13 @@
         "error"
       ]
     },
+    "Profile.guidanceCharacterCount": {
+      "kind": "literal",
+      "params": [
+        "count",
+        "max"
+      ]
+    },
     "Profile.guidanceReadError": {
       "kind": "literal",
       "params": [
@@ -393,6 +496,13 @@
       "kind": "literal",
       "params": [
         "count"
+      ]
+    },
+    "Profile.limitExceeded": {
+      "kind": "literal",
+      "params": [
+        "actual",
+        "max"
       ]
     },
     "Profile.localUx.guide.next": {
@@ -420,6 +530,13 @@
         "index"
       ]
     },
+    "Profile.profileCharacterCount": {
+      "kind": "literal",
+      "params": [
+        "count",
+        "max"
+      ]
+    },
     "Profile.removeRequirement": {
       "kind": "literal",
       "params": [
@@ -430,6 +547,27 @@
       "kind": "literal",
       "params": [
         "index"
+      ]
+    },
+    "Profile.requirementCharacterCount": {
+      "kind": "literal",
+      "params": [
+        "count",
+        "max"
+      ]
+    },
+    "Profile.requirementCountExceeded": {
+      "kind": "literal",
+      "params": [
+        "actual",
+        "max"
+      ]
+    },
+    "Profile.requirementRowCount": {
+      "kind": "literal",
+      "params": [
+        "count",
+        "max"
       ]
     },
     "Profile.taggingWork": {
@@ -517,6 +655,14 @@
         "filename"
       ]
     },
+    "RawUpload.documentStatus": {
+      "kind": "literal",
+      "params": [
+        "conversion",
+        "id",
+        "source"
+      ]
+    },
     "RawUpload.fileProgress": {
       "kind": "literal",
       "params": [
@@ -579,34 +725,6 @@
         "replaced"
       ]
     },
-    "Source.previewRawAria": {
-      "kind": "literal",
-      "params": [
-        "path"
-      ]
-    },
-    "States.loadingDetail": {
-      "kind": "literal",
-      "context": "Accessible loading state for a source or knowledge entry.",
-      "params": [
-        "label"
-      ]
-    },
-    "Admin.autoPipelineBacklogStatus": {
-      "kind": "literal",
-      "params": [
-        "revision",
-        "status"
-      ]
-    },
-    "RawUpload.documentStatus": {
-      "kind": "literal",
-      "params": [
-        "conversion",
-        "id",
-        "source"
-      ]
-    },
     "Source.documentImport.confirmDelete": {
       "kind": "literal",
       "params": [
@@ -643,113 +761,17 @@
         "state"
       ]
     },
-    "List.resultCount": {
+    "Source.previewRawAria": {
       "kind": "literal",
       "params": [
-        "count",
-        "total"
+        "path"
       ]
     },
-    "AccountSettings.projectKeyPermissions": {
-      "kind": "literal"
-    },
-    "AccountSettings.projectKeyQuery": {
-      "kind": "literal"
-    },
-    "AccountSettings.projectKeyContentRead": {
-      "kind": "literal"
-    },
-    "AccountSettings.projectKeyContentReadHint": {
-      "kind": "literal"
-    },
-    "AccountSettings.projectKeyQueryAndContentRead": {
-      "kind": "literal"
-    },
-    "MCPOAuth.requestedPermissions": {
-      "kind": "literal"
-    },
-    "MCPOAuth.queryScopeRequired": {
-      "kind": "literal"
-    },
-    "MCPOAuth.contentReadScope": {
-      "kind": "literal"
-    },
-    "MCPOAuth.contentReadScopeHint": {
-      "kind": "literal"
-    },
-    "MCPOAuth.rawWriteScope": {
-      "kind": "literal"
-    },
-    "MCPOAuth.scopeClientWarning": {
-      "kind": "literal"
-    },
-    "MCPOAuth.scopeSnippetNote": {
+    "States.loadingDetail": {
       "kind": "literal",
+      "context": "Accessible loading state for a source or knowledge entry.",
       "params": [
-        "scopes"
-      ]
-    },
-    "MCPOAuth.scopeQueryDescription": {
-      "kind": "literal"
-    },
-    "MCPOAuth.scopeContentReadDescription": {
-      "kind": "literal"
-    },
-    "MCPOAuth.scopeRawWriteDescription": {
-      "kind": "literal"
-    },
-    "MCPOAuth.unknownScopeDescription": {
-      "kind": "literal"
-    },
-    "AccountSettings.projectKeysHint": {
-      "kind": "literal"
-    },
-    "Profile.requirementCharacterCount": {
-      "kind": "literal",
-      "params": [
-        "count",
-        "max"
-      ]
-    },
-    "Profile.profileCharacterCount": {
-      "kind": "literal",
-      "params": [
-        "count",
-        "max"
-      ]
-    },
-    "Profile.requirementRowCount": {
-      "kind": "literal",
-      "params": [
-        "count",
-        "max"
-      ]
-    },
-    "Profile.limitExceeded": {
-      "kind": "literal",
-      "params": [
-        "actual",
-        "max"
-      ]
-    },
-    "Profile.requirementCountExceeded": {
-      "kind": "literal",
-      "params": [
-        "actual",
-        "max"
-      ]
-    },
-    "Profile.guidanceCharacterCount": {
-      "kind": "literal",
-      "params": [
-        "count",
-        "max"
-      ]
-    },
-    "Profile.errors.requestBodyTooLarge": {
-      "kind": "literal",
-      "params": [
-        "max"
+        "label"
       ]
     }
   }

@@ -1322,7 +1322,12 @@
     "objectUpdatedMissing": "Not provided",
     "resultCount": "{count} / {total} results",
     "clearControls": "Clear conditions",
-    "noFilterMatches": "No matching data. Adjust your search or filters."
+    "noFilterMatches": "No matching data. Adjust your search or filters.",
+    "paginationLabel": "List pages",
+    "previousPage": "Previous",
+    "nextPage": "Next",
+    "goToPage": "Go to page {page}",
+    "pageStatus": "Page {page} of {pageCount}"
   },
   "Status": {
     "title": "Pipeline Status",

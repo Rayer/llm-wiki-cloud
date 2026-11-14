@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { Eye, X } from 'lucide-react';
 import { ApiError, getRawFilePreview, getSources, type DocumentImportRecord, type SourceListItem } from '@/lib/api';
 import { useT } from '@/lib/i18n';
@@ -16,6 +16,20 @@ import { MarkdownView } from './MarkdownView';
 import { selectSources } from '@/lib/list-controls';
 import { ListToolbar } from './ListToolbar';
 import { AddMaterialAction } from './AddMaterialAction';
+import { ListPagination } from './ListPagination';
+import { LIST_VIEW_PAGE_SIZE, paginate, useListViewState, type ListViewState } from '@/lib/list-view-state';
+import {
+  consumeDocumentFocus,
+  currentListHistoryEntryId,
+  documentFocusMatchesLocation,
+  ensureListHistoryEntryId,
+  hasConsumedDocumentFocus,
+  subscribeListHistoryEntry,
+  type DocumentFocusIdentity,
+} from '@/lib/list-navigation';
+
+const getHistoryEntrySnapshot = () => currentListHistoryEntryId() ?? '';
+const getServerHistoryEntrySnapshot = () => '';
 
 const lifecycleVariant: Record<SourceListItem['lifecycle'], 'muted' | 'published' | 'draft'> = {
   new: 'muted',
@@ -29,31 +43,75 @@ type SourceListError = { message: string; requestId?: string; diagnosticId?: str
 type PreviewError = SourceListError & { path: string };
 
 export function SourceListClient() {
-  const { currentProject, user, sessionIdentityEpoch } = useWorkspace();
-  const identityKey = JSON.stringify([user?.id ?? null, sessionIdentityEpoch, currentProject?.id ?? 'no-project']);
+  const { currentProject, user, sessionIdentityEpoch, listViewSessionId } = useWorkspace();
+  const identityKey = JSON.stringify([user?.id ?? null, sessionIdentityEpoch, listViewSessionId, currentProject?.id ?? 'no-project']);
   return <SourceListSession key={identityKey} />;
 }
 
 function SourceListSession() {
   const { t } = useT();
-  const { currentProject, token, projects, projectsLoading, selectProject } = useWorkspace();
+  const {
+    currentProject,
+    token,
+    user,
+    hydrated,
+    listViewSessionId,
+    listViewGeneration,
+    isListViewSessionCurrent,
+    projects,
+    projectsLoading,
+    selectProject,
+  } = useWorkspace();
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const currentProjectId = currentProject?.id;
   const requestedProjectId = searchParams.get('project_id');
+  const queryString = searchParams.toString();
   const authorizedTarget = requestedProjectId ? projects.find((project) => project.id === requestedProjectId) : null;
   const projectMismatch = Boolean(requestedProjectId && currentProjectId !== requestedProjectId);
+  const historyEntryId = useSyncExternalStore(subscribeListHistoryEntry, getHistoryEntrySnapshot, getServerHistoryEntrySnapshot);
+  const [navigationGeneration, setNavigationGeneration] = useState(0);
+  const [suppressedFocusKey, setSuppressedFocusKey] = useState('');
+  const sourceImportTargetRef = useRef<HTMLDivElement | null>(null);
   const deepLinkError = requestedProjectId && !projectsLoading && !authorizedTarget
     ? t('Source.documentImport.projectUnavailable')
     : '';
+  useLayoutEffect(() => {
+    if (pathname === '/sources') ensureListHistoryEntryId();
+  }, [listViewGeneration, listViewSessionId, pathname, queryString, user?.id]);
   const [sources, setSources] = useState<SourceListItem[]>([]);
   const [documentImports, setDocumentImports] = useState<DocumentImportRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<SourceListError | null>(null);
-  const [search, setSearch] = useState('');
-  const [lifecycleFilter, setLifecycleFilter] = useState('all');
-  const [annotationFilter, setAnnotationFilter] = useState('all');
-  const [order, setOrder] = useState('title');
+  const defaults = useMemo<ListViewState>(() => ({
+    search: '',
+    filters: { lifecycle: 'all', annotation: 'all' },
+    order: 'title',
+    page: 1,
+  }), []);
+  const validation = useMemo(() => ({
+    filters: {
+      lifecycle: ['all', 'new', 'synced', 'notes_pending', 'content_pending', 'error'],
+      annotation: ['all', 'present', 'empty'],
+    },
+    orders: ['title', 'title-desc', 'path'],
+  }), []);
+  const view = useListViewState({
+    list: 'sources',
+    projectId: currentProjectId ?? 'no-project',
+    ownerId: user?.id ?? null,
+    namespaceId: listViewSessionId,
+    generation: listViewGeneration,
+    enabled: hydrated
+      && Boolean(user?.id && listViewSessionId)
+      && (!requestedProjectId || currentProjectId === requestedProjectId),
+    defaults,
+    validation,
+    isSessionCurrent: isListViewSessionCurrent,
+  });
+  const { search, filters, order, page: requestedPage } = view.state;
+  const lifecycleFilter = filters.lifecycle ?? 'all';
+  const annotationFilter = filters.annotation ?? 'all';
   const [preview, setPreview] = useState<{ path: string; content: string } | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<PreviewError | null>(null);
@@ -61,8 +119,6 @@ function SourceListSession() {
   const previewTriggerRef = useRef<HTMLButtonElement | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
   const previewRequestRef = useRef(0);
-  const sourceImportTargetRef = useRef<HTMLDivElement | null>(null);
-  const focusedSourceImportRef = useRef('');
   const { copyErrorId, errorIdCopied } = useErrorIdCopy(error, error?.requestId, error?.diagnosticId);
   const { copyErrorId: copyPreviewErrorId, errorIdCopied: previewErrorIdCopied } =
     useErrorIdCopy(previewError, previewError?.requestId, previewError?.diagnosticId);
@@ -168,7 +224,35 @@ function SourceListSession() {
   }, [closePreview, previewIsOpen]);
 
   const filtered = useMemo(() => selectSources(sources, search, lifecycleFilter, annotationFilter, order), [search, sources, lifecycleFilter, annotationFilter, order]);
+  const page = useMemo(() => paginate(filtered, requestedPage, LIST_VIEW_PAGE_SIZE), [filtered, requestedPage]);
+  const updateView = view.update;
   const active = Boolean(search.trim() || lifecycleFilter !== 'all' || annotationFilter !== 'all' || order !== 'title');
+
+  useLayoutEffect(() => {
+    if (view.ready && !loading && !error && page.page !== requestedPage) {
+      updateView((current) => ({ ...current, page: page.page }));
+    }
+  }, [error, loading, page.page, requestedPage, updateView, view.ready]);
+
+  const changeControl = (key: 'search' | 'lifecycle' | 'annotation' | 'order', value: string) => {
+    setNavigationGeneration((generation) => generation + 1);
+    setSuppressedFocusKey('');
+    updateView((current) => key === 'search'
+      ? { ...current, search: value, page: 1 }
+      : key === 'order'
+        ? { ...current, order: value, page: 1 }
+        : { ...current, filters: { ...current.filters, [key]: value }, page: 1 });
+  };
+  const clearControls = () => {
+    setNavigationGeneration((generation) => generation + 1);
+    setSuppressedFocusKey('');
+    updateView(() => defaults);
+  };
+  const setPageFromUser = (nextPage: number, focusKey: string) => {
+    setNavigationGeneration((generation) => generation + 1);
+    setSuppressedFocusKey(focusKey);
+    updateView((current) => ({ ...current, page: nextPage }));
+  };
 
   const documentImportsBySourcePath = useMemo(() => {
     const result = new Map<string, DocumentImportRecord>();
@@ -181,15 +265,97 @@ function SourceListSession() {
   }, [documentImports]);
 
   const requestedDocumentId = searchParams.get('document_id') ?? '';
-  const requestedImportPath = documentImports.find((item) => item.document_id === requestedDocumentId)?.source_ref?.raw_path;
+  const userId = user?.id ?? null;
+  const focusIdentity = useMemo<DocumentFocusIdentity | null>(() => (
+    requestedDocumentId && historyEntryId && userId && listViewSessionId && currentProjectId
+      ? { entryId: historyEntryId, ownerId: userId, namespaceId: listViewSessionId, projectId: currentProjectId, documentId: requestedDocumentId }
+      : null
+  ), [currentProjectId, historyEntryId, listViewSessionId, requestedDocumentId, userId]);
+  const focusKey = focusIdentity ? JSON.stringify(focusIdentity) : '';
+  const focusTarget = requestedDocumentId
+    ? documentImports.find((item) => item.document_id === requestedDocumentId
+      && item.conversion_state === 'succeeded'
+      && item.source_state === 'saved'
+      && item.deletion_state !== 'deleted'
+      && Boolean(item.source_ref?.raw_path))
+    : undefined;
+  const focusTargetIndex = focusTarget?.source_ref?.raw_path
+    ? filtered.findIndex((source) => source.rawPath === focusTarget.source_ref?.raw_path)
+    : -1;
+  const visibleSources = page.items;
+  const focusScopeRef = useRef({
+    identity: focusIdentity,
+    tupleKey: focusKey,
+    filtered,
+    visibleSources,
+    targetPath: focusTarget?.source_ref?.raw_path ?? null,
+    userId: user?.id ?? null,
+    namespaceId: listViewSessionId,
+    projectId: currentProjectId ?? null,
+    authGeneration: listViewGeneration,
+    isListViewSessionCurrent,
+  });
+  useLayoutEffect(() => {
+    focusScopeRef.current = {
+      identity: focusIdentity,
+      tupleKey: focusKey,
+      filtered,
+      visibleSources,
+      targetPath: focusTarget?.source_ref?.raw_path ?? null,
+      userId: user?.id ?? null,
+      namespaceId: listViewSessionId,
+      projectId: currentProjectId ?? null,
+      authGeneration: listViewGeneration,
+      isListViewSessionCurrent,
+    };
+  }, [currentProjectId, filtered, focusIdentity, focusKey, focusTarget?.source_ref?.raw_path, isListViewSessionCurrent, listViewGeneration, listViewSessionId, user?.id, visibleSources]);
+  const focusIsCurrent = useCallback((identity: DocumentFocusIdentity, generation: number, authGeneration: number, requireVisibleRow: boolean) => {
+    const current = focusScopeRef.current;
+    if (navigationGeneration !== generation || current.tupleKey !== JSON.stringify(identity)) return false;
+    if (current.userId !== identity.ownerId || current.namespaceId !== identity.namespaceId || current.projectId !== identity.projectId) return false;
+    if (current.authGeneration !== authGeneration || !current.isListViewSessionCurrent(identity.namespaceId, authGeneration, identity.ownerId)) return false;
+    if (!documentFocusMatchesLocation(identity) || current.targetPath === null) return false;
+    if (!current.filtered.some((source) => source.rawPath === current.targetPath)) return false;
+    return !requireVisibleRow || current.visibleSources.some((source) => source.rawPath === current.targetPath);
+  }, [navigationGeneration]);
+
   useEffect(() => {
-    if (!requestedDocumentId || focusedSourceImportRef.current === requestedDocumentId) return;
-    const record = documentImports.find((item) => item.document_id === requestedDocumentId);
-    if (!record?.source_ref?.raw_path || !sources.some((source) => source.rawPath === record.source_ref?.raw_path)) return;
-    focusedSourceImportRef.current = requestedDocumentId;
-    sourceImportTargetRef.current?.scrollIntoView({ block: 'center' });
-    sourceImportTargetRef.current?.focus();
-  }, [documentImports, requestedDocumentId, sources]);
+    if (!view.ready || loading || error || !focusIdentity || !focusTarget?.source_ref?.raw_path || focusTargetIndex < 0) return;
+    if (hasConsumedDocumentFocus(focusIdentity) || suppressedFocusKey === focusKey) return;
+    const generation = navigationGeneration;
+    const authGeneration = listViewGeneration;
+    if (!focusIsCurrent(focusIdentity, generation, authGeneration, false)) return;
+    const targetPage = Math.floor(focusTargetIndex / LIST_VIEW_PAGE_SIZE) + 1;
+    if (page.page !== targetPage) {
+      updateView((current) => ({ ...current, page: targetPage }));
+      return;
+    }
+
+    let cancelled = false;
+    let frame = 0;
+    let usingTimeout = false;
+    const focusRow = () => {
+      if (cancelled || !focusIsCurrent(focusIdentity, generation, authGeneration, true)) return;
+      const row = sourceImportTargetRef.current;
+      if (!row?.isConnected) return;
+      row.scrollIntoView({ block: 'center' });
+      row.focus();
+      if (!cancelled && document.activeElement === row && focusIsCurrent(focusIdentity, generation, authGeneration, true)) {
+        consumeDocumentFocus(focusIdentity);
+      }
+    };
+    if (typeof window.requestAnimationFrame === 'function') {
+      frame = window.requestAnimationFrame(focusRow);
+    } else {
+      usingTimeout = true;
+      frame = window.setTimeout(focusRow, 0);
+    }
+    return () => {
+      cancelled = true;
+      if (usingTimeout) window.clearTimeout(frame);
+      else window.cancelAnimationFrame(frame);
+    };
+  }, [documentImports, error, focusIdentity, focusIsCurrent, focusKey, focusTarget, focusTargetIndex, listViewGeneration, loading, navigationGeneration, page.page, requestedDocumentId, sources, suppressedFocusKey, updateView, view.ready]);
 
   if (deepLinkError) return <p role="alert" className="rounded-md border border-red-400/20 bg-red-950/30 p-4 text-red-100">{deepLinkError}</p>;
   if (projectMismatch) return <p role="status" className="rounded-md border border-white/10 p-4 text-zinc-300">{projectsLoading ? t('Source.documentImport.loadingProject') : t('Source.documentImport.switchingProject')}</p>;
@@ -202,24 +368,25 @@ function SourceListSession() {
         <AddMaterialAction className="mt-4" />
       </header>
 
-      <ListToolbar search={search} onSearch={setSearch} searchLabel={t('List.searchPlaceholder', { title: t('List.sourcesTitle').toLowerCase() })}
+      <ListToolbar search={search} onSearch={(value) => changeControl('search', value)} searchLabel={t('List.searchPlaceholder', { title: t('List.sourcesTitle').toLowerCase() })}
         count={filtered.length} total={sources.length} active={active}
-        onClear={() => { setSearch(''); setLifecycleFilter('all'); setAnnotationFilter('all'); setOrder('title'); }}
+        onClear={clearControls}
         filters={[
-          { label: t('List.filterStatus'), value: lifecycleFilter, onChange: setLifecycleFilter, options: [
+          { label: t('List.filterStatus'), value: lifecycleFilter, onChange: (value) => changeControl('lifecycle', value), options: [
             { value: 'all', label: t('List.allStatuses') },
-            ...[...new Set(sources.map((source) => source.lifecycle))].sort().map((value) => ({ value, label: t(`Source.lifecycle.${value}`) })),
+            ...[...new Set([...sources.map((source) => source.lifecycle), ...(lifecycleFilter !== 'all' ? [lifecycleFilter as SourceListItem['lifecycle']] : [])])].sort().map((value) => ({ value, label: t(`Source.lifecycle.${value}`) })),
           ] },
-          { label: t('List.filterAnnotation'), value: annotationFilter, onChange: setAnnotationFilter, options: [
+          { label: t('List.filterAnnotation'), value: annotationFilter, onChange: (value) => changeControl('annotation', value), options: [
             { value: 'all', label: t('List.allAnnotations') }, { value: 'present', label: t('Source.annotationPresent') }, { value: 'empty', label: t('Source.annotationEmpty') },
           ] },
         ]}
-        order={{ label: t('List.orderBy'), value: order, onChange: setOrder, options: [
+        order={{ label: t('List.orderBy'), value: order, onChange: (value) => changeControl('order', value), options: [
           { value: 'title', label: t('List.titleAsc') }, { value: 'title-desc', label: t('List.titleDesc') }, { value: 'path', label: t('List.pathOrder') },
         ] }} />
 
 
       {loading ? <LoadingState label={t('Source.loading')} /> : null}
+      {!view.ready && !loading ? <LoadingState label={t('Source.loading')} /> : null}
       {error ? (
         <ErrorState
           message={error.message}
@@ -233,15 +400,15 @@ function SourceListSession() {
           onCopyErrorId={copyErrorId}
         />
       ) : null}
-      {!loading && !error && filtered.length === 0 ? <EmptyState message={t(active ? 'List.noFilterMatches' : 'List.noSources')} /> : null}
+      {view.ready && !loading && !error && filtered.length === 0 ? <EmptyState message={t(active ? 'List.noFilterMatches' : 'List.noSources')} /> : null}
 
       <div className="lwc-data-list grid gap-4 md:grid-cols-2">
-        {filtered.map((source) => {
+        {view.ready && !loading && !error ? page.items.map((source) => {
           const detailHref = source.id ? `/sources/${source.id}-${encodeURIComponent(source.slug)}` : null;
           const lifecycle = t(`Source.lifecycle.${source.lifecycle}`);
           const importedRecord = documentImportsBySourcePath.get(source.rawPath);
           const displayName = importedRecord?.original_filename.trim() || source.title;
-          const isImportTarget = requestedImportPath === source.rawPath;
+          const isImportTarget = focusIdentity !== null && focusTarget?.source_ref?.raw_path === source.rawPath;
           return (
             <div key={source.id ?? source.rawPath} ref={isImportTarget ? sourceImportTargetRef : undefined} tabIndex={isImportTarget ? -1 : undefined} className="h-full">
               <Surface variant="glass" className="h-full p-5 transition hover:border-emerald-400/30">
@@ -287,8 +454,9 @@ function SourceListSession() {
               </Surface>
             </div>
           );
-        })}
+        }) : null}
       </div>
+      {view.ready && !loading && !error ? <ListPagination page={page.page} pageCount={page.pageCount} onPageChange={(nextPage) => setPageFromUser(nextPage, focusKey)} /> : null}
 
       {currentProjectId ? <DocumentImportsPanel projectId={currentProjectId} sourcePaths={sources.map((source) => source.rawPath)} onRecordsChange={mergeDocumentImports} /> : null}
 
