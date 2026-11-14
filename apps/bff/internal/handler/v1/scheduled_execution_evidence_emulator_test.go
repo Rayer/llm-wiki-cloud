@@ -89,7 +89,7 @@ func TestScheduledStatusReadsExactExecutionEvidenceAfterLaterManualRunEmulator(t
 	if err := fsClient.LinkQuotaReservation(ctx, reservationID, scheduledExecutionID); err != nil {
 		t.Fatalf("link scheduled execution: %v", err)
 	}
-	if err := fsClient.RecordScheduledPipelineAttempt(ctx, userID, projectID, dayKey, reservationID, scheduledExecutionID, "accepted", now); err != nil {
+	if err := fsClient.RecordScheduledPipelineAttempt(ctx, userID, projectID, dayKey, reservationID, reservationID, scheduledExecutionID, "accepted", now); err != nil {
 		t.Fatalf("record scheduled execution: %v", err)
 	}
 	manualExecutionID := fixture.addExecution(userID, projectID, "manual-later-reservation", "RUNNING")

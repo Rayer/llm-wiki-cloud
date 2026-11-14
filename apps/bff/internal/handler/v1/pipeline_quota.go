@@ -48,7 +48,7 @@ type scheduledPipelineQuotaStore interface {
 	ReserveScheduledQuota(ctx context.Context, reservationID, userID, projectID string, limits pipelinequota.Limits, now time.Time, mode pipelinequota.ExecutionMode, isDemo, alreadyRunning bool, newRawFiles, rawDirtyFiles, annotationDirtyFiles int) (pipelinequota.Snapshot, bool, error)
 	ReserveScheduledQuotaWithAttempt(ctx context.Context, reservationID, attemptID, userID, projectID string, limits pipelinequota.Limits, now time.Time, mode pipelinequota.ExecutionMode, isDemo, alreadyRunning bool, newRawFiles, rawDirtyFiles, annotationDirtyFiles int) (pipelinequota.Snapshot, bool, error)
 	RecordScheduledPipelineCheck(ctx context.Context, status firestore.ScheduledPipelineStatus) error
-	RecordScheduledPipelineAttempt(ctx context.Context, userID, projectID, dayKey, reservationID, executionID, result string, attemptedAt time.Time) error
+	RecordScheduledPipelineAttempt(ctx context.Context, userID, projectID, dayKey, reservationID, attemptID, executionID, result string, attemptedAt time.Time) error
 	LoadScheduledPipelineStatus(ctx context.Context, userID, projectID string, now time.Time) (firestore.ScheduledPipelineStatus, error)
 }
 
