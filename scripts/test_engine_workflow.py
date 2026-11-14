@@ -290,14 +290,33 @@ class EngineWorkflowContract(unittest.TestCase):
         self.assertEqual(dev_inputs['release_notes_action']['default'], 'run')
         self.assertNotIn('default', dev_inputs['components'])
         self.assertEqual(dev['jobs']['release']['with']['components'], '${{ inputs.components }}')
+        self.assertEqual(len(dev_inputs), 25)
+        self.assertIn('Prepare Release Notes package {0}', dev['run-name'])
+        package_entry = dev['jobs']['prepare-release-notes-package']
+        self.assertEqual(package_entry['if'], 'inputs.prepare_release_notes_package == true')
+        self.assertEqual(package_entry['uses'], './.github/workflows/prepare-release-notes-package.yml')
+        self.assertEqual(package_entry['permissions'], {'contents': 'read', 'actions': 'write'})
+        self.assertEqual(package_entry['with'], {
+            'ready_artifact_id': '${{ inputs.artifact_id }}',
+            'retention_days': '${{ inputs.release_notes_package_retention_days }}',
+            'request_id': '${{ inputs.release_notes_package_request_id }}',
+        })
+        self.assertNotIn('package_zip_base64', str(package_entry['with']))
+        for job_name in ('release', 'frontend-config-generate', 'auth-image-diagnostic'):
+            self.assertIn("inputs.prepare_release_notes_package != true", dev['jobs'][job_name]['if'])
+        self.assertIn('inputs.prepare_release_notes_package != true', dev['jobs']['main-fast-forward-eligible']['if'])
+        self.assertEqual(dev_inputs['prepare_release_notes_package']['type'], 'boolean')
+        self.assertEqual(dev_inputs['prepare_release_notes_package']['default'], False)
+        self.assertEqual(dev_inputs['release_notes_package_retention_days']['options'], ['30', '90'])
 
         manual_path = ROOT / '.github/workflows/prepare-release-notes-package.yml'
         manual = yaml.safe_load(manual_path.read_text())
         trigger = manual.get('on', manual.get(True, {}))
-        self.assertEqual(set(trigger), {'workflow_dispatch'})
+        self.assertEqual(set(trigger), {'workflow_call'})
+        self.assertEqual(set(trigger['workflow_call']['inputs']), {'ready_artifact_id', 'retention_days', 'request_id'})
+        self.assertNotIn('package_zip_base64', trigger['workflow_call']['inputs'])
         self.assertEqual(manual['permissions'], {'contents': 'read', 'actions': 'write'})
         job = manual['jobs']['package']
-        self.assertEqual(job['if'], "github.ref == 'refs/heads/develop'")
         self.assertEqual(job['permissions'], {'contents': 'read', 'actions': 'write'})
         manual_steps = job['steps']
         self.assertEqual(manual_steps[0]['uses'], 'actions/checkout@11d5960a326750d5838078e36cf38b85af677262')
@@ -315,14 +334,20 @@ class EngineWorkflowContract(unittest.TestCase):
         self.assertIn('lwc-release-notes-${{ steps.prepare.outputs.product_version }}-development-${{ github.run_id }}-${{ github.run_attempt }}',
                       upload['with']['name'])
         self.assertEqual(upload['with']['retention-days'], '${{ inputs.retention_days }}')
+        source_gate = next(step for step in manual_steps if step.get('name') == 'Validate workflow source branch')
+        self.assertIn('validate-package-event', source_gate['run'])
         prepare = next(step for step in manual_steps if step.get('id') == 'prepare')
         self.assertEqual(prepare['env']['REQUEST_ID'], '${{ inputs.request_id }}')
+        self.assertEqual(prepare['env']['READY_ARTIFACT_ID'], '${{ inputs.ready_artifact_id }}')
+        self.assertEqual(prepare['env']['RETENTION_DAYS'], '${{ inputs.retention_days }}')
         self.assertNotIn('LWC_RELEASE_NOTES_PACKAGE_B64', prepare.get('env', {}))
         self.assertNotIn('${{ inputs.package_zip_base64 }}', str(manual))
         self.assertIn('--event-path "$GITHUB_EVENT_PATH"', prepare['run'])
         self.assertNotIn('echo ', prepare['run'])
         self.assertNotIn('eval ', prepare['run'])
         self.assertIn('--request-id "$REQUEST_ID"', prepare['run'])
+        self.assertIn('--ready-artifact-id "$READY_ARTIFACT_ID"', prepare['run'])
+        self.assertIn('--retention-days "$RETENTION_DAYS"', prepare['run'])
         locate = next(step for step in manual_steps if step.get('id') == 'ready')
         self.assertIn('find-ready-result', locate['run'])
         ready_plan = next(step for step in manual_steps if step.get('id') == 'ready-plan')
@@ -358,6 +383,7 @@ class EngineWorkflowContract(unittest.TestCase):
     def test_manual_notes_package_operator_command_is_documented_without_content_logging(self):
         doc = (ROOT / 'docs/lwc-478/operator-package-preparation.md').read_text()
         self.assertIn('release_notes_workflow.py dispatch', doc)
+        self.assertIn('already registered `.github/workflows/deploy-dev.yml`', doc)
         self.assertIn('--ready-artifact-id "$READY_ARTIFACT_ID"', doc)
         self.assertIn('--package-dir "$PRIVATE_TPM_PACKAGE_DIR"', doc)
         self.assertIn('does not print package contents', doc.lower())
@@ -393,7 +419,7 @@ class EngineWorkflowContract(unittest.TestCase):
         self.assertEqual(dev_operation['default'],'release')
         self.assertEqual(dev_operation['options'],['release','config-only','frontend-config-only','frontend-config-generate','deploy','rollback','reactivate','tag','readback','notes-resend','diagnose-auth-image'])
         self.assertEqual(dev['jobs']['release']['if'],
-                         "github.ref == 'refs/heads/develop' && inputs.operation != 'diagnose-auth-image' && inputs.operation != 'frontend-config-generate'")
+                         "github.ref == 'refs/heads/develop' && inputs.prepare_release_notes_package != true && inputs.operation != 'diagnose-auth-image' && inputs.operation != 'frontend-config-generate'")
         self.assertEqual(dev['jobs']['release']['with'],{
             'environment':'development','source_sha':"${{ inputs.operation == 'release' && (inputs.source_sha || github.sha) || inputs.source_sha }}",
             'executor_sha':'${{ github.sha }}',
@@ -428,7 +454,7 @@ class EngineWorkflowContract(unittest.TestCase):
         self.assertEqual(dev_diagnostic['with'],{'source_sha':'${{ github.sha }}'})
 
         generator=dev['jobs']['frontend-config-generate']
-        self.assertEqual(generator['if'],"github.ref == 'refs/heads/develop' && inputs.operation == 'frontend-config-generate'")
+        self.assertEqual(generator['if'],"github.ref == 'refs/heads/develop' && inputs.prepare_release_notes_package != true && inputs.operation == 'frontend-config-generate'")
         self.assertEqual(generator['permissions'],{'contents':'read'})
         self.assertEqual(generator['uses'],'./.github/workflows/generate-frontend-config.yml')
         self.assertEqual(generator['with'],{'environment':'dev'})
