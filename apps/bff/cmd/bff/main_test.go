@@ -607,6 +607,52 @@ func TestSwaggerDocumentsPublicVersionRoute(t *testing.T) {
 	}
 }
 
+func TestSwaggerDocumentsPublicReleaseNotesRoutesWithoutPublisherFields(t *testing.T) {
+	document := readSwaggerDocument(t)
+	for path, expectedDefinition := range map[string]string{
+		"/api/v1/public/release-notes":                   "#/definitions/releasenotes.IndexResponse",
+		"/api/v1/public/release-notes/{product_version}": "#/definitions/releasenotes.ContentResponse",
+	} {
+		operation, ok := document.Paths[path]
+		if !ok {
+			t.Fatalf("Swagger document is missing %s", path)
+		}
+		get, ok := operation["get"]
+		if !ok {
+			t.Fatalf("Swagger document is missing GET %s", path)
+		}
+		var decoded struct {
+			Security  []json.RawMessage `json:"security"`
+			Responses map[string]struct {
+				Schema struct {
+					Ref string `json:"$ref"`
+				} `json:"schema"`
+				Headers map[string]json.RawMessage `json:"headers"`
+			} `json:"responses"`
+		}
+		if err := json.Unmarshal(get, &decoded); err != nil {
+			t.Fatalf("decode Release Notes Swagger operation %s: %v", path, err)
+		}
+		if len(decoded.Security) != 0 {
+			t.Errorf("public Release Notes route %s has Swagger security requirements", path)
+		}
+		response, ok := decoded.Responses["200"]
+		if !ok || response.Schema.Ref != expectedDefinition {
+			t.Errorf("public Release Notes route %s schema = %q, want %q", path, response.Schema.Ref, expectedDefinition)
+		}
+		if _, ok := response.Headers["Cache-Control"]; !ok {
+			t.Errorf("public Release Notes route %s does not document Cache-Control", path)
+		}
+	}
+	data, err := os.ReadFile("../../docs/swagger.json")
+	if err != nil {
+		t.Fatalf("read generated Swagger document: %v", err)
+	}
+	if strings.Contains(string(data), "CurrentDeployment") || strings.Contains(string(data), "deployment_evidence_digest") {
+		t.Fatal("Swagger exposes private Release Notes deployment provenance")
+	}
+}
+
 func TestSwaggerQueryRequestDoesNotExposeProjectField(t *testing.T) {
 	data, err := os.ReadFile("../../docs/swagger.json")
 	if err != nil {

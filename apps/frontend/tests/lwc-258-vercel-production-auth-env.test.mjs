@@ -83,8 +83,22 @@ test('production workflow invokes the shared engine with fixed authority and DEV
   const workflow = parseYaml(await readFile(workflowPath, 'utf8'));
   const job = workflow.jobs.release;
   assert.equal(workflow.on.push, undefined);
-  assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), ['components', 'release_tag', 'artifact_id', 'dev_artifact_id', 'frontend_config_artifact_id', 'operation', 'pipeline_run_timeout_seconds', 'release_source_mode', 'auth_schema_version']);
-  assert.deepEqual(workflow.on.workflow_dispatch.inputs.operation.options, ['release', 'config-only', 'frontend-config-only', 'frontend-config-generate']);
+  assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), ['components', 'release_tag', 'artifact_id', 'release_notes_artifact_id', 'release_notes_action', 'release_notes_result_artifact_id', 'release_notes_operation', 'dev_artifact_id', 'frontend_config_artifact_id', 'operation', 'pipeline_run_timeout_seconds', 'release_source_mode', 'auth_schema_version']);
+  assert.deepEqual(workflow.on.workflow_dispatch.inputs.operation.options, ['release', 'config-only', 'frontend-config-only', 'frontend-config-generate', 'notes-resend']);
+  const noteInputs = workflow.on.workflow_dispatch.inputs;
+  assert.deepEqual(noteInputs.release_notes_artifact_id, {
+    description: 'Exact retained TPM-authored private Release Notes package artifact ID', type: 'string', default: '',
+  });
+  assert.deepEqual(noteInputs.release_notes_action, {
+    description: 'Explicit Notes subphase choice; retry/skip are bound to this release plan, stop ends before product mutation',
+    required: true, type: 'choice', options: ['run', 'retry', 'skip', 'stop'], default: 'run',
+  });
+  assert.deepEqual(noteInputs.release_notes_result_artifact_id, {
+    description: 'Exact retained release result artifact ID for operation notes-resend', type: 'string', default: '',
+  });
+  assert.deepEqual(noteInputs.release_notes_operation, {
+    description: 'Original retained runtime operation used only by notes-resend', type: 'string', default: 'release',
+  });
   assert.equal(workflow.on.workflow_dispatch.inputs.release_tag.required, false);
   assert.deepEqual(workflow.on.workflow_dispatch.inputs.auth_schema_version, {
     description: 'Auth runtime input schema for Production; schema 3 is limited to independent Auth-only releases',
@@ -100,6 +114,10 @@ test('production workflow invokes the shared engine with fixed authority and DEV
     executor_sha: '${{ github.sha }}',
     components: '${{ inputs.components }}', release_tag: '${{ inputs.release_tag }}',
     artifact_id: '${{ inputs.artifact_id }}', dev_artifact_id: '${{ inputs.dev_artifact_id }}',
+    release_notes_artifact_id: '${{ inputs.release_notes_artifact_id }}',
+    release_notes_result_artifact_id: '${{ inputs.release_notes_result_artifact_id }}',
+    release_notes_action: '${{ inputs.release_notes_action }}',
+    release_notes_operation: '${{ inputs.release_notes_operation }}',
     frontend_config_artifact_id: '${{ inputs.frontend_config_artifact_id }}',
     operation: '${{ inputs.operation }}',
     pipeline_run_timeout_seconds: '${{ inputs.pipeline_run_timeout_seconds }}',

@@ -125,8 +125,10 @@ describe('LWC-447 runtime catalogs and locale UI', () => {
       expect(screen.getByText(t('Profile.localUx.multiSource.quiet.boundary'))).toBeDefined();
       view.unmount();
     }
-    expect(translate('en', 'Shell.versionInfo')).toBe('API version');
+    expect(translate('en', 'Shell.versionInfo')).toBe('Versions and updates');
     expect(translate('zh-TW', 'Shell.searchProjects')).toBe('搜尋所有專案');
+    expect(translate('en', 'ReleaseNotes.notesTab')).toBe('Notes');
+    expect(translate('zh-TW', 'ReleaseNotes.notesTab')).toBe('更新說明');
   });
 
   it('switches locale for this tab when localStorage cannot be written', () => {

@@ -68,6 +68,26 @@ on:
         type: string
         default: ''
         description: Exact retained DEV result artifact containing a machine-verifiable Vercel quota rejection
+      release_notes_artifact_id:
+        required: false
+        type: string
+        default: ''
+        description: Exact retained TPM-authored private Release Notes package artifact ID
+      release_notes_result_artifact_id:
+        required: false
+        type: string
+        default: ''
+        description: Exact retained deployment result artifact ID for an independent Notes resend
+      release_notes_action:
+        required: false
+        type: string
+        default: run
+        description: Explicit Owner disposition; run/retry performs Notes work, while skip/stop in notes-resend records a no-deploy choice
+      release_notes_operation:
+        required: false
+        type: string
+        default: release
+        description: Original retained operation identity used only by Notes resend
       dev_artifact_id:
         type: string
         default: ''
@@ -90,7 +110,7 @@ permissions:
   actions: read
 jobs:
   release:
-    if: inputs.operation != 'diagnose-auth-image' && inputs.operation != 'config-only' && inputs.operation != 'frontend-config-only'
+    if: inputs.operation != 'diagnose-auth-image' && inputs.operation != 'config-only' && inputs.operation != 'frontend-config-only' && inputs.operation != 'notes-resend'
     runs-on: ubuntu-latest
     timeout-minutes: 120
     environment: ${{ inputs.environment == 'production' && 'Production' || 'Development' }}
@@ -110,6 +130,10 @@ jobs:
       REUSE_ID: ${{ inputs.artifact_id }}
       DEV_ID: ${{ inputs.dev_artifact_id }}
       ARTIFACT_ID: ${{ inputs.artifact_id }}
+      RELEASE_NOTES_ARTIFACT_ID: ${{ inputs.release_notes_artifact_id }}
+      RELEASE_NOTES_RESULT_ARTIFACT_ID: ${{ inputs.release_notes_result_artifact_id }}
+      RELEASE_NOTES_ACTION: ${{ inputs.release_notes_action }}
+      RELEASE_NOTES_OPERATION: ${{ inputs.release_notes_operation }}
       REJECTION_ARTIFACT_ID: ${{ inputs.rejection_artifact_id }}
       OPERATION: ${{ inputs.operation }}
       FORCE: ${{ inputs.force }}
@@ -161,6 +185,14 @@ jobs:
           echo "NODE_PATH=$RUNNER_TEMP/lwc-tools/node_modules" >> "$GITHUB_ENV"
           npm install --prefix "$RUNNER_TEMP/lwc-tools" @actions/artifact@2.3.2 --ignore-scripts
           npm install --global vercel@59.11.7 --ignore-scripts
+      - name: Validate Release Notes disposition input
+        if: inputs.operation == 'release'
+        run: |
+          set -Eeuo pipefail
+          [[ "$RELEASE_NOTES_ACTION" =~ ^(run|retry|skip|stop)$ ]] || {
+            echo "Release Notes disposition must be run, retry, skip, or stop." >&2
+            exit 1
+          }
       - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
         with:
           project_id: llm-wiki-cloud
@@ -237,6 +269,108 @@ jobs:
           path: ${{ runner.temp }}/release
           retention-days: 90
           if-no-files-found: error
+      - name: Record missing Notes artifact ID against exact plan
+        if: inputs.operation == 'release' && (inputs.release_notes_action == 'run' || inputs.release_notes_action == 'retry') && inputs.release_notes_artifact_id == ''
+        run: |
+          set -Eeuo pipefail
+          python3 deploy/engine/release_notes_publish.py --action artifact-failure \
+            --failure-class artifact-id-required --directory "$RUNNER_TEMP/release" \
+            --environment "${{ inputs.environment == 'production' && 'prod' || 'dev' }}" \
+            --bucket "${{ inputs.environment == 'production' && 'llm-wiki-data' || 'llm-wiki-data-dev' }}" \
+            --plan "$RUNNER_TEMP/release/plan.json" --operation "$OPERATION" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" --product-status not_started
+          exit 1
+      - name: Inspect exact TPM Release Notes artifact
+        id: release-notes-artifact
+        if: inputs.operation == 'release' && (inputs.release_notes_action == 'run' || inputs.release_notes_action == 'retry') && inputs.release_notes_artifact_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ inputs.release_notes_artifact_id }}
+        run: |
+          set -Eeuo pipefail
+          if ! [[ "$ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]] || ! gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID" > "$RUNNER_TEMP/release-notes-artifact.json"; then
+            python3 deploy/engine/release_notes_publish.py --action artifact-failure \
+              --failure-class artifact-metadata-unavailable --directory "$RUNNER_TEMP/release" \
+              --environment "${{ inputs.environment == 'production' && 'prod' || 'dev' }}" \
+              --bucket "${{ inputs.environment == 'production' && 'llm-wiki-data' || 'llm-wiki-data-dev' }}" \
+              --artifact-id "$ARTIFACT_ID" --plan "$RUNNER_TEMP/release/plan.json" \
+              --operation "$OPERATION" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT"
+            exit 1
+          fi
+          if ! run_id="$(jq -er '.workflow_run.id | select(type=="number" and .>0) | tostring' "$RUNNER_TEMP/release-notes-artifact.json")" || \
+             ! digest="$(jq -er '.digest | select(type=="string" and test("^sha256:[0-9a-f]{64}$"))' "$RUNNER_TEMP/release-notes-artifact.json")" || \
+             ! name="$(jq -er '.name | select(type=="string")' "$RUNNER_TEMP/release-notes-artifact.json")" || \
+             ! expired="$(jq -er '.expired | tostring' "$RUNNER_TEMP/release-notes-artifact.json")" || \
+             [[ "$name" != lwc-release-notes-* || "$expired" != false ]] || \
+             ! gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" > "$RUNNER_TEMP/release-notes-run.json" || \
+             ! jq -e '.event == "workflow_dispatch" and .conclusion == "success"' "$RUNNER_TEMP/release-notes-run.json" >/dev/null; then
+            python3 deploy/engine/release_notes_publish.py --action artifact-failure \
+              --failure-class artifact-metadata-invalid --directory "$RUNNER_TEMP/release" \
+              --environment "${{ inputs.environment == 'production' && 'prod' || 'dev' }}" \
+              --bucket "${{ inputs.environment == 'production' && 'llm-wiki-data' || 'llm-wiki-data-dev' }}" \
+              --artifact-id "$ARTIFACT_ID" --plan "$RUNNER_TEMP/release/plan.json" \
+              --operation "$OPERATION" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT"
+            exit 1
+          fi
+          printf 'run_id=%s\ndigest=%s\n' "$run_id" "$digest" >> "$GITHUB_OUTPUT"
+      - name: Download exact TPM Release Notes artifact
+        id: release-notes-download
+        if: inputs.operation == 'release' && (inputs.release_notes_action == 'run' || inputs.release_notes_action == 'retry') && inputs.release_notes_artifact_id != ''
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ inputs.release_notes_artifact_id }}
+          run-id: ${{ steps.release-notes-artifact.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/release-notes-package
+          merge-multiple: true
+      - name: Record exact TPM artifact download failure
+        if: inputs.operation == 'release' && (inputs.release_notes_action == 'run' || inputs.release_notes_action == 'retry') && inputs.release_notes_artifact_id != '' && steps.release-notes-download.outcome != 'success'
+        run: |
+          set -Eeuo pipefail
+          python3 deploy/engine/release_notes_publish.py --action artifact-failure \
+            --failure-class artifact-download-failed --directory "$RUNNER_TEMP/release" \
+            --environment "${{ inputs.environment == 'production' && 'prod' || 'dev' }}" \
+            --bucket "${{ inputs.environment == 'production' && 'llm-wiki-data' || 'llm-wiki-data-dev' }}" \
+            --artifact-id "$RELEASE_NOTES_ARTIFACT_ID" --plan "$RUNNER_TEMP/release/plan.json" \
+            --operation "$OPERATION" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT"
+          exit 1
+      - name: Record explicit Notes stop
+        if: inputs.operation == 'release' && inputs.release_notes_action == 'stop'
+        run: |
+          set -Eeuo pipefail
+          python3 deploy/engine/release_notes_publish.py --action stop \
+            --directory "$RUNNER_TEMP/release" --environment "${{ inputs.environment == 'production' && 'prod' || 'dev' }}" \
+            --bucket "${{ inputs.environment == 'production' && 'llm-wiki-data' || 'llm-wiki-data-dev' }}" \
+            --plan "$RUNNER_TEMP/release/plan.json" --operation "$OPERATION" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --artifact-id "$RELEASE_NOTES_ARTIFACT_ID" --product-status not_started
+          echo "Explicit Notes stop selected; no product mutation will run." >&2
+          exit 1
+      - name: Record explicit Notes skip before release
+        if: inputs.operation == 'release' && inputs.release_notes_action == 'skip'
+        run: |
+          set -Eeuo pipefail
+          python3 deploy/engine/release_notes_publish.py --action skip-before-release \
+            --directory "$RUNNER_TEMP/release" --environment "${{ inputs.environment == 'production' && 'prod' || 'dev' }}" \
+            --bucket "${{ inputs.environment == 'production' && 'llm-wiki-data' || 'llm-wiki-data-dev' }}" \
+            --plan "$RUNNER_TEMP/release/plan.json" --operation "$OPERATION" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --artifact-id "$RELEASE_NOTES_ARTIFACT_ID" --product-status not_started
+      - name: Validate and store immutable Release Notes content before product release
+        if: inputs.operation == 'release' && (inputs.release_notes_action == 'run' || inputs.release_notes_action == 'retry')
+        env:
+          NOTES_ARTIFACT_DIGEST: ${{ steps.release-notes-artifact.outputs.digest }}
+        run: |
+          set -Eeuo pipefail
+          python3 deploy/engine/release_notes_publish.py --action prepare \
+            --directory "$RUNNER_TEMP/release" --package-dir "$RUNNER_TEMP/release-notes-package" \
+            --environment "${{ inputs.environment == 'production' && 'prod' || 'dev' }}" \
+            --bucket "${{ inputs.environment == 'production' && 'llm-wiki-data' || 'llm-wiki-data-dev' }}" \
+            --artifact-id "$RELEASE_NOTES_ARTIFACT_ID" --artifact-digest "$NOTES_ARTIFACT_DIGEST" \
+            --artifact-metadata-digest "$NOTES_ARTIFACT_DIGEST" --plan "$RUNNER_TEMP/release/plan.json" \
+            --operation "$OPERATION" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --product-status not_started
       - name: Validate explicit recovery inputs
         if: inputs.operation != 'release'
         run: |
@@ -271,6 +405,8 @@ jobs:
               assert os.environ['OPERATION'] in ('release','deploy')
           PY
       - name: Execute bounded runtime or explicit recovery
+        id: deployment
+        if: inputs.release_notes_action != 'stop'
         uses: ./.github/actions/deployment-engine
         env:
           GH_TOKEN: ${{ github.token }}
@@ -280,11 +416,211 @@ jobs:
         with:
           operation: runtime
           force: ${{ inputs.force }}
+      - name: Retain original product publication time
+        if: inputs.operation == 'release' && steps.deployment.outcome == 'success' && (inputs.release_notes_action == 'run' || inputs.release_notes_action == 'retry')
+        run: |
+          set -Eeuo pipefail
+          python3 deploy/engine/release_notes_publish.py --action record-publication \
+            --directory "$RUNNER_TEMP/release" --environment "${{ inputs.environment == 'production' && 'prod' || 'dev' }}" \
+            --bucket "${{ inputs.environment == 'production' && 'llm-wiki-data' || 'llm-wiki-data-dev' }}" \
+            --plan "$RUNNER_TEMP/release/plan.json" --operation "$OPERATION" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --product-status released --published-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      - name: Publish Notes content and exact current-operation marker
+        if: inputs.operation == 'release' && steps.deployment.outcome == 'success' && (inputs.release_notes_action == 'run' || inputs.release_notes_action == 'retry')
+        env:
+          NOTES_ARTIFACT_DIGEST: ${{ steps.release-notes-artifact.outputs.digest }}
+        run: |
+          set -Eeuo pipefail
+          python3 deploy/engine/release_notes_capture.py --directory "$RUNNER_TEMP/release" \
+            --operation "$OPERATION" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --environment "${{ inputs.environment == 'production' && 'prod' || 'dev' }}" \
+            --release-notes-action "$RELEASE_NOTES_ACTION" --product-status released \
+            --artifact-id "$RELEASE_NOTES_ARTIFACT_ID" --artifact-digest "$NOTES_ARTIFACT_DIGEST"
+          python3 deploy/engine/release_notes_publish.py --action publish \
+            --directory "$RUNNER_TEMP/release" --package-dir "$RUNNER_TEMP/release-notes-package" \
+            --environment "${{ inputs.environment == 'production' && 'prod' || 'dev' }}" \
+            --bucket "${{ inputs.environment == 'production' && 'llm-wiki-data' || 'llm-wiki-data-dev' }}" \
+            --artifact-id "$RELEASE_NOTES_ARTIFACT_ID" --artifact-digest "$NOTES_ARTIFACT_DIGEST" \
+            --artifact-metadata-digest "$NOTES_ARTIFACT_DIGEST" --plan "$RUNNER_TEMP/release/plan.json" \
+            --operation "$OPERATION" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --product-status released
+      - name: Publish current-operation marker after explicit Notes skip
+        if: inputs.operation == 'release' && steps.deployment.outcome == 'success' && inputs.release_notes_action == 'skip'
+        run: |
+          set -Eeuo pipefail
+          python3 deploy/engine/release_notes_capture.py --directory "$RUNNER_TEMP/release" \
+            --operation "$OPERATION" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --environment "${{ inputs.environment == 'production' && 'prod' || 'dev' }}" \
+            --release-notes-action skip --product-status released --artifact-id "$RELEASE_NOTES_ARTIFACT_ID"
+          python3 deploy/engine/release_notes_publish.py --action skip \
+            --directory "$RUNNER_TEMP/release" --environment "${{ inputs.environment == 'production' && 'prod' || 'dev' }}" \
+            --bucket "${{ inputs.environment == 'production' && 'llm-wiki-data' || 'llm-wiki-data-dev' }}" \
+            --artifact-id "$RELEASE_NOTES_ARTIFACT_ID" --plan "$RUNNER_TEMP/release/plan.json" \
+            --operation "$OPERATION" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --product-status released
+      - name: Publish marker for explicit BFF deploy, rollback, or reactivation
+        if: (inputs.operation == 'deploy' || inputs.operation == 'rollback' || inputs.operation == 'reactivate') && contains(format(',{0},', inputs.components), ',bff,') && steps.deployment.outcome == 'success'
+        run: |
+          set -Eeuo pipefail
+          python3 deploy/engine/release_notes_capture.py --directory "$RUNNER_TEMP/release" \
+            --operation "$OPERATION" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --environment "${{ inputs.environment == 'production' && 'prod' || 'dev' }}" \
+            --release-notes-action marker --product-status released
+          python3 deploy/engine/release_notes_publish.py --action marker \
+            --directory "$RUNNER_TEMP/release" --environment "${{ inputs.environment == 'production' && 'prod' || 'dev' }}" \
+            --bucket "${{ inputs.environment == 'production' && 'llm-wiki-data' || 'llm-wiki-data-dev' }}" \
+            --plan "$RUNNER_TEMP/release/plan.json" --operation "$OPERATION" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" --product-status released
       - name: Retain final result even after failure
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: lwc-result-${{ inputs.environment }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release
+          retention-days: 90
+          if-no-files-found: warn
+
+  notes-resend:
+    if: inputs.operation == 'notes-resend'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: ${{ inputs.environment == 'production' && 'Production' || 'Development' }}
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    env:
+      TARGET_ENVIRONMENT: ${{ inputs.environment == 'production' && 'prod' || 'dev' }}
+      RESULT_ENVIRONMENT: ${{ inputs.environment }}
+      NOTES_BUCKET: ${{ inputs.environment == 'production' && 'llm-wiki-data' || 'llm-wiki-data-dev' }}
+      RELEASE_NOTES_ARTIFACT_ID: ${{ inputs.release_notes_artifact_id }}
+      RELEASE_NOTES_RESULT_ARTIFACT_ID: ${{ inputs.release_notes_result_artifact_id }}
+      RELEASE_NOTES_ACTION: ${{ inputs.release_notes_action }}
+      RELEASE_NOTES_OPERATION: ${{ inputs.release_notes_operation }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ inputs.executor_sha }}
+          persist-credentials: false
+      - name: Validate Notes resend identity inputs
+        env:
+          EXECUTOR_SHA: ${{ inputs.executor_sha }}
+        run: |
+          set -Eeuo pipefail
+          test "$(git rev-parse HEAD)" = "$EXECUTOR_SHA"
+          [[ "$RELEASE_NOTES_RESULT_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$RELEASE_NOTES_ACTION" =~ ^(run|retry|skip|stop)$ ]]
+          if [[ "$RELEASE_NOTES_ACTION" == run || "$RELEASE_NOTES_ACTION" == retry ]]; then
+            [[ "$RELEASE_NOTES_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
+          fi
+          [[ "$RELEASE_NOTES_OPERATION" =~ ^(release|deploy|rollback|reactivate|promote)$ ]]
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - name: Install pinned artifact transport
+        run: |
+          set -Eeuo pipefail
+          echo "NODE_PATH=$RUNNER_TEMP/lwc-tools/node_modules" >> "$GITHUB_ENV"
+          npm install --prefix "$RUNNER_TEMP/lwc-tools" @actions/artifact@2.3.2 --ignore-scripts
+      - name: Inspect exact prior release result artifact
+        id: notes-result
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$RELEASE_NOTES_RESULT_ARTIFACT_ID" > "$RUNNER_TEMP/notes-result-metadata.json"
+          name="$(jq -er '.name | select(type=="string")' "$RUNNER_TEMP/notes-result-metadata.json")"
+          run_id="$(jq -er '.workflow_run.id | select(type=="number" and .>0) | tostring' "$RUNNER_TEMP/notes-result-metadata.json")"
+          attempt="$(jq -er '.name | capture("^lwc-result-(?<env>development|production)-(?<run>[0-9]+)-(?<attempt>[0-9]+)$").attempt' "$RUNNER_TEMP/notes-result-metadata.json")"
+          [[ "$name" == "lwc-result-$RESULT_ENVIRONMENT-$run_id-$attempt" ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" > "$RUNNER_TEMP/notes-result-run.json"
+          jq -e '.event == "workflow_dispatch" and (.conclusion == "success" or .conclusion == "failure")' "$RUNNER_TEMP/notes-result-run.json" >/dev/null
+          printf 'run_id=%s\nattempt=%s\n' "$run_id" "$attempt" >> "$GITHUB_OUTPUT"
+      - name: Download exact prior release result and retained operation evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node deploy/engine/artifacts.cjs download-result "$RELEASE_NOTES_RESULT_ARTIFACT_ID" "$RUNNER_TEMP/release" "$RESULT_ENVIRONMENT"
+      - name: Verify the retained product operation succeeded
+        run: |
+          set -Eeuo pipefail
+          python3 deploy/engine/release_notes_publish.py --action verify-operation \
+            --directory "$RUNNER_TEMP/release" --environment "$TARGET_ENVIRONMENT" --bucket "$NOTES_BUCKET" \
+            --plan "$RUNNER_TEMP/release/plan.json" --result-artifact-id "$RELEASE_NOTES_RESULT_ARTIFACT_ID" \
+            --operation "$RELEASE_NOTES_OPERATION" --run-id "${{ steps.notes-result.outputs.run_id }}" \
+            --run-attempt "${{ steps.notes-result.outputs.attempt }}" --product-status released
+      - name: Inspect exact TPM Release Notes artifact
+        id: notes-package
+        if: inputs.release_notes_action == 'run' || inputs.release_notes_action == 'retry'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$RELEASE_NOTES_ARTIFACT_ID" > "$RUNNER_TEMP/notes-package-metadata.json"
+          run_id="$(jq -er '.workflow_run.id | select(type=="number" and .>0) | tostring' "$RUNNER_TEMP/notes-package-metadata.json")"
+          digest="$(jq -er '.digest | select(type=="string" and test("^sha256:[0-9a-f]{64}$"))' "$RUNNER_TEMP/notes-package-metadata.json")"
+          name="$(jq -er '.name | select(type=="string")' "$RUNNER_TEMP/notes-package-metadata.json")"
+          expired="$(jq -er '.expired | tostring' "$RUNNER_TEMP/notes-package-metadata.json")"
+          [[ "$name" == lwc-release-notes-* && "$expired" == false ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" > "$RUNNER_TEMP/notes-package-run.json"
+          jq -e '.event == "workflow_dispatch" and .conclusion == "success"' "$RUNNER_TEMP/notes-package-run.json" >/dev/null
+          printf 'run_id=%s\ndigest=%s\n' "$run_id" "$digest" >> "$GITHUB_OUTPUT"
+      - name: Download exact TPM Release Notes artifact
+        if: inputs.release_notes_action == 'run' || inputs.release_notes_action == 'retry'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ inputs.release_notes_artifact_id }}
+          run-id: ${{ steps.notes-package.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/release-notes-package
+          merge-multiple: true
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        if: inputs.release_notes_action == 'run' || inputs.release_notes_action == 'retry'
+        with:
+          project_id: llm-wiki-cloud
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f
+        if: inputs.release_notes_action == 'run' || inputs.release_notes_action == 'retry'
+      - name: Resend Notes without product deployment
+        if: inputs.release_notes_action == 'run' || inputs.release_notes_action == 'retry'
+        env:
+          NOTES_ARTIFACT_DIGEST: ${{ steps.notes-package.outputs.digest }}
+        run: |
+          set -Eeuo pipefail
+          python3 deploy/engine/release_notes_publish.py --action resend \
+            --directory "$RUNNER_TEMP/release" --package-dir "$RUNNER_TEMP/release-notes-package" \
+            --environment "$TARGET_ENVIRONMENT" --bucket "$NOTES_BUCKET" \
+            --artifact-id "$RELEASE_NOTES_ARTIFACT_ID" --artifact-digest "$NOTES_ARTIFACT_DIGEST" \
+            --artifact-metadata-digest "$NOTES_ARTIFACT_DIGEST" --plan "$RUNNER_TEMP/release/plan.json" \
+            --result-artifact-id "$RELEASE_NOTES_RESULT_ARTIFACT_ID" \
+            --operation "$RELEASE_NOTES_OPERATION" --run-id "${{ steps.notes-result.outputs.run_id }}" \
+            --run-attempt "${{ steps.notes-result.outputs.attempt }}" --product-status released
+      - name: Record explicit Notes skip without product deployment
+        if: inputs.release_notes_action == 'skip'
+        run: |
+          set -Eeuo pipefail
+          python3 deploy/engine/release_notes_publish.py --action skip-after-release \
+            --directory "$RUNNER_TEMP/release" --environment "$TARGET_ENVIRONMENT" --bucket "$NOTES_BUCKET" \
+            --plan "$RUNNER_TEMP/release/plan.json" --operation "$RELEASE_NOTES_OPERATION" \
+            --result-artifact-id "$RELEASE_NOTES_RESULT_ARTIFACT_ID" \
+            --run-id "${{ steps.notes-result.outputs.run_id }}" \
+            --run-attempt "${{ steps.notes-result.outputs.attempt }}" --product-status released
+      - name: Record explicit Notes stop without product deployment
+        if: inputs.release_notes_action == 'stop'
+        run: |
+          set -Eeuo pipefail
+          python3 deploy/engine/release_notes_publish.py --action stop \
+            --directory "$RUNNER_TEMP/release" --environment "$TARGET_ENVIRONMENT" --bucket "$NOTES_BUCKET" \
+            --plan "$RUNNER_TEMP/release/plan.json" --operation "$RELEASE_NOTES_OPERATION" \
+            --result-artifact-id "$RELEASE_NOTES_RESULT_ARTIFACT_ID" \
+            --run-id "${{ steps.notes-result.outputs.run_id }}" \
+            --run-attempt "${{ steps.notes-result.outputs.attempt }}" --product-status released
+      - name: Retain independent Notes resend evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-notes-resend-${{ inputs.environment }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/release
           retention-days: 90
           if-no-files-found: warn

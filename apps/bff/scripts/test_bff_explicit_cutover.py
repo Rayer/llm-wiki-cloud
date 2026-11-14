@@ -268,6 +268,31 @@ class SharedCDContractTest(unittest.TestCase):
             self.assertEqual(job["if"], expected_release_guard)
             self.assertEqual(job["uses"], "./.github/workflows/cd.yml")
             self.assertEqual(job["with"]["environment"], environment)
+            notes_inputs = trigger["workflow_dispatch"]["inputs"]
+            self.assertEqual(notes_inputs["release_notes_artifact_id"], {
+                "description": "Exact retained TPM-authored private Release Notes package artifact ID",
+                "type": "string", "default": "",
+            })
+            self.assertEqual(notes_inputs["release_notes_action"], {
+                "description": "Explicit Notes subphase choice; retry/skip are bound to this release plan, stop ends before product mutation",
+                "required": True, "type": "choice", "options": ["run", "retry", "skip", "stop"], "default": "run",
+            })
+            self.assertEqual(notes_inputs["release_notes_result_artifact_id"], {
+                "description": "Exact retained release result artifact ID for operation notes-resend",
+                "type": "string", "default": "",
+            })
+            expected_notes_operation = {
+                "description": "Original retained runtime operation used only by notes-resend",
+                "required": False, "type": "choice",
+                "options": ["release", "deploy", "rollback", "reactivate", "promote"], "default": "release",
+            } if path == "deploy-dev.yml" else {
+                "description": "Original retained runtime operation used only by notes-resend",
+                "type": "string", "default": "release",
+            }
+            self.assertEqual(notes_inputs["release_notes_operation"], expected_notes_operation)
+            for name in ("release_notes_artifact_id", "release_notes_action",
+                         "release_notes_result_artifact_id", "release_notes_operation"):
+                self.assertEqual(job["with"][name], "${{ inputs." + name + " }}")
             generate_job = workflow["jobs"]["frontend-config-generate"]
             generation_environment = "dev" if path == "deploy-dev.yml" else "prod"
             self.assertEqual(generate_job["if"], "github.ref == 'refs/heads/develop' && inputs.operation == 'frontend-config-generate'")
@@ -281,7 +306,7 @@ class SharedCDContractTest(unittest.TestCase):
             if path == "deploy-dev.yml":
                 operation = trigger["workflow_dispatch"]["inputs"]["operation"]
                 self.assertEqual(operation["default"], "release")
-                self.assertEqual(operation["options"], ["release", "config-only", "frontend-config-only", "frontend-config-generate", "deploy", "rollback", "reactivate", "tag", "readback", "diagnose-auth-image"])
+                self.assertEqual(operation["options"], ["release", "config-only", "frontend-config-only", "frontend-config-generate", "deploy", "rollback", "reactivate", "tag", "readback", "notes-resend", "diagnose-auth-image"])
                 self.assertEqual(job["with"]["operation"], "${{ inputs.operation }}")
                 self.assertEqual(job["with"]["source_sha"], "${{ inputs.operation == 'release' && (inputs.source_sha || github.sha) || inputs.source_sha }}")
                 self.assertEqual(job["with"]["executor_sha"], "${{ github.sha }}")
@@ -291,6 +316,7 @@ class SharedCDContractTest(unittest.TestCase):
                 self.assertEqual(eligibility["needs"], "release")
                 self.assertIn("inputs.operation != 'readback'", eligibility["if"])
                 self.assertIn("inputs.operation != 'frontend-config-generate'", eligibility["if"])
+                self.assertIn("inputs.operation != 'notes-resend'", eligibility["if"])
                 self.assertEqual(eligibility["permissions"], {"contents": "read", "actions": "read", "statuses": "write"})
                 self.assertIn("${{ github.run_attempt }}", eligibility["steps"][1]["with"]["name"])
                 diagnostic = workflow["jobs"]["auth-image-diagnostic"]
@@ -309,7 +335,7 @@ class SharedCDContractTest(unittest.TestCase):
             else:
                 operation = trigger["workflow_dispatch"]["inputs"]["operation"]
                 self.assertEqual(operation["default"], "release")
-                self.assertEqual(operation["options"], ["release", "config-only", "frontend-config-only", "frontend-config-generate"])
+                self.assertEqual(operation["options"], ["release", "config-only", "frontend-config-only", "frontend-config-generate", "notes-resend"])
                 self.assertEqual(job["with"]["source_sha"], "${{ github.sha }}")
                 self.assertEqual(job["with"]["executor_sha"], "${{ github.sha }}")
 
@@ -344,9 +370,16 @@ class SharedCDContractTest(unittest.TestCase):
         self.assertEqual(shared_inputs["executor_sha"], {"required": True, "type": "string"})
         self.assertEqual(shared_inputs["release_tag"], {"required": True, "type": "string"})
         self.assertEqual(shared_inputs["force"], {"type": "boolean", "default": False})
-        self.assertEqual(set(shared["jobs"]), {"release", "pipeline-config-only", "frontend-config-only"})
+        self.assertEqual(set(shared["jobs"]), {"release", "notes-resend", "pipeline-config-only", "frontend-config-only"})
         job = shared["jobs"]["release"]
-        self.assertEqual(job["if"], "inputs.operation != 'diagnose-auth-image' && inputs.operation != 'config-only' && inputs.operation != 'frontend-config-only'")
+        self.assertEqual(job["if"], "inputs.operation != 'diagnose-auth-image' && inputs.operation != 'config-only' && inputs.operation != 'frontend-config-only' && inputs.operation != 'notes-resend'")
+        notes_resend = shared["jobs"]["notes-resend"]
+        self.assertEqual(notes_resend["if"], "inputs.operation == 'notes-resend'")
+        self.assertEqual(notes_resend["environment"], job["environment"])
+        self.assertEqual(notes_resend["permissions"], {"contents": "read", "actions": "read", "id-token": "write"})
+        self.assertNotIn("needs", notes_resend)
+        self.assertFalse(any(step.get("uses") == "./.github/actions/deployment-engine"
+                             for step in notes_resend["steps"]))
         config_only = shared["jobs"]["pipeline-config-only"]
         self.assertEqual(config_only["if"], "inputs.operation == 'config-only'")
         self.assertEqual(config_only["permissions"], {"contents": "read", "id-token": "write"})

@@ -21,6 +21,7 @@ import { NudgePanel } from './NudgePanel';
 import { LocaleControl } from './LocaleControl';
 import { dailyBriefSignedOutLandingURL } from '@/lib/mcp-oauth';
 import { getBuildInfo, type BuildInfo } from '@/lib/api';
+import { ReleaseNotesReader } from './ReleaseNotesReader';
 
 export function Shell({ children }: { children: React.ReactNode }) {
   return (
@@ -509,30 +510,31 @@ function ShellContent({ children }: { children: React.ReactNode }) {
         <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/70 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) setVersionDialogOpen(false); }}>
           <section id="build-info-dialog" role="dialog" aria-modal="true" aria-labelledby="build-info-title" className="relative max-h-[85dvh] w-full max-w-lg overflow-y-auto rounded border border-white/12 bg-[#191B1C] p-6 shadow-2xl">
             <button ref={dialogCloseRef} type="button" onClick={() => setVersionDialogOpen(false)} className="absolute right-4 top-4 min-h-11 min-w-11 rounded text-zinc-400 hover:bg-white/8 hover:text-white" aria-label={t('Shell.closeVersionInfo')}>×</button>
-            <h2 id="build-info-title" className="pr-10 text-lg font-semibold text-[#F0F3F1]">{t('Shell.versionInfo')}</h2>
-            {buildInfoError ? (
-              <div role="alert" className="mt-4 rounded border border-amber-300/30 bg-amber-400/8 p-4 text-sm text-amber-100">
-                <p>{t('Shell.versionUnavailable')}</p>
-                <button type="button" onClick={() => void reloadBuildInfo()} className="mt-3 min-h-11 rounded border border-amber-200/40 px-3">{t('Shell.retryVersionInfo')}</button>
-              </div>
-            ) : buildInfo ? (
-              <>
-                <dl className="mt-5 grid gap-4 text-sm sm:grid-cols-2">
-                  <div><dt className="text-xs text-zinc-500">{t('Shell.environment')}</dt><dd className="mt-1 text-zinc-100">{buildInfo.environment === 'unknown' ? t('Shell.environmentNotProvided') : buildInfo.environment}</dd></div>
-                  <div><dt className="text-xs text-zinc-500">{t('Shell.productVersion')}</dt><dd className="mt-1 text-zinc-100">{buildInfo.product_version}</dd></div>
-                  <div className="sm:col-span-2"><dt className="text-xs text-zinc-500">{t('Shell.commit')}</dt><dd className="mt-1 break-all font-mono text-xs text-zinc-200">{buildInfo.commit}</dd></div>
-                  <div className="sm:col-span-2"><dt className="text-xs text-zinc-500">{t('Shell.revision')}</dt><dd className="mt-1 break-all font-mono text-xs text-zinc-200">{buildInfo.revision}</dd></div>
-                </dl>
-                <details className="mt-4 text-sm text-zinc-400">
-                  <summary className="min-h-11 cursor-pointer py-2">{t('Shell.additionalBuildDetails')}</summary>
-                  <dl className="grid gap-2 pb-3 sm:grid-cols-2"><div><dt>{t('Shell.branch')}</dt><dd className="break-all">{buildInfo.branch}</dd></div><div><dt>{t('Shell.tag')}</dt><dd className="break-all">{buildInfo.tag || t('Common.notProvided')}</dd></div><div><dt>{t('Shell.imageTag')}</dt><dd className="break-all">{buildInfo.image_tag}</dd></div><div><dt>{t('Shell.service')}</dt><dd className="break-all">{buildInfo.service}</dd></div></dl>
-                </details>
-                <p className="mt-3 text-xs leading-5 text-zinc-500">{t('Shell.buildSourceNote')}</p>
-                <button type="button" onClick={() => void copyVersionSnapshot()} className="mt-4 min-h-11 rounded bg-[#DCE9E1] px-4 text-sm font-semibold text-[#17231D]">{versionCopied ? t('Shell.versionCopied') : t('Shell.copyVersionInfo')}</button>
-                {versionCopyFailed ? <p role="status" className="mt-2 text-sm text-amber-100">{t('Shell.versionCopyFailed')}</p> : null}
-                {versionCopyFailed ? <textarea readOnly value={versionSnapshot} aria-label={t('Shell.versionInfo')} onFocus={(event) => event.currentTarget.select()} className="mt-2 min-h-24 w-full rounded border border-white/10 bg-black/20 p-2 font-mono text-xs text-zinc-200" /> : null}
-              </>
-            ) : <p className="mt-5 text-sm text-zinc-400">{t('Shell.loadingVersion')}</p>}
+            <ReleaseNotesReader presentation="dialog" initialVersion="current" showBuildInformation buildInformation={(
+              buildInfoError ? (
+                <div role="alert" className="rounded border border-amber-300/30 bg-amber-400/8 p-4 text-sm text-amber-100">
+                  <p>{t('Shell.versionUnavailable')}</p>
+                  <button type="button" onClick={() => void reloadBuildInfo()} className="mt-3 min-h-11 rounded border border-amber-200/40 px-3">{t('Shell.retryVersionInfo')}</button>
+                </div>
+              ) : buildInfo ? (
+                <>
+                  <dl className="grid gap-4 text-sm sm:grid-cols-2">
+                    <div><dt className="text-xs text-zinc-500">{t('Shell.environment')}</dt><dd className="mt-1 text-zinc-100">{buildInfo.environment === 'unknown' ? t('Shell.environmentNotProvided') : buildInfo.environment}</dd></div>
+                    <div><dt className="text-xs text-zinc-500">{t('Shell.productVersion')}</dt><dd className="mt-1 text-zinc-100">{buildInfo.product_version}</dd></div>
+                    <div className="sm:col-span-2"><dt className="text-xs text-zinc-500">{t('Shell.commit')}</dt><dd className="mt-1 break-all font-mono text-xs text-zinc-200">{buildInfo.commit}</dd></div>
+                    <div className="sm:col-span-2"><dt className="text-xs text-zinc-500">{t('Shell.revision')}</dt><dd className="mt-1 break-all font-mono text-xs text-zinc-200">{buildInfo.revision}</dd></div>
+                  </dl>
+                  <details className="mt-4 text-sm text-zinc-400">
+                    <summary className="min-h-11 cursor-pointer py-2">{t('Shell.additionalBuildDetails')}</summary>
+                    <dl className="grid gap-2 pb-3 sm:grid-cols-2"><div><dt>{t('Shell.branch')}</dt><dd className="break-all">{buildInfo.branch}</dd></div><div><dt>{t('Shell.tag')}</dt><dd className="break-all">{buildInfo.tag || t('Common.notProvided')}</dd></div><div><dt>{t('Shell.imageTag')}</dt><dd className="break-all">{buildInfo.image_tag}</dd></div><div><dt>{t('Shell.service')}</dt><dd className="break-all">{buildInfo.service}</dd></div></dl>
+                  </details>
+                  <p className="mt-3 text-xs leading-5 text-zinc-500">{t('Shell.buildSourceNote')}</p>
+                  <button type="button" onClick={() => void copyVersionSnapshot()} className="mt-4 min-h-11 rounded bg-[#DCE9E1] px-4 text-sm font-semibold text-[#17231D]">{versionCopied ? t('Shell.versionCopied') : t('Shell.copyVersionInfo')}</button>
+                  {versionCopyFailed ? <p role="status" className="mt-2 text-sm text-amber-100">{t('Shell.versionCopyFailed')}</p> : null}
+                  {versionCopyFailed ? <textarea readOnly value={versionSnapshot} aria-label={t('Shell.versionInfo')} onFocus={(event) => event.currentTarget.select()} className="mt-2 min-h-24 w-full rounded border border-white/10 bg-black/20 p-2 font-mono text-xs text-zinc-200" /> : null}
+                </>
+              ) : <p className="text-sm text-zinc-400">{t('Shell.loadingVersion')}</p>
+            )} />
           </section>
         </div>
       ) : null}

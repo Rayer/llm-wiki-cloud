@@ -68,6 +68,10 @@ definitions:
         type: string
       id:
         type: string
+      management_scopes:
+        items:
+          type: string
+        type: array
       role:
         type: string
     type: object
@@ -76,6 +80,8 @@ definitions:
       branch:
         type: string
       commit:
+        type: string
+      environment:
         type: string
       image_tag:
         type: string
@@ -86,6 +92,45 @@ definitions:
       service:
         type: string
       tag:
+        type: string
+    type: object
+  firestore.ScheduledPipelineStatus:
+    properties:
+      annotation_dirty_files:
+        type: integer
+      availability:
+        type: string
+      budget_used:
+        type: boolean
+      day_key:
+        type: string
+      last_attempt_at:
+        type: string
+      last_attempt_id:
+        type: string
+      last_check_at:
+        type: string
+      last_execution_id:
+        type: string
+      last_result:
+        type: string
+      new_raw_files:
+        type: integer
+      next_check_at:
+        type: string
+      pending_work:
+        type: integer
+      project_id:
+        type: string
+      raw_dirty_files:
+        type: integer
+      schedule:
+        type: string
+      skip_reason:
+        type: string
+      timezone:
+        type: string
+      user_id:
         type: string
     type: object
   gcs.WikiPage:
@@ -122,9 +167,15 @@ definitions:
         type: string
       source_url:
         type: string
+      sources:
+        items:
+          type: string
+        type: array
       status:
         type: string
       title:
+        type: string
+      updated_at:
         type: string
     type: object
   handler.AnnotationRequest:
@@ -174,6 +225,14 @@ definitions:
         type: string
       raw:
         type: string
+      related_concepts:
+        items:
+          $ref: '#/definitions/handler.WikiReference'
+        type: array
+      related_sources:
+        items:
+          $ref: '#/definitions/handler.WikiReference'
+        type: array
       slug:
         type: string
       status:
@@ -232,6 +291,26 @@ definitions:
         type: string
       revision:
         type: string
+      saved_profile_input_digest:
+        type: string
+      saved_profile_revision:
+        type: integer
+      source_candidate_id:
+        type: string
+      source_content_generation:
+        type: string
+      source_model_version:
+        type: string
+      source_profile_input_digest:
+        type: string
+      source_profile_revision:
+        type: integer
+      source_prompt_version:
+        type: string
+      source_schema_version:
+        type: string
+      source_status:
+        type: string
       status:
         type: string
     type: object
@@ -287,11 +366,67 @@ definitions:
       version:
         type: integer
     type: object
+  handler.PipelineIntentStatus:
+    properties:
+      compile_mode:
+        type: string
+      created_at:
+        type: string
+      error_code:
+        type: string
+      error_message:
+        type: string
+      error_stage:
+        type: string
+      execution_id:
+        type: string
+      id:
+        type: string
+      prepared_guidance:
+        $ref: '#/definitions/handler.PipelinePreparedGuidance'
+      saved_profile_input_digest:
+        type: string
+      saved_profile_revision:
+        type: integer
+      status:
+        type: string
+      updated_at:
+        type: string
+    type: object
+  handler.PipelinePreparedGuidance:
+    properties:
+      candidate_id:
+        type: string
+      content_generation:
+        type: string
+      kind:
+        type: string
+      model_version:
+        type: string
+      prompt_version:
+        type: string
+      revision:
+        type: string
+      schema_version:
+        type: string
+      source_input_digest:
+        type: string
+      source_profile_revision:
+        type: integer
+      status:
+        type: string
+    type: object
   handler.ProjectResponse:
     properties:
       created_at:
         type: string
+      description:
+        type: string
+      description_revision:
+        type: integer
       id:
+        type: string
+      last_used_at:
         type: string
       name:
         type: string
@@ -305,6 +440,10 @@ definitions:
     type: object
   handler.QueryResponse:
     properties:
+      ai_operation_failures:
+        items:
+          $ref: '#/definitions/query.AIOperationFailure'
+        type: array
       ai_synth:
         type: string
       answer_basis:
@@ -313,6 +452,8 @@ definitions:
         items:
           $ref: '#/definitions/search.Citation'
         type: array
+      content_generation:
+        type: string
       disclosure_required:
         type: boolean
       expand:
@@ -347,23 +488,35 @@ definitions:
     type: object
   handler.ScrapeRequest:
     properties:
+      candidate_id:
+        type: string
+      candidate_revision:
+        type: string
       confirmation_ref:
         type: string
       tags:
         items:
           type: string
         type: array
+      title:
+        type: string
       url:
         type: string
     type: object
   handler.ScrapeResponse:
     properties:
+      candidate_id:
+        type: string
+      candidate_revision:
+        type: string
       confirmation_ref:
         type: string
       expires_at:
         type: string
       failure_diagnostic:
         $ref: '#/definitions/urlintake.FailureDiagnostic'
+      failure_stage:
+        type: string
       message:
         type: string
       preview:
@@ -404,6 +557,14 @@ definitions:
         type: boolean
       raw_path:
         type: string
+      related_concepts:
+        items:
+          $ref: '#/definitions/handler.WikiReference'
+        type: array
+      related_sources:
+        items:
+          $ref: '#/definitions/handler.WikiReference'
+        type: array
       slug:
         type: string
       title:
@@ -442,12 +603,27 @@ definitions:
         type: integer
       running_pipelines:
         type: integer
+      scheduled_execution:
+        $ref: '#/definitions/handler.PipelineExecutionResponse'
+      scheduled_pipeline:
+        $ref: '#/definitions/firestore.ScheduledPipelineStatus'
       sources_count:
         type: integer
       suggested_queries:
         items:
           type: string
         type: array
+    type: object
+  handler.WikiReference:
+    properties:
+      id:
+        type: string
+      slug:
+        type: string
+      title:
+        type: string
+      type:
+        type: string
     type: object
   llm.ExpandResult:
     properties:
@@ -488,6 +664,7 @@ definitions:
     - cooldown
     - already_running
     - no_new_raw
+    - scheduled_daily_used
     type: string
     x-enum-varnames:
     - ReasonNone
@@ -496,6 +673,7 @@ definitions:
     - ReasonCooldown
     - ReasonAlreadyRunning
     - ReasonNoNewRaw
+    - ReasonEntitlementUsed
   pipelinequota.Snapshot:
     properties:
       allowed:
@@ -526,6 +704,94 @@ definitions:
         $ref: '#/definitions/pipelinequota.Reason'
       runs_today:
         type: integer
+    type: object
+  profilederive.FailureDiagnostic:
+    properties:
+      class:
+        type: string
+      decode_reason:
+        type: string
+      stage:
+        type: string
+    type: object
+  query.AIOperationFailure:
+    properties:
+      class:
+        type: string
+      fallback:
+        type: string
+      source:
+        type: string
+      stage:
+        type: string
+    type: object
+  releasenotes.ContentResponse:
+    properties:
+      entries:
+        items:
+          $ref: '#/definitions/releasenotes.Entry'
+        type: array
+      is_current:
+        type: boolean
+      locale:
+        type: string
+      locale_fallback:
+        type: boolean
+      product:
+        type: string
+      product_version:
+        type: string
+      published_at:
+        type: string
+      requested_locale:
+        type: string
+      schema_version:
+        type: integer
+    type: object
+  releasenotes.Entry:
+    properties:
+      limitations:
+        items:
+          type: string
+        type: array
+      title:
+        type: string
+      user_benefit:
+        type: string
+      what_changed:
+        type: string
+      where_to_use:
+        type: string
+    type: object
+  releasenotes.IndexResponse:
+    properties:
+      current:
+        $ref: '#/definitions/releasenotes.VersionSummary'
+      current_product_version:
+        type: string
+      current_status:
+        type: string
+      environment:
+        type: string
+      history:
+        items:
+          $ref: '#/definitions/releasenotes.VersionSummary'
+        type: array
+      runtime_product_version:
+        type: string
+      schema_version:
+        type: integer
+    type: object
+  releasenotes.VersionSummary:
+    properties:
+      locales:
+        items:
+          type: string
+        type: array
+      product_version:
+        type: string
+      published_at:
+        type: string
     type: object
   search.Citation:
     properties:
@@ -617,6 +883,10 @@ definitions:
         type: string
       provider_truncated:
         type: boolean
+      quality_checked:
+        type: boolean
+      quality_status:
+        type: string
       reason:
         type: string
       source_url:
@@ -647,6 +917,25 @@ definitions:
     - content_too_large
     - unknown
     type: string
+    x-enum-varnames:
+    - FailureCategoryNotConfigured
+    - FailureCategoryInvalidURL
+    - FailureCategoryAuthentication
+    - FailureCategoryBalance
+    - FailureCategorySecurityPolicy
+    - FailureCategoryContentUnavailable
+    - FailureCategoryRateLimited
+    - FailureCategoryProviderTimeout
+    - FailureCategoryProviderError
+    - FailureCategoryInvalidRequest
+    - FailureCategoryRequestTooLarge
+    - FailureCategoryUnexpectedStatus
+    - FailureCategoryTransportTimeout
+    - FailureCategoryTransportCancelled
+    - FailureCategoryTransportError
+    - FailureCategoryInvalidResponse
+    - FailureCategoryContentTooLarge
+    - FailureCategoryUnknown
   urlintake.FailureDiagnostic:
     properties:
       category:
@@ -867,6 +1156,8 @@ definitions:
         $ref: '#/definitions/v1.ProfileCandidate'
       confirmed_candidate_id:
         type: string
+      derivation_diagnostic:
+        $ref: '#/definitions/profilederive.FailureDiagnostic'
       derivation_error_code:
         type: string
       derivation_status:
@@ -893,6 +1184,7 @@ definitions:
     - bootstrap_guidance
     - candidate
     - confirmed_candidate_id
+    - derivation_diagnostic
     - derivation_error_code
     - derivation_status
     - job
@@ -941,10 +1233,16 @@ definitions:
         $ref: '#/definitions/pipelinequota.Snapshot'
       last_execution:
         $ref: '#/definitions/handler.PipelineExecutionResponse'
+      pipeline_intent:
+        $ref: '#/definitions/handler.PipelineIntentStatus'
       project_id:
         type: string
       quota:
         $ref: '#/definitions/pipelinequota.Snapshot'
+      scheduled_execution:
+        $ref: '#/definitions/handler.PipelineExecutionResponse'
+      scheduled_pipeline:
+        $ref: '#/definitions/firestore.ScheduledPipelineStatus'
       suggested_queries:
         items:
           type: string
@@ -1437,7 +1735,9 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/syssettings.Settings'
+            additionalProperties:
+              type: string
+            type: object
         "400":
           description: Bad Request
           schema:
@@ -2437,6 +2737,96 @@ paths:
       summary: Public runtime config
       tags:
       - public
+  /api/v1/public/release-notes:
+    get:
+      description: Returns validated current/missing/unavailable state and the indexed
+        version history. It exposes no publisher provenance.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          headers:
+            Cache-Control:
+              description: no-store
+              type: string
+          schema:
+            $ref: '#/definitions/releasenotes.IndexResponse'
+        "503":
+          description: Service Unavailable
+          headers:
+            Cache-Control:
+              description: no-store
+              type: string
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Published Release Notes index
+      tags:
+      - public
+  /api/v1/public/release-notes/{product_version}:
+    get:
+      description: Returns the exact indexed version and requested locale, or an exact
+        English fallback when that version has no translation.
+      parameters:
+      - description: Exact SemVer version
+        in: path
+        name: product_version
+        required: true
+        type: string
+      - description: Requested UI locale
+        enum:
+        - en
+        - zh-TW
+        in: query
+        name: locale
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          headers:
+            Cache-Control:
+              description: no-store
+              type: string
+          schema:
+            $ref: '#/definitions/releasenotes.ContentResponse'
+        "400":
+          description: Bad Request
+          headers:
+            Cache-Control:
+              description: no-store
+              type: string
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          headers:
+            Cache-Control:
+              description: no-store
+              type: string
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "503":
+          description: Service Unavailable
+          headers:
+            Cache-Control:
+              description: no-store
+              type: string
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Published Release Notes version
+      tags:
+      - public
   /api/v1/public/version:
     get:
       description: Returns allowlisted product build metadata and Cloud Run identity.
@@ -2461,9 +2851,11 @@ paths:
       consumes:
       - application/json
       description: Full-text search across sources and concepts. Mode "wiki" returns
-        raw results, "full" adds AI-synthesized answer. Model-prior full responses
-        with insufficient_evidence/no_qualified_evidence include citations:[] and
-        the model-prior evidence metadata; legacy nil citations remain omitted.
+        raw results, "full" adds AI-synthesized answer. Recovered optional AI failures
+        include bounded ai_operation_failures with the source resolved for this request
+        while retaining retrieval results. Model-prior full responses with insufficient_evidence/no_qualified_evidence
+        include citations:[] and the model-prior evidence metadata; legacy nil citations
+        remain omitted.
       parameters:
       - description: Search query and mode
         in: body

@@ -70,8 +70,8 @@ async function download(id, destination, resultEnvironment=null) {
   const artifact = await api(`actions/artifacts/${id}`);
   if (resultEnvironment !== null) {
     const identity = artifact && typeof artifact.name === 'string'
-      ? artifact.name.match(/^lwc-result-(development)-(\d+)-(\d+)$/) : null;
-    if (resultEnvironment !== 'development' || !identity ||
+      ? artifact.name.match(/^lwc-result-(development|production)-(\d+)-(\d+)$/) : null;
+    if (!['development', 'production'].includes(resultEnvironment) || !identity || identity[1] !== resultEnvironment ||
         String(artifact.workflow_run?.id) !== identity[2]) {
       throw Error('quota rejection evidence is not an exact DEV result artifact');
     }

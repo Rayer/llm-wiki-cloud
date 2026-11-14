@@ -401,6 +401,7 @@ class CDContractTests(LegacyMonorepoCDTestMixin, unittest.TestCase):
             "inputs.operation != 'frontend-config-only'",
             "inputs.operation != 'frontend-config-generate'",
             "inputs.operation != 'readback'",
+            "inputs.operation != 'notes-resend'",
         ):
             with self.subTest(fence=fence):
                 self.assertIn(fence, condition)

@@ -152,8 +152,8 @@ func TestGetNudgesPreservesNestedSDKObservationForActionResolver(t *testing.T) {
 	for _, failure := range reconciled.Failures {
 		classes[failure.SafeClass] = true
 	}
-	if !classes["pipeline_history_missing"] || !classes["release_adapter_not_qualified"] {
-		t.Fatalf("reconcile did not report unavailable current Pipeline evidence and missing Release adapter: %+v", reconciled.Failures)
+	if !classes["pipeline_history_missing"] || !classes["release_source_unavailable"] {
+		t.Fatalf("reconcile did not report unavailable current Pipeline evidence and missing Release source: %+v", reconciled.Failures)
 	}
 }
 

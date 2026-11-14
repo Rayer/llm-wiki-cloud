@@ -742,6 +742,18 @@
         "replaced"
       ]
     },
+    "ReleaseNotes.missingCurrent": {
+      "kind": "literal",
+      "params": [
+        "version"
+      ]
+    },
+    "ReleaseNotes.publishedAt": {
+      "kind": "literal",
+      "params": [
+        "date"
+      ]
+    },
     "Source.documentImport.confirmDelete": {
       "kind": "literal",
       "params": [

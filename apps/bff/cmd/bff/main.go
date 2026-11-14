@@ -44,6 +44,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/queryconfig"
 	"github.com/rayer/llm-wiki-bff/internal/queryquality"
 	"github.com/rayer/llm-wiki-bff/internal/queryruntime"
+	"github.com/rayer/llm-wiki-bff/internal/releasenotes"
 	"github.com/rayer/llm-wiki-bff/internal/search"
 	store "github.com/rayer/llm-wiki-bff/internal/storage"
 	"github.com/rayer/llm-wiki-bff/internal/syssettings"
@@ -223,6 +224,7 @@ func main() {
 
 	// Handlers
 	hV1 := handlerv1.New(wikiStore, fsClient, idx, conceptCache, nil, nil)
+	hV1.SetReleaseNotesSource(newReleaseNotesReadStore(gcsClient), releaseNotesBuildInfo(cfg.AuthEnvironment))
 	hV1.SetBYOKCredentialEnvironment(authSessionEnvironment(cfg))
 	if cfg.DeepSeekAPIKeyReference != "" && cfg.DeepSeekAPIKey != "" {
 		hV1.SetBYOKDeploymentCredentials([]handlerv1.BYOKDeploymentCredential{{
@@ -528,7 +530,7 @@ func newProductionRouter(
 		AllowCredentials: true,
 	})))
 
-	registerPublicRoutes(r, settingsStore, cfg.AuthServiceURL, cfg.AuthEnvironment, !localMode, registrationProvider)
+	registerPublicRoutesWithNotes(r, settingsStore, cfg.AuthServiceURL, cfg.AuthEnvironment, !localMode, registrationProvider, gcsClient)
 	r.POST("/internal/profile/dispatch", productionProfileDispatcher(hV1, cfg).Gin)
 	r.POST("/internal/pipeline/schedule", hV1.ScheduledPipeline)
 	r.POST("/internal/pipeline/llm-profile", hV1.PipelineLLMProfile)
@@ -724,14 +726,80 @@ func newExportHTTPHandler(localMode bool, cfg config.Config, repo exportjob.Repo
 
 func registerPublicRoutes(r *gin.Engine, settingsStore syssettings.RegistrationGate, authServiceURL, environment string, demoEnabled bool,
 	registrationProviders ...syssettings.PublicRegistrationSettingsProvider) {
-	// Public routes are registered on the root router, outside JWT and project middleware.
-	_ = authServiceURL
 	var registration syssettings.PublicRegistrationSettingsProvider
 	if len(registrationProviders) > 0 {
 		registration = registrationProviders[0]
 	}
+	registerPublicRoutesWithNotes(r, settingsStore, authServiceURL, environment, demoEnabled, registration, nil)
+}
+
+func registerPublicRoutesWithNotes(r *gin.Engine, settingsStore syssettings.RegistrationGate, authServiceURL, environment string, demoEnabled bool,
+	registration syssettings.PublicRegistrationSettingsProvider, notesClient *gcs.Client) {
+	// Public routes are registered on the root router, outside JWT and project middleware.
+	_ = authServiceURL
 	r.GET("/api/v1/public/config", syssettings.PublicConfigHandlerWithRegistration(settingsStore, demoEnabled, registration))
 	r.GET("/api/v1/public/version", buildinfo.HandlerWithEnvironment(environment))
+	notesHandler := releasenotes.NewHTTPHandler(newReleaseNotesReadStore(notesClient), releaseNotesBuildInfo(environment))
+	registerPublicReleaseNotesIndexRoute(r, notesHandler)
+	registerPublicReleaseNotesContentRoute(r, notesHandler)
+}
+
+func newReleaseNotesReadStore(client *gcs.Client) releasenotes.ReadStore {
+	return releasenotes.NewGCSReadStore(gcs.NewReleaseNotesStore(client))
+}
+
+func releaseNotesBuildInfo(environment string) releasenotes.BuildInfo {
+	build := buildinfo.Current()
+	build.Environment = publicReleaseNotesEnvironment(environment)
+	return releasenotes.BuildInfo{
+		Environment: build.Environment, ProductVersion: build.ProductVersion, Commit: build.Commit,
+		Branch: build.Branch, Tag: build.Tag, ImageTag: build.ImageTag, Service: build.Service, Revision: build.Revision,
+	}
+}
+
+// registerPublicReleaseNotesIndexRoute owns the anonymous, no-store Release Notes index route.
+//
+//	@Summary		Published Release Notes index
+//	@Description	Returns validated current/missing/unavailable state and the indexed version history. It exposes no publisher provenance.
+//	@Tags			public
+//	@Produce		json
+//	@Success		200	{object}	releasenotes.IndexResponse
+//	@Failure		503	{object}	map[string]string
+//	@Header		200	{string}	Cache-Control	"no-store"
+//	@Header		503	{string}	Cache-Control	"no-store"
+//	@Router		/api/v1/public/release-notes [get]
+func registerPublicReleaseNotesIndexRoute(router gin.IRoutes, handler *releasenotes.HTTPHandler) {
+	router.GET("/api/v1/public/release-notes", handler.Index)
+}
+
+// registerPublicReleaseNotesContentRoute owns the anonymous, no-store versioned Notes content route.
+//
+//	@Summary		Published Release Notes version
+//	@Description	Returns the exact indexed version and requested locale, or an exact English fallback when that version has no translation.
+//	@Tags			public
+//	@Produce		json
+//	@Param			product_version	path	string	true	"Exact SemVer version"
+//	@Param			locale			query	string	true	"Requested UI locale" Enums(en, zh-TW)
+//	@Success		200	{object}	releasenotes.ContentResponse
+//	@Failure		400	{object}	map[string]string
+//	@Failure		404	{object}	map[string]string
+//	@Failure		503	{object}	map[string]string
+//	@Header		200	{string}	Cache-Control	"no-store"
+//	@Header		400	{string}	Cache-Control	"no-store"
+//	@Header		404	{string}	Cache-Control	"no-store"
+//	@Header		503	{string}	Cache-Control	"no-store"
+//	@Router		/api/v1/public/release-notes/{product_version} [get]
+func registerPublicReleaseNotesContentRoute(router gin.IRoutes, handler *releasenotes.HTTPHandler) {
+	router.GET("/api/v1/public/release-notes/:product_version", handler.Content)
+}
+
+func publicReleaseNotesEnvironment(environment string) string {
+	switch environment {
+	case "local", "dev", "prod":
+		return environment
+	default:
+		return "unknown"
+	}
 }
 
 type authConsumerPublicRegistrationProvider struct {
