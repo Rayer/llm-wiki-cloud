@@ -29,7 +29,9 @@ test('r2 registered release and recovery workflows use explicit artifact inputs'
   for (const [file, environment, branch] of [['deploy-dev.yml', 'development', 'develop'], ['promote-production.yml', 'production', 'main']]) {
     const parsed = parseYaml(await workflow(file));
     assert.deepEqual(Object.keys(parsed.on), ['workflow_dispatch']);
-    const expectedInputs = ['components', 'release_tag', 'artifact_id', 'dev_artifact_id', 'frontend_config_artifact_id'];
+    const expectedInputs = ['components', 'release_tag', 'artifact_id', 'release_notes_artifact_id',
+      'release_notes_action', 'release_notes_result_artifact_id', 'release_notes_operation',
+      'dev_artifact_id', 'frontend_config_artifact_id'];
     if (file === 'deploy-dev.yml') expectedInputs.push('source_sha', 'force', 'operation');
     else expectedInputs.push('operation');
     expectedInputs.push('pipeline_run_timeout_seconds');
@@ -42,6 +44,41 @@ test('r2 registered release and recovery workflows use explicit artifact inputs'
       expectedInputs.push('auth_schema_version');
     }
     assert.deepEqual(Object.keys(parsed.on.workflow_dispatch.inputs), expectedInputs);
+    const noteInputs = parsed.on.workflow_dispatch.inputs;
+    assert.deepEqual(noteInputs.release_notes_artifact_id, {
+      description: 'Exact retained TPM-authored private Release Notes package artifact ID',
+      type: 'string',
+      default: '',
+    });
+    assert.deepEqual(noteInputs.release_notes_action, {
+      description: 'Explicit Notes subphase choice; retry/skip are bound to this release plan, stop ends before product mutation',
+      required: true,
+      type: 'choice',
+      options: ['run', 'retry', 'skip', 'stop'],
+      default: 'run',
+    });
+    assert.deepEqual(noteInputs.release_notes_result_artifact_id, {
+      description: 'Exact retained release result artifact ID for operation notes-resend',
+      type: 'string',
+      default: '',
+    });
+    assert.deepEqual(noteInputs.release_notes_operation, file === 'deploy-dev.yml'
+      ? {
+        description: 'Original retained runtime operation used only by notes-resend',
+        required: false,
+        type: 'choice',
+        options: ['release', 'deploy', 'rollback', 'reactivate', 'promote'],
+        default: 'release',
+      }
+      : {
+        description: 'Original retained runtime operation used only by notes-resend',
+        type: 'string',
+        default: 'release',
+      });
+    for (const name of ['release_notes_artifact_id', 'release_notes_action',
+      'release_notes_result_artifact_id', 'release_notes_operation']) {
+      assert.equal(parsed.jobs.release.with[name], '$' + '{{ inputs.' + name + ' }}');
+    }
     assert.equal(parsed.jobs.release.with.environment, environment);
     assert.equal(parsed.jobs.release.if, file === 'deploy-dev.yml'
       ? `github.ref == 'refs/heads/${branch}' && inputs.operation != 'diagnose-auth-image' && inputs.operation != 'frontend-config-generate'`
@@ -96,10 +133,10 @@ test('r2 registered release and recovery workflows use explicit artifact inputs'
   const operation = deployDev.on.workflow_dispatch.inputs.operation;
   assert.equal(operation.type, 'choice');
   assert.equal(operation.default, 'release');
-  assert.deepEqual(operation.options, ['release', 'config-only', 'frontend-config-only', 'frontend-config-generate', 'deploy', 'rollback', 'reactivate', 'tag', 'readback', 'diagnose-auth-image']);
+  assert.deepEqual(operation.options, ['release', 'config-only', 'frontend-config-only', 'frontend-config-generate', 'deploy', 'rollback', 'reactivate', 'tag', 'readback', 'notes-resend', 'diagnose-auth-image']);
   const promoteProduction = parseYaml(await workflow('promote-production.yml'));
   assert.deepEqual(promoteProduction.on.workflow_dispatch.inputs.operation.options,
-    ['release', 'config-only', 'frontend-config-only', 'frontend-config-generate']);
+    ['release', 'config-only', 'frontend-config-only', 'frontend-config-generate', 'notes-resend']);
   assert.equal(deployDev.on.workflow_dispatch.inputs.source_sha.default, '');
   assert.deepEqual(deployDev.on.workflow_dispatch.inputs.force, { description: 'Explicitly accept duplicate-mutation risk to deploy a new ready attempt past another attempt\'s unresolved target status', type: 'boolean', default: false });
   assert.deepEqual(Object.keys(deployDev.jobs).sort(), ['auth-image-diagnostic', 'frontend-config-generate', 'main-fast-forward-eligible', 'release']);
@@ -109,6 +146,7 @@ test('r2 registered release and recovery workflows use explicit artifact inputs'
   assert.ok(eligibility.if.includes("inputs.operation != 'readback'"));
   assert.ok(eligibility.if.includes("inputs.operation != 'frontend-config-only'"));
   assert.ok(eligibility.if.includes("inputs.operation != 'frontend-config-generate'"));
+  assert.ok(eligibility.if.includes("inputs.operation != 'notes-resend'"));
   assert.deepEqual(eligibility.permissions, { contents: 'read', actions: 'read', statuses: 'write' });
   assert.equal(eligibility.steps.find((step) => step.name === 'Download this DEV attempt result').with.name,
     'lwc-result-development-${{ github.run_id }}-${{ github.run_attempt }}');
@@ -203,7 +241,7 @@ test('DEV provisioning uses the existing auth identity and preserves hidden evid
 
 test('shared engine has one approval and one serialized runtime authority', async () => {
   const parsed = parseYaml(await workflow('cd.yml'));
-  assert.deepEqual(Object.keys(parsed.jobs), ['release', 'pipeline-config-only', 'frontend-config-only']);
+  assert.deepEqual(Object.keys(parsed.jobs), ['release', 'notes-resend', 'pipeline-config-only', 'frontend-config-only']);
   assert.equal(parsed.concurrency.group, 'lwc-engine-${{ inputs.environment }}');
   assert.equal(parsed.concurrency['cancel-in-progress'], false);
   const job = parsed.jobs.release;
@@ -217,7 +255,7 @@ test('shared engine has one approval and one serialized runtime authority', asyn
   });
   assert.equal(parsed.jobs.release.env.EXECUTOR_SHA, '${{ inputs.executor_sha }}');
   assert.equal(parsed.jobs.release.env.FORCE, '${{ inputs.force }}');
-  assert.equal(job.if, "inputs.operation != 'diagnose-auth-image' && inputs.operation != 'config-only' && inputs.operation != 'frontend-config-only'");
+  assert.equal(job.if, "inputs.operation != 'diagnose-auth-image' && inputs.operation != 'config-only' && inputs.operation != 'frontend-config-only' && inputs.operation != 'notes-resend'");
   assert.equal(parsed.jobs['pipeline-config-only'].if, "inputs.operation == 'config-only'");
   assert.equal(parsed.jobs['pipeline-config-only'].permissions['id-token'], 'write');
   const frontend = parsed.jobs['frontend-config-only'];
@@ -275,14 +313,74 @@ test('frontend CI runs the receipt and exact config artifact contract tests in i
   assert.match(contractStep.run, /python3 \.\.\/\.\.\/scripts\/test_frontend_config_artifacts\.py/);
 });
 
+test('Notes resend has exact workflow inputs, a no-deploy authority, and retained recovery evidence', async () => {
+  const parsed = parseYaml(await workflow('cd.yml'));
+  const inputs = parsed.on.workflow_call.inputs;
+  assert.deepEqual(inputs.release_notes_artifact_id, {
+    required: false,
+    type: 'string',
+    default: '',
+    description: 'Exact retained TPM-authored private Release Notes package artifact ID',
+  });
+  assert.deepEqual(inputs.release_notes_result_artifact_id, {
+    required: false,
+    type: 'string',
+    default: '',
+    description: 'Exact retained deployment result artifact ID for an independent Notes resend',
+  });
+  assert.deepEqual(inputs.release_notes_action, {
+    required: false,
+    type: 'string',
+    default: 'run',
+    description: 'Explicit Owner disposition; run/retry performs Notes work, while skip/stop in notes-resend records a no-deploy choice',
+  });
+  assert.deepEqual(inputs.release_notes_operation, {
+    required: false,
+    type: 'string',
+    default: 'release',
+    description: 'Original retained operation identity used only by Notes resend',
+  });
+  const job = parsed.jobs['notes-resend'];
+  assert.equal(job.if, "inputs.operation == 'notes-resend'");
+  assert.equal(job.environment, parsed.jobs.release.environment);
+  assert.deepEqual(job.permissions, { contents: 'read', actions: 'read', 'id-token': 'write' });
+  assert.equal(job.env.RELEASE_NOTES_ARTIFACT_ID, '$' + '{{ inputs.release_notes_artifact_id }}');
+  assert.equal(job.env.RELEASE_NOTES_RESULT_ARTIFACT_ID, '$' + '{{ inputs.release_notes_result_artifact_id }}');
+  assert.equal(job.env.RELEASE_NOTES_ACTION, '$' + '{{ inputs.release_notes_action }}');
+  assert.equal(job.env.RELEASE_NOTES_OPERATION, '$' + '{{ inputs.release_notes_operation }}');
+  assert.equal(Object.hasOwn(job, 'needs'), false);
+  assert.equal(job.steps.some((step) => step.uses === './.github/actions/deployment-engine'), false);
+  const steps = job.steps;
+  const upload = steps.find((step) => step.name === 'Retain independent Notes resend evidence');
+  assert.ok(upload);
+  assert.equal(upload.if, 'always()');
+  assert.equal(upload.with['retention-days'], 90);
+  assert.equal(upload.with['if-no-files-found'], 'warn');
+  const runnerTemp = String.fromCharCode(36) + '{{ runner.temp }}';
+  assert.deepEqual(upload.with.path.split(String.fromCharCode(10)).filter(Boolean), [
+    runnerTemp + '/release',
+    runnerTemp + '/release-notes-package',
+  ]);
+  const auth = steps.find((step) => step.uses?.startsWith('google-github-actions/auth@'));
+  assert.equal(auth.if, "inputs.release_notes_action == 'run' || inputs.release_notes_action == 'retry'");
+  for (const name of ['Record explicit Notes skip without product deployment',
+    'Record explicit Notes stop without product deployment']) {
+    assert.ok(steps.some((step) => step.name === name));
+  }
+});
+
 test('ready and result artifacts have bounded retention and always retain failure evidence', async () => {
   const parsed = parseYaml(await workflow('cd.yml'));
   const uploads = parsed.jobs.release.steps.filter(step => step.uses?.startsWith('actions/upload-artifact@'));
   assert.equal(uploads.length, 2);
-  for (const step of uploads) {
-    assert.equal(step.with['retention-days'], 90);
-    assert.equal(step.with.path, '${{ runner.temp }}/release');
-  }
+  const runnerTemp = String.fromCharCode(36) + '{{ runner.temp }}';
+  assert.equal(uploads[0].with['retention-days'], 90);
+  assert.deepEqual(uploads[0].with.path.split(String.fromCharCode(10)).filter(Boolean), [runnerTemp + '/release']);
+  assert.equal(uploads[1].with['retention-days'], 90);
+  assert.deepEqual(uploads[1].with.path.split(String.fromCharCode(10)).filter(Boolean), [
+    runnerTemp + '/release',
+    runnerTemp + '/release-notes-package',
+  ]);
   assert.equal(uploads[1].if, 'always()');
   const adapter = await readFile(join(repoRoot, 'deploy/engine/providers.py'), 'utf8');
   assert.match(adapter, /'--prebuilt'/);

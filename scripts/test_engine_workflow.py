@@ -319,6 +319,7 @@ class EngineWorkflowContract(unittest.TestCase):
         self.assertNotIn('secrets',generator)
         self.assertNotIn('id-token',str(generator))
         self.assertIn("inputs.operation != 'frontend-config-generate'",dev['jobs']['main-fast-forward-eligible']['if'])
+        self.assertIn("inputs.operation != 'notes-resend'",dev['jobs']['main-fast-forward-eligible']['if'])
 
         production=yaml.safe_load((ROOT/'.github/workflows/promote-production.yml').read_text())
         prod_trigger=production.get('on',production.get(True,{}))

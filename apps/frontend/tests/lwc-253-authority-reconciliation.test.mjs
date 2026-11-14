@@ -766,11 +766,11 @@ test('foreign-project exact-SHA candidate cannot suppress CREATE_NOT_ALLOWED', a
 
 test('DEV authority uses the protected shared engine and durable selected stage barrier', async () => {
   const source = parseYaml(await readFile(join(monorepoRoot, '.github/workflows/cd.yml'), 'utf8'));
-  assert.deepEqual(Object.keys(source.jobs), ['release', 'pipeline-config-only', 'frontend-config-only']);
+  assert.deepEqual(Object.keys(source.jobs), ['release', 'notes-resend', 'pipeline-config-only', 'frontend-config-only']);
   assert.equal(source.concurrency.group, 'lwc-engine-${{ inputs.environment }}');
   assert.equal(source.concurrency['cancel-in-progress'], false);
   const job = source.jobs.release;
-  assert.equal(job.if, "inputs.operation != 'diagnose-auth-image' && inputs.operation != 'config-only' && inputs.operation != 'frontend-config-only'");
+  assert.equal(job.if, "inputs.operation != 'diagnose-auth-image' && inputs.operation != 'config-only' && inputs.operation != 'frontend-config-only' && inputs.operation != 'notes-resend'");
   assert.equal(source.jobs['pipeline-config-only'].if, "inputs.operation == 'config-only'");
   assert.equal(source.jobs['frontend-config-only'].if, "inputs.operation == 'frontend-config-only'");
   assert.deepEqual(source.jobs['frontend-config-only'].permissions, { contents: 'read', actions: 'read', 'id-token': 'write' });
@@ -792,6 +792,29 @@ test('DEV authority uses the protected shared engine and durable selected stage 
   assert.match(job.steps[ready].uses, /^actions\/upload-artifact@/);
   assert.equal(job.steps[ready].with['if-no-files-found'], 'error');
   assert.equal(job.steps[ready].with.path, '${{ runner.temp }}/release');
+  const resultUpload = job.steps.find(step => step.name === 'Retain final result even after failure');
+  assert.ok(resultUpload);
+  assert.equal(resultUpload.if, 'always()');
+  assert.equal(resultUpload.with['retention-days'], 90);
+  const runnerTemp = String.fromCharCode(36) + '{{ runner.temp }}';
+  assert.deepEqual(resultUpload.with.path.split(String.fromCharCode(10)).filter(Boolean), [
+    runnerTemp + '/release',
+    runnerTemp + '/release-notes-package',
+  ]);
+  const notesResend = source.jobs['notes-resend'];
+  assert.equal(notesResend.if, "inputs.operation == 'notes-resend'");
+  assert.equal(notesResend.environment, job.environment);
+  assert.deepEqual(notesResend.permissions, { contents: 'read', actions: 'read', 'id-token': 'write' });
+  assert.equal(Object.hasOwn(notesResend, 'needs'), false);
+  assert.equal(notesResend.steps.some(step => step.uses === './.github/actions/deployment-engine'), false);
+  const resendEvidence = notesResend.steps.find(step => step.name === 'Retain independent Notes resend evidence');
+  assert.ok(resendEvidence);
+  assert.equal(resendEvidence.if, 'always()');
+  assert.equal(resendEvidence.with['retention-days'], 90);
+  assert.deepEqual(resendEvidence.with.path.split(String.fromCharCode(10)).filter(Boolean), [
+    runnerTemp + '/release',
+    runnerTemp + '/release-notes-package',
+  ]);
   assert.equal(job.steps.find(step => step.uses?.startsWith('actions/checkout@')).with.ref, '${{ inputs.executor_sha }}');
   const diagnosticWorkflow = parseYaml(await readFile(join(monorepoRoot, '.github/workflows/cd-auth-image-diagnostic.yml'), 'utf8'));
   assert.deepEqual(Object.keys(diagnosticWorkflow.jobs), ['auth-image-diagnostic']);

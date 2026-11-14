@@ -26,6 +26,7 @@ class MainFastForwardEligibilityTests(unittest.TestCase):
         self.assertEqual(self.job["name"], "main-fast-forward-eligible")
         self.assertEqual(self.job["needs"], "release")
         self.assertIn("inputs.operation != 'readback'", self.job["if"])
+        self.assertIn("inputs.operation != 'notes-resend'", self.job["if"])
         self.assertEqual(self.job["permissions"], {
             "contents": "read", "actions": "read", "statuses": "write",
         })
