@@ -1,6 +1,6 @@
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { NudgeView } from '@/lib/nudges';
 
 const mocks = vi.hoisted(() => ({
@@ -92,6 +92,52 @@ describe('LWC-481 Nudge action navigation', () => {
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
+  });
+
+  it('renders yellow attention while preserving red urgent and green info treatments', async () => {
+    const itemWithSeverity = (severity: 'urgent' | 'attention' | 'info', category: string) => {
+      const item = structuredClone(view.items[0]!);
+      item.category = category;
+      item.severity = severity;
+      const observation = item.observations[0]?.observation;
+      if (!observation) throw new Error('test fixture is missing its observation');
+      observation.severity = severity;
+      return item;
+    };
+    const tieredView = structuredClone(view);
+    tieredView.items = [
+      itemWithSeverity('urgent', 'pipeline-failure'),
+      itemWithSeverity('attention', 'content-purpose-gap'),
+      itemWithSeverity('info', 'release-notes'),
+    ];
+    mocks.reconcileNudges.mockResolvedValueOnce(tieredView);
+    render(<NudgePanel onClose={vi.fn()} />);
+
+    await screen.findByText('pipeline-failure');
+    const article = (category: string) => {
+      const result = screen.getByText(category).closest('article');
+      if (!result) throw new Error(`${category} card was not rendered`);
+      return result;
+    };
+    const urgentArticle = article('pipeline-failure');
+    const attentionArticle = article('content-purpose-gap');
+    const infoArticle = article('release-notes');
+    const urgentCard = within(urgentArticle);
+    const attentionCard = within(attentionArticle);
+    const infoCard = within(infoArticle);
+
+    expect(urgentArticle.classList.contains('border-red-300/50')).toBe(true);
+    expect(urgentArticle.classList.contains('bg-red-950/30')).toBe(true);
+    expect(urgentCard.queryByRole('button', { name: 'Nudge.markRead' })).toBeNull();
+    expect(urgentCard.queryByRole('button', { name: 'Nudge.dismiss' })).toBeNull();
+    expect(attentionArticle.classList.contains('border-amber-300/60')).toBe(true);
+    expect(attentionArticle.classList.contains('bg-amber-950/55')).toBe(true);
+    expect(attentionCard.getByRole('button', { name: 'Nudge.markRead' })).toBeTruthy();
+    expect(attentionCard.getByRole('button', { name: 'Nudge.dismiss' })).toBeTruthy();
+    expect(infoArticle.classList.contains('border-emerald-300/50')).toBe(true);
+    expect(infoArticle.classList.contains('bg-emerald-950/30')).toBe(true);
+    expect(infoCard.getByRole('button', { name: 'Nudge.markRead' })).toBeTruthy();
+    expect(infoCard.getByRole('button', { name: 'Nudge.dismiss' })).toBeTruthy();
   });
 
   it('opens the actual same-Project target only after the exact copy succeeds', async () => {

@@ -208,7 +208,7 @@ export function NudgePanel({ onClose }: { onClose: () => void }) {
         {view?.items.length === 0 ? <p className="mt-5 text-sm text-zinc-400">{t('Nudge.empty')}</p> : null}
         <div className="mt-5 space-y-4">
           {view?.items.map((item) => (
-            <article key={item.category} className={`rounded border p-4 ${item.severity === 'urgent' ? 'border-red-300/50 bg-red-950/30' : 'border-white/10 bg-black/15'}`}>
+            <article key={item.category} className={`rounded border p-4 ${item.severity === 'urgent' ? 'border-red-300/50 bg-red-950/30' : item.severity === 'attention' ? 'border-amber-300/60 bg-amber-950/55' : 'border-emerald-300/50 bg-emerald-950/30'}`}>
               <div className="flex items-start justify-between gap-3">
                 <div><p className="text-xs font-semibold uppercase tracking-wide text-zinc-400">{item.category}</p><p className="mt-1 text-sm text-zinc-300">{item.severity === 'urgent' ? t('Nudge.urgent') : item.attention_state === 'read' ? t('Nudge.read') : t('Nudge.unread')}</p></div>
                 {item.severity !== 'urgent' ? <div className="flex gap-2">
