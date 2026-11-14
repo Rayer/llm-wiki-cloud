@@ -257,12 +257,12 @@ class SharedCDContractTest(unittest.TestCase):
             workflow = yaml.safe_load((workflows / path).read_text())
             trigger = workflow.get("on", workflow.get(True, {}))
             self.assertIn("workflow_dispatch", trigger)
-            expected_jobs = ["auth-image-diagnostic", "frontend-config-generate", "main-fast-forward-eligible", "release"] if path == "deploy-dev.yml" else ["frontend-config-generate", "release"]
+            expected_jobs = ["auth-image-diagnostic", "frontend-config-generate", "main-fast-forward-eligible", "prepare-release-notes-package", "release"] if path == "deploy-dev.yml" else ["frontend-config-generate", "release"]
             self.assertEqual(sorted(workflow["jobs"]), expected_jobs)
             job = workflow["jobs"]["release"]
             expected_release_guard = f"github.ref == 'refs/heads/{branch}'"
             if path == "deploy-dev.yml":
-                expected_release_guard += " && inputs.operation != 'diagnose-auth-image' && inputs.operation != 'frontend-config-generate'"
+                expected_release_guard += " && inputs.prepare_release_notes_package != true && inputs.operation != 'diagnose-auth-image' && inputs.operation != 'frontend-config-generate'"
             else:
                 expected_release_guard += " && inputs.operation != 'frontend-config-generate'"
             self.assertEqual(job["if"], expected_release_guard)
@@ -295,7 +295,10 @@ class SharedCDContractTest(unittest.TestCase):
                 self.assertEqual(job["with"][name], "${{ inputs." + name + " }}")
             generate_job = workflow["jobs"]["frontend-config-generate"]
             generation_environment = "dev" if path == "deploy-dev.yml" else "prod"
-            self.assertEqual(generate_job["if"], "github.ref == 'refs/heads/develop' && inputs.operation == 'frontend-config-generate'")
+            expected_generation_guard = "github.ref == 'refs/heads/develop' && inputs.operation == 'frontend-config-generate'"
+            if path == "deploy-dev.yml":
+                expected_generation_guard = "github.ref == 'refs/heads/develop' && inputs.prepare_release_notes_package != true && inputs.operation == 'frontend-config-generate'"
+            self.assertEqual(generate_job["if"], expected_generation_guard)
             self.assertEqual(generate_job["permissions"], {"contents": "read"})
             self.assertEqual(generate_job["uses"], "./.github/workflows/generate-frontend-config.yml")
             self.assertEqual(generate_job["with"], {"environment": generation_environment})
@@ -304,6 +307,26 @@ class SharedCDContractTest(unittest.TestCase):
             self.assertIn("release_tag", trigger["workflow_dispatch"]["inputs"])
             self.assertFalse(trigger["workflow_dispatch"]["inputs"]["release_tag"]["required"])
             if path == "deploy-dev.yml":
+                package_inputs = trigger["workflow_dispatch"]["inputs"]
+                self.assertEqual(package_inputs["prepare_release_notes_package"]["type"], "boolean")
+                self.assertFalse(package_inputs["prepare_release_notes_package"]["default"])
+                self.assertEqual(package_inputs["package_zip_base64"]["type"], "string")
+                self.assertEqual(package_inputs["package_zip_base64"]["default"], "")
+                self.assertEqual(package_inputs["release_notes_package_retention_days"]["type"], "choice")
+                self.assertEqual(package_inputs["release_notes_package_retention_days"]["options"], ["30", "90"])
+                self.assertEqual(package_inputs["release_notes_package_request_id"]["type"], "string")
+                package_job = workflow["jobs"]["prepare-release-notes-package"]
+                self.assertEqual(package_job["if"], "inputs.prepare_release_notes_package == true")
+                self.assertEqual(package_job["uses"], "./.github/workflows/prepare-release-notes-package.yml")
+                self.assertEqual(package_job["permissions"], {"contents": "read", "actions": "write"})
+                self.assertEqual(package_job["with"], {
+                    "ready_artifact_id": "${{ inputs.artifact_id }}",
+                    "retention_days": "${{ inputs.release_notes_package_retention_days }}",
+                    "request_id": "${{ inputs.release_notes_package_request_id }}",
+                })
+                self.assertNotIn("package_zip_base64", str(package_job["with"]))
+                self.assertNotIn("secrets", package_job)
+                self.assertNotIn("id-token", str(package_job))
                 operation = trigger["workflow_dispatch"]["inputs"]["operation"]
                 self.assertEqual(operation["default"], "release")
                 self.assertEqual(operation["options"], ["release", "config-only", "frontend-config-only", "frontend-config-generate", "deploy", "rollback", "reactivate", "tag", "readback", "notes-resend", "diagnose-auth-image"])
@@ -317,11 +340,13 @@ class SharedCDContractTest(unittest.TestCase):
                 self.assertIn("inputs.operation != 'readback'", eligibility["if"])
                 self.assertIn("inputs.operation != 'frontend-config-generate'", eligibility["if"])
                 self.assertIn("inputs.operation != 'notes-resend'", eligibility["if"])
+                self.assertIn("inputs.prepare_release_notes_package != true", eligibility["if"])
                 self.assertEqual(eligibility["permissions"], {"contents": "read", "actions": "read", "statuses": "write"})
                 self.assertIn("${{ github.run_attempt }}", eligibility["steps"][1]["with"]["name"])
                 diagnostic = workflow["jobs"]["auth-image-diagnostic"]
                 for condition in (
                     "inputs.operation == 'diagnose-auth-image'",
+                    "inputs.prepare_release_notes_package != true",
                     "github.ref == 'refs/heads/develop'",
                     "inputs.components == 'auth'",
                     "inputs.release_tag == 'diagnostic-36992147920'",
