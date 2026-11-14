@@ -1,9 +1,11 @@
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import type { NudgeView } from '@/lib/nudges';
 
 const mocks = vi.hoisted(() => ({
   getNudges: vi.fn(),
+  reconcileNudges: vi.fn(),
   setNudgeAttention: vi.fn().mockResolvedValue(undefined),
   resolveNudgeTarget: vi.fn(() => '/profile?project_id=project-a#project-description'),
   push: vi.fn(),
@@ -22,6 +24,7 @@ vi.mock('@/lib/i18n', () => ({ useT: () => ({ t: mocks.t }) }));
 vi.mock('@/lib/auth', () => ({ useAuth: () => mocks.auth }));
 vi.mock('@/lib/nudges', () => ({
   getNudges: mocks.getNudges,
+  reconcileNudges: mocks.reconcileNudges,
   setNudgeAttention: mocks.setNudgeAttention,
   resolveNudgeTarget: mocks.resolveNudgeTarget,
 }));
@@ -29,7 +32,7 @@ vi.mock('@/components/NavigationBlocker', () => ({ useNavigationBlocker: () => (
 
 import { NudgePanel } from '@/components/NudgePanel';
 
-const view = {
+const view: NudgeView = {
   schema_version: 1,
   partial: false,
   failures: [],
@@ -72,6 +75,7 @@ describe('LWC-481 Nudge action navigation', () => {
 
   beforeEach(() => {
     mocks.getNudges.mockResolvedValue(view);
+    mocks.reconcileNudges.mockResolvedValue(view);
     mocks.setNudgeAttention.mockResolvedValue(undefined);
     mocks.resolveNudgeTarget.mockReturnValue('/profile?project_id=project-a#project-description');
     mocks.push.mockReset();
@@ -132,29 +136,45 @@ describe('LWC-481 Nudge action navigation', () => {
     expect(mocks.setNudgeAttention).not.toHaveBeenCalled();
   });
 
+  it('shows explicit partial source status returned by manual reconcile', async () => {
+    const partialView = structuredClone(view);
+    partialView.partial = true;
+    partialView.failures = [{ safe_class: 'pipeline_observer_not_qualified' }];
+    mocks.reconcileNudges.mockResolvedValueOnce(partialView);
+    render(<NudgePanel onClose={vi.fn()} />);
+
+    expect(await screen.findByText('Nudge.partial')).toBeTruthy();
+    expect(mocks.reconcileNudges).toHaveBeenCalledTimes(1);
+    expect(mocks.getNudges).not.toHaveBeenCalled();
+  });
+
   it('suppresses an old account read after the session identity changes', async () => {
     let resolveOld!: (value: typeof view) => void;
     let resolveNew!: (value: typeof view) => void;
     const oldRead = new Promise<typeof view>((resolve) => { resolveOld = resolve; });
     const newRead = new Promise<typeof view>((resolve) => { resolveNew = resolve; });
-    mocks.getNudges.mockReset().mockImplementationOnce(() => oldRead).mockImplementationOnce(() => newRead);
+    mocks.reconcileNudges.mockReset().mockImplementationOnce(() => oldRead).mockImplementationOnce(() => newRead);
     const { rerender } = render(<NudgePanel onClose={vi.fn()} />);
 
-    await waitFor(() => expect(mocks.getNudges).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mocks.reconcileNudges).toHaveBeenCalledTimes(1));
     mocks.auth.user = { id: 'user-b' };
     mocks.auth.sessionIdentityEpoch = 2;
     mocks.auth.sessionEpoch = 2;
     rerender(<NudgePanel onClose={vi.fn()} />);
-    await waitFor(() => expect(mocks.getNudges).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(mocks.reconcileNudges).toHaveBeenCalledTimes(2));
 
     const oldView = structuredClone(view);
-    oldView.items[0].observations[0].observation.title = 'Old account purpose';
+    const oldObservation = oldView.items[0]?.observations[0]?.observation;
+    if (!oldObservation) throw new Error('test fixture is missing its observation');
+    oldObservation.title = 'Old account purpose';
     resolveOld(oldView);
     await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Nudge.loading'));
     expect(screen.queryByText('Old account purpose')).toBeNull();
 
     const newView = structuredClone(view);
-    newView.items[0].observations[0].observation.title = 'New account purpose';
+    const newObservation = newView.items[0]?.observations[0]?.observation;
+    if (!newObservation) throw new Error('test fixture is missing its observation');
+    newObservation.title = 'New account purpose';
     resolveNew(newView);
     expect(await screen.findByText('New account purpose')).toBeTruthy();
     expect(screen.queryByText('Old account purpose')).toBeNull();

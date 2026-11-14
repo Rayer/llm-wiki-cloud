@@ -76,6 +76,14 @@ export async function getNudges(): Promise<NudgeView> {
   return value as NudgeView;
 }
 
+export async function reconcileNudges(): Promise<NudgeView> {
+  const response = await apiFetch('/api/v1/nudges/reconcile', { method: 'POST', requireProject: false });
+  if (!response.ok) throw new Error(await errorMessage(response));
+  const value: unknown = await response.json();
+  if (!value || typeof value !== 'object' || !Array.isArray((value as NudgeView).items)) throw new Error('Nudge response is invalid.');
+  return value as NudgeView;
+}
+
 export async function setNudgeAttention(category: string, attentionId: string, action: 'read' | 'dismiss'): Promise<void> {
   const response = await apiFetch(`/api/v1/nudges/${encodeURIComponent(category)}/attention`, {
     method: 'PATCH', requireProject: false,

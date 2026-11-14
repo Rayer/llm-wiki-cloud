@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { X } from 'lucide-react';
 import { useT } from '@/lib/i18n';
 import { useAuth } from '@/lib/auth';
-import { getNudges, resolveNudgeTarget, setNudgeAttention, type NudgeAction, type NudgeItem, type NudgeView } from '@/lib/nudges';
+import { getNudges, reconcileNudges, resolveNudgeTarget, setNudgeAttention, type NudgeAction, type NudgeItem, type NudgeView } from '@/lib/nudges';
 import { useNavigationBlocker } from './NavigationBlocker';
 
 export function NudgePanel({ onClose }: { onClose: () => void }) {
@@ -29,11 +29,11 @@ export function NudgePanel({ onClose }: { onClose: () => void }) {
   const copied = copiedState?.identity === requestIdentity ? copiedState.actionId : '';
   const fallback = fallbackState?.identity === requestIdentity ? fallbackState : null;
 
-  const refresh = async (identity = requestIdentity) => {
+  const refresh = async (identity = requestIdentity, reconcile = false) => {
     if (requestIdentityRef.current !== identity) return;
     setBusyState({ identity, value: true });
     try {
-      const saved = await getNudges();
+      const saved = reconcile ? await reconcileNudges() : await getNudges();
       if (requestIdentityRef.current !== identity) return;
       setViewState({ identity, value: saved });
       setErrorState({ identity, value: '' });
@@ -47,7 +47,7 @@ export function NudgePanel({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     let active = true;
     if (!user || isDemoSession) return () => { active = false; };
-    void getNudges().then((saved) => {
+    void reconcileNudges().then((saved) => {
       if (!active || requestIdentityRef.current !== requestIdentity) return;
       setViewState({ identity: requestIdentity, value: saved });
       setErrorState({ identity: requestIdentity, value: '' });
@@ -218,7 +218,7 @@ export function NudgePanel({ onClose }: { onClose: () => void }) {
           <textarea id="nudge-copy-fallback" readOnly value={fallback.text} onFocus={(event) => event.currentTarget.select()} className="mt-2 min-h-28 w-full rounded border border-white/10 bg-black/30 p-2 text-sm text-white" />
           {fallback.href ? <a href={fallback.href} target="_blank" rel="noreferrer" onClick={followFallback} className="mt-3 inline-flex min-h-11 items-center text-sm text-emerald-200 underline">{t('Nudge.openTarget')}</a> : null}
         </div> : null}
-        <button disabled={busy} type="button" onClick={() => void refresh()} className="mt-6 min-h-11 rounded border border-white/15 px-4 text-sm text-zinc-200 hover:bg-white/5">{busy ? t('Nudge.loading') : t('Nudge.refresh')}</button>
+        <button disabled={busy} type="button" onClick={() => void refresh(requestIdentity, true)} className="mt-6 min-h-11 rounded border border-white/15 px-4 text-sm text-zinc-200 hover:bg-white/5">{busy ? t('Nudge.loading') : t('Nudge.refresh')}</button>
       </section>
     </div>
   );
