@@ -17,6 +17,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/llm"
 	"github.com/rayer/llm-wiki-bff/internal/observability"
 	"github.com/rayer/llm-wiki-bff/internal/profileartifacts"
+	"github.com/rayer/llm-wiki-bff/internal/profilelimits"
 )
 
 const (
@@ -367,6 +368,13 @@ func requirementIDs(requirements []Requirement) []string {
 }
 
 func validateRequirements(requirements []Requirement) error {
+	texts := make([]string, len(requirements))
+	for index, requirement := range requirements {
+		texts[index] = requirement.Text
+	}
+	if violation := profilelimits.ValidateRequirementTexts(texts); violation != nil {
+		return violation
+	}
 	seen := make(map[string]struct{}, len(requirements))
 	for _, requirement := range requirements {
 		if strings.TrimSpace(requirement.ID) == "" || !utf8.ValidString(requirement.ID) || !utf8.ValidString(requirement.Text) {
@@ -409,6 +417,9 @@ func validateAccounting(rows []RequirementAccounting, requirements []Requirement
 		if row.Disposition == "limitation" && !strings.Contains(strings.ToLower(row.Explanation), "limit") && !strings.Contains(strings.ToLower(row.Explanation), "cannot") && !strings.Contains(strings.ToLower(row.Explanation), "could not") {
 			return fmt.Errorf("limitation for requirement %q is not explained as a limitation", requirement.ID)
 		}
+	}
+	if violation := profilelimits.ValidateGuidance(guidance); violation != nil {
+		return violation
 	}
 	return nil
 }

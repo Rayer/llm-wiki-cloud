@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import {
+  ApiError,
   confirmProfileCandidate,
   getProfile,
   getProfileBootstrapGuidance,
@@ -17,6 +18,7 @@ import {
   type ProfileGuidanceArtifact,
   type ProfileState,
 } from '@/lib/api';
+import { countUnicodeScalars, PROFILE_LIMITS, validateProfileRequirements } from '@/lib/profile-limits';
 import { useT } from '@/lib/i18n';
 import { useAuth } from '@/lib/auth';
 import { useWorkspace } from './WorkspaceProvider';
@@ -92,6 +94,7 @@ function ProfileGuidanceArtifactDetails({ projectId, revision, title }: { projec
   const current = result?.projectId === projectId && result.revision === revision ? result : null;
   if (current?.error) return <p className="mt-3 text-sm text-amber-200" role="alert">{t('Profile.guidanceReadError', { error: current.error })}</p>;
   if (!current?.artifact) return <p className="mt-3 text-sm text-zinc-400" role="status">{t('Profile.loadingImmutableGuidance')}</p>;
+  const guidanceScalars = countUnicodeScalars(current.artifact.compile_guidance);
 
   return (
     <section className="mt-4 rounded border border-white/10 p-3" aria-label={title}>
@@ -105,6 +108,12 @@ function ProfileGuidanceArtifactDetails({ projectId, revision, title }: { projec
       <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-zinc-200">
         {current.artifact.compile_guidance || t('Profile.noCompileGuidance')}
       </p>
+      <p className="mt-2 text-xs leading-5 text-zinc-500" aria-live="polite">
+        {t('Profile.guidanceCharacterCount', { count: guidanceScalars, max: PROFILE_LIMITS.guidanceScalars })}
+      </p>
+      {guidanceScalars > PROFILE_LIMITS.guidanceScalars ? (
+        <p className="mt-1 text-xs leading-5 text-amber-200" role="status">{t('Profile.legacyGuidanceOverLimit')}</p>
+      ) : null}
       <p className="mt-2 text-xs leading-5 text-zinc-500">
         {t('Profile.adapterBudgetNote')}
       </p>
@@ -401,9 +410,19 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
         // The user draft stays in the editor when the latest server state is unavailable.
       }
       if (!requestIsCurrent(scope)) return;
-      showError(status === 409
-        ? t('Profile.errors.profileChanged')
-        : t('Profile.errors.saveUnconfirmed', { error: errorMessage(saveError, t('Profile.requestFailed')) }));
+      if (status === 409) {
+        showError(t('Profile.errors.profileChanged'));
+      } else if (saveError instanceof ApiError && saveError.code === 'profile_limit_exceeded') {
+        const details = { max: saveError.max ?? 0, actual: saveError.actual ?? 0 };
+        const limitError = saveError.violation === 'requirement_count'
+          ? t('Profile.requirementCountExceeded', details)
+          : t('Profile.limitExceeded', details);
+        showError(limitError);
+      } else if (saveError instanceof ApiError && saveError.code === 'profile_request_body_too_large') {
+        showError(t('Profile.errors.requestBodyTooLarge', { max: saveError.maxBytes ?? PROFILE_LIMITS.requestBodyBytes }));
+      } else {
+        showError(t('Profile.errors.saveUnconfirmed', { error: errorMessage(saveError, t('Profile.requestFailed')) }));
+      }
     } finally {
       if (requestIsCurrent(scope)) setSavingScope(null);
     }
@@ -472,7 +491,8 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
     }
   }
 
-  const isSavingDisabled = !visibleProfile || saving || working
+  const draftLimitViolation = validateProfileRequirements(draft);
+  const isSavingDisabled = !visibleProfile || saving || working || Boolean(draftLimitViolation)
     || sameRequirements(draft, visibleProfile?.requirements ?? []);
   const canRetryTagging = visibleProfile?.job
     && (visibleProfile.job.status === 'incomplete' || visibleProfile.job.status === 'retry_wait');
@@ -712,19 +732,29 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
             {visibleProfile.derivation_status === 'failed' ? (
               <div className="flex flex-wrap items-center gap-3 text-sm text-red-200">
                 <span>
-                  {visibleProfile.derivation_error_code === 'runtime_retry_exhausted'
+                  {visibleProfile.derivation_error_code === 'profile_guidance_too_long'
+                    ? t('Profile.guidanceOutputTooLong')
+                    : visibleProfile.derivation_error_code === 'profile_requirements_over_limit'
+                      ? t('Profile.savedRequirementsOverLimit')
+                      : visibleProfile.derivation_error_code === 'runtime_retry_exhausted'
                     ? t('Profile.runtimeRetriesExhausted')
                     : t('Profile.previewGenerationFailed')}
                   {visibleProfile.derivation_error_code ? ` (${visibleProfile.derivation_error_code})` : ''}.
                 </span>
-                <button
-                  type="button"
-                  disabled={working}
-                  onClick={() => void retryDerivation()}
-                  className="min-h-10 rounded-md border border-white/10 px-3 text-sm text-zinc-200 hover:bg-white/5 disabled:opacity-50"
-                >
-                  {visibleProfile.derivation_error_code === 'runtime_retry_exhausted' ? t('Profile.retryProfileWork') : t('Profile.retryPreviewGeneration')}
-                </button>
+                {visibleProfile.derivation_error_code === 'profile_requirements_over_limit' ? (
+                  <button type="button" onClick={() => setOpenCard('requirements')} className="min-h-10 rounded-md border border-white/10 px-3 text-sm text-zinc-200 hover:bg-white/5">
+                    {t('Profile.editRequirements')}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={working}
+                    onClick={() => void retryDerivation()}
+                    className="min-h-10 rounded-md border border-white/10 px-3 text-sm text-zinc-200 hover:bg-white/5 disabled:opacity-50"
+                  >
+                    {visibleProfile.derivation_error_code === 'runtime_retry_exhausted' ? t('Profile.retryProfileWork') : t('Profile.retryPreviewGeneration')}
+                  </button>
+                )}
               </div>
             ) : null}
             {visibleProfile.job ? (
@@ -999,10 +1029,11 @@ export function ProjectProfilePanel({ projectId }: { projectId: string }) {
                 />
               </div>
               <ProfileTemplates
-                disabled={saving || working}
+                disabled={saving || working || draft.length >= PROFILE_LIMITS.requirementRows}
                 onAddExample={(exampleId: ProfileExampleId) => {
                   const text = t(`Profile.localUx.examples.${exampleId}.text`);
                   setDraft((current) => {
+                    if (current.length >= PROFILE_LIMITS.requirementRows) return current;
                     const emptyIndex = current.findIndex((requirement) => requirement.text.trim() === '');
                     if (emptyIndex < 0) return [...current, { id: newProfileRequirementId(), text }];
                     return current.map((requirement, index) => index === emptyIndex ? { ...requirement, text } : requirement);

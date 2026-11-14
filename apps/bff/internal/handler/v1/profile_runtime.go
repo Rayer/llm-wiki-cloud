@@ -216,7 +216,9 @@ func (d *ProfileDispatcher) Dispatch(ctx context.Context, limit int) (processed 
 		if finishErr == nil {
 			commitOutcome := "committed"
 			attemptOutcome := "success"
-			if finishStatus != "complete" {
+			if finishStatus == "failed" {
+				attemptOutcome = "failure"
+			} else if finishStatus != "complete" {
 				commitOutcome, attemptOutcome = "no_op", "no_op"
 				if finishStatus == "retry_wait" {
 					commitOutcome = "not_committed"
@@ -311,6 +313,16 @@ func (d *ProfileDispatcher) finish(ctx context.Context, repo *firestoreProfileRe
 			return err
 		}
 		if w.Token != claimed.Token {
+			if _, committed := profilederive.CommittedLimitFailureCode(cause); committed && claimed.Kind == "derive" &&
+				w.UserID == claimed.UserID && w.ProjectID == claimed.ProjectID && w.Kind == claimed.Kind &&
+				w.Revision == claimed.Revision && w.ID == claimed.ID && w.Attempts == claimed.Attempts &&
+				!w.Pending && w.Status == "failed" && w.Token == "" && w.LeaseUntil.IsZero() {
+				// Profile failure, attempt history and queue settlement committed
+				// atomically in ProfileDerivationFailed; accept that exact terminal
+				// row after re-reading it, without attempting a second settlement.
+				settledStatus = "failed"
+				return nil
+			}
 			return errProfileRuntimeLease
 		}
 		w.LeaseUntil = time.Time{}
@@ -405,6 +417,14 @@ func (d *ProfileDispatcher) finish(ctx context.Context, repo *firestoreProfileRe
 				w.Pending = false
 				w.Status = "complete"
 			}
+		} else if _, committed := profilederive.CommittedLimitFailureCode(cause); w.Kind == "derive" && committed {
+			// The derivation executor already committed the specific rejected
+			// intent/history/Profile state. Settle only this leased queue row so
+			// it cannot clear that error on another attempt or replace it with
+			// runtime_retry_exhausted; an uncommitted/unknown failure has no marker.
+			w.Pending = false
+			w.Status = "failed"
+			w.Due = repo.now()
 		} else if errors.As(cause, &conflict) || errors.Is(cause, errProfileCandidateNotCurrent) || errors.Is(cause, errProfileProjectNotFound) {
 			if w.Kind == "compile" {
 				if err := clearSupersededProfileCompileRetry(ctx, tx, repo, w); err != nil {

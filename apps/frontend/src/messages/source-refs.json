@@ -703,6 +703,54 @@
     },
     "AccountSettings.projectKeysHint": {
       "kind": "literal"
+    },
+    "Profile.requirementCharacterCount": {
+      "kind": "literal",
+      "params": [
+        "count",
+        "max"
+      ]
+    },
+    "Profile.profileCharacterCount": {
+      "kind": "literal",
+      "params": [
+        "count",
+        "max"
+      ]
+    },
+    "Profile.requirementRowCount": {
+      "kind": "literal",
+      "params": [
+        "count",
+        "max"
+      ]
+    },
+    "Profile.limitExceeded": {
+      "kind": "literal",
+      "params": [
+        "actual",
+        "max"
+      ]
+    },
+    "Profile.requirementCountExceeded": {
+      "kind": "literal",
+      "params": [
+        "actual",
+        "max"
+      ]
+    },
+    "Profile.guidanceCharacterCount": {
+      "kind": "literal",
+      "params": [
+        "count",
+        "max"
+      ]
+    },
+    "Profile.errors.requestBodyTooLarge": {
+      "kind": "literal",
+      "params": [
+        "max"
+      ]
     }
   }
 }

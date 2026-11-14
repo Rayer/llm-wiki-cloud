@@ -23,6 +23,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/auth"
 	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"github.com/rayer/llm-wiki-bff/internal/profileartifacts"
+	"github.com/rayer/llm-wiki-bff/internal/profilelimits"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -31,7 +32,6 @@ const (
 	profileGuidanceSchemaVersion = profileartifacts.GuidanceSchema
 	profileGuidanceObjectPrefix  = profileartifacts.GuidancePathPrefix
 	profileGuidanceReadLimit     = profileartifacts.MaxArtifactBytes
-	syntoVaultSchemaCharLimit    = 1500
 )
 
 const defaultProfileVaultSchema = "# Vault Schema\n\n" +
@@ -336,7 +336,7 @@ func readPipelineIntentGuidance(ctx context.Context, client *firestore.Client, c
 		if err != nil {
 			return nil, true, fmt.Errorf("read pinned bootstrap Profile guidance artifact: %w", err)
 		}
-		envelope, err := profileartifacts.ValidateBootstrapGuidance(data, *ref)
+		envelope, err := validateBootstrapProfileGuidance(data, *ref)
 		if err != nil {
 			return nil, true, fmt.Errorf("validate pinned bootstrap Profile guidance artifact: %w", err)
 		}
@@ -374,7 +374,7 @@ func readConfirmedBootstrapProfileGuidance(ctx context.Context, state profileGui
 		InputDigest: bootstrap.InputDigest, ModelVersion: bootstrap.ModelVersion,
 		PromptVersion: bootstrap.PromptVersion, SchemaVersion: bootstrap.SchemaVersion,
 	}
-	envelope, err := profileartifacts.ValidateBootstrapGuidance(data, ref)
+	envelope, err := validateBootstrapProfileGuidance(data, ref)
 	if err != nil {
 		return nil, fmt.Errorf("validate confirmed Profile bootstrap guidance artifact: %w", err)
 	}
@@ -398,10 +398,35 @@ func profileRequirementsDigest(requirements []profileGuidanceRequirement) string
 }
 
 func validateProfileGuidanceArtifact(data []byte, ref profileGuidanceRef) (profileGuidanceEnvelope, error) {
-	return profileartifacts.ValidateGuidance(data, profileartifacts.DerivedRef{
+	envelope, err := profileartifacts.ValidateGuidance(data, profileartifacts.DerivedRef{
 		Revision: ref.Revision, InputDigest: ref.InputDigest, ModelVersion: ref.ModelVersion,
 		PromptVersion: ref.PromptVersion, SchemaVersion: ref.SchemaVersion,
 	})
+	if err != nil {
+		return envelope, err
+	}
+	if err := validateWorkerGuidanceLength(envelope.CompileGuidance); err != nil {
+		return envelope, err
+	}
+	return envelope, nil
+}
+
+func validateBootstrapProfileGuidance(data []byte, ref profileartifacts.BootstrapGuidanceRef) (profileartifacts.BootstrapGuidanceEnvelope, error) {
+	envelope, err := profileartifacts.ValidateBootstrapGuidance(data, ref)
+	if err != nil {
+		return envelope, err
+	}
+	if err := validateWorkerGuidanceLength(envelope.CompileGuidance); err != nil {
+		return envelope, err
+	}
+	return envelope, nil
+}
+
+func validateWorkerGuidanceLength(content string) error {
+	if violation := profilelimits.ValidateGuidance(content); violation != nil {
+		return fmt.Errorf("profile_guidance_over_limit: guidance has %d Unicode scalar values; the limit is %d, reduce Profile requirements before compiling", violation.Actual, violation.Max)
+	}
+	return nil
 }
 
 func isLowerSHA256(value string) bool {
@@ -412,7 +437,7 @@ func isLowerSHA256(value string) bool {
 	return err == nil
 }
 
-func profileGuidanceSchema(vault string, pin *profileGuidancePin) ([]byte, error) {
+func profileBaseSchema(vault string, pin *profileGuidancePin) ([]byte, error) {
 	if pin == nil || pin.Content == "" {
 		return nil, nil
 	}
@@ -422,31 +447,26 @@ func profileGuidanceSchema(vault string, pin *profileGuidancePin) ([]byte, error
 	if !utf8.ValidString(pin.Content) {
 		return nil, errors.New("active Profile guidance is not valid UTF-8")
 	}
+	if err := validateWorkerGuidanceLength(pin.Content); err != nil {
+		return nil, err
+	}
 	base := []byte(defaultProfileVaultSchema)
 	if existing, err := readRegularFileWithin(vault, "vault-schema.md"); err == nil {
 		base = existing
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("read existing vault-schema.md: %w", err)
 	}
-	separator := "\n\n"
-	if len(base) > 0 && base[len(base)-1] == '\n' {
-		separator = "\n"
-	}
-	materialized := string(base) + separator + "## Project Profile Compile Guidance\n" + pin.Content + "\n"
-	if utf8.RuneCountInString(materialized) > syntoVaultSchemaCharLimit {
-		return nil, fmt.Errorf("active Profile guidance plus vault schema exceeds Synto's 1500-character adapter budget; edit Profile guidance before compiling")
-	}
-	return []byte(materialized), nil
+	return base, nil
 }
 
-func profileGuidanceSchemaPath(vault string, pin *profileGuidancePin, configHome string) (string, error) {
-	data, err := profileGuidanceSchema(vault, pin)
+func profileBaseSchemaPath(vault string, pin *profileGuidancePin, configHome string) (string, error) {
+	data, err := profileBaseSchema(vault, pin)
 	if err != nil || data == nil {
 		return "", err
 	}
-	path := filepath.Join(configHome, "profile-vault-schema.md")
+	path := filepath.Join(configHome, "profile-base-schema.md")
 	if err := os.WriteFile(path, data, 0o600); err != nil {
-		return "", fmt.Errorf("write pinned Profile guidance schema: %w", err)
+		return "", fmt.Errorf("write pinned base schema: %w", err)
 	}
 	return path, nil
 }

@@ -1,5 +1,6 @@
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ApiError } from '@/lib/api';
 import type { ProfileBootstrapGuidance, ProfileRequirement, ProfileState } from '@/lib/api';
 
 if (!(React as { act?: (callback: () => unknown) => Promise<unknown> | unknown }).act) {
@@ -287,6 +288,68 @@ describe('LWC-211 Project Profile', () => {
     expect(mocks.getRecompileAllCapability).not.toHaveBeenCalled();
   });
 
+  it('shows Unicode-scalar counters, keeps legacy text editable, and blocks invalid saves', async () => {
+    const legacyText = '🙂'.repeat(2_001);
+    mocks.getProfile.mockResolvedValue({
+      ...emptyProfile('project-a', 2),
+      requirements: [{ id: 'legacy', text: legacyText }],
+    });
+    await renderProfile('project-a');
+
+    const input = await screen.findByRole('textbox', { name: 'Requirement 1' }) as HTMLTextAreaElement;
+    const save = screen.getByRole('button', { name: 'Save requirements' }) as HTMLButtonElement;
+    expect(input.value).toBe(legacyText);
+    expect(input.hasAttribute('maxLength')).toBe(false);
+    expect(screen.getByText('2001 / 2000 characters')).toBeDefined();
+    expect(screen.getByText('Total: 2001 / 10000 characters')).toBeDefined();
+    expect(save.disabled).toBe(true);
+
+    fireEvent.change(input, { target: { value: 'reduced legacy requirement' } });
+    expect(input.value).toBe('reduced legacy requirement');
+    expect((screen.getByRole('button', { name: 'Save requirements' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('blocks row and aggregate overflow and disables Add and template append at twenty rows', async () => {
+    mocks.getProfile.mockResolvedValue({
+      ...emptyProfile('project-a', 2),
+      requirements: Array.from({ length: 20 }, (_, index) => ({ id: `r${index}`, text: 'x' })),
+    });
+    await renderProfile('project-a');
+    await screen.findByRole('textbox', { name: 'Requirement 1' });
+    expect(screen.getByText('Requirements: 20 / 20')).toBeDefined();
+    expect((screen.getByRole('button', { name: 'Add requirement' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Add family example' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Save requirements' }) as HTMLButtonElement).disabled).toBe(true);
+
+    cleanup();
+    mocks.getProfile.mockResolvedValue({
+      ...emptyProfile('project-a', 3),
+      requirements: Array.from({ length: 6 }, (_, index) => ({ id: `sum${index}`, text: '界'.repeat(1_667) })),
+    });
+    await renderProfile('project-a');
+    await screen.findByRole('textbox', { name: 'Requirement 1' });
+    expect(screen.getByText('Total: 10002 / 10000 characters')).toBeDefined();
+    expect((screen.getByRole('button', { name: 'Save requirements' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('preserves a valid editor draft after the server returns structured limit details', async () => {
+    mocks.getProfile.mockResolvedValue({
+      ...emptyProfile('project-a', 1),
+      requirements: [{ id: 'req-1', text: 'saved requirement' }],
+    });
+    mocks.saveProfile.mockRejectedValue(new ApiError('Profile input exceeds a supported limit', 400, undefined, null, {
+      code: 'profile_limit_exceeded', violation: 'profile_text_total', max: 10_000, actual: 10_001,
+    }));
+    await renderProfile('project-a');
+
+    const input = await screen.findByRole('textbox', { name: 'Requirement 1' }) as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: 'my preserved edit' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save requirements' }));
+
+    expect(await screen.findByText('Limit 10000; current length 10001.')).toBeDefined();
+    expect((screen.getByRole('textbox', { name: 'Requirement 1' }) as HTMLTextAreaElement).value).toBe('my preserved edit');
+  });
+
   it('shows first-compile guidance as a read-only preview separate from an active Profile', async () => {
     const profile = {
       ...emptyProfile('project-a', 1),
@@ -328,7 +391,7 @@ describe('LWC-211 Project Profile', () => {
     ) === true)).toBeDefined();
     expect(screen.getByText(/req-1: Compile guidance and dictionary or query/)).toBeDefined();
     expect(screen.getByText('Applied to tagging and writing.')).toBeDefined();
-    expect(screen.getAllByText(/1,500-character adapter budget/).length).toBe(2);
+    expect(screen.getAllByText(/Profile guidance is injected separately/).length).toBe(2);
   });
 
   it('shows retained active guidance after saving requirements clears the prior preview', async () => {
@@ -348,7 +411,7 @@ describe('LWC-211 Project Profile', () => {
     expect(await screen.findByText('Active immutable instructions.')).toBeDefined();
     expect(screen.getByRole('heading', { name: 'Active writing guidance' })).toBeDefined();
     expect(screen.queryByRole('heading', { name: 'Candidate writing guidance' })).toBeNull();
-    expect(screen.getByText(/1,500-character adapter budget/)).toBeDefined();
+    expect(screen.getByText(/Generated guidance: \d+ \/ 6000 characters/)).toBeDefined();
   });
 
   it('keeps first-compile guidance read-only while a polling GET resolves', async () => {
@@ -581,6 +644,41 @@ describe('LWC-211 Project Profile', () => {
 
     await waitFor(() => expect(mocks.retryProfileDerivation).toHaveBeenCalledWith('project-a', 3));
     expect(await screen.findByText(/scheduled by the server/i)).toBeDefined();
+  });
+
+  it('keeps legacy over-limit requirements on the edit-and-save recovery action', async () => {
+    mocks.getProfile.mockResolvedValue({
+      ...emptyProfile('project-a', 3),
+      requirements: [{ id: 'req-1', text: 'historically oversized' }],
+      derivation_status: 'failed',
+      derivation_error_code: 'profile_requirements_over_limit',
+    });
+
+    await renderProfile('project-a', null);
+    expect(await screen.findByText(/Saved Profile requirements exceed the current size limits/i)).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Edit requirements' })).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Retry preview generation' })).toBeNull();
+  });
+
+  it('keeps oversized generated guidance on the explicit preview retry action', async () => {
+    mocks.getProfile.mockResolvedValue({
+      ...emptyProfile('project-a', 3),
+      requirements: [{ id: 'req-1', text: 'invoice source' }],
+      derivation_status: 'failed',
+      derivation_error_code: 'profile_guidance_too_long',
+    });
+    mocks.retryProfileDerivation.mockResolvedValue({
+      ...emptyProfile('project-a', 3),
+      requirements: [{ id: 'req-1', text: 'invoice source' }],
+      derivation_status: 'pending',
+      scheduled_for: '2026-09-25T03:05:00Z',
+    });
+
+    await renderProfile('project-a', null);
+    expect(await screen.findByText(/Generated Profile guidance exceeds the 6,000-character limit/i)).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Retry preview generation' })).toBeDefined();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry preview generation' }));
+    await waitFor(() => expect(mocks.retryProfileDerivation).toHaveBeenCalledWith('project-a', 3));
   });
 
   it('exposes exhausted Profile runtime work and retries it at the current revision', async () => {

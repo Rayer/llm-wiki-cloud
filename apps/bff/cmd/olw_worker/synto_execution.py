@@ -294,11 +294,12 @@ OpenAICompatClient._wrap_error = _wrap_provider_error(OpenAICompatClient._wrap_e
 from synto.anthropic_compat_client import AnthropicCompatClient
 AnthropicCompatClient._wrap_error = _wrap_provider_error(AnthropicCompatClient._wrap_error)
 
-# The worker supplies this temporary overlay only when it pinned nonempty
-# active Profile guidance. Synto's own CLI still owns the vault's normal schema.
-_profile_schema_path = os.environ.get("LWC_PROFILE_SCHEMA_PATH")
-if _profile_schema_path:
-    Config.schema_path = property(lambda self: Path(_profile_schema_path))
+# The worker supplies a private copy of the vault's base schema only when it
+# pinned nonempty Profile guidance. Profile text is injected below only into
+# compile_article prompts, outside Synto's schema-size budget.
+_base_schema_path = os.environ.get("LWC_BASE_SCHEMA_PATH")
+if _base_schema_path:
+    Config.schema_path = property(lambda self: Path(_base_schema_path))
 _profile_guidance = os.environ.get("LWC_PROFILE_GUIDANCE", "")
 if _profile_guidance:
     _request_structured = compile_pipeline.request_structured
