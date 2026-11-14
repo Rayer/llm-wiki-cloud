@@ -3,7 +3,7 @@
   "locale": "zh_tw",
   "migration_source_revision": "b8f167ef9fe3d7e3f6b53c860356eb1c2d87b9bf",
   "migration_catalog_revision": "3a0e6da83c9113423b9582f6fe3b7df6d15ab414fefc197641b1ef1c6bc25e9b",
-  "seed_map_sha256": "8f912cc295721246aabf8fd6b92d5e559fb7f438de80fa284d233a9601897e08",
+  "seed_map_sha256": "9dcc425ae17baad5fd84730e1501c8ccc9ad57537721454967f7b9f62d5e56cf",
   "entries": {
     "AccountSettings.accountTab": "9d4435cd4778e9d6f90f5797c2e556e1baaffe742ef1b78150f3b61931a4a8b2",
     "AccountSettings.bindingActive": "155e79378bcb9e2d77d0d0c40999baccc08c8b72d2bbfbf835a45ea757ef1177",
@@ -605,7 +605,7 @@
     "List.sourcesTitle": "2aea6c6f8f4fe24c477614f6158c7ea5066f29c6e5ae607963361db5077ecfcd",
     "List.titleAsc": "e31070f255467ad6d6e93a5db73369cfa3cad00d9fd7980d1b119ebf05138184",
     "List.titleDesc": "e722fbe8bece249acdbbbdddb81cfd1ef43026f8417d50e02dbb3b415de39fff",
-    "List.updatedDesc": "7ade166f26e21b9a51491adad917962a6a959f6e40e8b3d286814de7337faa70",
+    "List.updatedDesc": "9ac91be21da3c24ce1ce5a0be09bc648e8793a467b51ab55ec76e78066795edc",
     "List.withDate": "7589a9f16926ac65271758f702d9b37bf94e456835623785a4ad7534ec1677bb",
     "List.withoutDate": "c39dbf590a8faeae699f73bd746933719ee0628e1dc06326fe3984953f37031d",
     "Login.brand": "957cba666bebec20654c0c61d863d259762f00be63852677b28c11ce229accfc",
@@ -1578,7 +1578,12 @@
     "Status.stageSyntoRun": "56b823a54423d6bad61971edf5181394dfd530782ac265b493b77ecbfa5924c6",
     "Status.started": "710326bb912829c50fb91d7133e2d3975c6d8a6abae3585c4232d0152bc6249f",
     "Status.title": "18a8ffe5d86b40a3c43916aa9732af8351eda5ac1d6d9a97eef8c8b06ea552de",
-    "Status.userId": "64686fb5bf34f712038a9bc40c80410c189662c575a6a166d9c6ff9e8dbc69b5"
+    "Status.userId": "64686fb5bf34f712038a9bc40c80410c189662c575a6a166d9c6ff9e8dbc69b5",
+    "List.addedDesc": "4a1097bb5304d709d32f392c2a43e100d32fc4625b566e65ead445816573b9a3",
+    "List.contentUpdated": "a1e755eb8b7e26c9b49f24ad8f569c2153ca476426851f8cd914fe3253326a50",
+    "List.contentUpdatedMissing": "cfc1c7b1dd02aee671574595bd2cb352e2809d13cca53e3e63ded60d3cda6a4e",
+    "Source.addedAt": "4c779bfeb7686838179608d46f0a8d2f48149fd5528e349851114602d7e628b3",
+    "Source.addedAtMissing": "d5bef0103552647b9bda21bc499acddadb60678577ab83a3781a9aa0c92ddfb4"
   },
   "candidate_catalog_revision": "049a79128b92240ecce6118e76c0c41622ec00bb9c53edb59fde0d7cb9288de6"
 }

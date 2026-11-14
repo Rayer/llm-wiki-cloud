@@ -341,8 +341,189 @@ func TestSnapshotConceptsReadsPriorIDMap(t *testing.T) {
 
 func TestSnapshotConceptsMissingMapIsEmpty(t *testing.T) {
 	got, err := snapshotConcepts(t.TempDir())
-	if err != nil || len(got) != 0 {
+	if err != nil || len(got) != 1 || got[0].ConceptID != "" || got[0].Recency == nil || got[0].Recency.IDMapVerified {
 		t.Fatalf("snapshot=%#v err=%v", got, err)
+	}
+}
+
+func TestWorkerConceptWriterThreeGenerationRecencyEvidence(t *testing.T) {
+	const (
+		legacyA = "a3f7b2c01d9d"
+		legacyB = "b7e2c9a4d113"
+		entityA = "01JAZ5N7Y3K8M2Q4R6T9VWXAC0"
+		entityB = "01JAZ5N7Y3K8M2Q4R6T9VWXAC1"
+	)
+	seedGeneratedLegacy := func(root string) {
+		mustWriteFile(t, filepath.Join(root, "cache", "id_map.json"), []byte(`{"concept":{"`+legacyA+`":"alpha","`+legacyB+`":"beta"},"source":{},"source_meta":{},"redirects":{},"id_redirects":{}}`))
+		mustWriteFile(t, filepath.Join(root, "cache", "concepts.jsonl"), []byte(
+			`{"slug":"alpha","title":"Alpha","frontmatter":{"id":"`+legacyA+`"}}`+"\n"+
+				`{"slug":"beta","title":"Beta","frontmatter":{"id":"`+legacyB+`"}}`+"\n",
+		))
+		mustWriteFile(t, filepath.Join(root, "wiki", "alpha.md"), []byte("---\nid: "+legacyA+"\ntitle: Alpha\n---\nSee [[concepts/"+legacyB+"-beta#section|Visible B]]\n"))
+		mustWriteFile(t, filepath.Join(root, "wiki", "beta.md"), []byte("---\nid: "+legacyB+"\ntitle: Beta\n---\nBeta body\n"))
+	}
+	seedGeneratedEntity := func(root string, visibleEdit bool, explicitRedirects bool) {
+		redirects := `"id_redirects":{}`
+		if explicitRedirects {
+			redirects = `"id_redirects":{"` + legacyA + `":"` + entityA + `","` + legacyB + `":"` + entityB + `"}`
+		}
+		mustWriteFile(t, filepath.Join(root, "cache", "id_map.json"), []byte(`{"concept":{"`+entityA+`":"alpha","`+entityB+`":"beta"},"source":{},"source_meta":{},"redirects":{},`+redirects+`}`))
+		mustWriteFile(t, filepath.Join(root, "cache", "concepts.jsonl"), []byte(
+			`{"slug":"alpha","title":"Alpha","frontmatter":{"id":"`+entityA+`"}}`+"\n"+
+				`{"slug":"beta","title":"Beta","frontmatter":{"id":"`+entityB+`"}}`+"\n",
+		))
+		target := `[[concepts/` + entityB + `-beta#section|Visible B]]`
+		if visibleEdit {
+			target = `[[concepts/` + entityB + `-beta#section|Visible B edited]]`
+		}
+		mustWriteFile(t, filepath.Join(root, "wiki", "alpha.md"), []byte("---\nid: "+entityA+"\ntitle: Alpha\n---\nSee "+target+"\n"))
+		mustWriteFile(t, filepath.Join(root, "wiki", "beta.md"), []byte("---\nid: "+entityB+"\ntitle: Beta\n---\nBeta body\n"))
+		mustWriteFile(t, filepath.Join(root, ".synto", "INDEX.json"), []byte(syntoIndexFixtureWithEntities([]string{
+			"article-alpha:" + entityA + ":alpha",
+			"article-beta:" + entityB + ":beta",
+		}, nil)))
+	}
+	cacheValues := func(root string) map[string]map[string]any {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join(root, "cache", "concepts.jsonl"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]map[string]any{}
+		for _, line := range bytes.Split(data, []byte{'\n'}) {
+			if len(bytes.TrimSpace(line)) == 0 {
+				continue
+			}
+			var row map[string]any
+			if err := json.Unmarshal(line, &row); err != nil {
+				t.Fatal(err)
+			}
+			out[row["slug"].(string)] = row
+		}
+		return out
+	}
+
+	// Gen1 is the actual reconciliation writer persisting H1 and its first
+	// timestamp, starting from a verified absent prior map.
+	gen1 := t.TempDir()
+	priorAbsent, err := snapshotConcepts(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedGeneratedLegacy(gen1)
+	if err := reconcileWorkspaceConcepts(gen1, priorAbsent); err != nil {
+		t.Fatalf("gen1 reconcile: %v", err)
+	}
+	gen1Rows := cacheValues(gen1)
+	firstTime, ok := gen1Rows["alpha"]["content_updated_at"].(string)
+	if !ok || firstTime == "" || gen1Rows["alpha"]["content_sha256"] == nil {
+		t.Fatalf("gen1 writer did not persist H1/time: %#v", gen1Rows["alpha"])
+	}
+
+	// Gen2 with a technical redirect rewrite but a missing prior page is
+	// UNKNOWN. The real writer must reject before mutating candidate outputs.
+	gen2MissingPage := t.TempDir()
+	copyConceptCommit(t, gen1, gen2MissingPage, false)
+	priorMissingPage, err := snapshotConcepts(gen2MissingPage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedGeneratedEntity(gen2MissingPage, false, false)
+	before := snapshotRelevantVaultBytes(t, gen2MissingPage,
+		"cache/id_map.json", "cache/concepts.jsonl", "wiki/alpha.md", "wiki/beta.md", ".synto/INDEX.json")
+	if err := reconcileWorkspaceConcepts(gen2MissingPage, priorMissingPage); err == nil || !strings.Contains(err.Error(), "basis UNKNOWN") {
+		t.Fatalf("missing-page technical rewrite error=%v, want UNKNOWN basis rejection", err)
+	}
+	assertVaultBytesUnchanged(t, gen2MissingPage, before)
+
+	// A missing prior map is also UNKNOWN despite the exact ID embedded in the
+	// prior H1 row; generation 2 must not promote that row to a new Concept.
+	gen2MissingMap := t.TempDir()
+	copyConceptCommit(t, gen1, gen2MissingMap, true)
+	if err := os.Remove(filepath.Join(gen2MissingMap, "cache", "id_map.json")); err != nil {
+		t.Fatal(err)
+	}
+	priorMissingMap, err := snapshotConcepts(gen2MissingMap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedGeneratedEntity(gen2MissingMap, false, true)
+	before = snapshotRelevantVaultBytes(t, gen2MissingMap,
+		"cache/id_map.json", "cache/concepts.jsonl", "wiki/alpha.md", "wiki/beta.md", ".synto/INDEX.json")
+	if err := reconcileWorkspaceConcepts(gen2MissingMap, priorMissingMap); err == nil || !strings.Contains(err.Error(), "basis UNKNOWN") {
+		t.Fatalf("missing-map H1 rewrite error=%v, want UNKNOWN basis rejection", err)
+	}
+	assertVaultBytesUnchanged(t, gen2MissingMap, before)
+
+	// With both pinned pages present, gen2 is a proven redirect-only rewrite:
+	// the real writer preserves the known time, and gen3 no-op stays idempotent.
+	gen2 := t.TempDir()
+	copyConceptCommit(t, gen1, gen2, true)
+	priorGen2, err := snapshotConcepts(gen2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedGeneratedEntity(gen2, false, false)
+	if err := reconcileWorkspaceConcepts(gen2, priorGen2); err != nil {
+		t.Fatalf("gen2 full-witness reconcile: %v", err)
+	}
+	gen2Rows := cacheValues(gen2)
+	if got := gen2Rows["alpha"]["content_updated_at"]; got != firstTime {
+		t.Fatalf("gen2 technical rewrite changed known semantic time: got %v want %s", got, firstTime)
+	}
+
+	gen3 := t.TempDir()
+	copyConceptCommit(t, gen2, gen3, true)
+	priorGen3, err := snapshotConcepts(gen3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cacheBeforeGen3, err := os.ReadFile(filepath.Join(gen3, "cache", "concepts.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcileWorkspaceConcepts(gen3, priorGen3); err != nil {
+		t.Fatalf("gen3 no-op reconcile: %v", err)
+	}
+	cacheAfterGen3, err := os.ReadFile(filepath.Join(gen3, "cache", "concepts.jsonl"))
+	if err != nil || !bytes.Equal(cacheAfterGen3, cacheBeforeGen3) {
+		t.Fatalf("gen3 no-op changed semantic cache: before=%s after=%s err=%v", cacheBeforeGen3, cacheAfterGen3, err)
+	}
+
+	// Verified equal redirect maps prove SAME even without the prior page, so a
+	// real H1->H2 body/visible edit still receives a new time.
+	sameBasisMissingPage := t.TempDir()
+	copyConceptCommit(t, gen1, sameBasisMissingPage, false)
+	priorSameBasis, err := snapshotConcepts(sameBasisMissingPage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changedPage := []byte("---\nid: " + legacyA + "\ntitle: Alpha\n---\nVisible body edit\n")
+	mustWriteFile(t, filepath.Join(sameBasisMissingPage, "wiki", "alpha.md"), changedPage)
+	if err := reconcileWorkspaceConcepts(sameBasisMissingPage, priorSameBasis); err != nil {
+		t.Fatalf("same-basis missing-page H1->H2 reconcile: %v", err)
+	}
+	changedTime := cacheValues(sameBasisMissingPage)["alpha"]["content_updated_at"]
+	if changedTime == nil || changedTime == firstTime {
+		t.Fatalf("same-basis missing-page real edit time=%v, want new run time after %s", changedTime, firstTime)
+	}
+}
+
+func copyConceptCommit(t *testing.T, source, target string, includeAlpha bool) {
+	t.Helper()
+	for _, rel := range []string{"cache/id_map.json", "cache/concepts.jsonl", "wiki/beta.md"} {
+		data, err := os.ReadFile(filepath.Join(source, filepath.FromSlash(rel)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		mustWriteFile(t, filepath.Join(target, filepath.FromSlash(rel)), data)
+	}
+	if includeAlpha {
+		data, err := os.ReadFile(filepath.Join(source, "wiki", "alpha.md"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		mustWriteFile(t, filepath.Join(target, "wiki", "alpha.md"), data)
 	}
 }
 

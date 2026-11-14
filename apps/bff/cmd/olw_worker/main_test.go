@@ -1161,10 +1161,10 @@ func TestWorkspaceMaterializesAnnotatedSourceIdenticallyOnSequentialRuns(t *test
 		if err := runWorkerBatch(context.Background(), cfg, `[["run","--auto-approve"]]`); err != nil {
 			t.Fatal(err)
 		}
-		// In production OLW regenerates id_map with its source mappings. The fake
-		// executor above does not, so retain this mapped-source fixture between
-		// the two independent workspace runs.
-		mustWriteFile(t, filepath.Join(vault, "cache", "id_map.json"), []byte(`{"source_meta":{"s1":{"source_file":"raw/source.md"}}}`))
+		// In production OLW regenerates both its mapped Source and Concept rows.
+		// The fake executor above does not, so retain a valid mapped fixture
+		// between the two independent workspace runs.
+		mustWriteFile(t, filepath.Join(vault, "cache", "id_map.json"), []byte(`{"concept":{"01JAZ5N7Y3K8M2Q4R6T9VWXAC8":"new"},"source":{"s1":"source"},"source_meta":{"s1":{"slug":"source","source_file":"raw/source.md"}},"redirects":{},"id_redirects":{}}`))
 	}
 	if len(materialized) != 2 || materialized[0] != materialized[1] {
 		t.Fatalf("materialized runs differ: %#v", materialized)

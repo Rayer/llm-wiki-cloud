@@ -2,11 +2,13 @@ package profilederive
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/rayer/llm-wiki-bff/internal/profileartifacts"
@@ -16,11 +18,28 @@ import (
 // Fields mirror cache.Entry, serialized by wikiindex buildSyntoConceptsJSONL.
 // Keep frontmatter raw so derivation retains its exact provider context.
 type conceptRow struct {
-	Slug        string          `json:"slug"`
-	Title       string          `json:"title"`
-	Body        string          `json:"body"`
-	Sources     []string        `json:"sources"`
-	Frontmatter json.RawMessage `json:"frontmatter"`
+	Slug             string          `json:"slug"`
+	Title            string          `json:"title"`
+	Body             string          `json:"body"`
+	Sources          []string        `json:"sources"`
+	Frontmatter      json.RawMessage `json:"frontmatter"`
+	ContentSHA256    optionalText    `json:"content_sha256"`
+	ContentUpdatedAt optionalText    `json:"content_updated_at"`
+}
+
+// optionalText distinguishes an absent field from a present, non-string JSON
+// value. In particular, JSON null is not a valid optional string.
+type optionalText struct {
+	Value   string
+	Present bool
+}
+
+func (value *optionalText) UnmarshalJSON(data []byte) error {
+	value.Present = true
+	if len(data) < 2 || data[0] != '"' {
+		return errors.New("value must be a string")
+	}
+	return json.Unmarshal(data, &value.Value)
 }
 
 // ValidateConceptSnapshot parses one already-read manifest-listed JSONL file,
@@ -66,6 +85,26 @@ func ValidateConceptSnapshot(data []byte, idMap wikiindex.IDMap) ([]Concept, str
 		}
 		if row.Slug == "" || row.Slug != strings.TrimSpace(row.Slug) || row.Slug == "." || row.Slug == ".." || strings.ContainsAny(row.Slug, `/\\`) {
 			return nil, digest, fmt.Errorf("canonical concept row %d has an invalid slug", index+1)
+		}
+		if row.ContentSHA256.Present {
+			value := row.ContentSHA256.Value
+			if len(value) != 64 || strings.ToLower(value) != value {
+				return nil, digest, fmt.Errorf("canonical concept row %d has an invalid content hash", index+1)
+			}
+			if _, err := hex.DecodeString(value); err != nil {
+				return nil, digest, fmt.Errorf("canonical concept row %d has an invalid content hash", index+1)
+			}
+		}
+		if row.ContentUpdatedAt.Present {
+			value := row.ContentUpdatedAt.Value
+			parsed, err := time.Parse(time.RFC3339Nano, value)
+			if err != nil || parsed.Format(time.RFC3339Nano) != value {
+				return nil, digest, fmt.Errorf("canonical concept row %d has an invalid content update time", index+1)
+			}
+			_, offset := parsed.Zone()
+			if offset != 0 {
+				return nil, digest, fmt.Errorf("canonical concept row %d has a non-UTC content update time", index+1)
+			}
 		}
 		var frontmatter map[string]json.RawMessage
 		if len(row.Frontmatter) == 0 || string(row.Frontmatter) == "null" || json.Unmarshal(row.Frontmatter, &frontmatter) != nil {

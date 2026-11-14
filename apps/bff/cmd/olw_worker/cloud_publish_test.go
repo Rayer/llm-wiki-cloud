@@ -2658,7 +2658,7 @@ func TestCloudMaterializationReadsManifestDirectlyAndNeverListsGenerations(t *te
 	}
 	store := &noFullProjectListStore{objectStore: m, prefix: prefix}
 	workspace := t.TempDir()
-	if _, _, _, err := materializeCloudWorkspace(context.Background(), store, prefix, workspace, false); err != nil {
+	if _, _, _, _, err := materializeCloudWorkspace(context.Background(), store, prefix, workspace, false); err != nil {
 		t.Fatal(err)
 	}
 	if store.listedGeneration || store.readHistorical {
@@ -2683,7 +2683,7 @@ func TestCloudMaterializationPreservesValidatedSyntoIndexAndState(t *testing.T) 
 		t.Fatal(err)
 	}
 	materialized := t.TempDir()
-	if _, _, _, err := materializeCloudWorkspace(context.Background(), m, prefix, materialized, false); err != nil {
+	if _, _, _, _, err := materializeCloudWorkspace(context.Background(), m, prefix, materialized, false); err != nil {
 		t.Fatal(err)
 	}
 	gotIndex, err := os.ReadFile(filepath.Join(materialized, ".synto", "INDEX.json"))
@@ -2716,12 +2716,15 @@ func TestCloudMaterializationCleanRebuildSkipsPriorGenerationOutputs(t *testing.
 		t.Fatal(err)
 	}
 	materialized := t.TempDir()
-	_, manifestData, attrs, err := materializeCloudWorkspace(context.Background(), m, prefix, materialized, true)
+	_, manifestData, attrs, priorRecency, err := materializeCloudWorkspace(context.Background(), m, prefix, materialized, true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(manifestData) == 0 || attrs.Generation <= 0 {
 		t.Fatalf("clean rebuild must still load current manifest for CAS: data=%d gen=%d", len(manifestData), attrs.Generation)
+	}
+	if priorRecency == nil {
+		t.Fatal("clean rebuild must retain a manifest-pinned prior recency snapshot")
 	}
 	if _, err := os.Stat(filepath.Join(materialized, ".synto", "state.db")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("clean rebuild installed prior .synto/state.db: %v", err)
@@ -2731,6 +2734,171 @@ func TestCloudMaterializationCleanRebuildSkipsPriorGenerationOutputs(t *testing.
 	}
 	if _, err := os.Stat(filepath.Join(materialized, "raw", "source.md")); err != nil {
 		t.Fatalf("clean rebuild must keep raw source: %v", err)
+	}
+}
+
+func TestCloudCleanRebuildReadsManifestPinnedConceptRecencyWithoutInstallingOutputs(t *testing.T) {
+	workspace := t.TempDir()
+	writeCloudRequiredOutputs(t, workspace)
+	const oldID = "a3f7b2c01d9d"
+	const newID = "b7e2c9a4d113"
+	const updatedAt = "2026-10-01T02:03:04Z"
+	oldHash := strings.Repeat("a", 64)
+	manifestMap := `{"concept":{"` + oldID + `":"old","` + newID + `":"new"},"concept_entity_id":{},"source":{},"source_meta":{},"redirects":{},"id_redirects":{}}`
+	rows := `{"slug":"old","title":"Old","frontmatter":{"id":"` + oldID + `"},"content_sha256":"` + oldHash + `","content_updated_at":"` + updatedAt + `"}` + "\n" +
+		`{"slug":"new","title":"New","frontmatter":{"id":"` + newID + `"}}` + "\n"
+	mustWriteFile(t, filepath.Join(workspace, "cache", "id_map.json"), []byte(manifestMap))
+	mustWriteFile(t, filepath.Join(workspace, "cache", "concepts.jsonl"), []byte(rows))
+	mustWriteFile(t, filepath.Join(workspace, "wiki", "old.md"), []byte("---\nid: "+oldID+"\n---\nOld content\n"))
+	mustWriteFile(t, filepath.Join(workspace, "wiki", "new.md"), []byte("---\nid: "+newID+"\n---\nNew content\n"))
+	m := newMemoryObjects()
+	prefix := "users/user/projects/project/"
+	if _, _, err := publishCloudGeneration(context.Background(), m, prefix, workspace, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	cleanWorkspace := t.TempDir()
+	_, manifestData, _, prior, err := materializeCloudWorkspace(context.Background(), m, prefix, cleanWorkspace, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prior == nil || !prior.IDMapVerified || prior.IDMap.Concept[oldID] != "old" || !bytes.Contains(prior.ActiveJSONL, []byte(oldHash)) || !bytes.Equal(prior.ActivePages[oldID], []byte("---\nid: "+oldID+"\n---\nOld content\n")) {
+		t.Fatalf("manifest-pinned prior snapshot lost recency evidence: %+v", prior)
+	}
+	if _, err := os.Stat(filepath.Join(cleanWorkspace, "wiki", "old.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("clean rebuild installed prior Concept page into build workspace: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(cleanWorkspace, "cache", "concepts.jsonl")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("clean rebuild installed prior Concept cache into build workspace: %v", err)
+	}
+	priorConcepts, err := snapshotConceptsWithRecency(cleanWorkspace, nil, prior)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(priorConcepts) != 2 || priorConcepts[0].ConceptID != oldID || !bytes.Equal(priorConcepts[0].Page, prior.ActivePages[oldID]) || !bytes.Contains(priorConcepts[0].CacheRow, []byte(updatedAt)) {
+		t.Fatalf("clean rebuild prior identity/recency snapshots = %#v", priorConcepts)
+	}
+	manifest, err := generation.Decode(manifestData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cacheFile, ok := manifest.File("cache/concepts.jsonl")
+	if !ok {
+		t.Fatal("fixture manifest omitted declared Concepts cache")
+	}
+	if err := m.Delete(context.Background(), prefix+manifest.ObjectPath(cacheFile), cacheFile.Generation); err != nil {
+		t.Fatal(err)
+	}
+	brokenWorkspace := t.TempDir()
+	if _, _, _, _, err := materializeCloudWorkspace(context.Background(), m, prefix, brokenWorkspace, true); err == nil || !strings.Contains(err.Error(), "cache/concepts.jsonl") {
+		t.Fatalf("declared missing Concepts object error=%v, want fail-closed read", err)
+	}
+	if _, err := os.Stat(filepath.Join(brokenWorkspace, "wiki", "old.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("broken clean rebuild materialized prior Concept page: %v", err)
+	}
+}
+
+func TestCloudCleanRebuildUnknownConceptBasisLeavesPointerAndCommittedCachesUntouched(t *testing.T) {
+	oldExec := execOLW
+	t.Cleanup(func() { execOLW = oldExec })
+	const (
+		legacyA = "a3f7b2c01d9d"
+		legacyB = "b7e2c9a4d113"
+		entityA = "01JAZ5N7Y3K8M2Q4R6T9VWXAC0"
+		entityB = "01JAZ5N7Y3K8M2Q4R6T9VWXAC1"
+	)
+	store := newMemoryObjects()
+	prefix := "users/user/projects/project/"
+	seedCloudSource(t, store, prefix, "raw-source", "", publisherReceipt("s1", "raw/source.md", []byte("raw-source"), ""))
+
+	priorWorkspace := t.TempDir()
+	writeCloudRequiredOutputs(t, priorWorkspace)
+	mustWriteFile(t, filepath.Join(priorWorkspace, "cache", "id_map.json"), []byte(`{"concept":{"`+legacyA+`":"alpha","`+legacyB+`":"beta"},"source":{},"source_meta":{},"redirects":{},"id_redirects":{}}`))
+	mustWriteFile(t, filepath.Join(priorWorkspace, "cache", "concepts.jsonl"), []byte(
+		`{"slug":"alpha","title":"Alpha","frontmatter":{"id":"`+legacyA+`"}}`+"\n"+
+			`{"slug":"beta","title":"Beta","frontmatter":{"id":"`+legacyB+`"}}`+"\n",
+	))
+	alphaPrior := []byte("---\nid: " + legacyA + "\ntitle: Alpha\n---\nSee [[concepts/" + legacyB + "-beta#section|Visible B]]\n")
+	mustWriteFile(t, filepath.Join(priorWorkspace, "wiki", "alpha.md"), alphaPrior)
+	mustWriteFile(t, filepath.Join(priorWorkspace, "wiki", "beta.md"), []byte("---\nid: "+legacyB+"\ntitle: Beta\n---\nBeta body\n"))
+	priorIndex, err := os.ReadFile(filepath.Join(priorWorkspace, ".synto", "INDEX.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	priorSyntoState, err := os.ReadFile(filepath.Join(priorWorkspace, ".synto", "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []string{"wiki/old.md", "wiki/new.md", ".synto/INDEX.json", ".synto/state.db"} {
+		if err := os.Remove(filepath.Join(priorWorkspace, filepath.FromSlash(rel))); err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+	}
+	absentPrior, err := snapshotConcepts(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcileWorkspaceConcepts(priorWorkspace, absentPrior); err != nil {
+		t.Fatalf("write prior generation H1: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(priorWorkspace, ".synto", "INDEX.json"), priorIndex)
+	mustWriteFile(t, filepath.Join(priorWorkspace, ".synto", "state.db"), priorSyntoState)
+	if err := os.Remove(filepath.Join(priorWorkspace, "wiki", "alpha.md")); err != nil {
+		t.Fatal(err)
+	}
+	priorManifest, _, err := publishCloudGeneration(context.Background(), store, prefix, priorWorkspace, nil)
+	if err != nil {
+		t.Fatalf("publish prior fixture generation: %v", err)
+	}
+	pointerBefore, _, err := store.Read(context.Background(), prefix+generation.ManifestPath, 0, generation.MaxManifestBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	priorCache, _ := cloudGenerationFile(t, store, prefix, priorManifest, "cache/concepts.jsonl")
+	if !bytes.Contains(priorCache, []byte("content_sha256")) {
+		t.Fatalf("prior H1 cache=%s", priorCache)
+	}
+	generationsBefore, err := store.List(context.Background(), prefix+generation.Prefix, generation.MaxFiles)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	execOLW = func(_ context.Context, vault string, _ []string, _ []string, _, _ io.Writer) error {
+		writeCloudRequiredOutputs(t, vault)
+		mustWriteFile(t, filepath.Join(vault, "cache", "id_map.json"), []byte(`{"concept":{"`+entityA+`":"alpha","`+entityB+`":"beta"},"source":{},"source_meta":{},"redirects":{},"id_redirects":{}}`))
+		mustWriteFile(t, filepath.Join(vault, "cache", "concepts.jsonl"), []byte(
+			`{"slug":"alpha","title":"Alpha","frontmatter":{"id":"`+entityA+`"}}`+"\n"+
+				`{"slug":"beta","title":"Beta","frontmatter":{"id":"`+entityB+`"}}`+"\n",
+		))
+		mustWriteFile(t, filepath.Join(vault, "wiki", "alpha.md"), []byte("---\nid: "+entityA+"\ntitle: Alpha\n---\nSee [[concepts/"+entityB+"-beta#section|Visible B]]\n"))
+		mustWriteFile(t, filepath.Join(vault, "wiki", "beta.md"), []byte("---\nid: "+entityB+"\ntitle: Beta\n---\nBeta body\n"))
+		for _, rel := range []string{"wiki/old.md", "wiki/new.md"} {
+			if err := os.Remove(filepath.Join(vault, filepath.FromSlash(rel))); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+		}
+		mustWriteFile(t, filepath.Join(vault, ".synto", "INDEX.json"), []byte(syntoIndexFixtureWithEntities([]string{
+			"article-alpha:" + entityA + ":alpha",
+			"article-beta:" + entityB + ":beta",
+		}, nil)))
+		return nil
+	}
+	cfg := cloudCfgFor("user", "project", "recency-unknown")
+	cfg.CleanRebuild = true
+	if err := runCloudWorkerBatch(context.Background(), cfg, [][]string{{"run", "--auto-approve"}}, store); err == nil || !errors.Is(err, errCloudPipelinePublish) {
+		t.Fatalf("clean rebuild with missing redirect witness error=%v, want pre-publication rejection", err)
+	}
+	pointerAfter, _, err := store.Read(context.Background(), prefix+generation.ManifestPath, 0, generation.MaxManifestBytes)
+	if err != nil || !bytes.Equal(pointerAfter, pointerBefore) {
+		t.Fatalf("current pointer changed after UNKNOWN basis: err=%v", err)
+	}
+	cacheAfter, _ := cloudGenerationFile(t, store, prefix, priorManifest, "cache/concepts.jsonl")
+	if !bytes.Equal(cacheAfter, priorCache) {
+		t.Fatalf("committed H1 cache changed")
+	}
+	generationsAfter, err := store.List(context.Background(), prefix+generation.Prefix, generation.MaxFiles)
+	if err != nil || len(generationsAfter) != len(generationsBefore) {
+		t.Fatalf("UNKNOWN basis published immutable generation: before=%d after=%d err=%v", len(generationsBefore), len(generationsAfter), err)
 	}
 }
 
@@ -4130,7 +4298,7 @@ func TestCommittedLocalExecutionSurvivesReceiptWriteFailureAndLaterCommitIsNotMi
 	}
 
 	secondWorkspace := t.TempDir()
-	snapshots, oldData, oldAttrs, err := materializeCloudWorkspace(context.Background(), base, prefix, secondWorkspace, false)
+	snapshots, oldData, oldAttrs, _, err := materializeCloudWorkspace(context.Background(), base, prefix, secondWorkspace, false)
 	if err != nil {
 		t.Fatalf("materialize second execution inputs: %v", err)
 	}

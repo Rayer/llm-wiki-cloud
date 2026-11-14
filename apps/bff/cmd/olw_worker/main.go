@@ -1819,10 +1819,10 @@ func runCacheIndexStage(ctx context.Context, vault string, warn io.Writer) error
 		if err := enforceActiveEntityCoverage(plan); err != nil {
 			return fmt.Errorf("postprocess Synto index: %w", err)
 		}
-		if _, err := wikiindex.RebuildWithSyntoIdentity(ctx, store, plan); err != nil {
+		if _, err := wikiindex.RebuildWithSyntoIdentityWithoutRecency(ctx, store, plan); err != nil {
 			return fmt.Errorf("postprocess Synto index: %w", err)
 		}
-	} else if _, err := wikiindex.Rebuild(ctx, store); err != nil {
+	} else if _, err := wikiindex.RebuildWithoutRecency(ctx, store); err != nil {
 		return fmt.Errorf("postprocess: %w", err)
 	}
 	if err := ensureDormantConceptCache(vault); err != nil {

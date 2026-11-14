@@ -45,6 +45,27 @@ func TestCalculateUnionAndPrecedence(t *testing.T) {
 	}
 }
 
+func TestCalculateAddsRawCreationTimeOnlyForExactMappedPath(t *testing.T) {
+	created := time.Date(2026, 11, 14, 1, 2, 3, 456, time.FixedZone("source", 8*60*60))
+	raw := storage.RawFile{Name: "nested/one.md", Path: "raw/nested/one.md", Created: created, Updated: created.Add(24 * time.Hour)}
+	pages, _ := Calculate(Input{
+		Sources:  []storage.WikiPage{{ID: "mapped", RawPath: raw.Path}, {ID: "not-exact", RawPath: "nested/one.md"}},
+		RawFiles: []storage.RawFile{raw, {Name: "new.md", Path: "raw/new.md", Created: created}},
+	})
+	if len(pages) != 3 {
+		t.Fatalf("len(pages)=%d pages=%+v", len(pages), pages)
+	}
+	if pages[0].AddedAt == nil || *pages[0].AddedAt != created.UTC().Format(time.RFC3339Nano) {
+		t.Fatalf("mapped added_at=%v, want raw creation time", pages[0].AddedAt)
+	}
+	if pages[1].AddedAt != nil {
+		t.Fatalf("non-exact raw join got added_at=%v", pages[1].AddedAt)
+	}
+	if pages[2].AddedAt == nil || *pages[2].AddedAt != created.UTC().Format(time.RFC3339Nano) {
+		t.Fatalf("raw-only added_at=%v, want raw creation time", pages[2].AddedAt)
+	}
+}
+
 func TestInvalidReceiptUsesLegacyStatus(t *testing.T) {
 	raw := storage.RawFile{Name: "one.md", Path: "raw/one.md", SHA256: "raw"}
 	base := storage.WikiPage{ID: "id", RawPath: raw.Path}
