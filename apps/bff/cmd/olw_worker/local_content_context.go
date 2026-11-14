@@ -333,8 +333,12 @@ func runLocalContentContext(ctx context.Context, cfg workerConfig, vault string)
 	repository := contentcontext.NewFirestoreRepository(client)
 	authority := newLocalContentContextAuthority(cfg, vault)
 	claim, err := repository.Claim(ctx, cfg.UserID, cfg.ProjectID, authority)
-	if err != nil || claim == nil {
+	if err != nil {
 		return err
+	}
+	if claim == nil {
+		runStoredPurposeComparison(ctx, cfg, repository, authority)
+		return nil
 	}
 	inputCtx, cancelInput := context.WithTimeout(ctx, contentContextInputTimeout)
 	input, metadata, inputErr := loadLocalContentContextSummaryInput(inputCtx, cfg, vault, authority, *claim)

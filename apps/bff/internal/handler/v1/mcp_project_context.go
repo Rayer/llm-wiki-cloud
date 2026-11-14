@@ -12,22 +12,26 @@ import (
 )
 
 type mcpProjectContext struct {
-	ProjectID             string                   `json:"project_id"`
-	ProjectName           string                   `json:"project_name"`
-	Description           string                   `json:"description"`
-	DescriptionRevision   int64                    `json:"description_revision"`
-	ContentContextStatus  string                   `json:"content_context_status"`
-	CurrentGeneration     *string                  `json:"current_generation"`
-	CurrentConceptsSHA256 *string                  `json:"current_concepts_sha256"`
-	Summary               *contentcontext.LastGood `json:"published_content_summary"`
-	SummaryStale          bool                     `json:"summary_stale"`
-	SummaryErrorClass     string                   `json:"summary_error_class,omitempty"`
+	ProjectID               string                                 `json:"project_id"`
+	ProjectName             string                                 `json:"project_name"`
+	Description             string                                 `json:"description"`
+	DescriptionRevision     int64                                  `json:"description_revision"`
+	DeclaredPurposeStatus   string                                 `json:"declared_purpose_context_status"`
+	DeclaredPurpose         *contentcontext.DeclaredPurposeContext `json:"declared_purpose_context"`
+	PurposeComparisonStatus string                                 `json:"purpose_comparison_status"`
+	PurposeComparison       *contentcontext.PurposeComparison      `json:"purpose_comparison"`
+	ContentContextStatus    string                                 `json:"content_context_status"`
+	CurrentGeneration       *string                                `json:"current_generation"`
+	CurrentConceptsSHA256   *string                                `json:"current_concepts_sha256"`
+	Summary                 *contentcontext.LastGood               `json:"published_content_summary"`
+	SummaryStale            bool                                   `json:"summary_stale"`
+	SummaryErrorClass       string                                 `json:"summary_error_class,omitempty"`
 }
 
 func (h *Handler) authenticatedMCPProjectContext(ctx context.Context, identity mcpProjectKeyIdentity) mcpProjectContext {
 	result := mcpProjectContext{
 		ProjectID: identity.projectID, ProjectName: identity.projectID,
-		ContentContextStatus: "unavailable",
+		DeclaredPurposeStatus: "unavailable", PurposeComparisonStatus: "unavailable", ContentContextStatus: "unavailable",
 	}
 	if h.firestore == nil || h.firestore.Raw() == nil || identity.userID == "" || identity.projectID == "" {
 		return result
@@ -51,9 +55,11 @@ func (h *Handler) authenticatedMCPProjectContext(ctx context.Context, identity m
 	}
 	if missing {
 		result.ContentContextStatus = "missing"
+		result.DeclaredPurposeStatus = "missing"
 		return result
 	}
 	response := contentContextResponseForState(identity.projectID, identitySnapshot, nil)
+	var state *contentcontext.StateDocument
 	stateRef := projectRef.Collection("content_context").Doc("state")
 	stateSnapshot, err := stateRef.Get(ctx)
 	if err != nil {
@@ -61,11 +67,34 @@ func (h *Handler) authenticatedMCPProjectContext(ctx context.Context, identity m
 			return result
 		}
 	} else {
-		state, decodeErr := decodeStoredContentContextState(stateSnapshot.Data())
+		decoded, decodeErr := decodeStoredContentContextState(stateSnapshot.Data())
 		if decodeErr != nil {
 			return result
 		}
-		response = contentContextResponseForState(identity.projectID, identitySnapshot, &state)
+		state = &decoded
+		response = contentContextResponseForState(identity.projectID, identitySnapshot, state)
+	}
+	readback, err := h.readPurposeReadback(ctx, identity.userID, identity.projectID, project.DescriptionRevision, identitySnapshot, state)
+	if err != nil {
+		return result
+	}
+	result.DeclaredPurposeStatus = readback.DeclarationStatus
+	result.DeclaredPurpose = readback.Declaration
+	result.PurposeComparisonStatus = readback.ComparisonStatus
+	result.PurposeComparison = readback.Comparison
+	verifiedIdentity, nowMissing, verifyErr := currentContentContextPublication(ctx, h.store, identity.userID, identity.projectID)
+	verifiedProjectSnapshot, projectErr := projectRef.Get(ctx)
+	verifiedDescriptionRevision, verifiedProjectID, verifiedOwner, validVerifiedProject := int64(-1), "", "", false
+	if projectErr == nil {
+		verifiedProject, owner, valid := projectResponseFromFirestoreDoc(projectRef.ID, verifiedProjectSnapshot.Data())
+		verifiedDescriptionRevision, verifiedProjectID, verifiedOwner, validVerifiedProject = verifiedProject.DescriptionRevision, verifiedProject.ID, owner, valid
+	}
+	if verifyErr != nil || nowMissing || verifiedIdentity.GenerationID != identitySnapshot.GenerationID ||
+		contentcontext.NormalizeDigest(verifiedIdentity.ConceptsDigest) != contentcontext.NormalizeDigest(identitySnapshot.ConceptsDigest) ||
+		projectErr != nil || !validVerifiedProject || verifiedOwner != identity.userID || verifiedProjectID != identity.projectID || verifiedDescriptionRevision != project.DescriptionRevision {
+		result.DeclaredPurposeStatus = "stale"
+		result.PurposeComparisonStatus = "stale"
+		response.Stale = true
 	}
 	result.ContentContextStatus = string(response.Status)
 	result.CurrentGeneration = response.CurrentGeneration
@@ -97,23 +126,47 @@ func appendMCPInstruction(existing, addition string) string {
 func appendMCPProjectContextHint(description string, projectContext mcpProjectContext) string {
 	name, nameTruncated := truncateMCPCodepoints(projectContext.ProjectName, 300)
 	manualDescription, descriptionTruncated := truncateMCPCodepoints(projectContext.Description, 300)
+	declaredPurpose := ""
+	declaredPurposeGeneration := ""
+	declaredPurposeRevision := int64(0)
+	if projectContext.DeclaredPurpose != nil {
+		declaredPurpose, _ = truncateMCPCodepoints(projectContext.DeclaredPurpose.Description, 300)
+		declaredPurposeGeneration = projectContext.DeclaredPurpose.PublicationGeneration
+		declaredPurposeRevision = projectContext.DeclaredPurpose.DescriptionRevision
+	}
+	purposeBasis := ""
+	purposeVerdict := ""
+	if projectContext.PurposeComparison != nil {
+		purposeBasis, _ = truncateMCPCodepoints(projectContext.PurposeComparison.Basis, 200)
+		purposeVerdict = projectContext.PurposeComparison.Verdict
+	}
 	var publishedSummary string
 	var summaryTruncated bool
 	if projectContext.Summary != nil {
 		publishedSummary, summaryTruncated = truncateMCPCodepoints(projectContext.Summary.Text, 300)
 	}
 	shortContext := struct {
-		ProjectName          string `json:"project_name"`
-		ProjectNameTruncated bool   `json:"project_name_truncated"`
-		Description          string `json:"description"`
-		DescriptionTruncated bool   `json:"description_truncated"`
-		PublishedSummary     string `json:"published_content_summary"`
-		SummaryTruncated     bool   `json:"summary_truncated"`
-		SummaryStale         bool   `json:"summary_stale"`
-		ContentContextStatus string `json:"content_context_status"`
+		ProjectName               string `json:"project_name"`
+		ProjectNameTruncated      bool   `json:"project_name_truncated"`
+		Description               string `json:"description"`
+		DescriptionTruncated      bool   `json:"description_truncated"`
+		DeclaredPurpose           string `json:"declared_purpose_context"`
+		DeclaredPurposeStatus     string `json:"declared_purpose_context_status"`
+		DeclaredPurposeRevision   int64  `json:"declared_purpose_description_revision"`
+		DeclaredPurposeGeneration string `json:"declared_purpose_publication_generation"`
+		PurposeComparisonStatus   string `json:"purpose_comparison_status"`
+		PurposeVerdict            string `json:"purpose_verdict"`
+		PurposeBasis              string `json:"purpose_basis"`
+		PublishedSummary          string `json:"published_content_summary"`
+		SummaryTruncated          bool   `json:"summary_truncated"`
+		SummaryStale              bool   `json:"summary_stale"`
+		ContentContextStatus      string `json:"content_context_status"`
 	}{
 		ProjectName: name, ProjectNameTruncated: nameTruncated,
 		Description: manualDescription, DescriptionTruncated: descriptionTruncated,
+		DeclaredPurpose: declaredPurpose, DeclaredPurposeStatus: projectContext.DeclaredPurposeStatus,
+		DeclaredPurposeRevision: declaredPurposeRevision, DeclaredPurposeGeneration: declaredPurposeGeneration,
+		PurposeComparisonStatus: projectContext.PurposeComparisonStatus, PurposeVerdict: purposeVerdict, PurposeBasis: purposeBasis,
 		PublishedSummary: publishedSummary, SummaryTruncated: summaryTruncated,
 		SummaryStale: projectContext.SummaryStale, ContentContextStatus: projectContext.ContentContextStatus,
 	}

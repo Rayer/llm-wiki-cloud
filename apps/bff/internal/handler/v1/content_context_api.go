@@ -18,17 +18,22 @@ import (
 )
 
 type contentContextResponse struct {
-	ProjectID             string                   `json:"project_id"`
-	Status                contentcontext.Status    `json:"status"`
-	CurrentGeneration     *string                  `json:"current_generation"`
-	CurrentConceptsSHA256 *string                  `json:"current_concepts_sha256"`
-	Summary               *contentcontext.LastGood `json:"summary"`
-	Stale                 bool                     `json:"stale"`
-	ErrorClass            string                   `json:"error_class,omitempty"`
+	ProjectID                    string                                 `json:"project_id"`
+	Status                       contentcontext.Status                  `json:"status"`
+	CurrentGeneration            *string                                `json:"current_generation"`
+	CurrentConceptsSHA256        *string                                `json:"current_concepts_sha256"`
+	Summary                      *contentcontext.LastGood               `json:"summary"`
+	Stale                        bool                                   `json:"stale"`
+	ErrorClass                   string                                 `json:"error_class,omitempty"`
+	DeclaredPurposeContextStatus string                                 `json:"declared_purpose_context_status"`
+	DeclaredPurposeContext       *contentcontext.DeclaredPurposeContext `json:"declared_purpose_context"`
+	PurposeComparisonStatus      string                                 `json:"purpose_comparison_status"`
+	PurposeComparison            *contentcontext.PurposeComparison      `json:"purpose_comparison"`
 }
 
 func contentContextResponseForState(projectID string, identity storage.QueryGenerationIdentity, state *contentcontext.StateDocument) contentContextResponse {
-	response := contentContextResponse{ProjectID: projectID, Status: contentcontext.StatusMissing}
+	response := contentContextResponse{ProjectID: projectID, Status: contentcontext.StatusMissing,
+		DeclaredPurposeContextStatus: "missing", PurposeComparisonStatus: "unavailable"}
 	if identity.GenerationID == "" {
 		return response
 	}
@@ -109,7 +114,92 @@ func (h *Handler) GetContentContext(c *gin.Context) {
 		writeContentContextUnavailable(c)
 		return
 	}
-	c.JSON(http.StatusOK, contentContextResponseForState(projectID, identity, &state))
+	response := contentContextResponseForState(projectID, identity, &state)
+	projectSnapshot, err := scopedfirestore.Collection(h.firestore.Raw(), "projects").Doc(projectDocID(userID, projectID)).Get(c.Request.Context())
+	if err != nil {
+		writeContentContextUnavailable(c)
+		return
+	}
+	project, ownerID, validProject := projectResponseFromFirestoreDoc(projectSnapshot.Ref.ID, projectSnapshot.Data())
+	if !validProject || ownerID != userID || project.ID != projectID {
+		writeContentContextUnavailable(c)
+		return
+	}
+	readback, err := h.readPurposeReadback(c.Request.Context(), userID, projectID, project.DescriptionRevision, identity, &state)
+	if err != nil {
+		writeContentContextUnavailable(c)
+		return
+	}
+	response.DeclaredPurposeContextStatus = readback.DeclarationStatus
+	response.DeclaredPurposeContext = readback.Declaration
+	response.PurposeComparisonStatus = readback.ComparisonStatus
+	response.PurposeComparison = readback.Comparison
+	verifiedIdentity, stillPublished, identityErr := currentContentContextPublication(c.Request.Context(), h.store, userID, projectID)
+	verifiedProjectSnapshot, projectErr := scopedfirestore.Collection(h.firestore.Raw(), "projects").Doc(projectDocID(userID, projectID)).Get(c.Request.Context())
+	verifiedDescriptionRevision, verifiedProjectID, verifiedOwner, validVerifiedProject := int64(-1), "", "", false
+	if projectErr == nil {
+		verifiedProject, owner, valid := projectResponseFromFirestoreDoc(projectDocID(userID, projectID), verifiedProjectSnapshot.Data())
+		verifiedDescriptionRevision, verifiedProjectID, verifiedOwner, validVerifiedProject = verifiedProject.DescriptionRevision, verifiedProject.ID, owner, valid
+	}
+	if identityErr != nil || !stillPublished || verifiedIdentity.GenerationID != identity.GenerationID ||
+		contentcontext.NormalizeDigest(verifiedIdentity.ConceptsDigest) != contentcontext.NormalizeDigest(identity.ConceptsDigest) ||
+		projectErr != nil || !validVerifiedProject || verifiedOwner != userID || verifiedProjectID != projectID || verifiedDescriptionRevision != project.DescriptionRevision {
+		response.Stale = true
+		response.DeclaredPurposeContextStatus = "stale"
+		response.PurposeComparisonStatus = "stale"
+	}
+	c.JSON(http.StatusOK, response)
+}
+
+type purposeReadback struct {
+	DeclarationStatus string
+	Declaration       *contentcontext.DeclaredPurposeContext
+	ComparisonStatus  string
+	Comparison        *contentcontext.PurposeComparison
+}
+
+func (h *Handler) readPurposeReadback(ctx context.Context, userID, projectID string, currentDescriptionRevision int64, identity storage.QueryGenerationIdentity, state *contentcontext.StateDocument) (purposeReadback, error) {
+	result := purposeReadback{DeclarationStatus: "missing", ComparisonStatus: "unavailable"}
+	if h.firestore == nil || h.firestore.Raw() == nil {
+		return result, errors.New("purpose store unavailable")
+	}
+	repository := contentcontext.NewFirestoreRepository(h.firestore.Raw())
+	declaration, comparison, err := repository.ReadPurposeDocuments(ctx, userID, projectID)
+	if err != nil {
+		return result, err
+	}
+	result.Declaration, result.Comparison = declaration, comparison
+	if declaration == nil {
+		return result, nil
+	}
+	result.DeclarationStatus = "available"
+	if declaration.OwnerID != userID || declaration.ProjectID != projectID || identity.GenerationID == "" ||
+		declaration.PublicationGeneration != identity.GenerationID || contentcontext.NormalizeDigest(identity.ConceptsDigest) != declaration.ConceptsSHA256 ||
+		currentDescriptionRevision != declaration.DescriptionRevision || state == nil || state.LastGood == nil ||
+		state.LastGood.SourceGeneration != declaration.SummarySourceGeneration || state.LastGood.InputDigest != declaration.SummaryInputDigest ||
+		contentcontext.NormalizeDigest(state.LastGood.ConceptsSHA256) != declaration.ConceptsSHA256 ||
+		contentcontext.PurposeTextDigest(state.LastGood.Text) != declaration.SummaryTextDigest {
+		result.DeclarationStatus = "stale"
+		result.ComparisonStatus = "stale"
+		return result, nil
+	}
+	if comparison == nil {
+		return result, nil
+	}
+	if comparison.OwnerID != userID || comparison.ProjectID != projectID || comparison.PairKey != declaration.PairKey ||
+		comparison.DeclarationID != declaration.DeclarationID || comparison.DescriptionRevision != declaration.DescriptionRevision ||
+		comparison.PublicationGeneration != declaration.PublicationGeneration || comparison.ConceptsDigest != declaration.ConceptsSHA256 ||
+		comparison.SummarySourceGeneration != declaration.SummarySourceGeneration || comparison.SummaryInputDigest != declaration.SummaryInputDigest ||
+		comparison.SummaryTextDigest != declaration.SummaryTextDigest ||
+		comparison.State == "stale" || comparison.DeliveryStatus == "stale" {
+		result.ComparisonStatus = "stale"
+		return result, nil
+	}
+	result.ComparisonStatus = comparison.State
+	if comparison.DeliveryStatus == "pending" {
+		result.ComparisonStatus = "pending"
+	}
+	return result, nil
 }
 
 func hasLegacyPinnedView(pinned storage.Store) bool {

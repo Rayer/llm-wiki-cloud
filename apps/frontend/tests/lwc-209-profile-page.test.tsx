@@ -8,6 +8,8 @@ const mocks = vi.hoisted(() => ({
   hydrated: true,
   projectsLoading: false,
   currentProject: { id: 'project-a', name: 'Project A' } as { id: string; name: string } | null,
+  projects: [{ id: 'project-a', name: 'Project A' }, { id: 'project-b', name: 'Project B' }] as { id: string; name: string }[],
+  projectsError: false,
   isDemoSession: false,
   user: { id: 'user-a', email: 'user@example.com' } as { id: string; email: string } | null,
   accessToken: 'profile-token' as string | null,
@@ -20,11 +22,14 @@ vi.mock('@/components/WorkspaceProvider', () => ({
     hydrated: mocks.hydrated,
     projectsLoading: mocks.projectsLoading,
     currentProject: mocks.currentProject,
+    projects: mocks.projects,
+    projectsError: mocks.projectsError,
     isDemoSession: mocks.isDemoSession,
   }),
 }));
 
-vi.mock('@/lib/auth', () => ({ useAuth: () => ({ user: mocks.user, accessToken: mocks.accessToken, sessionEpoch: mocks.sessionEpoch }) }));
+vi.mock('@/lib/auth', () => ({ useAuth: () => ({ user: mocks.user, accessToken: mocks.accessToken, sessionEpoch: mocks.sessionEpoch, sessionIdentityEpoch: mocks.sessionEpoch }) }));
+vi.mock('next/navigation', () => ({ useSearchParams: () => new URLSearchParams(window.location.search) }));
 vi.mock('@/components/NavigationBlocker', () => ({ useNavigationBlocker: () => ({ setBlocked: mocks.setBlocked, confirmNavigation: () => true }) }));
 vi.mock('@/components/ProjectProfilePanel', () => ({
   ProjectProfilePanel: ({ projectId }: { projectId: string }) => <div data-testid="profile-panel">{projectId}</div>,
@@ -38,9 +43,12 @@ vi.mock('@/components/ProjectKeysSection', () => ({
 import ProfilePage from '@/app/(workspace)/profile/page';
 
 beforeEach(() => {
+  window.history.replaceState({}, '', '/profile');
   mocks.hydrated = true;
   mocks.projectsLoading = false;
   mocks.currentProject = { id: 'project-a', name: 'Project A' };
+  mocks.projects = [{ id: 'project-a', name: 'Project A' }, { id: 'project-b', name: 'Project B' }];
+  mocks.projectsError = false;
   mocks.isDemoSession = false;
   mocks.user = { id: 'user-a', email: 'user@example.com' };
   mocks.accessToken = 'profile-token';
@@ -71,6 +79,26 @@ describe('LWC-209 Profile route', () => {
     expect(screen.queryByTestId('profile-panel')).toBeNull();
     expect(screen.queryByTestId('project-keys-section')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Rename project' })).toBeNull();
+  });
+
+  it('binds a targeted route heading and panel to the same owned Project without changing selection', () => {
+    window.history.replaceState({}, '', '/profile?project_id=project-b#project-description');
+    render(<ProfilePage />);
+    expect(screen.getByText('Project B')).toBeDefined();
+    expect(screen.getByTestId('profile-panel').textContent).toBe('project-b');
+    expect(mocks.currentProject?.id).toBe('project-a');
+  });
+
+  it('shows the generic unavailable state for duplicate and non-owned target IDs without falling back', () => {
+    window.history.replaceState({}, '', '/profile?project_id=project-b&project_id=project-a');
+    const duplicate = render(<ProfilePage />);
+    expect(screen.getByText('Profile is unavailable for this Project.')).toBeDefined();
+    expect(screen.queryByTestId('profile-panel')).toBeNull();
+    duplicate.unmount();
+    window.history.replaceState({}, '', '/profile?project_id=other-project');
+    render(<ProfilePage />);
+    expect(screen.getByText('Profile is unavailable for this Project.')).toBeDefined();
+    expect(screen.queryByTestId('profile-panel')).toBeNull();
   });
 
   it('provides the route copy in Traditional Chinese', () => {

@@ -1,0 +1,162 @@
+import React from 'react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+
+const mocks = vi.hoisted(() => ({
+  getNudges: vi.fn(),
+  setNudgeAttention: vi.fn().mockResolvedValue(undefined),
+  resolveNudgeTarget: vi.fn(() => '/profile?project_id=project-a#project-description'),
+  push: vi.fn(),
+  confirmNavigation: vi.fn(() => true),
+  t: vi.fn((key: string) => key),
+  auth: {
+    user: { id: 'user-a' },
+    sessionIdentityEpoch: 1,
+    sessionEpoch: 1,
+    isDemoSession: false,
+  },
+}));
+
+vi.mock('next/navigation', () => ({ useRouter: () => ({ push: mocks.push }) }));
+vi.mock('@/lib/i18n', () => ({ useT: () => ({ t: mocks.t }) }));
+vi.mock('@/lib/auth', () => ({ useAuth: () => mocks.auth }));
+vi.mock('@/lib/nudges', () => ({
+  getNudges: mocks.getNudges,
+  setNudgeAttention: mocks.setNudgeAttention,
+  resolveNudgeTarget: mocks.resolveNudgeTarget,
+}));
+vi.mock('@/components/NavigationBlocker', () => ({ useNavigationBlocker: () => ({ confirmNavigation: mocks.confirmNavigation }) }));
+
+import { NudgePanel } from '@/components/NudgePanel';
+
+const view = {
+  schema_version: 1,
+  partial: false,
+  failures: [],
+  notices: [],
+  items: [{
+    category: 'content-purpose-gap',
+    attention_id: 'attention-a',
+    attention_state: 'unread',
+    severity: 'attention',
+    observations: [{
+      source_key: 'purpose:project-a',
+      source_revision: 1,
+      active: true,
+      observation: {
+        project_id: 'project-a',
+        project_name: 'Research archive',
+        title: 'Purpose and overview differ',
+        body: 'Review the published overview.',
+        declared_purpose: 'Local history',
+        published_summary: 'Published overview text to preserve',
+        severity: 'attention',
+        actions: [{
+          id: 'copy-open-description',
+          kind: 'copy-then-link',
+          label: 'Copy and open description',
+          copy_text: 'Published overview text to preserve',
+          target: { kind: 'project-description', project_id: 'project-a' },
+        }],
+      },
+    }],
+  }],
+};
+
+function popup() {
+  return { location: { replace: vi.fn() }, close: vi.fn(), opener: null } as unknown as Window;
+}
+
+describe('LWC-481 Nudge action navigation', () => {
+  let writeText: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    mocks.getNudges.mockResolvedValue(view);
+    mocks.setNudgeAttention.mockResolvedValue(undefined);
+    mocks.resolveNudgeTarget.mockReturnValue('/profile?project_id=project-a#project-description');
+    mocks.push.mockReset();
+    mocks.confirmNavigation.mockReturnValue(true);
+    mocks.auth.user = { id: 'user-a' };
+    mocks.auth.sessionIdentityEpoch = 1;
+    mocks.auth.sessionEpoch = 1;
+    mocks.auth.isDemoSession = false;
+    writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    window.open = vi.fn();
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  it('opens the actual same-Project target only after the exact copy succeeds', async () => {
+    const opened = popup();
+    vi.mocked(window.open).mockReturnValue(opened);
+    render(<NudgePanel onClose={vi.fn()} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Copy and open description' }));
+
+    await waitFor(() => expect(opened.location.replace).toHaveBeenCalledWith('/profile?project_id=project-a#project-description'));
+    expect(writeText).toHaveBeenCalledWith('Published overview text to preserve');
+    expect(window.open).toHaveBeenCalledWith('about:blank', '_blank');
+    await waitFor(() => expect(mocks.setNudgeAttention).toHaveBeenCalledWith('content-purpose-gap', 'attention-a', 'read'));
+    expect(mocks.push).not.toHaveBeenCalled();
+  });
+
+  it('shows selectable exact text and an explicit link when clipboard access is denied', async () => {
+    const opened = popup();
+    writeText.mockRejectedValueOnce(new Error('clipboard denied'));
+    vi.mocked(window.open).mockReturnValue(opened);
+    render(<NudgePanel onClose={vi.fn()} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Copy and open description' }));
+
+    expect((await screen.findByRole('alert')).textContent).toContain('Nudge.copyFailed');
+    expect((screen.getByLabelText('Nudge.selectCopy') as HTMLTextAreaElement).value).toBe('Published overview text to preserve');
+    expect(opened.location.replace).not.toHaveBeenCalled();
+    expect(opened.close).toHaveBeenCalled();
+    expect(mocks.setNudgeAttention).not.toHaveBeenCalled();
+  });
+
+  it('keeps copy success truthful and exposes a target link when the popup is blocked', async () => {
+    vi.mocked(window.open).mockReturnValue(null);
+    render(<NudgePanel onClose={vi.fn()} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Copy and open description' }));
+
+    expect((await screen.findByRole('alert')).textContent).toContain('Nudge.popupBlocked');
+    expect(writeText).toHaveBeenCalledWith('Published overview text to preserve');
+    const link = screen.getByRole('link', { name: 'Nudge.openTarget' });
+    expect(link.getAttribute('href')).toBe('/profile?project_id=project-a#project-description');
+    expect(mocks.setNudgeAttention).not.toHaveBeenCalled();
+  });
+
+  it('suppresses an old account read after the session identity changes', async () => {
+    let resolveOld!: (value: typeof view) => void;
+    let resolveNew!: (value: typeof view) => void;
+    const oldRead = new Promise<typeof view>((resolve) => { resolveOld = resolve; });
+    const newRead = new Promise<typeof view>((resolve) => { resolveNew = resolve; });
+    mocks.getNudges.mockReset().mockImplementationOnce(() => oldRead).mockImplementationOnce(() => newRead);
+    const { rerender } = render(<NudgePanel onClose={vi.fn()} />);
+
+    await waitFor(() => expect(mocks.getNudges).toHaveBeenCalledTimes(1));
+    mocks.auth.user = { id: 'user-b' };
+    mocks.auth.sessionIdentityEpoch = 2;
+    mocks.auth.sessionEpoch = 2;
+    rerender(<NudgePanel onClose={vi.fn()} />);
+    await waitFor(() => expect(mocks.getNudges).toHaveBeenCalledTimes(2));
+
+    const oldView = structuredClone(view);
+    oldView.items[0].observations[0].observation.title = 'Old account purpose';
+    resolveOld(oldView);
+    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Nudge.loading'));
+    expect(screen.queryByText('Old account purpose')).toBeNull();
+
+    const newView = structuredClone(view);
+    newView.items[0].observations[0].observation.title = 'New account purpose';
+    resolveNew(newView);
+    expect(await screen.findByText('New account purpose')).toBeTruthy();
+    expect(screen.queryByText('Old account purpose')).toBeNull();
+  });
+});

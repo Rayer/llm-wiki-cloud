@@ -312,7 +312,8 @@ func TestFirestoreRepositoryProducerStateFlowsThroughContentContextAPI(t *testin
 	stateRef := projectRef.Collection("content_context").Doc("state")
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if _, err := projectRef.Set(ctx, map[string]interface{}{"user_id": owner, "project_id": projectID}); err != nil {
+	if _, err := projectRef.Set(ctx, map[string]interface{}{"user_id": owner, "project_id": projectID,
+		"name": "Research archive", "description": "Published engineering research", "description_revision": int64(3)}); err != nil {
 		t.Fatalf("seed owner Project: %v", err)
 	}
 	defer func() {
@@ -343,6 +344,23 @@ func TestFirestoreRepositoryProducerStateFlowsThroughContentContextAPI(t *testin
 	}
 	if saved, err := repository.Complete(ctx, owner, projectID, authority, *claim, completion); err != nil || !saved {
 		t.Fatalf("persist producer summary: saved=%t err=%v", saved, err)
+	}
+	lastGoodState, err := repository.Read(ctx, owner, projectID)
+	if err != nil || lastGoodState.LastGood == nil {
+		t.Fatalf("read exact summary for purpose companion: state=%+v err=%v", lastGoodState, err)
+	}
+	declaration, err := repository.CaptureDeclaredPurpose(ctx, owner, projectID, authority)
+	if err != nil {
+		t.Fatalf("capture generation-bound Project purpose: %v", err)
+	}
+	comparison, err := repository.BeginPurposeComparison(ctx, owner, projectID, authority, declaration, 0, time.Now().UTC().Truncate(time.Microsecond))
+	if err != nil {
+		t.Fatalf("begin purpose comparison: %v", err)
+	}
+	readyComparison, err := repository.CompletePurposeComparison(ctx, owner, projectID, authority, comparison.AttemptID,
+		"reasonable_extension", "The overview adds a useful adjacent topic.", *lastGoodState.LastGood)
+	if err != nil || readyComparison.State != "ready" {
+		t.Fatalf("complete purpose comparison: comparison=%+v err=%v", readyComparison, err)
 	}
 	persisted, err := stateRef.Get(ctx)
 	if err != nil {
@@ -385,6 +403,29 @@ func TestFirestoreRepositoryProducerStateFlowsThroughContentContextAPI(t *testin
 		body.CurrentConceptsSHA256 == nil || *body.CurrentConceptsSHA256 != digest || body.Summary == nil ||
 		body.Summary.Text != completion.Text || body.Summary.SourceGeneration != "published-G1" || body.Summary.Role != contentcontext.SummaryRole || body.Stale {
 		t.Fatalf("producer Firestore state was not read faithfully: %+v", body)
+	}
+	if body.DeclaredPurposeContextStatus != "available" || body.DeclaredPurposeContext == nil ||
+		body.DeclaredPurposeContext.Description != "Published engineering research" ||
+		body.DeclaredPurposeContext.SummaryTextDigest != contentcontext.PurposeTextDigest(completion.Text) ||
+		body.PurposeComparisonStatus != "pending" || body.PurposeComparison == nil ||
+		body.PurposeComparison.ConfirmationID != readyComparison.ConfirmationID {
+		t.Fatalf("HTTP omitted the separate generation-bound purpose readback: %+v", body)
+	}
+	projectContext := h.authenticatedMCPProjectContext(ctx, mcpProjectKeyIdentity{userID: owner, projectID: projectID})
+	if projectContext.DeclaredPurposeStatus != "available" || projectContext.DeclaredPurpose == nil ||
+		projectContext.PurposeComparisonStatus != "pending" || projectContext.PurposeComparison == nil ||
+		projectContext.PurposeComparison.ConfirmationID != readyComparison.ConfirmationID {
+		t.Fatalf("MCP Project context omitted the separate purpose readback: %+v", projectContext)
+	}
+	if _, err := projectRef.Set(ctx, map[string]interface{}{"user_id": owner, "project_id": projectID,
+		"name": "Research archive", "description": "Updated purpose", "description_revision": int64(4)}); err != nil {
+		t.Fatalf("advance manual description revision: %v", err)
+	}
+	staleResponse := serveContentContext(h, owner, projectID, projectID)
+	var staleBody contentContextResponse
+	if staleResponse.Code != http.StatusOK || json.Unmarshal(staleResponse.Body.Bytes(), &staleBody) != nil ||
+		!staleBody.Stale || staleBody.DeclaredPurposeContextStatus != "stale" || staleBody.PurposeComparisonStatus != "stale" {
+		t.Fatalf("old companion remained current after description save: status=%d body=%+v", staleResponse.Code, staleBody)
 	}
 }
 
