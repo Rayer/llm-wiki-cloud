@@ -40,6 +40,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/sourcestatus"
 	"github.com/rayer/llm-wiki-bff/internal/storage"
 	"github.com/rayer/llm-wiki-bff/internal/suggestedqueries"
+	"github.com/rayer/llm-wiki-bff/internal/wikiindex"
 	"go.opentelemetry.io/otel"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -2795,6 +2796,121 @@ func TestCloudCleanRebuildReadsManifestPinnedConceptRecencyWithoutInstallingOutp
 	}
 	if _, err := os.Stat(filepath.Join(brokenWorkspace, "wiki", "old.md")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("broken clean rebuild materialized prior Concept page: %v", err)
+	}
+}
+
+func TestCloudCleanRebuildReactivatesDormantConceptWithItsSemanticTime(t *testing.T) {
+	const (
+		activeID    = "a3f7b2c01d9d"
+		dormantID   = "b7e2c9a4d113"
+		priorTime   = "2026-10-01T02:03:04Z"
+		activeSlug  = "alpha"
+		dormantSlug = "sleeping"
+	)
+	prefix := "users/user/projects/project/"
+	store := newMemoryObjects()
+	priorWorkspace := t.TempDir()
+	writeCloudRequiredOutputs(t, priorWorkspace)
+	activePage := []byte("---\nid: " + activeID + "\ntitle: Alpha\n---\nStable active body.\n")
+	dormantPage := []byte("---\nid: " + dormantID + "\ntitle: Sleeping\n---\nStable dormant body.\n")
+	ids := wikiindex.IDMap{
+		Concept:        map[string]string{activeID: activeSlug},
+		DormantConcept: map[string]string{dormantID: dormantSlug},
+		Source:         map[string]string{},
+		Redirects:      map[string][]string{},
+		IDRedirects:    map[string]string{},
+	}
+	idMapData, err := wikiindex.EncodeIDMap(ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wikiindex.DecodeIDMap(idMapData); err != nil {
+		t.Fatalf("encoded fixture ID map %s: %v", idMapData, err)
+	}
+	activeBase := []byte(`{"slug":"alpha","title":"Alpha","frontmatter":{"id":"` + activeID + `"}}` + "\n")
+	dormantBase := []byte(`{"slug":"sleeping","title":"Sleeping","frontmatter":{"id":"` + dormantID + `"}}` + "\n")
+	initial := wikiindex.ConceptRecencySnapshot{
+		IDMap: ids, IDMapVerified: true, ActiveJSONL: activeBase, DormantJSONL: dormantBase,
+		ActivePages: map[string][]byte{activeID: activePage}, DormantPages: map[string][]byte{dormantID: dormantPage},
+	}
+	activeCache, dormantCache, err := wikiindex.EnrichConceptRecency(initial, wikiindex.ConceptRecencySnapshot{ActivePages: map[string][]byte{}, DormantPages: map[string][]byte{}}, time.Date(2026, 10, 1, 2, 3, 4, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("seed canonical recency fields: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(priorWorkspace, "cache", "id_map.json"), idMapData)
+	mustWriteFile(t, filepath.Join(priorWorkspace, "cache", "concepts.jsonl"), activeCache)
+	mustWriteFile(t, filepath.Join(priorWorkspace, "cache", "dormant_concepts.jsonl"), dormantCache)
+	mustWriteFile(t, filepath.Join(priorWorkspace, "wiki", activeSlug+".md"), activePage)
+	mustWriteFile(t, filepath.Join(priorWorkspace, "wiki", ".dormant", dormantSlug+".md"), dormantPage)
+	if _, _, err := publishCloudGeneration(context.Background(), store, prefix, priorWorkspace, nil); err != nil {
+		t.Fatalf("publish committed dormant generation: %v", err)
+	}
+
+	cleanWorkspace := t.TempDir()
+	_, _, _, priorRecency, err := materializeCloudWorkspace(context.Background(), store, prefix, cleanWorkspace, true)
+	if err != nil || priorRecency == nil {
+		t.Fatalf("manifest-pinned clean snapshot=%+v err=%v", priorRecency, err)
+	}
+	if !bytes.Equal(priorRecency.DormantPages[dormantID], dormantPage) || !bytes.Contains(priorRecency.DormantJSONL, []byte(priorTime)) {
+		t.Fatalf("clean rebuild lost dormant witness: cache=%s page=%s", priorRecency.DormantJSONL, priorRecency.DormantPages[dormantID])
+	}
+	priorConcepts, err := snapshotConceptsWithRecency(cleanWorkspace, nil, priorRecency)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var dormantPrior *conceptSnapshot
+	for i := range priorConcepts {
+		if priorConcepts[i].ConceptID == dormantID {
+			dormantPrior = &priorConcepts[i]
+		}
+	}
+	if dormantPrior == nil || !dormantPrior.Dormant || !bytes.Equal(dormantPrior.Page, dormantPage) {
+		t.Fatalf("dormant source snapshot=%+v", dormantPrior)
+	}
+
+	// The clean candidate reactivates the same stable Concept ID. Its new active
+	// row is enriched against the manifest-pinned dormant row/page pair.
+	reactivatedIDs := wikiindex.IDMap{
+		Concept:     map[string]string{activeID: activeSlug, dormantID: dormantSlug},
+		Source:      map[string]string{},
+		Redirects:   map[string][]string{},
+		IDRedirects: map[string]string{},
+	}
+	reactivatedMap, err := wikiindex.EncodeIDMap(reactivatedIDs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	activeCandidate := append(append([]byte(nil), activeBase...), dormantBase...)
+	mustWriteFile(t, filepath.Join(cleanWorkspace, "cache", "id_map.json"), reactivatedMap)
+	mustWriteFile(t, filepath.Join(cleanWorkspace, "cache", "concepts.jsonl"), activeCandidate)
+	mustWriteFile(t, filepath.Join(cleanWorkspace, "cache", "dormant_concepts.jsonl"), nil)
+	mustWriteFile(t, filepath.Join(cleanWorkspace, "wiki", activeSlug+".md"), activePage)
+	mustWriteFile(t, filepath.Join(cleanWorkspace, "wiki", dormantSlug+".md"), dormantPage)
+	if err := reconcileWorkspaceConcepts(cleanWorkspace, priorConcepts); err != nil {
+		t.Fatalf("reactivate dormant Concept: %v", err)
+	}
+	activeAfter, err := os.ReadFile(filepath.Join(cleanWorkspace, "cache", "concepts.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var dormantRow map[string]any
+	for _, line := range bytes.Split(activeAfter, []byte{'\n'}) {
+		var candidate map[string]any
+		if json.Unmarshal(line, &candidate) != nil {
+			continue
+		}
+		matter, _ := candidate["frontmatter"].(map[string]any)
+		if matter["id"] == dormantID {
+			dormantRow = candidate
+			break
+		}
+	}
+	if dormantRow == nil || dormantRow["content_updated_at"] != priorTime {
+		t.Fatalf("reactivated Concept row=%v, want exact prior timestamp %s", dormantRow, priorTime)
+	}
+	dormantAfter, err := os.ReadFile(filepath.Join(cleanWorkspace, "cache", "dormant_concepts.jsonl"))
+	if err != nil || len(bytes.TrimSpace(dormantAfter)) != 0 {
+		t.Fatalf("reactivated dormant cache=%s err=%v", dormantAfter, err)
 	}
 }
 
