@@ -218,13 +218,30 @@ def main():
     parser.add_argument("--operation", required=True, choices=sorted(release_notes.TRANSITION_OPS))
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--run-attempt", required=True, type=int)
+    parser.add_argument("--environment", required=True, choices=("dev", "prod"))
+    parser.add_argument("--release-notes-action", required=True, choices=("run", "retry", "skip", "marker"))
+    parser.add_argument("--product-status", default="released", choices=("released",))
+    parser.add_argument("--artifact-id", default="")
+    parser.add_argument("--artifact-digest", default="")
     args = parser.parse_args()
     if not re.fullmatch(r"[1-9][0-9]*", args.run_id) or args.run_attempt < 1:
         raise SystemExit("invalid workflow run identity")
     try:
         marker, sidecar = capture(Path(args.directory), args.operation, args.run_id, args.run_attempt)
     except release_notes.ReleaseNotesError as error:
-        print(json.dumps({"stage": error.stage, "safe_class": error.safe_class}, sort_keys=True))
+        try:
+            import release_notes_publish
+            release_notes_publish.record_capture_failure(
+                Path(args.directory), environment=args.environment, operation=args.operation,
+                run_id=args.run_id, run_attempt=args.run_attempt,
+                release_notes_action=args.release_notes_action, product_status=args.product_status,
+                artifact_id=args.artifact_id, artifact_digest=args.artifact_digest,
+                failure_stage=error.stage, safe_class=error.safe_class)
+            evidence_recorded = True
+        except Exception:
+            evidence_recorded = False
+        print(json.dumps({"stage": error.stage, "safe_class": error.safe_class,
+                          "evidence_recorded": evidence_recorded}, sort_keys=True))
         raise SystemExit(1)
     print(json.dumps({"stage": "service_readback", "status": "verified",
                       "operation": args.operation, "revision": marker["revision"],

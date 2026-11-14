@@ -433,7 +433,10 @@ jobs:
         run: |
           set -Eeuo pipefail
           python3 deploy/engine/release_notes_capture.py --directory "$RUNNER_TEMP/release" \
-            --operation "$OPERATION" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT"
+            --operation "$OPERATION" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --environment "${{ inputs.environment == 'production' && 'prod' || 'dev' }}" \
+            --release-notes-action "$RELEASE_NOTES_ACTION" --product-status released \
+            --artifact-id "$RELEASE_NOTES_ARTIFACT_ID" --artifact-digest "$NOTES_ARTIFACT_DIGEST"
           python3 deploy/engine/release_notes_publish.py --action publish \
             --directory "$RUNNER_TEMP/release" --package-dir "$RUNNER_TEMP/release-notes-package" \
             --environment "${{ inputs.environment == 'production' && 'prod' || 'dev' }}" \
@@ -447,7 +450,9 @@ jobs:
         run: |
           set -Eeuo pipefail
           python3 deploy/engine/release_notes_capture.py --directory "$RUNNER_TEMP/release" \
-            --operation "$OPERATION" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT"
+            --operation "$OPERATION" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --environment "${{ inputs.environment == 'production' && 'prod' || 'dev' }}" \
+            --release-notes-action skip --product-status released --artifact-id "$RELEASE_NOTES_ARTIFACT_ID"
           python3 deploy/engine/release_notes_publish.py --action skip \
             --directory "$RUNNER_TEMP/release" --environment "${{ inputs.environment == 'production' && 'prod' || 'dev' }}" \
             --bucket "${{ inputs.environment == 'production' && 'llm-wiki-data' || 'llm-wiki-data-dev' }}" \
@@ -459,7 +464,9 @@ jobs:
         run: |
           set -Eeuo pipefail
           python3 deploy/engine/release_notes_capture.py --directory "$RUNNER_TEMP/release" \
-            --operation "$OPERATION" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT"
+            --operation "$OPERATION" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --environment "${{ inputs.environment == 'production' && 'prod' || 'dev' }}" \
+            --release-notes-action marker --product-status released
           python3 deploy/engine/release_notes_publish.py --action marker \
             --directory "$RUNNER_TEMP/release" --environment "${{ inputs.environment == 'production' && 'prod' || 'dev' }}" \
             --bucket "${{ inputs.environment == 'production' && 'llm-wiki-data' || 'llm-wiki-data-dev' }}" \

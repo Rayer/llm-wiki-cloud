@@ -1,6 +1,8 @@
 import copy
 import hashlib
 import json
+import os
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -21,6 +23,42 @@ W_IMAGE = "asia-east1-docker.pkg.dev/project/repo/bff@sha256:" + "b" * 64
 
 def canonical(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+
+
+def run_capture_cli_with_service_url_failure(directory, *, operation, action, run_id="701", artifact_id=""):
+    fake_bin = directory / "fake-bin"
+    fake_bin.mkdir(exist_ok=True)
+    gcloud = fake_bin / "gcloud"
+    gcloud.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$2\" = services ]; then\n"
+        "  printf '%s\\n' '{\"metadata\":{\"name\":\"svc\",\"uid\":\"uid-1\",\"generation\":43},\"status\":{\"traffic\":[{\"revisionName\":\"rev-w\",\"percent\":100}]}}'\n"
+        "elif [ \"$2\" = revisions ]; then\n"
+        "  printf '%s\\n' '{\"metadata\":{\"name\":\"rev-w\"},\"status\":{\"conditions\":[{\"type\":\"Ready\",\"status\":\"True\"}],\"imageDigest\":\"" + W_IMAGE + "\"},\"spec\":{\"containers\":[{\"image\":\"" + W_IMAGE + "\"}]}}'\n"
+        "else\n  exit 1\nfi\n"
+    )
+    gcloud.chmod(0o755)
+    environment = os.environ.copy()
+    environment.update({
+        "PATH": str(fake_bin) + os.pathsep + environment.get("PATH", ""),
+        "GOOGLE_APPLICATION_CREDENTIALS": "/dev/null",
+        "GCE_METADATA_HOST": "127.0.0.1:9",
+        "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE": "/dev/null",
+        "HTTP_PROXY": "http://127.0.0.1:9",
+        "HTTPS_PROXY": "http://127.0.0.1:9",
+        "NO_PROXY": "127.0.0.1,localhost",
+        "http_proxy": "http://127.0.0.1:9",
+        "https_proxy": "http://127.0.0.1:9",
+        "no_proxy": "127.0.0.1,localhost",
+    })
+    script = Path(__file__).resolve().parents[1] / "release_notes_capture.py"
+    args = [sys.executable, str(script), "--directory", str(directory), "--operation", operation,
+            "--run-id", run_id, "--run-attempt", "1", "--environment", "dev",
+            "--release-notes-action", action, "--product-status", "released"]
+    if artifact_id:
+        args.extend(("--artifact-id", artifact_id, "--artifact-digest", "sha256:" + "c" * 64))
+    return subprocess.run(args, cwd=Path(__file__).resolve().parents[3], env=environment,
+                          capture_output=True, text=True, check=False)
 
 
 def plan_fixture():
@@ -409,6 +447,28 @@ class ReleaseNotesContractTests(unittest.TestCase):
             publication_path = directory / "release-notes-publication.json"
             publication_bytes = publication_path.read_bytes()
 
+            capture_attempt = run_capture_cli_with_service_url_failure(
+                directory, operation="release", action="run", artifact_id="8001")
+            self.assertEqual(capture_attempt.returncode, 1, capture_attempt.stderr)
+            capture_failure = json.loads(capture_attempt.stdout)
+            self.assertEqual(capture_failure, {
+                "stage": "index_update", "safe_class": "service-url-unavailable", "evidence_recorded": True,
+            })
+            retained_after_capture = json.loads((directory / "release-notes-evidence.json").read_text())["stages"]
+            failure_record = retained_after_capture[-1]
+            self.assertEqual(failure_record["action"], "capture")
+            self.assertEqual(failure_record["status"], "failed")
+            self.assertEqual(failure_record["product_status"], "released")
+            self.assertEqual(failure_record["release_notes_action"], "run")
+            self.assertEqual(failure_record["safe_class"], "service-url-unavailable")
+            self.assertEqual(failure_record["published_at"], "2026-11-14T10:00:00Z")
+            self.assertEqual(failure_record["publication_evidence_sha256"],
+                             release_notes.digest_bytes(publication_bytes))
+            self.assertEqual(failure_record["next_actions"], ["retry", "skip", "stop"])
+            self.assertTrue(failure_record["owner_choice_required"])
+            self.assertFalse(failure_record["automatic_skip"])
+            self.assertFalse((directory / "release-notes-operation.json").exists())
+
             current = normalized_marker(operation="deploy", service_generation=44,
                                         revision="rev-w", product_version="9.0.0")
             store = MemoryNotesStore()
@@ -438,6 +498,36 @@ class ReleaseNotesContractTests(unittest.TestCase):
             self.assertEqual(evidence["publication_evidence_sha256"], release_notes.digest_bytes(publication_bytes))
             self.assertIsNone(evidence["operation_sidecar_sha256"])
             self.assertFalse((directory / "release-notes-operation.json").exists())
+            retained_after_resend = json.loads((directory / "release-notes-evidence.json").read_text())["stages"]
+            self.assertEqual([item["action"] for item in retained_after_resend],
+                             ["record-publication", "capture", "resend"])
+            self.assertEqual(retained_after_resend[1]["published_at"], "2026-11-14T10:00:00Z")
+            self.assertEqual(retained_after_resend[1]["status"], "failed")
+            self.assertEqual(retained_after_resend[2]["published_at"], "2026-11-14T10:00:00Z")
+
+    def test_capture_failure_records_skip_and_marker_contexts(self):
+        for operation, action in (("release", "skip"), ("deploy", "marker")):
+            with self.subTest(operation=operation, action=action), TemporaryDirectory() as temp:
+                directory = Path(temp)
+                fixture = operation_fixture(operation=operation)
+                for name, data in zip(("plan.json", "state.json", "result.json"), fixture[:3]):
+                    (directory / name).write_bytes(data)
+                (directory / "receipts").mkdir()
+                (directory / "receipts" / "bff.json").write_bytes(fixture[4])
+
+                capture_attempt = run_capture_cli_with_service_url_failure(
+                    directory, operation=operation, action=action)
+                self.assertEqual(capture_attempt.returncode, 1, capture_attempt.stderr)
+                output = json.loads(capture_attempt.stdout)
+                self.assertEqual(output["safe_class"], "service-url-unavailable")
+                self.assertTrue(output["evidence_recorded"])
+                evidence = json.loads((directory / "release-notes-evidence.json").read_text())["stages"]
+                self.assertEqual(len(evidence), 1)
+                self.assertEqual(evidence[0]["action"], "capture")
+                self.assertEqual(evidence[0]["release_notes_action"], action)
+                self.assertEqual(evidence[0]["product_status"], "released")
+                self.assertEqual(evidence[0]["next_actions"], ["retry", "skip", "stop"])
+                self.assertIsNone(evidence[0].get("published_at"))
 
     def test_resend_without_operation_readback_or_original_time_never_fabricates_publication(self):
         fixture = operation_fixture(operation="release")

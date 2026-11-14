@@ -1,0 +1,11 @@
+{
+  "name": "lwc-release-notes-artifact-sdk-tests",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Locked retained GitHub Actions artifact SDK used by offline Release Notes boundary tests",
+  "dependencies": {
+    "@actions/artifact": "2.3.2",
+    "@actions/core": "1.11.1",
+    "@actions/glob": "0.5.0"
+  }
+}

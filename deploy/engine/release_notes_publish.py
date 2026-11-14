@@ -12,8 +12,10 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
+from types import SimpleNamespace
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
@@ -313,6 +315,55 @@ def write_publication_record(directory: Path, args, plan_bytes: bytes) -> tuple[
             temporary_path.unlink(missing_ok=True)
         raise release_notes.ReleaseNotesError("product_release", "publication-time-evidence-write-failed") from None
     return record, data
+
+
+def record_capture_failure(directory: Path, *, environment: str, operation: str, run_id: str,
+                           run_attempt: int, release_notes_action: str, product_status: str,
+                           artifact_id: str, artifact_digest: str, failure_stage: str,
+                           safe_class: str) -> dict:
+    """Persist a capture failure through the retained publisher evidence log."""
+    plan_bytes = release_notes_capture.read_bytes(directory / "plan.json")
+    state_bytes = release_notes_capture.read_bytes(directory / "state.json")
+    result_bytes = release_notes_capture.read_bytes(directory / "result.json")
+    receipt_bytes = release_notes_capture.read_bytes(directory / "receipts" / "bff.json")
+    release_notes.validate_native_operation(
+        plan_bytes, state_bytes, result_bytes, receipt_bytes,
+        environment=environment, workflow_operation=operation,
+        run_id=run_id, run_attempt=run_attempt)
+    if product_status != "released" or release_notes_action not in ("run", "retry", "skip", "marker"):
+        raise release_notes.ReleaseNotesError("product_release", "capture-context-invalid")
+    if (release_notes_action in ("run", "retry", "skip") and operation != "release") or \
+            (release_notes_action == "marker" and operation not in ("deploy", "rollback", "reactivate")):
+        raise release_notes.ReleaseNotesError("product_release", "capture-context-invalid")
+    if failure_stage not in ("index_update", "exact_readback") or \
+            re.fullmatch(r"[a-z0-9-]{1,80}", safe_class) is None:
+        failure_stage, safe_class = "service_readback", "capture-error-report-invalid"
+
+    evidence = {
+        "schema_version": 1, "action": "capture", "environment": environment,
+        "stage": failure_stage, "status": "failed", "safe_class": safe_class,
+        "product_status": product_status, "release_notes_action": release_notes_action,
+        "plan_sha256": release_notes.digest_bytes(plan_bytes),
+        "state_sha256": release_notes.digest_bytes(state_bytes),
+        "result_sha256": release_notes.digest_bytes(result_bytes),
+        "receipt_sha256": release_notes.digest_bytes(receipt_bytes),
+        "artifact_id": artifact_id or None, "artifact_digest": artifact_digest or None,
+        "operation": operation, "run_id": run_id, "run_attempt": run_attempt,
+        "next_actions": ["retry", "skip", "stop"],
+        "owner_choice_required": True, "automatic_skip": False,
+        "product_rollback": False, "product_redeploy": False,
+        "decision_actor": None, "decision_time": None,
+    }
+    if release_notes_action in ("run", "retry"):
+        publication, publication_bytes = publication_record(
+            directory, SimpleNamespace(environment=environment, operation=operation,
+                                       run_id=run_id, run_attempt=run_attempt), plan_bytes)
+        if publication is None:
+            raise release_notes.ReleaseNotesError("product_release", "publication-time-evidence-unavailable")
+        evidence["published_at"] = publication["published_at"]
+        evidence["publication_evidence_sha256"] = release_notes.digest_bytes(publication_bytes)
+    write_evidence(directory, evidence)
+    return evidence
 
 
 def verify_reader_api(directory: Path, expected_environment: str, marker: dict, product_version: str,
