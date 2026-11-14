@@ -58,6 +58,41 @@ type recencyPair struct {
 	dormant bool
 }
 
+// conceptFingerprintSegment is the stable, renderer-visible representation of
+// a Concept page body. Literal Markdown (including code) remains text; only a
+// recognized prose Concept wikilink is represented by identity/route, anchor,
+// and the label the frontend renders.
+type conceptFingerprintSegment struct {
+	Type      string `json:"type"`
+	Text      string `json:"text,omitempty"`
+	Identity  string `json:"identity,omitempty"`
+	Route     string `json:"route,omitempty"`
+	Anchor    string `json:"anchor,omitempty"`
+	HasAnchor bool   `json:"has_anchor,omitempty"`
+	Label     string `json:"label,omitempty"`
+}
+
+type conceptLinkTarget struct {
+	Identity  string
+	Route     string
+	Anchor    string
+	HasAnchor bool
+}
+
+func (target conceptLinkTarget) resolve(redirects map[string]string) string {
+	path := target.Route
+	if target.Identity != "" {
+		path = target.Identity
+		if resolved, ok := redirects[target.Identity]; ok {
+			path = resolved
+		}
+	}
+	if target.HasAnchor {
+		path += "#" + target.Anchor
+	}
+	return path
+}
+
 var hexDigestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 const DormantConceptsJSONLPath = "cache/dormant_concepts.jsonl"
@@ -85,39 +120,19 @@ func CaptureConceptRecencySnapshot(ctx context.Context, store Store) (ConceptRec
 	if err != nil {
 		return snapshot, fmt.Errorf("read prior dormant concept cache: %w", err)
 	}
-	active, err := parseRecencyRows(snapshot.ActiveJSONL, false)
+	refs, err := ConceptRecencyPageRefs(snapshot.IDMap, snapshot.IDMapVerified, snapshot.ActiveJSONL, snapshot.DormantJSONL)
 	if err != nil {
-		return snapshot, fmt.Errorf("decode prior active concept cache: %w", err)
+		return snapshot, fmt.Errorf("bind prior concept snapshot: %w", err)
 	}
-	dormant, err := parseRecencyRows(snapshot.DormantJSONL, true)
-	if err != nil {
-		return snapshot, fmt.Errorf("decode prior dormant concept cache: %w", err)
-	}
-	rows := map[string]*recencyCacheRow{}
-	if snapshot.IDMapVerified {
-		rows, err = bindRecencyRows(snapshot.IDMap, active, dormant)
-	} else {
-		rows, err = bindCacheRowsByEmbeddedID(active, dormant)
-	}
-	if err != nil {
-		return snapshot, fmt.Errorf("bind prior cache rows: %w", err)
-	}
-	for id, row := range rows {
-		if strings.Contains(row.slug, "/") || row.slug == "." || row.slug == ".." || strings.TrimSpace(row.slug) != row.slug {
-			return snapshot, fmt.Errorf("unsafe prior concept slug %q", row.slug)
-		}
-		path := "wiki/" + row.slug + ".md"
-		if row.dormant {
-			path = "wiki/.dormant/" + row.slug + ".md"
-		}
-		page, readErr := readOptionalRecencyFile(ctx, store, path)
+	for _, ref := range refs {
+		page, readErr := readOptionalRecencyFile(ctx, store, ref.Path)
 		if readErr != nil {
-			return snapshot, fmt.Errorf("read prior concept page %q: %w", id, readErr)
+			return snapshot, fmt.Errorf("read prior concept page %q: %w", ref.ID, readErr)
 		}
-		if row.dormant {
-			snapshot.DormantPages[id] = page
+		if ref.Dormant {
+			snapshot.DormantPages[ref.ID] = page
 		} else {
-			snapshot.ActivePages[id] = page
+			snapshot.ActivePages[ref.ID] = page
 		}
 	}
 	return snapshot, nil
@@ -188,16 +203,52 @@ func ConceptRecencyPageRefs(ids IDMap, idMapVerified bool, activeJSONL, dormantJ
 	if err != nil {
 		return nil, err
 	}
-	refs := make([]ConceptRecencyPageRef, 0, len(rows))
-	for id, row := range rows {
-		if strings.Contains(row.slug, "/") || row.slug == "." || row.slug == ".." || strings.TrimSpace(row.slug) != row.slug {
-			return nil, fmt.Errorf("unsafe prior concept slug %q", row.slug)
+	refsByID := make(map[string]ConceptRecencyPageRef, len(rows))
+	if idMapVerified {
+		idBySlug := make(map[string]string, len(ids.Concept)+len(ids.DormantConcept))
+		appendIdentity := func(id, slug string, dormant bool) error {
+			if id == "" || strings.TrimSpace(slug) == "" || slug != strings.TrimSpace(slug) || strings.ContainsAny(slug, "/\\") || slug == "." || slug == ".." {
+				return fmt.Errorf("unsafe prior concept mapping %q -> %q", id, slug)
+			}
+			if _, exists := refsByID[id]; exists {
+				return fmt.Errorf("duplicate prior concept identity %q", id)
+			}
+			if otherID, exists := idBySlug[slug]; exists {
+				return fmt.Errorf("duplicate prior concept slug %q for %q and %q", slug, otherID, id)
+			}
+			idBySlug[slug] = id
+			path := "wiki/" + slug + ".md"
+			if dormant {
+				path = "wiki/.dormant/" + slug + ".md"
+			}
+			refsByID[id] = ConceptRecencyPageRef{ID: id, Slug: slug, Path: path, Dormant: dormant}
+			return nil
 		}
-		path := "wiki/" + row.slug + ".md"
-		if row.dormant {
-			path = "wiki/.dormant/" + row.slug + ".md"
+		for id, slug := range ids.Concept {
+			if err := appendIdentity(id, slug, false); err != nil {
+				return nil, err
+			}
 		}
-		refs = append(refs, ConceptRecencyPageRef{ID: id, Slug: row.slug, Path: path, Dormant: row.dormant})
+		for id, slug := range ids.DormantConcept {
+			if err := appendIdentity(id, slug, true); err != nil {
+				return nil, err
+			}
+		}
+	} else {
+		for id, row := range rows {
+			if strings.ContainsAny(row.slug, "/\\") || row.slug == "." || row.slug == ".." || strings.TrimSpace(row.slug) != row.slug {
+				return nil, fmt.Errorf("unsafe prior concept slug %q", row.slug)
+			}
+			path := "wiki/" + row.slug + ".md"
+			if row.dormant {
+				path = "wiki/.dormant/" + row.slug + ".md"
+			}
+			refsByID[id] = ConceptRecencyPageRef{ID: id, Slug: row.slug, Path: path, Dormant: row.dormant}
+		}
+	}
+	refs := make([]ConceptRecencyPageRef, 0, len(refsByID))
+	for _, ref := range refsByID {
+		refs = append(refs, ref)
 	}
 	sort.Slice(refs, func(i, j int) bool { return refs[i].ID < refs[j].ID })
 	return refs, nil
@@ -284,6 +335,11 @@ func EnrichConceptRecency(current, prior ConceptRecencySnapshot, runAt time.Time
 		if err := ensureRecencyRowsBound(priorRows, priorDormant, priorByID); err != nil {
 			return nil, nil, fmt.Errorf("bind prior concept cache: %w", err)
 		}
+		if err := addPriorIdentityRows(prior.IDMap, priorByID); err != nil {
+			return nil, nil, fmt.Errorf("bind prior concept identities: %w", err)
+		}
+	} else if err := ensureUnknownPriorRowsJoined(priorByID, currentByID, current.IDMap.IDRedirects); err != nil {
+		return nil, nil, err
 	}
 	priorPairs := make(map[string]recencyPair, len(priorByID))
 	for id, row := range priorByID {
@@ -409,9 +465,10 @@ func EnrichConceptRecency(current, prior ConceptRecencySnapshot, runAt time.Time
 					previousFingerprints = append(previousFingerprints, oldHash)
 				}
 			} else {
-				if len(old.page) > 0 && priorHashesOld[old.row.id] != oldHash {
-					return nil, nil, fmt.Errorf("concept %q recency basis UNKNOWN: prior page does not replay content_sha256 (stored %s, replay %s)", currentID, oldHash, priorHashesOld[old.row.id])
-				}
+				// Verified equal redirect projections establish SAME directly.
+				// A page may already contain the user's new H2 bytes before the
+				// rebuild reads it, so requiring it to replay committed H1 would
+				// reject ordinary edits. The stored H1 remains the baseline.
 				previousFingerprints = append(previousFingerprints, oldHash)
 			}
 			if previousFingerprints[len(previousFingerprints)-1] != candidateHash {
@@ -587,6 +644,63 @@ func bindCacheRowsByEmbeddedID(active, dormant []*recencyCacheRow) (map[string]*
 	return out, nil
 }
 
+// addPriorIdentityRows retains a verified legacy page as a baseline even when
+// its cache row is absent. A mapped identity is existing history; absence of a
+// cache row alone must not make it look like a newly created Concept.
+func addPriorIdentityRows(ids IDMap, rows map[string]*recencyCacheRow) error {
+	add := func(id, slug string, dormant bool) error {
+		if id == "" || strings.TrimSpace(slug) == "" || slug != strings.TrimSpace(slug) || strings.ContainsAny(slug, "/\\") || slug == "." || slug == ".." {
+			return fmt.Errorf("unsafe prior concept mapping %q -> %q", id, slug)
+		}
+		if old := rows[id]; old != nil {
+			if old.slug != slug || old.dormant != dormant {
+				return fmt.Errorf("prior concept %q cache row does not match its identity map", id)
+			}
+			return nil
+		}
+		rows[id] = &recencyCacheRow{fields: map[string]json.RawMessage{}, slug: slug, id: id, dormant: dormant}
+		return nil
+	}
+	for id, slug := range ids.Concept {
+		if err := add(id, slug, false); err != nil {
+			return err
+		}
+	}
+	for id, slug := range ids.DormantConcept {
+		if err := add(id, slug, true); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ensureUnknownPriorRowsJoined refuses to call unmatched legacy rows new when
+// the prior identity map is absent. Exact stable IDs and the verified current
+// direct redirect projection are the only permitted joins; slug is never used
+// as a fallback identity.
+func ensureUnknownPriorRowsJoined(prior, current map[string]*recencyCacheRow, redirects map[string]string) error {
+	if len(prior) == 0 {
+		return nil
+	}
+	joined := make(map[string]bool, len(prior))
+	for id := range current {
+		if prior[id] != nil {
+			joined[id] = true
+		}
+	}
+	for oldID, currentID := range redirects {
+		if current[currentID] != nil && prior[oldID] != nil {
+			joined[oldID] = true
+		}
+	}
+	for id := range prior {
+		if !joined[id] {
+			return fmt.Errorf("concept recency basis UNKNOWN: prior ID map is missing and cache row %q cannot be joined to current identities", id)
+		}
+	}
+	return nil
+}
+
 func ensureRecencyRowsBound(active, dormant []*recencyCacheRow, bound map[string]*recencyCacheRow) error {
 	covered := make(map[*recencyCacheRow]bool, len(bound))
 	for _, row := range bound {
@@ -643,7 +757,7 @@ func recencyBasisChanged(priorPage, currentPage []byte, priorRedirects, currentR
 	if err != nil {
 		return false, err
 	}
-	set := map[string]bool{}
+	set := map[conceptLinkTarget]bool{}
 	for _, target := range priorTargets {
 		set[target] = true
 	}
@@ -651,136 +765,199 @@ func recencyBasisChanged(priorPage, currentPage []byte, priorRedirects, currentR
 		set[target] = true
 	}
 	for target := range set {
-		if resolveConceptTarget(target, priorRedirects) != resolveConceptTarget(target, currentRedirects) {
+		if target.resolve(priorRedirects) != target.resolve(currentRedirects) {
 			return true, nil
 		}
 	}
 	return false, nil
 }
 
-func conceptTargets(page []byte) ([]string, error) {
+func conceptTargets(page []byte) ([]conceptLinkTarget, error) {
 	_, body, err := parseRecencyPage(page)
 	if err != nil {
 		return nil, err
 	}
-	var targets []string
+	_, targets, err := scanConceptBody(body, nil)
+	return targets, err
+}
+
+func fingerprintBody(body string, redirects map[string]string) ([]conceptFingerprintSegment, error) {
+	segments, _, err := scanConceptBody(body, redirects)
+	return segments, err
+}
+
+func appendFingerprintText(segments *[]conceptFingerprintSegment, value string) {
+	if value == "" {
+		return
+	}
+	if length := len(*segments); length > 0 && (*segments)[length-1].Type == "text" {
+		(*segments)[length-1].Text += value
+		return
+	}
+	*segments = append(*segments, conceptFingerprintSegment{Type: "text", Text: value})
+}
+
+func scanConceptBody(body string, redirects map[string]string) ([]conceptFingerprintSegment, []conceptLinkTarget, error) {
+	segments := []conceptFingerprintSegment{}
+	var targets []conceptLinkTarget
 	section := "concepts"
 	fenceChar, fenceSize := byte(0), 0
-	for _, line := range strings.Split(body, "\n") {
+	lines := strings.Split(body, "\n")
+	for lineNo, line := range lines {
 		trimmed := strings.TrimLeft(line, " ")
 		if fenceChar != 0 {
+			appendFingerprintText(&segments, line)
 			if count, ch, rest, ok := markdownFenceLine(trimmed); ok && rest == "" && ch == fenceChar && count >= fenceSize {
 				fenceChar, fenceSize = 0, 0
 			}
-			continue
-		}
-		if count, ch, _, opening := markdownFenceLine(trimmed); opening {
+		} else if count, ch, _, opening := markdownFenceLine(trimmed); opening {
+			appendFingerprintText(&segments, line)
 			fenceChar, fenceSize = ch, count
-			continue
-		}
-		if strings.HasPrefix(line, "## ") {
-			heading := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(line, "## ")))
-			if strings.HasPrefix(heading, "sources") {
-				section = "sources"
+		} else {
+			if strings.HasPrefix(line, "## ") {
+				heading := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(line, "## ")))
+				if strings.HasPrefix(heading, "sources") {
+					section = "sources"
+				}
+				if strings.HasPrefix(heading, "concepts") {
+					section = "concepts"
+				}
 			}
-			if strings.HasPrefix(heading, "concepts") {
-				section = "concepts"
+			if section == "sources" {
+				appendFingerprintText(&segments, line)
+			} else {
+				lineSegments, lineTargets := scanConceptLine(line, section, redirects)
+				for _, segment := range lineSegments {
+					if segment.Type == "text" {
+						appendFingerprintText(&segments, segment.Text)
+					} else {
+						segments = append(segments, segment)
+					}
+				}
+				targets = append(targets, lineTargets...)
 			}
 		}
-		if section == "sources" {
-			continue
+		if lineNo < len(lines)-1 {
+			appendFingerprintText(&segments, "\n")
 		}
-		targets = append(targets, findConceptWikilinks([]byte(line))...)
 	}
-	return targets, nil
+	return segments, targets, nil
 }
 
-func findConceptWikilinks(line []byte) []string {
-	var targets []string
+func scanConceptLine(line, section string, redirects map[string]string) ([]conceptFingerprintSegment, []conceptLinkTarget) {
+	segments := []conceptFingerprintSegment{}
+	var targets []conceptLinkTarget
+	textStart := 0
 	for i := 0; i < len(line); {
 		if line[i] == '`' {
-			n := 1
-			for i+n < len(line) && line[i+n] == '`' {
-				n++
-			}
-			j := i + n
-			for j < len(line) {
-				if line[j] != '`' {
-					j++
-					continue
-				}
-				m := 1
-				for j+m < len(line) && line[j+m] == '`' {
-					m++
-				}
-				if m == n {
-					j += m
-					break
-				}
-				j += m
-			}
-			if j > len(line) {
-				j = len(line)
-			}
-			i = j
+			i = inlineCodeEnd(line, i)
 			continue
 		}
 		if i+1 < len(line) && line[i] == '[' && line[i+1] == '[' {
-			end := bytes.Index(line[i+2:], []byte("]]"))
-			if end >= 0 {
-				inner := strings.TrimSpace(string(line[i+2 : i+2+end]))
-				if target, ok := parseConceptTarget(inner); ok {
+			relativeEnd := strings.Index(line[i+2:], "]]")
+			if relativeEnd >= 0 {
+				end := i + 2 + relativeEnd
+				inner := line[i+2 : end]
+				segment, target, ok := fingerprintLinkSegment(inner, section, redirects)
+				if ok {
+					appendFingerprintText(&segments, line[textStart:i])
+					segments = append(segments, segment)
 					targets = append(targets, target)
+					i = end + 2
+					textStart = i
+					continue
 				}
-				i += end + 4
+				i = end + 2
 				continue
 			}
 		}
 		i++
 	}
-	return targets
+	appendFingerprintText(&segments, line[textStart:])
+	return segments, targets
 }
 
-func parseConceptTarget(inner string) (string, bool) {
-	target, alias, hasAlias := strings.Cut(inner, "|")
-	target = strings.TrimSpace(target)
-	if strings.HasPrefix(target, "sources/") {
-		return "", false
+func inlineCodeEnd(line string, start int) int {
+	width := 1
+	for start+width < len(line) && line[start+width] == '`' {
+		width++
 	}
-	if strings.HasPrefix(target, "concepts/") {
-		target = strings.TrimPrefix(target, "concepts/")
+	for i := start + width; i < len(line); {
+		if line[i] != '`' {
+			i++
+			continue
+		}
+		end := i + 1
+		for end < len(line) && line[end] == '`' {
+			end++
+		}
+		if end-i == width {
+			return end
+		}
+		i = end
 	}
-	if strings.Contains(target, "/") || target == "" {
-		return "", false
+	return len(line)
+}
+
+func fingerprintLinkSegment(inner, section string, redirects map[string]string) (conceptFingerprintSegment, conceptLinkTarget, bool) {
+	targetText, alias, hasAlias := strings.Cut(inner, "|")
+	rawTarget := strings.TrimSpace(targetText)
+	if rawTarget == "" {
+		return conceptFingerprintSegment{}, conceptLinkTarget{}, false
 	}
-	path, anchor, hasAnchor := strings.Cut(target, "#")
-	identity := path
-	label := path
-	if id, suffix, ok := splitCanonicalIDSlug(path); ok {
-		identity, label = id, suffix
+	routeSection, routeTarget := section, rawTarget
+	if collection, rest, ok := strings.Cut(rawTarget, "/"); ok {
+		switch collection {
+		case "concepts":
+			routeSection, routeTarget = "concepts", rest
+		case "sources":
+			routeSection, routeTarget = "sources", rest
+		}
 	}
+	if routeSection != "concepts" || routeTarget == "" || strings.Contains(routeTarget, "/") {
+		return conceptFingerprintSegment{}, conceptLinkTarget{}, false
+	}
+	path, anchor, hasAnchor := strings.Cut(routeTarget, "#")
+	if path == "" {
+		return conceptFingerprintSegment{}, conceptLinkTarget{}, false
+	}
+	label := frontendVisibleLinkLabel(rawTarget)
 	if hasAlias {
 		label = strings.TrimSpace(alias)
 	}
-	if hasAnchor {
-		target = identity + "#" + anchor
+	target := conceptLinkTarget{Anchor: anchor, HasAnchor: hasAnchor}
+	identity, _, hasIdentity := splitCanonicalIDSlug(path)
+	segment := conceptFingerprintSegment{Type: "concept_link", Anchor: anchor, HasAnchor: hasAnchor, Label: label}
+	if hasIdentity {
+		if resolved, ok := redirects[identity]; ok {
+			identity = resolved
+		}
+		target.Identity = identity
+		segment.Identity = identity
 	} else {
-		target = identity
+		route := rawTarget
+		if hasAlias {
+			route, _, _ = strings.Cut(rawTarget, "|")
+		}
+		if _, _, explicitAnchor := strings.Cut(routeTarget, "#"); explicitAnchor {
+			route = strings.TrimSuffix(route, "#"+anchor)
+		}
+		target.Route = route
+		segment.Route = route
 	}
-	// Keep renderer-visible label and anchor separate from technical identity.
-	return target + "\x00" + label, true
+	return segment, target, true
 }
 
-func resolveConceptTarget(value string, redirects map[string]string) string {
-	identity, visible, _ := strings.Cut(value, "\x00")
-	path, anchor, hasAnchor := strings.Cut(identity, "#")
-	if redirected, ok := redirects[path]; ok {
-		path = redirected
+func frontendVisibleLinkLabel(target string) string {
+	path := strings.TrimSpace(target)
+	if collection, rest, ok := strings.Cut(path, "/"); ok && (collection == "concepts" || collection == "sources") {
+		path = rest
 	}
-	if hasAnchor {
-		path += "#" + anchor
+	path, _, _ = strings.Cut(path, "#")
+	if _, slug, ok := splitCanonicalIDSlug(path); ok {
+		return slug
 	}
-	return path + "\x00" + visible
+	return path
 }
 
 func splitCanonicalIDSlug(path string) (id, slug string, ok bool) {
@@ -828,15 +1005,15 @@ func fingerprintConcept(page []byte, redirects map[string]string, fallbackSlug s
 	}
 	body = strings.ReplaceAll(strings.ReplaceAll(body, "\r\n", "\n"), "\r", "\n")
 	body = strings.TrimRight(body, "\n")
-	body, err = normalizeConceptWikilinks(body, redirects)
+	canonicalBody, err := fingerprintBody(body, redirects)
 	if err != nil {
 		return "", err
 	}
 	projection := struct {
-		Title       string `json:"title"`
-		Description string `json:"description"`
-		Body        string `json:"body"`
-	}{title, description, body}
+		Title       string                      `json:"title"`
+		Description string                      `json:"description"`
+		Body        []conceptFingerprintSegment `json:"body"`
+	}{title, description, canonicalBody}
 	data, err := json.Marshal(projection)
 	if err != nil {
 		return "", err
@@ -860,39 +1037,6 @@ func parseRecencyPage(page []byte) (map[string]interface{}, string, error) {
 
 func stringValue(value interface{}) string { text, _ := value.(string); return text }
 
-func normalizeConceptWikilinks(body string, redirects map[string]string) (string, error) {
-	lines := strings.Split(body, "\n")
-	section := "concepts"
-	fenceChar, fenceSize := byte(0), 0
-	for lineNo, line := range lines {
-		trimmed := strings.TrimLeft(line, " ")
-		if strings.HasPrefix(trimmed, "## ") {
-			heading := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(trimmed, "## ")))
-			if strings.HasPrefix(heading, "sources") {
-				section = "sources"
-			}
-			if strings.HasPrefix(heading, "concepts") {
-				section = "concepts"
-			}
-		}
-		if fenceChar != 0 {
-			if count, ch, rest, ok := markdownFenceLine(trimmed); ok && rest == "" && ch == fenceChar && count >= fenceSize {
-				fenceChar, fenceSize = 0, 0
-			}
-			continue
-		}
-		if count, ch, _, opening := markdownFenceLine(trimmed); opening {
-			fenceChar, fenceSize = ch, count
-			continue
-		}
-		if section == "sources" {
-			continue
-		}
-		lines[lineNo] = string(rewriteRecencyLine([]byte(line), redirects))
-	}
-	return strings.Join(lines, "\n"), nil
-}
-
 func markdownFenceLine(line string) (int, byte, string, bool) {
 	if strings.HasPrefix(line, ">") {
 		line = strings.TrimLeft(strings.TrimLeft(line, ">"), " ")
@@ -909,88 +1053,6 @@ func markdownFenceLine(line string) (int, byte, string, bool) {
 	}
 	remainder := strings.TrimSpace(line[n:])
 	return n, ch, remainder, true
-}
-
-func rewriteRecencyLine(line []byte, redirects map[string]string) []byte {
-	var out bytes.Buffer
-	for i := 0; i < len(line); {
-		if line[i] == '`' {
-			n := 1
-			for i+n < len(line) && line[i+n] == '`' {
-				n++
-			}
-			j := i + n
-			for j < len(line) {
-				if line[j] != '`' {
-					j++
-					continue
-				}
-				m := 1
-				for j+m < len(line) && line[j+m] == '`' {
-					m++
-				}
-				if m == n {
-					j += m
-					break
-				}
-				j += m
-			}
-			if j > len(line) {
-				j = len(line)
-			}
-			out.Write(line[i:j])
-			i = j
-			continue
-		}
-		if i+1 < len(line) && line[i] == '[' && line[i+1] == '[' {
-			end := bytes.Index(line[i+2:], []byte("]]"))
-			if end >= 0 {
-				inner := string(line[i+2 : i+2+end])
-				out.WriteString("[[")
-				out.WriteString(normalizeRecencyTarget(inner, redirects))
-				out.WriteString("]]")
-				i += end + 4
-				continue
-			}
-		}
-		out.WriteByte(line[i])
-		i++
-	}
-	return out.Bytes()
-}
-
-func normalizeRecencyTarget(inner string, redirects map[string]string) string {
-	target, alias, hasAlias := strings.Cut(inner, "|")
-	trimmed := strings.TrimSpace(target)
-	collection := ""
-	if prefix, rest, ok := strings.Cut(trimmed, "/"); ok && (prefix == "concepts" || prefix == "sources") {
-		collection, trimmed = prefix+"/", rest
-	}
-	if collection == "sources/" {
-		return inner
-	}
-	path, anchor, hasAnchor := strings.Cut(trimmed, "#")
-	id, slug, hasID := splitCanonicalIDSlug(path)
-	if hasID {
-		if redirected, ok := redirects[id]; ok {
-			id = redirected
-		}
-		path = id + "-" + slug
-	} else if redirected, ok := redirects[path]; ok {
-		path = redirected
-	}
-	var out strings.Builder
-	out.WriteString(collection)
-	out.WriteString(path)
-	if hasAnchor {
-		out.WriteByte('#')
-		out.WriteString(anchor)
-	}
-	if hasAlias {
-		out.WriteByte('|')
-		out.WriteString(strings.TrimSpace(alias))
-	}
-	return out.String()
 }
 
 func validRecencyTime(value string) bool {

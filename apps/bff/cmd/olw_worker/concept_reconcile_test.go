@@ -362,7 +362,7 @@ func TestWorkerConceptWriterThreeGenerationRecencyEvidence(t *testing.T) {
 		mustWriteFile(t, filepath.Join(root, "wiki", "alpha.md"), []byte("---\nid: "+legacyA+"\ntitle: Alpha\n---\nSee [[concepts/"+legacyB+"-beta#section|Visible B]]\n"))
 		mustWriteFile(t, filepath.Join(root, "wiki", "beta.md"), []byte("---\nid: "+legacyB+"\ntitle: Beta\n---\nBeta body\n"))
 	}
-	seedGeneratedEntity := func(root string, visibleEdit bool, explicitRedirects bool) {
+	seedGeneratedEntity := func(root string, visibleEdit bool, explicitRedirects bool, targetSlugs ...string) {
 		redirects := `"id_redirects":{}`
 		if explicitRedirects {
 			redirects = `"id_redirects":{"` + legacyA + `":"` + entityA + `","` + legacyB + `":"` + entityB + `"}`
@@ -372,7 +372,11 @@ func TestWorkerConceptWriterThreeGenerationRecencyEvidence(t *testing.T) {
 			`{"slug":"alpha","title":"Alpha","frontmatter":{"id":"`+entityA+`"}}`+"\n"+
 				`{"slug":"beta","title":"Beta","frontmatter":{"id":"`+entityB+`"}}`+"\n",
 		))
-		target := `[[concepts/` + entityB + `-beta#section|Visible B]]`
+		targetSlug := "beta"
+		if len(targetSlugs) > 0 {
+			targetSlug = targetSlugs[0]
+		}
+		target := `[[concepts/` + entityB + `-` + targetSlug + `#section|Visible B]]`
 		if visibleEdit {
 			target = `[[concepts/` + entityB + `-beta#section|Visible B edited]]`
 		}
@@ -440,6 +444,26 @@ func TestWorkerConceptWriterThreeGenerationRecencyEvidence(t *testing.T) {
 	// prior H1 row; generation 2 must not promote that row to a new Concept.
 	gen2MissingMap := t.TempDir()
 	copyConceptCommit(t, gen1, gen2MissingMap, true)
+	const dormantID = "c9d8e7f6a5b4"
+	idMapWithDormant, err := os.ReadFile(filepath.Join(gen2MissingMap, "cache", "id_map.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var priorMapWithDormant map[string]json.RawMessage
+	if err := json.Unmarshal(idMapWithDormant, &priorMapWithDormant); err != nil {
+		t.Fatal(err)
+	}
+	priorDormant := map[string]string{}
+	_ = json.Unmarshal(priorMapWithDormant["dormant_concept"], &priorDormant)
+	priorDormant[dormantID] = "dormant"
+	priorMapWithDormant["dormant_concept"], _ = json.Marshal(priorDormant)
+	idMapWithDormant, err = json.Marshal(priorMapWithDormant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWriteFile(t, filepath.Join(gen2MissingMap, "cache", "id_map.json"), idMapWithDormant)
+	mustWriteFile(t, filepath.Join(gen2MissingMap, "cache", "dormant_concepts.jsonl"), []byte(`{"slug":"dormant","frontmatter":{"id":"`+dormantID+`"},"content_sha256":"`+strings.Repeat("0", 64)+`","content_updated_at":"2026-01-01T00:00:00Z"}`+"\n"))
+	mustWriteFile(t, filepath.Join(gen2MissingMap, "wiki", ".dormant", "dormant.md"), []byte("---\nid: "+dormantID+"\ntitle: Dormant\n---\nDormant historical body\n"))
 	if err := os.Remove(filepath.Join(gen2MissingMap, "cache", "id_map.json")); err != nil {
 		t.Fatal(err)
 	}
@@ -447,9 +471,9 @@ func TestWorkerConceptWriterThreeGenerationRecencyEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	seedGeneratedEntity(gen2MissingMap, false, true)
+	seedGeneratedEntity(gen2MissingMap, false, false)
 	before = snapshotRelevantVaultBytes(t, gen2MissingMap,
-		"cache/id_map.json", "cache/concepts.jsonl", "wiki/alpha.md", "wiki/beta.md", ".synto/INDEX.json")
+		"cache/id_map.json", "cache/concepts.jsonl", "cache/dormant_concepts.jsonl", "wiki/alpha.md", "wiki/beta.md", "wiki/.dormant/dormant.md", ".synto/INDEX.json")
 	if err := reconcileWorkspaceConcepts(gen2MissingMap, priorMissingMap); err == nil || !strings.Contains(err.Error(), "basis UNKNOWN") {
 		t.Fatalf("missing-map H1 rewrite error=%v, want UNKNOWN basis rejection", err)
 	}
@@ -470,6 +494,22 @@ func TestWorkerConceptWriterThreeGenerationRecencyEvidence(t *testing.T) {
 	gen2Rows := cacheValues(gen2)
 	if got := gen2Rows["alpha"]["content_updated_at"]; got != firstTime {
 		t.Fatalf("gen2 technical rewrite changed known semantic time: got %v want %s", got, firstTime)
+	}
+
+	// The canonical identity, anchor and alias are unchanged even though the
+	// technical suffix changes; the actual Worker writer must preserve time.
+	gen2AliasSuffix := t.TempDir()
+	copyConceptCommit(t, gen1, gen2AliasSuffix, true)
+	priorAliasSuffix, err := snapshotConcepts(gen2AliasSuffix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedGeneratedEntity(gen2AliasSuffix, false, false, "new-technical-suffix")
+	if err := reconcileWorkspaceConcepts(gen2AliasSuffix, priorAliasSuffix); err != nil {
+		t.Fatalf("gen2 fixed-alias technical suffix reconcile: %v", err)
+	}
+	if got := cacheValues(gen2AliasSuffix)["alpha"]["content_updated_at"]; got != firstTime {
+		t.Fatalf("technical target suffix changed semantic time: got %v want %s", got, firstTime)
 	}
 
 	// A valid H1 with unknown prior time still replays the complete technical
@@ -559,6 +599,7 @@ func TestWorkerConceptWriterThreeGenerationRecencyEvidence(t *testing.T) {
 		new  string
 	}{
 		{name: "visible label", old: "Visible B", new: "Different visible B"},
+		{name: "unaliased visible slug", old: "beta#section|Visible B", new: "visible-slug-change#section"},
 		{name: "anchor", old: "#section", new: "#other-section"},
 		{name: "different unredirected ULID at same slug", old: legacyB + "-beta", new: "01JAZ5N7Y3K8M2Q4R6T9VWXAC9-beta"},
 		{name: "body", old: "See [[", new: "Changed prose [["},

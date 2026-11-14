@@ -21,6 +21,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/annotation"
 	"github.com/rayer/llm-wiki-bff/internal/sourcestatus"
 	"github.com/rayer/llm-wiki-bff/internal/suggestedqueries"
+	"github.com/rayer/llm-wiki-bff/internal/wikiindex"
 	"go.opentelemetry.io/otel"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -485,6 +486,170 @@ func TestRunPostprocessWritesSuggestedQueriesFromConcepts(t *testing.T) {
 	}
 }
 
+func TestRunPostprocessCommandPreservesCommittedConceptRecency(t *testing.T) {
+	t.Setenv("BUCKET", "")
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "/dev/null")
+	t.Setenv("GCE_METADATA_HOST", "127.0.0.1:9")
+	oldHooks := localWorkspaceBatchHooks
+	hooks := oldHooks
+	hooks.syncWorkspaceOutputs = func(workspace, vault, _ string) error {
+		for _, rel := range []string{"cache/id_map.json", "cache/concepts.jsonl", "cache/dormant_concepts.jsonl"} {
+			data, err := os.ReadFile(filepath.Join(workspace, filepath.FromSlash(rel)))
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			mustWriteFile(t, filepath.Join(vault, filepath.FromSlash(rel)), data)
+		}
+		return nil
+	}
+	localWorkspaceBatchHooks = hooks
+	t.Cleanup(func() { localWorkspaceBatchHooks = oldHooks })
+	run := func(t *testing.T, vault, executionID string) {
+		t.Helper()
+		cfg := workerConfig{VaultPath: vault, WorkspaceDir: t.TempDir(), ExecutionID: executionID}
+		if err := runPostprocessCommand(context.Background(), cfg); err != nil {
+			t.Fatalf("runPostprocessCommand(%s): %v", executionID, err)
+		}
+	}
+	readRows := func(t *testing.T, path string) []map[string]json.RawMessage {
+		t.Helper()
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var rows []map[string]json.RawMessage
+		for _, line := range bytes.Split(data, []byte{'\n'}) {
+			if len(bytes.TrimSpace(line)) == 0 {
+				continue
+			}
+			var row map[string]json.RawMessage
+			if err := json.Unmarshal(line, &row); err != nil {
+				t.Fatal(err)
+			}
+			rows = append(rows, row)
+		}
+		return rows
+	}
+	rowByID := func(t *testing.T, rows []map[string]json.RawMessage, id string) map[string]json.RawMessage {
+		t.Helper()
+		for _, row := range rows {
+			var frontmatter map[string]json.RawMessage
+			_ = json.Unmarshal(row["frontmatter"], &frontmatter)
+			var gotID string
+			_ = json.Unmarshal(frontmatter["id"], &gotID)
+			if gotID == id {
+				return row
+			}
+		}
+		t.Fatalf("cache row for %q not found: %#v", id, rows)
+		return nil
+	}
+	writeRows := func(t *testing.T, path string, rows []map[string]json.RawMessage) {
+		t.Helper()
+		var data bytes.Buffer
+		for _, row := range rows {
+			encoded, err := json.Marshal(row)
+			if err != nil {
+				t.Fatal(err)
+			}
+			data.Write(encoded)
+			data.WriteByte('\n')
+		}
+		mustWriteFile(t, path, data.Bytes())
+	}
+
+	t.Run("known active and dormant times survive no-op", func(t *testing.T) {
+		vault := t.TempDir()
+		mustWriteFile(t, filepath.Join(vault, "wiki", "alpha.md"), []byte("---\nid: alpha-id\ntitle: Alpha\n---\nAlpha body\n"))
+		mustWriteFile(t, filepath.Join(vault, "wiki", "beta.md"), []byte("---\nid: beta-id\ntitle: Beta\n---\nBeta body\n"))
+		run(t, vault, "postprocess-recency-gen1")
+		cachePath := filepath.Join(vault, "cache", "concepts.jsonl")
+		rows := readRows(t, cachePath)
+		alpha := rowByID(t, rows, "alpha-id")
+		beta := rowByID(t, rows, "beta-id")
+		var alphaTime, betaTime string
+		_ = json.Unmarshal(alpha["content_updated_at"], &alphaTime)
+		_ = json.Unmarshal(beta["content_updated_at"], &betaTime)
+		if alphaTime == "" || betaTime == "" {
+			t.Fatalf("gen1 times missing: alpha=%#v beta=%#v", alpha, beta)
+		}
+
+		// Move Beta to the pre-existing dormant lifecycle while retaining its
+		// exact generated cache row and page as the committed prior witness.
+		var idMap map[string]json.RawMessage
+		idMapBytes, err := os.ReadFile(filepath.Join(vault, "cache", "id_map.json"))
+		if err != nil || json.Unmarshal(idMapBytes, &idMap) != nil {
+			t.Fatalf("decode prior id map: %v", err)
+		}
+		var activeIDs, dormantIDs map[string]string
+		_ = json.Unmarshal(idMap["concept"], &activeIDs)
+		if activeIDs == nil {
+			activeIDs = map[string]string{}
+		}
+		_ = json.Unmarshal(idMap["dormant_concept"], &dormantIDs)
+		if dormantIDs == nil {
+			dormantIDs = map[string]string{}
+		}
+		delete(activeIDs, "beta-id")
+		dormantIDs["beta-id"] = "beta"
+		idMap["concept"], _ = json.Marshal(activeIDs)
+		idMap["dormant_concept"], _ = json.Marshal(dormantIDs)
+		idMapBytes, err = json.Marshal(idMap)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mustWriteFile(t, filepath.Join(vault, "cache", "id_map.json"), idMapBytes)
+		writeRows(t, cachePath, []map[string]json.RawMessage{alpha})
+		writeRows(t, filepath.Join(vault, "cache", "dormant_concepts.jsonl"), []map[string]json.RawMessage{beta})
+		if err := os.MkdirAll(filepath.Join(vault, "wiki", ".dormant"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(filepath.Join(vault, "wiki", "beta.md"), filepath.Join(vault, "wiki", ".dormant", "beta.md")); err != nil {
+			t.Fatal(err)
+		}
+
+		run(t, vault, "postprocess-recency-gen2")
+		activeAfter := rowByID(t, readRows(t, cachePath), "alpha-id")
+		dormantAfter := rowByID(t, readRows(t, filepath.Join(vault, "cache", "dormant_concepts.jsonl")), "beta-id")
+		var gotAlphaTime, gotBetaTime string
+		_ = json.Unmarshal(activeAfter["content_updated_at"], &gotAlphaTime)
+		_ = json.Unmarshal(dormantAfter["content_updated_at"], &gotBetaTime)
+		if gotAlphaTime != alphaTime || gotBetaTime != betaTime {
+			t.Fatalf("gen2 no-op changed semantic times: alpha=%q want %q; dormant beta=%q want %q", gotAlphaTime, alphaTime, gotBetaTime, betaTime)
+		}
+	})
+
+	t.Run("unknown time remains omitted through no-op", func(t *testing.T) {
+		vault := t.TempDir()
+		mustWriteFile(t, filepath.Join(vault, "wiki", "alpha.md"), []byte("---\nid: alpha-id\ntitle: Alpha\n---\nAlpha body\n"))
+		run(t, vault, "postprocess-unknown-gen1")
+		cachePath := filepath.Join(vault, "cache", "concepts.jsonl")
+		rows := readRows(t, cachePath)
+		alpha := rowByID(t, rows, "alpha-id")
+		if _, exists := alpha["content_sha256"]; !exists {
+			t.Fatalf("gen1 hash missing: %#v", alpha)
+		}
+		delete(alpha, "content_updated_at")
+		writeRows(t, cachePath, []map[string]json.RawMessage{alpha})
+		run(t, vault, "postprocess-unknown-gen2")
+		for generation := 2; generation <= 3; generation++ {
+			got := rowByID(t, readRows(t, cachePath), "alpha-id")
+			if _, exists := got["content_updated_at"]; exists {
+				t.Fatalf("gen%d invented unknown prior time: %#v", generation, got)
+			}
+			if string(got["content_sha256"]) == "" {
+				t.Fatalf("gen%d lost content hash: %#v", generation, got)
+			}
+			if generation == 2 {
+				run(t, vault, "postprocess-unknown-gen3")
+			}
+		}
+	})
+}
+
 func TestSuggestedQueryGenerationDoesNotReadVaultRootIndexAsDescription(t *testing.T) {
 	vault := t.TempDir()
 	mustWriteFile(t, filepath.Join(vault, "index.md"), []byte("SYSTEM_INDEX_MUST_NOT_REACH_SUGGESTED_QUERY_PROVIDER"))
@@ -778,7 +943,10 @@ func TestCommittedWorkspaceCleanupFailureHasTruthfulWorkerTrace(t *testing.T) {
 	hooks.acquireVaultLease = func(string, string) (*vaultLease, error) {
 		return &vaultLease{root: t.TempDir(), owner: "test"}, nil
 	}
-	hooks.createWorkspace = func(string, string) (string, error) { return workspace, nil }
+	hooks.createWorkspace = func(string, string) (string, error) {
+		mustWriteFile(t, filepath.Join(workspace, wikiindex.IDMapPath), []byte(`{"concept":{},"source":{},"redirects":{}}`))
+		return workspace, nil
+	}
 	hooks.recoverInterruptedPublish = func(string) error { return nil }
 	hooks.runPostprocessWithProvider = func(context.Context, string, suggestedqueries.Provider, io.Writer) error { return nil }
 	hooks.syncWorkspaceOutputs = func(string, string, string) error { return nil }
@@ -1994,7 +2162,10 @@ func TestStandaloneCommandsRecordOwnedTerminalFailuresOnce(t *testing.T) {
 					hooks.acquireVaultLease = func(string, string) (*vaultLease, error) {
 						return &vaultLease{root: t.TempDir(), owner: "test"}, nil
 					}
-					hooks.createWorkspace = func(string, string) (string, error) { return workspace, nil }
+					hooks.createWorkspace = func(string, string) (string, error) {
+						mustWriteFile(t, filepath.Join(workspace, wikiindex.IDMapPath), []byte(`{"concept":{},"source":{},"redirects":{}}`))
+						return workspace, nil
+					}
 					hooks.recoverInterruptedPublish = func(string) error { return nil }
 					hooks.runPostprocessWithProvider = func(context.Context, string, suggestedqueries.Provider, io.Writer) error { return nil }
 					hooks.runSuggestedQueriesStage = func(context.Context, string, suggestedqueries.Provider) error { return nil }
@@ -2058,7 +2229,10 @@ func TestStandaloneCommandsKeepPrimaryAndIsolateRawLogFailure(t *testing.T) {
 			hooks := oldHooks
 			workspace := t.TempDir()
 			hooks.acquireVaultLease = func(string, string) (*vaultLease, error) { return &vaultLease{root: t.TempDir(), owner: "test"}, nil }
-			hooks.createWorkspace = func(string, string) (string, error) { return workspace, nil }
+			hooks.createWorkspace = func(string, string) (string, error) {
+				mustWriteFile(t, filepath.Join(workspace, wikiindex.IDMapPath), []byte(`{"concept":{},"source":{},"redirects":{}}`))
+				return workspace, nil
+			}
 			hooks.recoverInterruptedPublish = func(string) error { return nil }
 			hooks.syncWorkspaceOutputs = func(string, string, string) error { return nil }
 			hooks.removeWorkspace = func(string) error { return nil }
@@ -2124,7 +2298,10 @@ func TestStandaloneCommandsHaveZeroEventsBeforeLeaseAndOnSuccess(t *testing.T) {
 			hooks = originalHooks
 			hooks.acquireVaultLease = func(string, string) (*vaultLease, error) { return &vaultLease{root: t.TempDir(), owner: "test"}, nil }
 			workspace := t.TempDir()
-			hooks.createWorkspace = func(string, string) (string, error) { return workspace, nil }
+			hooks.createWorkspace = func(string, string) (string, error) {
+				mustWriteFile(t, filepath.Join(workspace, wikiindex.IDMapPath), []byte(`{"concept":{},"source":{},"redirects":{}}`))
+				return workspace, nil
+			}
 			hooks.recoverInterruptedPublish = func(string) error { return nil }
 			hooks.runPostprocessWithProvider = func(context.Context, string, suggestedqueries.Provider, io.Writer) error { return nil }
 			hooks.runSuggestedQueriesStage = func(context.Context, string, suggestedqueries.Provider) error { return nil }

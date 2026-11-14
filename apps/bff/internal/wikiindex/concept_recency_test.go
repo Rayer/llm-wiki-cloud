@@ -82,6 +82,19 @@ func TestEnrichConceptRecencyMissingPriorMapIsUnknownWhenHashChanges(t *testing.
 	}
 }
 
+func TestEnrichConceptRecencyMissingMapCannotTreatUnjoinedH1AsNew(t *testing.T) {
+	oldPage := []byte("---\ntitle: Alpha\n---\nunchanged visible body\n")
+	newPage := []byte("---\ntitle: Alpha\n---\nchanged visible body\n")
+	oldHash := fingerprintForTest(t, oldPage, nil, "alpha")
+	prior := recencySnapshot(IDMap{}, recencyPageRow(recencyLegacyA, "alpha", oldHash, "2026-01-01T00:00:00Z"), nil, false)
+	currentIDs := recencyIDMap(map[string]string{recencyEntityA: "alpha"}, nil)
+	current := recencySnapshot(currentIDs, recencyPageRow(recencyEntityA, "alpha", "", ""), newPage, true)
+	current.ActivePages[recencyEntityA] = newPage
+	if _, _, err := EnrichConceptRecency(current, prior, time.Now().UTC()); err == nil || !strings.Contains(err.Error(), "basis UNKNOWN") {
+		t.Fatalf("unjoined H1 result = %v, want fail-closed UNKNOWN", err)
+	}
+}
+
 func TestEnrichConceptRecencyMissingPriorPageWithChangedRedirectMapFails(t *testing.T) {
 	oldPage := []byte("---\ntitle: Alpha\n---\n[[b1c2d3e4f5a6-beta#part|Beta]]\n")
 	oldHash := fingerprintForTest(t, oldPage, nil, "alpha")
@@ -157,6 +170,45 @@ func TestConceptFingerprintKeepsVisibleLabelAnchorAndIdentityIndependent(t *test
 		if fingerprintForTest(t, page, redirects, "alpha") == fingerprintForTest(t, technicalRewrite, redirects, "alpha") {
 			t.Fatalf("visible change did not alter fingerprint: %s", page)
 		}
+	}
+}
+
+func TestConceptFingerprintCanonicalizesIdentityAndRendererVisibleSegments(t *testing.T) {
+	redirects := map[string]string{recencyLegacyB: recencyEntityB}
+	legacyAlias := []byte("---\ntitle: Alpha\n---\n[[concepts/" + recencyLegacyB + "-old-route#part|Visible B]]\n")
+	entityAlias := []byte("---\ntitle: Alpha\n---\n[[concepts/" + recencyEntityB + "-new-route#part|Visible B]]\n")
+	if got, want := fingerprintForTest(t, legacyAlias, redirects, "alpha"), fingerprintForTest(t, entityAlias, redirects, "alpha"); got != want {
+		t.Fatalf("verified identity/anchor/alias rewrite changed fingerprint: %s != %s", got, want)
+	}
+	noAlias := []byte("---\ntitle: Alpha\n---\n[[concepts/" + recencyEntityB + "-new-route#part]]\n")
+	if got := fingerprintForTest(t, entityAlias, redirects, "alpha"); got == fingerprintForTest(t, noAlias, redirects, "alpha") {
+		t.Fatal("explicit alias did not preserve the actual difference in rendered label")
+	}
+	aliasedSlug := []byte("---\ntitle: Alpha\n---\n[[concepts/" + recencyEntityB + "-beta|beta]]\n")
+	unaliasedSlug := []byte("---\ntitle: Alpha\n---\n[[concepts/" + recencyEntityB + "-beta]]\n")
+	if got := fingerprintForTest(t, aliasedSlug, redirects, "alpha"); got != fingerprintForTest(t, unaliasedSlug, redirects, "alpha") {
+		t.Fatal("identical rendered labels changed fingerprint only because one used an explicit alias")
+	}
+	visibleControl := []byte("---\ntitle: Alpha\n---\n[[concepts/" + recencyEntityB + "-changed-visible-route#part]]\n")
+	if got := fingerprintForTest(t, noAlias, redirects, "alpha"); got == fingerprintForTest(t, visibleControl, redirects, "alpha") {
+		t.Fatal("unaliased rendered slug change did not change fingerprint")
+	}
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{name: "inline code literal", body: "`[[concepts/" + recencyLegacyB + "-old-route|Visible B]]`\n"},
+		{name: "fenced code literal", body: "```\n[[concepts/" + recencyLegacyB + "-old-route|Visible B]]\n```\n"},
+		{name: "source section literal", body: "## Sources\n[[concepts/" + recencyLegacyB + "-old-route|Visible B]]\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			old := []byte("---\ntitle: Alpha\n---\n" + tc.body)
+			changed := strings.Replace(tc.body, recencyLegacyB+"-old-route", recencyEntityB+"-new-route", 1)
+			newPage := []byte("---\ntitle: Alpha\n---\n" + changed)
+			if fingerprintForTest(t, old, redirects, "alpha") == fingerprintForTest(t, newPage, redirects, "alpha") {
+				t.Fatal("literal/code wikilink text was canonicalized")
+			}
+		})
 	}
 }
 
