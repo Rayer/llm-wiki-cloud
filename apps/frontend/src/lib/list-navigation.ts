@@ -51,6 +51,11 @@ export function ensureListHistoryEntryId(): string {
 export function pushDocumentFocusEntry(documentId: string): string {
   const entryId = createListViewOpaqueId();
   const state = { ...currentHistoryState() };
+  // Next's App Router patches native pushState to synchronize useSearchParams.
+  // Passing its __NA marker bypasses that patch, so let Next copy its own state.
+  delete state.__NA;
+  delete state._N;
+  delete state.__PRIVATE_NEXTJS_INTERNALS_TREE;
   delete state[CONSUMED_FOCUS];
   window.history.pushState(
     { ...state, [ENTRY_ID]: entryId },

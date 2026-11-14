@@ -72,6 +72,34 @@ it('operates the shared entry toolbar, updates counts and clears all conditions'
   fireEvent.click(screen.getByRole('button', { name: 'List.clearControls' }));
   expect(screen.getByRole('status').textContent).toBe('4/4');
 });
+it('keeps the Concepts updated-desc default on initial load and Clear across client pages', async () => {
+  const concepts = Array.from({ length: 25 }, (_, index): WikiEntry => ({
+    title: `Concept ${String(index + 1).padStart(2, '0')}`,
+    slug: `concept-${String(index + 1).padStart(2, '0')}`,
+    objectUpdatedAt: `2026-11-${String(index + 1).padStart(2, '0')}T00:00:00Z`,
+    raw: {},
+  }));
+  const load = vi.fn(async () => concepts);
+  render(<ListClient title="Concepts" description="" basePath="/concepts" entryType="concept" load={load} />);
+
+  await screen.findByRole('heading', { name: 'Concept 25' });
+  expect(screen.getByLabelText('List.orderBy')).toHaveProperty('value', 'updated-desc');
+  expect(screen.getByRole('status').textContent).toBe('25/25');
+  expect(document.querySelectorAll('.lwc-entry')).toHaveLength(12);
+  fireEvent.click(screen.getByRole('button', { name: 'List.nextPage' }));
+  await screen.findByRole('heading', { name: 'Concept 13' });
+  fireEvent.click(screen.getByRole('button', { name: 'List.nextPage' }));
+  await screen.findByRole('heading', { name: 'Concept 01' });
+  expect(load).toHaveBeenCalledTimes(1);
+
+  fireEvent.change(screen.getByLabelText('List.orderBy'), { target: { value: 'title' } });
+  await screen.findByRole('heading', { name: 'Concept 01' });
+  fireEvent.click(screen.getByRole('button', { name: 'List.clearControls' }));
+  await screen.findByRole('heading', { name: 'Concept 25' });
+  expect(screen.getByLabelText('List.orderBy')).toHaveProperty('value', 'updated-desc');
+  expect(document.querySelectorAll('.lwc-entry')).toHaveLength(12);
+  expect(load).toHaveBeenCalledTimes(1);
+});
 it('resets entry filters and cache across project and session changes', async () => {
   const load = vi.fn(async () => workspace.currentProject.id === 'list-459-b' ? [{ ...entries[0], title: 'Separate project' }] : entries);
   const props = { title: 'Entries', description: '', basePath: '/concepts', load };

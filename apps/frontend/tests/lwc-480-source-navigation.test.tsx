@@ -304,7 +304,12 @@ describe('LWC-480 actual source import and history integration', () => {
   it('allows a new same-document entry to focus again and leaves no new entry when navigation is declined', async () => {
     const oldEntryId = 'previous-entry';
     const consumedFocus = { entryId: oldEntryId, ownerId: 'user-a', namespaceId: workspace.listViewSessionId, projectId: 'project-a', documentId: 'document-a' };
-    window.history.replaceState({ __lwcListEntryId: oldEntryId, __lwcConsumedDocumentFocus: consumedFocus }, '', '/sources?document_id=document-a');
+    window.history.replaceState({
+      __NA: true,
+      __PRIVATE_NEXTJS_INTERNALS_TREE: { tree: 'synthetic-next-tree' },
+      __lwcListEntryId: oldEntryId,
+      __lwcConsumedDocumentFocus: consumedFocus,
+    }, '', '/sources?document_id=document-a');
     refreshRouteFromLocation();
     const oldHistoryLength = window.history.length;
     const view = renderRoute();
@@ -318,11 +323,17 @@ describe('LWC-480 actual source import and history integration', () => {
     expect(window.history.length).toBe(oldHistoryLength);
 
     view.rerender(<RouteHarness />);
+    const pushCount = vi.mocked(window.history.pushState).mock.calls.length;
     fireEvent.click(screen.getByRole('link', { name: 'Source.documentImport.viewSource' }));
     await waitForFocusedImportRow();
     expect(window.history.state.__lwcListEntryId).not.toBe(oldEntryId);
     expect(window.history.state.__lwcConsumedDocumentFocus?.entryId).toBe(window.history.state.__lwcListEntryId);
     expect(window.location.search).toBe('?document_id=document-a');
+    const focusPushState = vi.mocked(window.history.pushState).mock.calls.slice(pushCount)
+      .find(([, , url]) => String(url).includes('document_id=document-a'))?.[0];
+    expect(focusPushState).toEqual(expect.objectContaining({ __lwcListEntryId: expect.any(String) }));
+    expect(focusPushState).not.toHaveProperty('__NA');
+    expect(focusPushState).not.toHaveProperty('__PRIVATE_NEXTJS_INTERNALS_TREE');
   });
 
   it('does not consume excluded targets or let a canceled delayed focus move the page', async () => {

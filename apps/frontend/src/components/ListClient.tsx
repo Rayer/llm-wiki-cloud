@@ -53,7 +53,7 @@ function ListClientSession({
   const [entries, setEntries] = useState<WikiEntry[]>(() => clientCache.get(cacheKey) ?? []);
   const [loading, setLoading] = useState(() => !clientCache.has(cacheKey));
   const [error, setError] = useState<ListError | null>(null);
-  const defaultOrder = 'title';
+  const defaultOrder = entryType === 'concept' ? 'updated-desc' : 'title';
   const defaults = useMemo<ListViewState>(() => ({
     search: '',
     filters: { status: 'all', dates: 'all' },
