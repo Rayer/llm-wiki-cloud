@@ -597,7 +597,7 @@ func (h *Handler) readCloudPipelineEventSnapshot(ctx context.Context, userID, pr
 		candidateByReservation[candidate.ReservationID] = candidate
 	}
 	for id := range needed {
-		response, err := h.pipelineExecutionStatusForOwner(ctx, id, userID, projectID)
+		response, actualReservationID, err := h.pipelineExecutionStatusForOwnerWithIdentity(ctx, id, userID, projectID)
 		if errors.Is(err, errPipelineExecutionNotFound) || errors.Is(err, handlerapi.ErrPipelineExecutionNotFound) || response == nil && err == nil {
 			unresolved = append(unresolved, id)
 			continue
@@ -614,23 +614,37 @@ func (h *Handler) readCloudPipelineEventSnapshot(ctx context.Context, userID, pr
 			actualStarted: actualStarted, endedAt: endedAt, publication: publication,
 			quota: response.QuotaSettlement, response: response, mode: normalizePipelineMode(response.CompileMode),
 		}
+		listedExecution, listedInHistory := listed[id]
+		listedReservationID := ""
+		if listedInHistory {
+			listedReservationID = cloudRunExecutionReservationID(listedExecution, userID, projectID)
+		}
+		listIdentityMismatch := listedInHistory && listedReservationID != "" && listedReservationID != actualReservationID
 		if candidate, ok := candidateByExecution[id]; ok {
-			record.reservationID = candidate.ReservationID
-			if err := h.attachPipelineReservation(ctx, userID, projectID, &record, &candidate); err != nil {
-				return pipelineEventSnapshot{}, err
+			record.reservationID = actualReservationID
+			if actualReservationID == "" || candidate.ReservationID != actualReservationID || listIdentityMismatch {
+				record.reservationMissing = true
+			} else {
+				if err := h.attachPipelineReservation(ctx, userID, projectID, &record, &candidate); err != nil {
+					return pipelineEventSnapshot{}, err
+				}
 			}
-		} else if execution, ok := listed[id]; ok {
-			record.reservationID = cloudRunExecutionReservationID(execution, userID, projectID)
-			candidate, pendingMatch := candidateByReservation[record.reservationID]
-			var candidatePtr *scopedfirestore.PipelineEventCandidate
-			if pendingMatch {
-				candidatePtr = &candidate
-			}
-			if err := h.attachPipelineReservation(ctx, userID, projectID, &record, candidatePtr); err != nil {
-				return pipelineEventSnapshot{}, err
-			}
-			if pendingMatch {
-				record.candidate = true
+		} else if listedInHistory {
+			record.reservationID = actualReservationID
+			candidate, pendingMatch := candidateByReservation[actualReservationID]
+			if listIdentityMismatch || pendingMatch && candidate.ExecutionID != "" && candidate.ExecutionID != id {
+				record.reservationMissing = true
+			} else {
+				var candidatePtr *scopedfirestore.PipelineEventCandidate
+				if pendingMatch {
+					candidatePtr = &candidate
+				}
+				if err := h.attachPipelineReservation(ctx, userID, projectID, &record, candidatePtr); err != nil {
+					return pipelineEventSnapshot{}, err
+				}
+				if pendingMatch {
+					record.candidate = true
+				}
 			}
 		}
 		records[id] = record

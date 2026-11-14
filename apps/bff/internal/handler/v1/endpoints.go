@@ -1801,7 +1801,12 @@ func (h *Handler) pipelineExecutionStatus(ctx context.Context, executionID strin
 }
 
 func (h *Handler) pipelineExecutionStatusForOwner(ctx context.Context, executionID, userID, projectID string) (*handler.PipelineExecutionResponse, error) {
-	return h.pipelineExecutionStatusWithOwner(ctx, executionID, &pipelineExecutionOwner{
+	response, _, err := h.pipelineExecutionStatusForOwnerWithIdentity(ctx, executionID, userID, projectID)
+	return response, err
+}
+
+func (h *Handler) pipelineExecutionStatusForOwnerWithIdentity(ctx context.Context, executionID, userID, projectID string) (*handler.PipelineExecutionResponse, string, error) {
+	return h.pipelineExecutionStatusWithOwnerAndIdentity(ctx, executionID, &pipelineExecutionOwner{
 		userID:    userID,
 		projectID: projectID,
 	})
@@ -1813,59 +1818,70 @@ type pipelineExecutionOwner struct {
 }
 
 func (h *Handler) pipelineExecutionStatusWithOwner(ctx context.Context, executionID string, owner *pipelineExecutionOwner) (*handler.PipelineExecutionResponse, error) {
+	response, _, err := h.pipelineExecutionStatusWithOwnerAndIdentity(ctx, executionID, owner)
+	return response, err
+}
+
+// pipelineExecutionStatusWithOwnerAndIdentity returns the reservation ID from
+// the exact Cloud Run execution detail used to construct the response. Keep
+// this identity internal to source discovery; it is not part of API JSON.
+func (h *Handler) pipelineExecutionStatusWithOwnerAndIdentity(ctx context.Context, executionID string, owner *pipelineExecutionOwner) (*handler.PipelineExecutionResponse, string, error) {
 	if h.localPipeline != nil && owner != nil {
-		return h.localPipeline.Status(ctx, owner.userID, owner.projectID, executionID)
+		response, err := h.localPipeline.Status(ctx, owner.userID, owner.projectID, executionID)
+		return response, "", err
 	}
 	token, err := h.getMetadataAccessToken(ctx)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	if executionID != "" {
 		execution, err := h.fetchCloudRunExecution(ctx, token, executionID)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		if shortCloudRunExecutionName(execution.Name, true) != executionID {
-			return nil, errPipelineExecutionNotFound
+			return nil, "", errPipelineExecutionNotFound
 		}
 		if owner != nil && !cloudRunExecutionOwnedBy(execution, owner.userID, owner.projectID) {
-			return nil, errPipelineExecutionNotFound
+			return nil, "", errPipelineExecutionNotFound
 		}
 		response := newPipelineExecutionResponse(execution)
+		reservationID := ""
 		if owner != nil {
-			reservationID := cloudRunExecutionReservationID(execution, owner.userID, owner.projectID)
+			reservationID = cloudRunExecutionReservationID(execution, owner.userID, owner.projectID)
 			h.attachPipelineDiagnostic(ctx, response, owner)
 			h.attachPipelineQuotaSettlement(ctx, response, owner, reservationID)
 			h.attachPipelineExecutionEvidence(ctx, response, owner, executionID)
 		}
-		return response, nil
+		return response, reservationID, nil
 	}
 
 	pageToken := ""
 	for {
 		executions, err := h.listCloudRunExecutions(ctx, token, pageToken)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		if owner == nil {
 			if len(executions.Executions) == 0 {
-				return nil, nil
+				return nil, "", nil
 			}
-			return newPipelineExecutionResponse(executions.Executions[0]), nil
+			return newPipelineExecutionResponse(executions.Executions[0]), "", nil
 		}
 		for _, execution := range executions.Executions {
 			if cloudRunExecutionOwnedBy(execution, owner.userID, owner.projectID) {
 				response := newPipelineExecutionResponse(execution)
 				executionID := shortCloudRunExecutionName(execution.Name, true)
 				h.attachPipelineDiagnostic(ctx, response, owner)
-				h.attachPipelineQuotaSettlement(ctx, response, owner, cloudRunExecutionReservationID(execution, owner.userID, owner.projectID))
+				reservationID := cloudRunExecutionReservationID(execution, owner.userID, owner.projectID)
+				h.attachPipelineQuotaSettlement(ctx, response, owner, reservationID)
 				h.attachPipelineExecutionEvidence(ctx, response, owner, executionID)
-				return response, nil
+				return response, reservationID, nil
 			}
 		}
 		if executions.NextPageToken == "" {
-			return nil, nil
+			return nil, "", nil
 		}
 		pageToken = executions.NextPageToken
 	}
