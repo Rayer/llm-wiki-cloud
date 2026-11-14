@@ -48,6 +48,9 @@ class FakeProvider:
         self.fail_policy_read_at = set()
         self.policy_reads_without_etag = set()
         self.omit_policy_version_on_read = False
+        self.return_unconditional_version_one = False
+        self.policy_version_on_read = {}
+        self.policy_version_absent_at = set()
         self.deny_role_read = False
         self.role_not_found_calls = 0
         self.drop_condition_on_readback = False
@@ -98,8 +101,13 @@ class FakeProvider:
                         binding["members"] = [member for member in binding.get("members", []) if member != MEMBER]
             if self.policy_reads in self.policy_reads_without_etag:
                 policy.pop("etag", None)
-            if self.omit_policy_version_on_read:
+            if self.policy_reads in self.policy_version_absent_at or self.omit_policy_version_on_read:
                 policy.pop("version", None)
+            elif self.policy_reads in self.policy_version_on_read:
+                policy["version"] = self.policy_version_on_read[self.policy_reads]
+            elif (self.return_unconditional_version_one and
+                  not any(binding.get("condition") is not None for binding in policy.get("bindings", []))):
+                policy["version"] = 1
             return 200, json.dumps(policy).encode("utf-8")
         if method == "PUT":
             if query != {"alt": ["json"]}:
@@ -174,7 +182,10 @@ class ExportJobProdProvisionTests(unittest.TestCase):
         self.assertEqual(readback.wire_policy, policy)
         self.assertEqual(readback.policy, policy)
         self.assertEqual(readback.normalization["requested_fields"], ["bindings", "etag", "version"])
-        self.assertEqual(readback.normalization["version_source"], "returned_and_verified")
+        self.assertEqual(readback.normalization["requested_maximum_policy_version"], 3)
+        self.assertEqual(readback.normalization["provider_observed_version"], 3)
+        self.assertEqual(readback.normalization["normalized_policy_version"], 3)
+        self.assertEqual(readback.normalization["policy_version_normalization"], "none")
         self.assertEqual(fake.api_calls[0]["method"], "GET")
         get_query = parse_qs(urlsplit(fake.api_calls[0]["url"]).query)
         self.assertEqual(get_query, {"alt": ["json"], "optionsRequestedPolicyVersion": ["3"],
@@ -208,12 +219,83 @@ class ExportJobProdProvisionTests(unittest.TestCase):
         with self.assertRaisesRegex(prod.ProvisionError, "unexpected policy version"):
             adapter_for(missing).read("llm-wiki-data")
         self.assertEqual(missing.writes, [])
+        inconsistent = FakeProvider(policy={"etag": "bucket-e1", "version": 1, "bindings": [
+            {"role": "roles/storage.objectViewer", "members": ["user:reader@example.test"],
+             "condition": {"title": "must-not-be-downgraded", "expression": "true"}},
+        ]})
+        with self.assertRaisesRegex(prod.ProvisionError, "v1 while containing conditions"):
+            adapter_for(inconsistent).read("llm-wiki-data")
         with self.assertRaisesRegex(prod.ProvisionError, "requires the verified v3"):
             prod.GCSBucketPolicyAdapter.serialize_for_write({"etag": "bucket-e1", "bindings": []})
         with self.assertRaisesRegex(prod.ProvisionError, "requires the verified v3"):
             prod.GCSBucketPolicyAdapter.serialize_for_write({"etag": "bucket-e1", "version": 2, "bindings": []})
         with self.assertRaisesRegex(prod.ProvisionError, "requires the observed etag"):
             prod.GCSBucketPolicyAdapter.serialize_for_write({"version": 3, "bindings": []})
+
+    def test_unconditional_v1_is_preserved_as_observed_and_normalized_for_noop_and_write(self):
+        noop = FakeProvider(policy={"etag": "bucket-v1-noop", "version": 1, "bindings": [
+            {"role": ROLE, "members": [MEMBER, "user:other@example.test"]},
+        ]})
+        noop.return_unconditional_version_one = True
+        with tempfile.TemporaryDirectory() as directory:
+            result = self.provisioner(noop, directory).apply()
+            evidence = json.loads((Path(directory) / "evidence.json").read_text())
+        self.assertEqual(result, "verified_noop")
+        self.assertEqual(noop.writes, [])
+        attempt = evidence["invocations"][0]["policy_attempts"][0]
+        self.assertEqual(attempt["before_wire_policy"]["version"], 1)
+        self.assertEqual(attempt["before_policy"]["version"], 3)
+        self.assertEqual(attempt["before_policy_normalization"]["provider_observed_version"], 1)
+        self.assertEqual(attempt["before_policy_normalization"]["normalized_policy_version"], 3)
+        self.assertEqual(attempt["before_policy_normalization"]["policy_version_normalization"],
+                         "unconditional_v1_to_v3_internal_policy_view")
+        self.assert_only_fixed_provider_calls(noop)
+
+        addition = FakeProvider(policy={"etag": "bucket-v1-add", "version": 1, "bindings": [
+            {"role": "roles/storage.objectViewer", "members": ["user:reader@example.test"]},
+        ]})
+        addition.return_unconditional_version_one = True
+        with tempfile.TemporaryDirectory() as directory:
+            result = self.provisioner(addition, directory).apply()
+            evidence = json.loads((Path(directory) / "evidence.json").read_text())
+        self.assertEqual(result, "verified_addition")
+        self.assertEqual(len(addition.writes), 1)
+        self.assertEqual(addition.writes[0]["version"], 3)
+        self.assertEqual(addition.writes[0]["etag"], "bucket-v1-add")
+        self.assertEqual(addition.policy_reads, 2)
+        self.assertEqual(addition.policy["bindings"], [
+            {"role": "roles/storage.objectViewer", "members": ["user:reader@example.test"]},
+            {"role": ROLE, "members": [MEMBER]},
+        ])
+        attempt = evidence["invocations"][0]["policy_attempts"][0]
+        self.assertEqual(attempt["before_wire_policy"]["version"], 1)
+        self.assertEqual(attempt["before_policy"]["version"], 3)
+        self.assertEqual(attempt["after_wire_policy"]["version"], 1)
+        self.assertEqual(attempt["after_policy"]["version"], 3)
+        self.assertEqual(attempt["after_policy_normalization"]["provider_observed_version"], 1)
+        self.assertEqual(attempt["submitted_policy"]["version"], 3)
+        self.assertEqual(attempt["set_policy_serialization"]["provider_observed_version"], 1)
+        self.assertEqual(attempt["set_policy_serialization"]["version"], 3)
+        self.assertEqual(attempt["set_policy_serialization"]["write_policy_version_source"],
+                         "explicit_v3_policy_serializer")
+        self.assert_only_fixed_provider_calls(addition)
+
+    def test_invalid_or_missing_version_on_write_readback_fails_without_replay(self):
+        for case in ("wrong", "missing"):
+            fake = FakeProvider()
+            if case == "wrong":
+                fake.policy_version_on_read[2] = 2
+            else:
+                fake.policy_version_absent_at.add(2)
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                with self.assertRaisesRegex(prod.ProvisionError, "unexpected policy version"):
+                    self.provisioner(fake, directory).apply()
+                evidence = json.loads((Path(directory) / "evidence.json").read_text())
+            self.assertEqual(evidence["invocations"][0]["status"], "failed")
+            self.assertEqual(evidence["invocations"][0]["policy_attempts"][0]["status"], "readback_failed")
+            self.assertEqual(fake.policy_reads, 2)
+            self.assertEqual(len(fake.writes), 1)
+            self.assert_only_fixed_provider_calls(fake)
 
     def test_installed_sdk_get_policy_and_protojson_serializer_wire_fixture(self):
         gcloud = shutil.which("gcloud")
@@ -222,6 +304,7 @@ class ExportJobProdProvisionTests(unittest.TestCase):
             self.skipTest("installed Cloud SDK and compatible Python 3.14 are required for the wire fixture")
         sdk_root = Path(gcloud).resolve().parents[1]
         fixture = Path(__file__).with_name("lwc486_gcloud_sdk_wire_fixture.py")
+        temp_root = os.environ.get("TMPDIR", "/Users/rayer/.hermes/profiles/lwc-tpm/cache/scratch")
         with tempfile.TemporaryDirectory(prefix="lwc486-sdk-wire-test-") as temp_dir:
             scratch = Path(temp_dir)
             home = scratch / "home"
@@ -242,6 +325,7 @@ class ExportJobProdProvisionTests(unittest.TestCase):
                 "PYTHONNOUSERSITE": "1",
                 "PYTHONDONTWRITEBYTECODE": "1",
                 "NO_PROXY": "127.0.0.1,localhost",
+                "TMPDIR": temp_root,
             }
             self.assertFalse(adc.exists())
             completed = subprocess.run([python, "-S", str(fixture)], cwd=Path(__file__).resolve().parents[1],
@@ -249,14 +333,15 @@ class ExportJobProdProvisionTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         evidence = json.loads(completed.stdout)
         self.assertEqual(evidence["base_url"], "http://127.0.0.1:18764/storage/v1/")
-        self.assertEqual(evidence["captured_call_count"], 8)
+        self.assertEqual(evidence["captured_call_count"], 12)
         self.assertEqual(evidence["version_controls"], [
             {"response_version": 2, "observed_version": 2},
             {"response_version": None, "observed_version": None},
         ])
         self.assertEqual(evidence["loss_controls"], {"member_loss_observed": True, "condition_loss_observed": True})
         for case in evidence["cases"]:
-            self.assertEqual(case["get_version"], 3)
+            expected_response_version = 3 if case["name"] == "conditional" else 1
+            self.assertEqual(case["get_version"], expected_response_version)
             self.assertTrue(case["get_wire"]["authorization_is_synthetic"])
             get_query = parse_qs(urlsplit(case["get_wire"]["url"]).query)
             self.assertEqual(get_query, {"alt": ["json"], "optionsRequestedPolicyVersion": ["3"],
@@ -271,6 +356,46 @@ class ExportJobProdProvisionTests(unittest.TestCase):
             self.assertEqual(submitted["bindings"][0].get("condition"), case["get_bindings"]["bindings"][0].get("condition"))
         self.assertIsNotNone(evidence["cases"][0]["get_bindings"]["bindings"][0].get("condition"))
         self.assertNotIn("condition", evidence["cases"][1]["get_bindings"]["bindings"][0])
+        self.assertEqual(evidence["product_cases"]["unconditional_v1_noop"]["result"], "verified_noop")
+        no_op = evidence["product_cases"]["unconditional_v1_noop"]
+        self.assertEqual(no_op["before_wire_version"], 1)
+        self.assertEqual(no_op["before_policy_version"], 3)
+        self.assertEqual(no_op["normalization"]["provider_observed_version"], 1)
+        self.assertEqual(no_op["normalization"]["normalized_policy_version"], 3)
+        self.assertEqual(no_op["normalization"]["policy_version_normalization"],
+                         "unconditional_v1_to_v3_internal_policy_view")
+        self.assertEqual(no_op["write_count"], 0)
+        self.assertEqual([call["method"] for call in no_op["calls"]], ["GET"])
+        self.assertTrue(no_op["calls"][0]["authorization_is_synthetic"])
+        self.assertEqual(parse_qs(urlsplit(no_op["calls"][0]["url"]).query), {
+            "alt": ["json"], "optionsRequestedPolicyVersion": ["3"], "fields": ["bindings,etag,version"],
+        })
+        self.assertEqual(evidence["product_cases"]["unconditional_v1_addition"]["result"], "verified_addition")
+        addition = evidence["product_cases"]["unconditional_v1_addition"]
+        self.assertEqual(addition["before_wire_version"], 1)
+        self.assertEqual(addition["after_wire_version"], 1)
+        self.assertEqual(addition["submitted_version"], 3)
+        self.assertEqual(addition["after_policy_version"], 3)
+        self.assertEqual(addition["before_policy_version"], 3)
+        self.assertEqual(addition["before_normalization"]["provider_observed_version"], 1)
+        self.assertEqual(addition["before_normalization"]["normalized_policy_version"], 3)
+        self.assertEqual(addition["after_normalization"]["provider_observed_version"], 1)
+        self.assertEqual(addition["after_normalization"]["normalized_policy_version"], 3)
+        self.assertEqual(addition["write_serialization"]["provider_observed_version"], 1)
+        self.assertEqual(addition["write_serialization"]["version"], 3)
+        self.assertEqual(addition["write_serialization"]["write_policy_version_source"],
+                         "explicit_v3_policy_serializer")
+        self.assertEqual(addition["methods"], ["GET", "PUT", "GET"])
+        self.assertTrue(all(call["authorization_is_synthetic"] for call in addition["calls"]))
+        self.assertEqual(addition["calls"][1]["body"], addition["submitted_policy"])
+        self.assertEqual(parse_qs(urlsplit(addition["calls"][2]["url"]).query), {
+            "alt": ["json"], "optionsRequestedPolicyVersion": ["3"], "fields": ["bindings,etag,version"],
+        })
+        self.assertEqual(addition["submitted_policy"]["bindings"], [
+            {"role": "roles/storage.objectViewer", "members": ["user:reader@example.test"]},
+            {"role": ROLE, "members": [MEMBER]},
+        ])
+        self.assertEqual(addition["write_count"], 1)
 
     def test_declaration_is_the_exact_fixed_production_binding(self):
         self.assertEqual(prod.load_contract(), {
@@ -371,8 +496,10 @@ class ExportJobProdProvisionTests(unittest.TestCase):
         self.assertEqual(attempt["after_policy"]["version"], 3)
         self.assertEqual(attempt["before_wire_policy"]["version"], 3)
         self.assertEqual(attempt["after_wire_policy"]["version"], 3)
-        self.assertEqual(attempt["before_policy_normalization"]["version_source"], "returned_and_verified")
-        self.assertEqual(attempt["after_policy_normalization"]["version_source"], "returned_and_verified")
+        self.assertEqual(attempt["before_policy_normalization"]["provider_observed_version"], 3)
+        self.assertEqual(attempt["after_policy_normalization"]["provider_observed_version"], 3)
+        self.assertEqual(attempt["before_policy_normalization"]["policy_version_normalization"], "none")
+        self.assertEqual(attempt["after_policy_normalization"]["policy_version_normalization"], "none")
         self.assertEqual(attempt["set_policy_serialization"]["version"], 3)
         self.assert_only_fixed_provider_calls(fake)
 

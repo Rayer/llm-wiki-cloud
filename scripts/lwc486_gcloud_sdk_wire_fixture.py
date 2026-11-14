@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 from urllib.parse import urlsplit
 
@@ -12,6 +14,7 @@ BUCKET = "llm-wiki-data"
 ROLE = "projects/llm-wiki-cloud/roles/lwcExportObjectLister"
 MEMBER = "serviceAccount:lwc-export-worker-prod@llm-wiki-cloud.iam.gserviceaccount.com"
 SYNTHETIC_AUTH = "Bearer lwc486-sdk-wire-fixture"
+SYNTHETIC_TOKEN = "lwc486-sdk-wire-fixture"
 BASE_URL = "http://127.0.0.1:18764/storage/v1/"
 
 
@@ -43,6 +46,15 @@ class CapturedHttp:
         content = json.dumps(payload).encode("utf-8")
         return {"status": "200", "content-type": "application/json", "content-length": str(len(content))}, content
 
+    @staticmethod
+    def summarized_call(call):
+        return {
+            "method": call["method"],
+            "url": call["url"],
+            "authorization_is_synthetic": call["authorization_is_synthetic"],
+            "body": json.loads(call["body"]) if call["body"] else None,
+        }
+
 
 def policy_case(name, *, conditioned):
     binding = {"role": ROLE, "members": [MEMBER, "user:fixture@example.test"]}
@@ -54,9 +66,20 @@ def policy_case(name, *, conditioned):
         }
     return {
         "name": name,
-        "response": {"version": 3, "etag": "c2RrLWNvbmRpdGlvbmVkLWV0YWc=", "bindings": [binding]},
+        "response": {"version": 3 if conditioned else 1,
+                     "etag": "c2RrLWNvbmRpdGlvbmVkLWV0YWc=", "bindings": [binding]},
         "input": {"version": 1, "etag": "c2RrLWNvbmRpdGlvbmVkLWV0YWc=", "bindings": [binding]},
     }
+
+
+class SyntheticRoleCommand:
+    """Only satisfy the local custom-role read; it never invokes gcloud."""
+
+    def __call__(self, args):
+        if args[1:4] != ["iam", "roles", "describe"]:
+            raise AssertionError("the fixture attempted an unexpected command")
+        role = {"name": ROLE, "stage": "GA", "includedPermissions": ["storage.objects.list"]}
+        return subprocess.CompletedProcess(args, 0, json.dumps(role), "")
 
 
 def main():
@@ -73,6 +96,9 @@ def main():
     from googlecloudsdk.api_lib.storage.gcs_json.metadata_field_converters import process_iam_file
     from googlecloudsdk.generated_clients.apis.storage.v1 import storage_v1_client
     from googlecloudsdk.generated_clients.apis.storage.v1 import storage_v1_messages
+    project_root = Path(__file__).resolve().parents[1]
+    sys.path.insert(0, str(project_root))
+    from deploy.provision import exportjob_prod as prod
 
     cases = [policy_case("conditional", conditioned=True), policy_case("unconditioned", conditioned=False)]
     wrong_version = {"version": 2, "etag": "c2RrLWNvbmRpdGlvbmVkLWV0YWc=", "bindings": cases[0]["response"]["bindings"]}
@@ -145,8 +171,85 @@ def main():
         "condition_loss_observed": condition_policy.bindings[0].condition is None,
     }
 
+    # Carry the documented provider v1 response through the actual helper adapter
+    # and Provisioner while reusing the same captured numeric-loopback transport.
+    noop_response = {
+        "version": 1,
+        "etag": "c2RrLXYxLW5vb3AtZXRhZw==",
+        "bindings": [{"role": ROLE, "members": [MEMBER, "user:other@example.test"]}],
+    }
+    addition_before = {
+        "version": 1,
+        "etag": "c2RrLXYxLWFkZC1ldGFn",
+        "bindings": [{"role": "roles/storage.objectViewer", "members": ["user:reader@example.test"]}],
+    }
+    addition_after = {
+        "version": 1,
+        "etag": "c2RrLXYxLWFmdGVyLWV0YWc=",
+        "bindings": addition_before["bindings"] + [{"role": ROLE, "members": [MEMBER]}],
+    }
+    http.get_responses.extend([noop_response, addition_before, addition_after])
+
+    def product_adapter():
+        def transport(method, url, headers, body):
+            info, content = http.request(url, method=method, body=body, headers=headers)
+            return int(info["status"]), content
+
+        return prod.GCSBucketPolicyAdapter(
+            token_provider=lambda: SYNTHETIC_TOKEN,
+            transport=transport,
+            api_base_url=prod.TEST_JSON_API_BASE,
+        )
+
+    with tempfile.TemporaryDirectory(prefix="lwc486-product-v1-noop-") as temp_dir:
+        before_calls = len(http.calls)
+        no_op_provisioner = prod.Provisioner(
+            prod.expected_contract(), SyntheticRoleCommand(), Path(temp_dir) / "evidence.json",
+            policy_adapter=product_adapter(),
+        )
+        no_op_result = no_op_provisioner.apply()
+        no_op_attempt = json.loads((Path(temp_dir) / "evidence.json").read_text())["invocations"][0]["policy_attempts"][0]
+        no_op_calls = http.calls[before_calls:]
+
+    with tempfile.TemporaryDirectory(prefix="lwc486-product-v1-add-") as temp_dir:
+        before_calls = len(http.calls)
+        add_provisioner = prod.Provisioner(
+            prod.expected_contract(), SyntheticRoleCommand(), Path(temp_dir) / "evidence.json",
+            policy_adapter=product_adapter(),
+        )
+        add_result = add_provisioner.apply()
+        add_attempt = json.loads((Path(temp_dir) / "evidence.json").read_text())["invocations"][0]["policy_attempts"][0]
+        add_calls = http.calls[before_calls:]
+
+    product_cases = {
+        "unconditional_v1_noop": {
+            "result": no_op_result,
+            "before_wire_version": no_op_attempt["before_wire_policy"]["version"],
+            "before_policy_version": no_op_attempt["before_policy"]["version"],
+            "normalization": no_op_attempt["before_policy_normalization"],
+            "write_count": sum(call["method"] == "PUT" for call in no_op_calls),
+            "calls": [http.summarized_call(call) for call in no_op_calls],
+        },
+        "unconditional_v1_addition": {
+            "result": add_result,
+            "before_wire_version": add_attempt["before_wire_policy"]["version"],
+            "before_policy_version": add_attempt["before_policy"]["version"],
+            "after_wire_version": add_attempt["after_wire_policy"]["version"],
+            "after_policy_version": add_attempt["after_policy"]["version"],
+            "before_normalization": add_attempt["before_policy_normalization"],
+            "after_normalization": add_attempt["after_policy_normalization"],
+            "submitted_version": add_attempt["submitted_policy"]["version"],
+            "write_serialization": add_attempt["set_policy_serialization"],
+            "submitted_policy": add_attempt["submitted_policy"],
+            "write_count": sum(call["method"] == "PUT" for call in add_calls),
+            "methods": [call["method"] for call in add_calls],
+            "calls": [http.summarized_call(call) for call in add_calls],
+        },
+    }
+
     print(json.dumps({"base_url": BASE_URL, "cases": results, "version_controls": controls,
                       "loss_controls": loss_controls,
+                      "product_cases": product_cases,
                       "captured_call_count": len(http.calls)}, sort_keys=True))
 
 

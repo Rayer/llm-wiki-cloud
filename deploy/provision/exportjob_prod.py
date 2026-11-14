@@ -141,23 +141,38 @@ class PolicyReadback:
     normalization: dict
 
 
-def normalize_json_api_policy(raw: object, *, requested_version: int | None,
+def normalize_json_api_policy(raw: object, *, requested_maximum_version: int | None,
                               requested_fields: list[str]) -> PolicyReadback:
-    """Validate the complete version-aware policy returned by the JSON API."""
+    """Validate raw policy version and explicitly normalize a legal unconditional v1."""
     if not isinstance(raw, dict):
         raise ProvisionError("Production bucket IAM policy read returned an invalid shape")
-    if requested_version != IAM_POLICY_VERSION:
-        raise ProvisionError("Production bucket IAM policy read requires an explicit v3 request")
+    if requested_maximum_version != IAM_POLICY_VERSION:
+        raise ProvisionError("Production bucket IAM policy read requires an explicit maximum v3 request")
+    bindings = _policy_bindings(raw)
     wire_policy = copy.deepcopy(raw)
     policy = copy.deepcopy(raw)
-    if type(policy.get("version")) is not int or policy["version"] != requested_version:
+    observed_version = policy.get("version")
+    if type(observed_version) is not int:
         raise ProvisionError("Production bucket IAM policy readback has an unexpected policy version")
-    _policy_bindings(policy)
+    conditions_present = any(binding.get("condition") is not None for binding in bindings)
+    if observed_version == 3:
+        version_normalization = "none"
+    elif observed_version == 1 and not conditions_present:
+        # GetPolicyOptions requests the maximum response format; an unconditioned
+        # policy can legally remain v1. Normalize only the working/write copy.
+        policy["version"] = IAM_POLICY_VERSION
+        version_normalization = "unconditional_v1_to_v3_internal_policy_view"
+    elif observed_version == 1 and conditions_present:
+        raise ProvisionError("Production bucket IAM policy returned v1 while containing conditions")
+    else:
+        raise ProvisionError("Production bucket IAM policy readback has an unexpected policy version")
     normalization = {
         "provider_api": "Cloud Storage JSON API buckets.getIamPolicy",
-        "requested_policy_version": requested_version,
+        "requested_maximum_policy_version": requested_maximum_version,
         "requested_fields": requested_fields.copy(),
-        "version_source": "returned_and_verified",
+        "provider_observed_version": observed_version,
+        "normalized_policy_version": policy["version"],
+        "policy_version_normalization": version_normalization,
     }
     return PolicyReadback(policy=policy, wire_policy=wire_policy, normalization=normalization)
 
@@ -233,7 +248,7 @@ class GCSBucketPolicyAdapter:
             raw = json.loads(content)
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
             raise ProvisionError("Production bucket IAM policy read returned invalid JSON") from error
-        result = normalize_json_api_policy(raw, requested_version=IAM_POLICY_VERSION,
+        result = normalize_json_api_policy(raw, requested_maximum_version=IAM_POLICY_VERSION,
                                            requested_fields=IAM_POLICY_FIELDS)
         normalization = dict(result.normalization)
         normalization["request_url"] = url
@@ -445,6 +460,8 @@ class Provisioner:
             attempt["set_policy_serialization"] = {
                 "version": IAM_POLICY_VERSION,
                 "provider_api": "Cloud Storage JSON API buckets.setIamPolicy",
+                "provider_observed_version": readback.normalization["provider_observed_version"],
+                "write_policy_version_source": "explicit_v3_policy_serializer",
             }
             attempt["status"] = "write_pending"
             self._save()
