@@ -83,6 +83,7 @@ func TestLocalPipelineEventsBoundedHistoryAndExactIntentOverlay(t *testing.T) {
 		t.Fatalf("seed exact known local run: %v", err)
 	}
 	if _, err := scopedfirestore.Collection(fsClient.Raw(), "pipeline_quota").Doc(scopedfirestore.QuotaDocID("user-a", "project-a")).Set(ctx, map[string]any{
+		"user_id": "user-a", "project_id": "project-a",
 		"active_reservation_id": "known-reservation", "last_pipeline_intent_id": "known-reservation",
 	}); err != nil {
 		t.Fatalf("seed local active intent pointer: %v", err)
@@ -196,7 +197,10 @@ func TestCloudPipelineEventsBoundedGlobalScanAndExactRunOverlay(t *testing.T) {
 		return h
 	}
 	seedCandidate := func(reservationID, executionID string) {
-		if _, err := scopedfirestore.Collection(fsClient.Raw(), "pipeline_quota").Doc(scopedfirestore.QuotaDocID("user-a", "project-a")).Set(ctx, map[string]any{"active_reservation_id": reservationID, "last_pipeline_intent_id": reservationID}); err != nil {
+		if _, err := scopedfirestore.Collection(fsClient.Raw(), "pipeline_quota").Doc(scopedfirestore.QuotaDocID("user-a", "project-a")).Set(ctx, map[string]any{
+			"user_id": "user-a", "project_id": "project-a",
+			"active_reservation_id": reservationID, "last_pipeline_intent_id": reservationID,
+		}); err != nil {
 			t.Fatalf("seed scoped quota pointer: %v", err)
 		}
 		if _, err := scopedfirestore.Collection(fsClient.Raw(), "pipeline_quota_reservations").Doc(reservationID).Set(ctx, map[string]any{
@@ -391,6 +395,7 @@ func TestCloudPipelineEventOutcomeUsesOwnerDetailAndPublicationEvidenceEmulator(
 	} {
 		t.Run(tc.executionID, func(t *testing.T) {
 			if _, err := scopedfirestore.Collection(fsClient.Raw(), "pipeline_quota").Doc(scopedfirestore.QuotaDocID(userID, projectID)).Set(ctx, map[string]any{
+				"user_id": userID, "project_id": projectID,
 				"active_reservation_id": tc.reservationID, "last_pipeline_intent_id": tc.reservationID,
 			}); err != nil {
 				t.Fatalf("seed bounded intent pointer: %v", err)
