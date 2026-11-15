@@ -245,6 +245,102 @@ func TestReleaseNotesNudgeAuthenticatedRoutePersistsProjectsAndPreservesTransiti
 	}
 }
 
+func TestReleaseNotesNudgeOutageReturnsTransientStaleNoticeForActiveItem(t *testing.T) {
+	if !requireLoopbackEmulator(t, "FIRESTORE_EMULATOR_HOST") {
+		t.Skip("requires loopback Firestore emulator")
+	}
+	t.Setenv("GCE_METADATA_HOST", "127.0.0.1:9")
+	t.Setenv("HTTP_PROXY", "")
+	t.Setenv("HTTPS_PROXY", "")
+	t.Setenv("ALL_PROXY", "")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	fsClient := newContentContextEmulator(t)
+	defer fsClient.Close()
+
+	runtime := releaseNotesRuntime("1.0.0", "llm-wiki-bff-dev-00041-xyz")
+	store, snapshot := releaseNotesIndexFixture(t, runtime, 123, true, "original")
+	ownerID := fmt.Sprintf("release-notes-stale-wire-%d", time.Now().UnixNano())
+	handler := &Handler{firestore: fsClient}
+	handler.SetReleaseNotesSource(store, runtime)
+	router := newReleaseNotesRoute(t, handler, ownerID)
+	key := "release-notes:llm-wiki-cloud:dev"
+
+	status, response := releaseNotesRouteCall(t, router, http.MethodPost, "/api/v1/nudges/reconcile", "")
+	var initial nudge.View
+	if status != http.StatusOK || json.Unmarshal([]byte(response), &initial) != nil || initial.Partial || len(initial.Items) != 1 {
+		t.Fatalf("current Release source did not create one visible item: status=%d body=%s", status, response)
+	}
+	item := initial.Items[0]
+	if item.Category != nudge.CategoryReleaseNotes || item.AttentionID == "" || len(item.Observations) != 1 {
+		t.Fatalf("current Release item identity=%+v", item)
+	}
+	repository := nudge.NewRepository(fsClient.Raw())
+	before, err := repository.ReadSourceSlot(ctx, ownerID, nudge.CategoryReleaseNotes, key)
+	if err != nil || !before.Active || before.SourceRevision != 1 || before.Observation == nil {
+		t.Fatalf("active Release source slot missing before outage: slot=%+v err=%v", before, err)
+	}
+	categoryRef := scopedfirestore.Collection(fsClient.Raw(), "user_nudges").Doc(ownerID).
+		Collection("categories").Doc(nudge.CategoryReleaseNotes)
+	status, response = releaseNotesRouteCall(t, router, http.MethodPatch, "/api/v1/nudges/release-notes/attention",
+		fmt.Sprintf(`{"attention_id":%q,"action":"read"}`, item.AttentionID))
+	categoryBefore, categoryErr := categoryRef.Get(ctx)
+	if status != http.StatusNoContent || categoryErr != nil || categoryBefore.Data()["attention_id"] != item.AttentionID ||
+		categoryBefore.Data()["attention_state"] != string(nudge.AttentionRead) {
+		t.Fatalf("could not mark the active Release attention read before outage: status=%d category=%v err=%v body=%s",
+			status, categoryBefore.Data(), categoryErr, response)
+	}
+
+	store.setIndexError(errors.New("test-only source outage"))
+	status, response = releaseNotesRouteCall(t, router, http.MethodPost, "/api/v1/nudges/reconcile", "")
+	var outage nudge.View
+	if status != http.StatusOK || json.Unmarshal([]byte(response), &outage) != nil || !outage.Partial || len(outage.Items) != 1 ||
+		outage.Items[0].AttentionID != item.AttentionID || outage.Items[0].AttentionState != nudge.AttentionRead || len(outage.Items[0].Observations) != 1 {
+		t.Fatalf("matching current Release outage did not retain its visible read item and partial state: status=%d body=%s", status, response)
+	}
+	staleNotice := false
+	for _, notice := range outage.Notices {
+		if notice.SourceKey == key && notice.State == "stale" {
+			staleNotice = true
+		}
+	}
+	if !staleNotice {
+		t.Fatalf("handler wire omitted the stale notice for the retained Release source: %+v", outage)
+	}
+	afterOutage, err := repository.ReadSourceSlot(ctx, ownerID, nudge.CategoryReleaseNotes, key)
+	categoryAfter, categoryErr := categoryRef.Get(ctx)
+	if err != nil || categoryErr != nil || !afterOutage.Active || afterOutage.SourceRevision != before.SourceRevision ||
+		afterOutage.PayloadDigest != before.PayloadDigest || afterOutage.AttentionMaterialRevision != before.AttentionMaterialRevision ||
+		afterOutage.ProducerWitness != before.ProducerWitness || afterOutage.Observation == nil ||
+		categoryAfter.Data()["attention_id"] != item.AttentionID || categoryAfter.Data()["attention_state"] != string(nudge.AttentionRead) {
+		t.Fatalf("outage rewrote the Release source or read attention: before=%+v after=%+v category=%v errors=%v/%v",
+			before, afterOutage, categoryAfter.Data(), err, categoryErr)
+	}
+
+	readsBeforeGet := store.readCount()
+	status, response = releaseNotesRouteCall(t, router, http.MethodGet, "/api/v1/nudges", "")
+	var persistedGet nudge.View
+	if status != http.StatusOK || store.readCount() != readsBeforeGet || json.Unmarshal([]byte(response), &persistedGet) != nil ||
+		persistedGet.Partial || len(persistedGet.Items) != 1 || persistedGet.Items[0].AttentionID != item.AttentionID ||
+		persistedGet.Items[0].AttentionState != nudge.AttentionRead {
+		t.Fatalf("persisted GET did not remain source-read-only with the retained item: status=%d reads=%d before=%d body=%s",
+			status, store.readCount(), readsBeforeGet, response)
+	}
+
+	store.setIndex(snapshot, store.content)
+	status, response = releaseNotesRouteCall(t, router, http.MethodPost, "/api/v1/nudges/reconcile", "")
+	var recovered nudge.View
+	if status != http.StatusOK || json.Unmarshal([]byte(response), &recovered) != nil || recovered.Partial || len(recovered.Items) != 1 ||
+		recovered.Items[0].AttentionID != item.AttentionID || recovered.Items[0].AttentionState != nudge.AttentionRead {
+		t.Fatalf("successful source recovery did not clear partial state and retain attention: status=%d body=%s", status, response)
+	}
+	for _, notice := range recovered.Notices {
+		if notice.SourceKey == key && notice.State == "stale" {
+			t.Fatalf("recovered source still emitted stale notice: %+v", recovered.Notices)
+		}
+	}
+}
+
 func TestReleaseNotesFixedOldRuntimeCannotReplaceNewerCommonSlot(t *testing.T) {
 	if !requireLoopbackEmulator(t, "FIRESTORE_EMULATOR_HOST") {
 		t.Skip("requires loopback Firestore emulator")
@@ -282,12 +378,24 @@ func TestReleaseNotesFixedOldRuntimeCannotReplaceNewerCommonSlot(t *testing.T) {
 	handlerV.SetReleaseNotesSource(newStore, runtimeV)
 	routerV := newReleaseNotesRoute(t, handlerV, ownerID)
 	status, response = releaseNotesRouteCall(t, routerV, http.MethodPost, "/api/v1/nudges/reconcile", "")
-	if status != http.StatusOK || !strings.Contains(response, "release-transition-unavailable") {
+	var firstCaptureV nudge.View
+	if status != http.StatusOK || !strings.Contains(response, "release-transition-unavailable") ||
+		json.Unmarshal([]byte(response), &firstCaptureV) != nil || len(firstCaptureV.Items) != 0 {
 		t.Fatalf("fixed old runtime did not fail closed on latest W witness: status=%d body=%s", status, response)
 	}
 	afterLatest, err := repository.ReadSourceSlot(ctx, ownerID, nudge.CategoryReleaseNotes, key)
 	if err != nil || afterLatest.SourceRevision != before.SourceRevision || afterLatest.ProducerWitness != before.ProducerWitness {
 		t.Fatalf("old first-capture runtime replaced current common slot: before=%+v after=%+v err=%v", before, afterLatest, err)
+	}
+
+	unknownRuntime := releaseNotesRuntime("", "llm-wiki-bff-dev-00043-xyz")
+	handlerUnknown := &Handler{firestore: fsClient}
+	handlerUnknown.SetReleaseNotesSource(newStore, unknownRuntime)
+	unknownRouter := newReleaseNotesRoute(t, handlerUnknown, ownerID)
+	status, response = releaseNotesRouteCall(t, unknownRouter, http.MethodPost, "/api/v1/nudges/reconcile", "")
+	var unknownView nudge.View
+	if status != http.StatusOK || json.Unmarshal([]byte(response), &unknownView) != nil || len(unknownView.Items) != 0 {
+		t.Fatalf("unknown runtime version exposed the persisted W Release item: status=%d body=%s", status, response)
 	}
 
 	// A previously cached V index also fails the common monotonic witness fence,
@@ -296,7 +404,9 @@ func TestReleaseNotesFixedOldRuntimeCannotReplaceNewerCommonSlot(t *testing.T) {
 	handlerCachedV.SetReleaseNotesSource(oldStore, runtimeV)
 	cachedRouter := newReleaseNotesRoute(t, handlerCachedV, ownerID)
 	status, response = releaseNotesRouteCall(t, cachedRouter, http.MethodPost, "/api/v1/nudges/reconcile", "")
-	if status != http.StatusOK || !strings.Contains(response, "release_source_revision_conflict") {
+	var cachedView nudge.View
+	if status != http.StatusOK || !strings.Contains(response, "release_source_revision_conflict") ||
+		json.Unmarshal([]byte(response), &cachedView) != nil || len(cachedView.Items) != 0 {
 		t.Fatalf("stale old runtime did not report common witness conflict: status=%d body=%s", status, response)
 	}
 	afterCached, err := repository.ReadSourceSlot(ctx, ownerID, nudge.CategoryReleaseNotes, key)

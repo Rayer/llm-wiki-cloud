@@ -23,7 +23,7 @@ export function NudgePanel({ onClose }: { onClose: () => void }) {
   } | null>(null);
   const [errorState, setErrorState] = useState<{ identity: string; value: string } | null>(null);
   const [busyState, setBusyState] = useState<{ identity: string; value: boolean } | null>(null);
-  const [copiedState, setCopiedState] = useState<{ identity: string; actionId: string } | null>(null);
+  const [copiedState, setCopiedState] = useState<{ identity: string; sourceKey: string; actionId: string } | null>(null);
   const [fallbackState, setFallbackState] = useState<{
     identity: string; text: string; href: string; action: NudgeAction; item: NudgeItem;
   } | null>(null);
@@ -31,8 +31,12 @@ export function NudgePanel({ onClose }: { onClose: () => void }) {
   const sourceStatus = sourceStatusState?.identity === requestIdentity ? sourceStatusState.value : null;
   const error = errorState?.identity === requestIdentity ? errorState.value : '';
   const busy = busyState?.identity === requestIdentity && busyState.value;
-  const copied = copiedState?.identity === requestIdentity ? copiedState.actionId : '';
   const fallback = fallbackState?.identity === requestIdentity ? fallbackState : null;
+  const isSourceStale = (sourceKey: string) => sourceStatus?.notices?.some(
+    (notice) => notice.state === 'stale' && notice.source_key === sourceKey,
+  ) ?? false;
+  const isActionCopied = (sourceKey: string, actionId: string) => copiedState?.identity === requestIdentity &&
+    copiedState.sourceKey === sourceKey && copiedState.actionId === actionId;
 
   const refresh = async (identity = requestIdentity, reconcile = false) => {
     if (requestIdentityRef.current !== identity) return;
@@ -45,12 +49,21 @@ export function NudgePanel({ onClose }: { onClose: () => void }) {
       if (reconcile) {
         setSourceStatusState({
           identity,
-          value: { partial: saved.partial, failures: saved.failures, notices: saved.notices },
+          value: { partial: saved.partial, failures: saved.failures, notices: saved.notices ?? [] },
         });
       } else if (saved.partial) {
+        const previousStaleNotices = sourceStatusState?.identity === identity
+          ? (sourceStatusState.value.notices ?? []).filter((notice) => notice.state === 'stale')
+          : [];
+        const notices = [...(saved.notices ?? [])];
+        for (const notice of previousStaleNotices) {
+          if (!notices.some((current) => current.source_key === notice.source_key && current.state === 'stale')) {
+            notices.push(notice);
+          }
+        }
         setSourceStatusState({
           identity,
-          value: { partial: true, failures: saved.failures, notices: saved.notices },
+          value: { partial: true, failures: saved.failures, notices },
         });
       }
       setErrorState({ identity, value: '' });
@@ -74,7 +87,7 @@ export function NudgePanel({ onClose }: { onClose: () => void }) {
       setViewState({ identity: requestIdentity, value: saved });
       setSourceStatusState({
         identity: requestIdentity,
-        value: { partial: saved.partial, failures: saved.failures, notices: saved.notices },
+        value: { partial: saved.partial, failures: saved.failures, notices: saved.notices ?? [] },
       });
       setErrorState({ identity: requestIdentity, value: '' });
     }).catch(() => {
@@ -105,7 +118,7 @@ export function NudgePanel({ onClose }: { onClose: () => void }) {
     }
   };
 
-  const runAction = async (item: NudgeItem, action: NudgeAction) => {
+  const runAction = async (item: NudgeItem, sourceKey: string, action: NudgeAction) => {
     const identity = requestIdentity;
     if (requestIdentityRef.current !== identity) return;
     const href = action.target ? resolveNudgeTarget(action.target) : null;
@@ -124,7 +137,7 @@ export function NudgePanel({ onClose }: { onClose: () => void }) {
       try {
         await navigator.clipboard.writeText(action.copy_text ?? '');
         if (requestIdentityRef.current !== identity) return;
-        setCopiedState({ identity, actionId: action.id });
+        setCopiedState({ identity, sourceKey, actionId: action.id });
       } catch {
         if (requestIdentityRef.current !== identity) return;
         setCopiedState(null);
@@ -146,7 +159,7 @@ export function NudgePanel({ onClose }: { onClose: () => void }) {
         try { popup?.close(); } catch { /* the gesture may already have closed it */ }
         return;
       }
-      setCopiedState({ identity, actionId: action.id });
+      setCopiedState({ identity, sourceKey, actionId: action.id });
       if (!popup) {
         setFallbackState({ identity, text: action.copy_text ?? '', href, action, item });
         setErrorState({ identity, value: t('Nudge.popupBlocked') });
@@ -229,10 +242,12 @@ export function NudgePanel({ onClose }: { onClose: () => void }) {
                       {observation.published_summary ? <div><h4 className="font-medium text-zinc-200">{t('Nudge.publishedOverview')}</h4><p className="mt-1 whitespace-pre-wrap break-words leading-6 text-zinc-300">{observation.published_summary}</p></div> : null}
                       {observation.coverage ? <p className="text-xs text-zinc-400 sm:col-span-2">{t('Nudge.coverage', { selected: observation.coverage.selected_concepts, total: observation.coverage.total_concepts })}{observation.coverage.sampled ? ` ${t('Nudge.sampled')}` : ''}{observation.coverage.title_truncated_concepts + observation.coverage.body_truncated_concepts > 0 ? ` ${t('Nudge.truncated')}` : ''}</p> : null}
                     </div> : null}
-                    {observation.stale ? <p className="mt-2 text-xs text-amber-100">{t('Nudge.stale')}</p> : null}
+                    {observation.stale || isSourceStale(slot.source_key)
+                      ? <p className="mt-2 text-xs text-amber-100">{t('Nudge.stale')}</p>
+                      : null}
                     <div className="mt-3 flex flex-wrap gap-2">
-                      {observation.actions.map((action) => <button key={action.id} type="button" disabled={busy} onClick={() => void runAction(item, action)} className="min-h-11 rounded bg-[#DCE9E1] px-3 text-sm font-medium text-[#17231D] disabled:opacity-60">
-                        {copied === action.id ? t('Nudge.copied') : action.label}
+                      {observation.actions.map((action) => <button key={action.id} type="button" disabled={busy} onClick={() => void runAction(item, slot.source_key, action)} className="min-h-11 rounded bg-[#DCE9E1] px-3 text-sm font-medium text-[#17231D] disabled:opacity-60">
+                        {isActionCopied(slot.source_key, action.id) ? t('Nudge.copied') : action.label}
                       </button>)}
                     </div>
                   </div>;
