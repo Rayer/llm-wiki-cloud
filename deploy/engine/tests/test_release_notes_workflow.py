@@ -24,8 +24,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import release_notes
 import release_notes_workflow
 import release_notes_publish
+import release_notes_capture
 import engine
-from test_release_notes import canonical, note, operation_fixture, plan_fixture, run_capture_cli_with_service_url_failure
+from test_release_notes import (MemoryNotesStore, canonical, note, operation_fixture, plan_fixture,
+                                run_capture_cli_with_service_url_failure)
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -622,6 +624,56 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
                 "ready_id": str(ready_id), "result_id": str(result_id),
                 "ready_dir": ready_dir, "result_dir": result_dir}
 
+    def make_historical_result(self, root):
+        source = "a" * 40
+        identity = {"profile": "bff", "digest": "synthetic-history-inputs"}
+        candidate = {"revision": "revision-historical-fixture"}
+        plan = {
+            "schema": 3, "source": source, "executor_sha": source, "branch": "develop",
+            "tag": "2026.11.1-dev.6", "normalized": {
+                "environment": "development", "bff": {"service_name": "synthetic-bff"}},
+            "identities": {"bff": identity}, "dev_reference": None, "selected": ["bff"],
+        }
+        plan["id"] = release_notes_workflow._plan_id(plan)
+        plan_bytes = canonical(plan)
+        state = {"plan": plan["id"], "status": "success", "sequence": 4,
+                 "components": {"bff": {"status": "verified", "candidate": candidate}}}
+        state_bytes = canonical(state)
+        result = {
+            "release": plan["tag"], "attempt": plan["id"], "stage": "success", "status": "success",
+            "component": "bff", "expected": {"source": source,
+                "identity": hashlib.sha256(canonical(identity)).hexdigest()},
+            "observed": {"component_status": "verified"}, "candidate": candidate,
+            "last_verified_checkpoint": state["sequence"],
+        }
+        result_bytes = canonical(result)
+        receipt = {"component": "bff", "identity": identity,
+                   "artifact": {"image": "registry.example/bff@sha256:" + "c" * 64}}
+        receipt_bytes = canonical(receipt)
+        result_id, run_id, attempt = 9901, 9902, 1
+        head_sha = source
+        artifact_name = f"lwc-result-development-{run_id}-{attempt}"
+        metadata = {
+            "id": result_id, "name": artifact_name, "expired": False,
+            "digest": "sha256:" + "d" * 64, "expires_at": "2027-02-12T00:00:00Z",
+            "workflow_run": {"id": run_id, "head_branch": "develop", "head_sha": head_sha},
+        }
+        run = {"id": run_id, "run_attempt": attempt, "event": "workflow_dispatch",
+               "path": release_notes_workflow.WORKFLOW_PATH, "status": "completed",
+               "conclusion": "success", "head_branch": "develop", "head_sha": head_sha}
+        result_dir = root / "historical-result-fixture"
+        (result_dir / "receipts").mkdir(parents=True)
+        (result_dir / "plan.json").write_bytes(plan_bytes)
+        (result_dir / "state.json").write_bytes(state_bytes)
+        (result_dir / "result.json").write_bytes(result_bytes)
+        (result_dir / "receipts" / "bff.json").write_bytes(receipt_bytes)
+        return {
+            "result_id": str(result_id), "run_id": str(run_id), "attempt": str(attempt),
+            "head_sha": head_sha, "source_sha": source, "plan": plan, "plan_bytes": plan_bytes,
+            "state_bytes": state_bytes, "result_bytes": result_bytes, "receipt_bytes": receipt_bytes,
+            "metadata": metadata, "run": run, "result_dir": result_dir,
+        }
+
     def make_native_ready_handoff(self, root):
         producer_sha = "b" * 40
         plan = {
@@ -1168,6 +1220,276 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
         self.assertIs(kwargs["capture_output"], True)
         self.assertIs(kwargs["check"], False)
         self.assertIs(kwargs.get("shell", False), False)
+
+    def make_historical_package(self, package_dir, plan_bytes):
+        package_dir.mkdir()
+        body = note("2026.11.1", "en", "Synthetic fixture only; never published content")
+        manifest = {
+            "schema_version": 1, "product": "llm-wiki-cloud", "product_version": "2026.11.1",
+            "environment": "dev", "release_plan_sha256": hashlib.sha256(plan_bytes).hexdigest(),
+            "release_note_snapshot_ref": "LWC-A-58:synthetic-test-reference",
+            "release_note_snapshot_sha256": "sha256:" + "a" * 64,
+            "delivered_scope_evidence_sha256": "sha256:" + "b" * 64,
+            "original_published_at": "2026-11-01T22:58:30+08:00",
+            "historical_source_record_ref": "LWC-A-58:synthetic-test-reference",
+            "historical_source_record_sha256": "sha256:" + "c" * 64,
+            "imported_at": "2026-11-15T09:00:00+08:00",
+            "files": {"en": {"path": "en.json", "sha256": hashlib.sha256(body).hexdigest()}},
+        }
+        (package_dir / "release-notes-manifest.json").write_bytes(canonical(manifest))
+        (package_dir / "en.json").write_bytes(body)
+        return manifest, body
+
+    def test_historical_result_admission_binds_exact_successful_dev_operation(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fixture = self.make_historical_result(root)
+            output = root / "github-output"
+            binding_path = root / "history-binding.json"
+            binding = release_notes_workflow.validate_history_result_handoff(
+                fixture["metadata"], fixture["run"], fixture["result_dir"],
+                expected_artifact_id=fixture["result_id"], operation="deploy",
+                output_path=str(output), binding_path=binding_path)
+            self.assertEqual(binding["source_kind"], "historical-result")
+            self.assertEqual(binding["result_artifact_id"], fixture["result_id"])
+            self.assertEqual(binding["run_id"], fixture["run_id"])
+            self.assertEqual(binding["head_sha"], fixture["head_sha"])
+            self.assertEqual(binding["source_sha"], fixture["source_sha"])
+            self.assertEqual(binding["plan_sha256"], hashlib.sha256(fixture["plan_bytes"]).hexdigest())
+            self.assertEqual(json.loads(binding_path.read_text()), binding)
+            self.assertEqual(binding_path.stat().st_mode & 0o777, 0o600)
+            self.assertIn(f"plan_sha256={binding['plan_sha256']}\n", output.read_text())
+
+            for label, mutate in (
+                ("wrong artifact id", lambda meta, run: meta.update(id=int(fixture["result_id"]) + 1)),
+                ("expired artifact", lambda meta, run: meta.update(expired=True)),
+                ("wrong result name", lambda meta, run: meta.update(name="lwc-ready-development-9902-1")),
+                ("wrong run attempt", lambda meta, run: run.update(run_attempt=2)),
+                ("failed workflow", lambda meta, run: run.update(conclusion="failure")),
+                ("wrong source head", lambda meta, run: run.update(head_sha="e" * 40)),
+                ("non-dev branch", lambda meta, run: run.update(head_branch="main")),
+            ):
+                metadata = json.loads(json.dumps(fixture["metadata"]))
+                run = dict(fixture["run"])
+                mutate(metadata, run)
+                with self.subTest(label=label), self.assertRaises(release_notes_workflow.PackageWorkflowError):
+                    release_notes_workflow.validate_history_result_handoff(
+                        metadata, run, fixture["result_dir"], expected_artifact_id=fixture["result_id"],
+                        operation="deploy")
+
+            with self.assertRaisesRegex(release_notes.ReleaseNotesError, "native-operation-unsuccessful"):
+                release_notes_workflow.validate_history_result_handoff(
+                    fixture["metadata"], fixture["run"], fixture["result_dir"],
+                    expected_artifact_id=fixture["result_id"], operation="rollback")
+            sidecar = fixture["result_dir"] / "release-notes-operation.json"
+            sidecar.write_bytes(b"synthetic sidecar")
+            with self.assertRaisesRegex(release_notes_workflow.PackageWorkflowError,
+                                        "history-operation-sidecar-present"):
+                release_notes_workflow.validate_history_result_handoff(
+                    fixture["metadata"], fixture["run"], fixture["result_dir"],
+                    expected_artifact_id=fixture["result_id"], operation="deploy")
+
+    def test_historical_package_event_upload_receipt_and_resend_identity_are_bound(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fixture = self.make_historical_result(root)
+            binding = release_notes_workflow.validate_history_result_handoff(
+                fixture["metadata"], fixture["run"], fixture["result_dir"],
+                expected_artifact_id=fixture["result_id"], operation="deploy")
+            package = root / "package"
+            self.make_historical_package(package, fixture["plan_bytes"])
+            archive_b64 = base64.b64encode(release_notes_workflow.package_directory_archive(package)).decode("ascii")
+            request_id = "7" * 32
+            event = {
+                "inputs": {
+                    "prepare_release_notes_package": True, "operation": "release",
+                    "release_notes_action": "stop", "release_notes_package_request_id": request_id,
+                    "artifact_id": "", "release_notes_result_artifact_id": fixture["result_id"],
+                    "release_notes_operation": "deploy",
+                    "release_notes_package_retention_days": "90", "package_zip_base64": archive_b64,
+                },
+            }
+            event_path = root / "event.json"
+            event_path.write_bytes(canonical(event))
+            output = root / "prepare-output"
+            staged = root / "staged-package"
+            prepared = release_notes_workflow.prepare_package_from_event(
+                event_path, fixture["result_dir"] / "plan.json", staged, str(output), request_id,
+                "", "90", fixture["result_id"], "deploy")
+            self.assertEqual(prepared["source_kind"], "historical-result")
+            self.assertEqual(prepared["release_plan_sha256"], binding["plan_sha256"])
+            self.assertIn("source_kind=historical-result\n", output.read_text())
+            self.assertNotIn(archive_b64, json.dumps(prepared))
+
+            for label, changes in (
+                ("both source IDs", {"artifact_id": "9900"}),
+                ("wrong retained result", {"release_notes_result_artifact_id": "9900"}),
+                ("wrong native operation", {"release_notes_operation": "rollback"}),
+            ):
+                bad_event = {"inputs": {**event["inputs"], **changes}}
+                bad_path = root / f"bad-{label.replace(' ', '-')}.json"
+                bad_path.write_bytes(canonical(bad_event))
+                with self.subTest(label=label), self.assertRaisesRegex(
+                        release_notes_workflow.PackageWorkflowError, "workflow-event-invalid"):
+                    release_notes_workflow._read_package_input_from_event(
+                        bad_path, request_id, "", "90", fixture["result_id"], "deploy")
+
+            upload_run, upload_attempt, package_artifact_id = "9903", "2", "9904"
+            expected_name = release_notes.historical_package_artifact_name(
+                prepared["product_version"], "deploy", fixture["result_id"], upload_run, upload_attempt)
+            action_digest = "e" * 64
+            metadata = {"id": int(package_artifact_id), "name": expected_name,
+                        "digest": "sha256:" + action_digest, "expired": False,
+                        "expires_at": "2027-02-12T00:00:00Z", "workflow_run": {"id": int(upload_run)}}
+            receipt = release_notes_workflow.verify_uploaded_package(
+                staged, fixture["result_dir"] / "plan.json", metadata,
+                expected_artifact_id=package_artifact_id, expected_name=expected_name,
+                action_digest=action_digest, run_id=upload_run, run_attempt=upload_attempt,
+                ready_artifact_id="", history_result_artifact_id=fixture["result_id"],
+                history_operation="deploy", history_binding=binding, output_path=str(root / "receipt-output"))
+            self.assertEqual(receipt["source_kind"], "historical-result")
+            self.assertEqual(receipt["history_result_artifact_id"], fixture["result_id"])
+            self.assertEqual(receipt["history_operation"], "deploy")
+            self.assertIsNone(receipt["ready_artifact_id"])
+            self.assertIsNone(receipt["resume_inputs"])
+            self.assertNotIn("Synthetic fixture only", json.dumps(receipt))
+            for label, mutate in (
+                ("missing archive digest", lambda value: value.pop("result_sha256")),
+                ("wrong source", lambda value: value.update(source_sha="f" * 40)),
+                ("wrong operation run", lambda value: value.update(run_attempt="3")),
+                ("wrong plan", lambda value: value.update(plan_id="f" * 64)),
+            ):
+                bad_binding = dict(binding)
+                mutate(bad_binding)
+                with self.subTest(label=label), self.assertRaisesRegex(
+                        release_notes_workflow.PackageWorkflowError, "history-result-binding-mismatch"):
+                    release_notes_workflow.verify_uploaded_package(
+                        staged, fixture["result_dir"] / "plan.json", metadata,
+                        expected_artifact_id=package_artifact_id, expected_name=expected_name,
+                        action_digest=action_digest, run_id=upload_run, run_attempt=upload_attempt,
+                        ready_artifact_id="", history_result_artifact_id=fixture["result_id"],
+                        history_operation="deploy", history_binding=bad_binding)
+
+            package_run = {"id": int(upload_run), "run_attempt": int(upload_attempt),
+                           "event": "workflow_dispatch", "path": release_notes_workflow.WORKFLOW_PATH,
+                           "status": "completed", "conclusion": "success", "head_branch": "develop",
+                           "head_sha": "b" * 40}
+            metadata["workflow_run"].update(head_branch="develop", head_sha=package_run["head_sha"])
+            resend = release_notes_workflow.validate_resend_package_artifact(
+                metadata, package_run, expected_artifact_id=package_artifact_id,
+                result_artifact_id=fixture["result_id"], operation="deploy")
+            self.assertTrue(resend["historical"])
+            self.assertEqual(resend["artifact_name"], expected_name)
+            self.assertEqual(resend["package_run_id"], upload_run)
+            self.assertEqual(resend["package_run_attempt"], upload_attempt)
+            legacy_metadata = dict(metadata, name="lwc-release-notes-1.2.3-development-9903-2")
+            legacy = release_notes_workflow.validate_resend_package_artifact(
+                legacy_metadata, package_run, expected_artifact_id=package_artifact_id,
+                result_artifact_id=fixture["result_id"], operation="deploy")
+            self.assertFalse(legacy["historical"])
+            self.assertIsNone(legacy["history_result_artifact_id"])
+            for wrong_id, wrong_operation in (("9905", "deploy"), (fixture["result_id"], "release")):
+                with self.subTest(wrong_id=wrong_id, wrong_operation=wrong_operation), \
+                        self.assertRaisesRegex(release_notes_workflow.PackageWorkflowError,
+                                               "historical-artifact-binding-mismatch"):
+                    release_notes_workflow.validate_resend_package_artifact(
+                        metadata, package_run, expected_artifact_id=package_artifact_id,
+                        result_artifact_id=wrong_id, operation=wrong_operation)
+
+            body, version = release_notes_workflow.build_dispatch_payload(
+                package, history_result_artifact_id=fixture["result_id"], history_operation="deploy",
+                retention_days=90, request_id="8" * 32)
+            self.assertEqual(version, "2026.11.1")
+            self.assertEqual(body["inputs"]["artifact_id"], "")
+            self.assertEqual(body["inputs"]["release_notes_result_artifact_id"], fixture["result_id"])
+            self.assertEqual(body["inputs"]["release_notes_operation"], "deploy")
+            self.assertNotIn("Synthetic fixture only", json.dumps(body))
+            with self.assertRaisesRegex(release_notes_workflow.PackageWorkflowError,
+                                        "package-source-ambiguous"):
+                release_notes_workflow.build_dispatch_payload(
+                    package, ready_artifact_id="9900",
+                    history_result_artifact_id=fixture["result_id"], history_operation="deploy",
+                    retention_days=90, request_id="9" * 32)
+
+    def test_history_only_resend_preserves_current_marker_and_uses_original_time(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fixture = self.make_historical_result(root)
+            run_dir = root / "retained-result"
+            (run_dir / "receipts").mkdir(parents=True)
+            for name, data in (("plan.json", fixture["plan_bytes"]),
+                               ("state.json", fixture["state_bytes"]),
+                               ("result.json", fixture["result_bytes"])):
+                (run_dir / name).write_bytes(data)
+            (run_dir / "receipts" / "bff.json").write_bytes(fixture["receipt_bytes"])
+            package_dir = root / "package"
+            manifest, body = self.make_historical_package(package_dir, fixture["plan_bytes"])
+            package_artifact_id, package_run_id, package_attempt = "9910", "9911", "1"
+            package_name = release_notes.historical_package_artifact_name(
+                manifest["product_version"], "deploy", fixture["result_id"], package_run_id, package_attempt)
+
+            store = MemoryNotesStore()
+            current_fixture = operation_fixture(operation="deploy", service_generation=44,
+                                                revision="rev-current", product_version="1.0.0")
+            current_marker = release_notes.normalize_operation(
+                *current_fixture[:4], environment="dev", workflow_operation="deploy",
+                run_id="701", run_attempt=1, service="svc", receipt_bytes=current_fixture[4])[0]
+            store.active_marker = current_marker
+            release_notes.publish_marker_only(store, current_marker)
+            marker_bytes_before = canonical(json.loads(store.index)["current_deployment"])
+
+            class Handler(http.server.BaseHTTPRequestHandler):
+                def do_GET(self):
+                    if self.path == "/api/v1/public/release-notes":
+                        index = json.loads(store.index)
+                        value = {"schema_version": 1, "environment": "dev",
+                                 "history": index["versions"]}
+                    elif self.path.startswith("/api/v1/public/release-notes/2026.11.1?locale=en"):
+                        value = json.loads(body)
+                    else:
+                        self.send_error(404)
+                        return
+                    encoded = canonical(value)
+                    self.send_response(200)
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(encoded)
+
+                def log_message(self, _format, *_args):
+                    pass
+
+            server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                args = release_notes_publish.parser().parse_args([
+                    "--action", "resend", "--directory", str(run_dir), "--package-dir", str(package_dir),
+                    "--environment", "dev", "--bucket", "synthetic-no-cloud", "--artifact-id", package_artifact_id,
+                    "--result-artifact-id", fixture["result_id"], "--artifact-digest", "sha256:" + "f" * 64,
+                    "--artifact-metadata-digest", "sha256:" + "f" * 64, "--artifact-name", package_name,
+                    "--package-run-id", package_run_id, "--package-run-attempt", package_attempt,
+                    "--plan", str(run_dir / "plan.json"), "--operation", "deploy",
+                    "--run-id", fixture["run_id"], "--run-attempt", fixture["attempt"],
+                    "--product-status", "released",
+                ])
+                with patch.object(release_notes_publish, "GCSCLIStore", return_value=store), \
+                        patch.object(release_notes_capture, "active_service_url",
+                                     return_value=f"http://127.0.0.1:{server.server_port}"):
+                    evidence = release_notes_publish.execute(args)
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
+            self.assertEqual(evidence["status"], "verified")
+            self.assertEqual(evidence["currentness"], "history-only")
+            self.assertEqual(evidence["product_version"], "2026.11.1")
+            self.assertEqual(evidence["published_at"], "2026-11-01T22:58:30+08:00")
+            index = json.loads(store.index)
+            self.assertEqual(canonical(index["current_deployment"]), marker_bytes_before)
+            row = next(row for row in index["versions"] if row["product_version"] == "2026.11.1")
+            self.assertEqual(row["published_at"], "2026-11-01T22:58:30+08:00")
 
 
 if __name__ == "__main__":

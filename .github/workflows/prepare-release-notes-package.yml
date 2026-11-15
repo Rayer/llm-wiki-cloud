@@ -4,8 +4,19 @@ on:
     inputs:
       ready_artifact_id:
         description: Exact retained Ready artifact from a DEV release stopped because its selected BFF Notes package ID was missing
-        required: true
+        required: false
         type: string
+        default: ''
+      history_result_artifact_id:
+        description: Exact successful retained DEV result artifact for a history-only Notes package; mutually exclusive with ready_artifact_id
+        required: false
+        type: string
+        default: ''
+      history_operation:
+        description: Native operation for the exact historical DEV result; closed to release/deploy/rollback/reactivate/promote
+        required: false
+        type: string
+        default: ''
       retention_days:
         description: Private artifact retention period
         required: true
@@ -36,19 +47,26 @@ jobs:
         env:
           REQUEST_ID: ${{ inputs.request_id }}
           READY_ARTIFACT_ID: ${{ inputs.ready_artifact_id }}
+          HISTORY_RESULT_ARTIFACT_ID: ${{ inputs.history_result_artifact_id }}
+          HISTORY_OPERATION: ${{ inputs.history_operation }}
           RETENTION_DAYS: ${{ inputs.retention_days }}
         run: |
           set -Eeuo pipefail
           test "$GITHUB_REF" = refs/heads/develop
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           [[ "$REQUEST_ID" =~ ^[0-9a-f]{32}$ ]]
-          [[ "$READY_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ -z "$READY_ARTIFACT_ID" || "$READY_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ -z "$HISTORY_RESULT_ARTIFACT_ID" || "$HISTORY_RESULT_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
           [[ "$RETENTION_DAYS" == 30 || "$RETENTION_DAYS" == 90 ]]
+          [[ -z "$HISTORY_OPERATION" || "$HISTORY_OPERATION" =~ ^(release|deploy|rollback|reactivate|promote)$ ]]
           python3 deploy/engine/release_notes_workflow.py validate-package-event \
             --event-path "$GITHUB_EVENT_PATH" --request-id "$REQUEST_ID" \
-            --ready-artifact-id "$READY_ARTIFACT_ID" --retention-days "$RETENTION_DAYS"
+            --ready-artifact-id "$READY_ARTIFACT_ID" \
+            --history-result-artifact-id "$HISTORY_RESULT_ARTIFACT_ID" \
+            --history-operation "$HISTORY_OPERATION" --retention-days "$RETENTION_DAYS"
       - name: Locate the exact prepared Ready run and its final result artifact
         id: ready
+        if: inputs.ready_artifact_id != ''
         env:
           GH_TOKEN: ${{ github.token }}
           READY_ARTIFACT_ID: ${{ inputs.ready_artifact_id }}
@@ -69,6 +87,7 @@ jobs:
             --artifacts "$RUNNER_TEMP/ready-run-artifacts.json" --artifact-id "$READY_ARTIFACT_ID" \
             --output "$GITHUB_OUTPUT"
       - name: Download the exact ready-plan artifact
+        if: inputs.ready_artifact_id != ''
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.1.8
         with:
           artifact-ids: ${{ inputs.ready_artifact_id }}
@@ -77,6 +96,7 @@ jobs:
           path: ${{ runner.temp }}/ready-plan
           merge-multiple: true
       - name: Download the exact final result from the same producer attempt
+        if: inputs.ready_artifact_id != ''
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.1.8
         with:
           artifact-ids: ${{ steps.ready.outputs.result_artifact_id }}
@@ -86,6 +106,7 @@ jobs:
           merge-multiple: true
       - name: Validate the exact pre-runtime Notes gate and same-plan resume inputs
         id: ready-plan
+        if: inputs.ready_artifact_id != ''
         env:
           GH_TOKEN: ${{ github.token }}
           READY_ARTIFACT_ID: ${{ inputs.ready_artifact_id }}
@@ -102,26 +123,75 @@ jobs:
             --result-directory "$RUNNER_TEMP/ready-result" \
             --artifact-id "$READY_ARTIFACT_ID" --result-artifact-id "$RESULT_ARTIFACT_ID" \
             --output "$GITHUB_OUTPUT"
+      - name: Locate the exact successful historical DEV result run
+        id: history-identity
+        if: inputs.history_result_artifact_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HISTORY_RESULT_ARTIFACT_ID: ${{ inputs.history_result_artifact_id }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$HISTORY_RESULT_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$HISTORY_RESULT_ARTIFACT_ID" > "$RUNNER_TEMP/history-result-metadata.json"
+          python3 deploy/engine/release_notes_workflow.py history-result-run-id \
+            --metadata "$RUNNER_TEMP/history-result-metadata.json" \
+            --artifact-id "$HISTORY_RESULT_ARTIFACT_ID" --output "$GITHUB_OUTPUT" \
+            > "$RUNNER_TEMP/history-result-identity.json"
+          run_id="$(jq -er '.run_id' "$RUNNER_TEMP/history-result-identity.json")"
+          [[ "$run_id" =~ ^[1-9][0-9]*$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" > "$RUNNER_TEMP/history-result-run.json"
+      - name: Download the exact historical DEV result artifact
+        if: inputs.history_result_artifact_id != ''
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.1.8
+        with:
+          artifact-ids: ${{ inputs.history_result_artifact_id }}
+          run-id: ${{ steps.history-identity.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/history-result
+          merge-multiple: true
+      - name: Validate the successful historical DEV operation and exact archived plan
+        id: history
+        if: inputs.history_result_artifact_id != ''
+        env:
+          HISTORY_RESULT_ARTIFACT_ID: ${{ inputs.history_result_artifact_id }}
+          HISTORY_OPERATION: ${{ inputs.history_operation }}
+        run: |
+          set -Eeuo pipefail
+          python3 deploy/engine/release_notes_workflow.py validate-history-result \
+            --metadata "$RUNNER_TEMP/history-result-metadata.json" \
+            --run "$RUNNER_TEMP/history-result-run.json" \
+            --result-directory "$RUNNER_TEMP/history-result" \
+            --artifact-id "$HISTORY_RESULT_ARTIFACT_ID" --operation "$HISTORY_OPERATION" \
+            --binding-output "$RUNNER_TEMP/history-result-binding.json" --output "$GITHUB_OUTPUT"
       - name: Validate and safely stage the existing TPM package
         id: prepare
         env:
           REQUEST_ID: ${{ inputs.request_id }}
           READY_ARTIFACT_ID: ${{ inputs.ready_artifact_id }}
+          HISTORY_RESULT_ARTIFACT_ID: ${{ inputs.history_result_artifact_id }}
+          HISTORY_OPERATION: ${{ inputs.history_operation }}
           RETENTION_DAYS: ${{ inputs.retention_days }}
         run: |
           set -Eeuo pipefail
+          if [[ -n "$HISTORY_RESULT_ARTIFACT_ID" ]]; then
+            PLAN_PATH="$RUNNER_TEMP/history-result/plan.json"
+          else
+            PLAN_PATH="$RUNNER_TEMP/ready-plan/plan.json"
+          fi
           python3 deploy/engine/release_notes_workflow.py prepare-package \
-            --plan "$RUNNER_TEMP/ready-plan/plan.json" \
+            --plan "$PLAN_PATH" \
             --package-dir "$RUNNER_TEMP/release-notes-input" \
             --environment dev --request-id "$REQUEST_ID" \
             --ready-artifact-id "$READY_ARTIFACT_ID" \
+            --history-result-artifact-id "$HISTORY_RESULT_ARTIFACT_ID" \
+            --history-operation "$HISTORY_OPERATION" \
             --retention-days "$RETENTION_DAYS" \
             --event-path "$GITHUB_EVENT_PATH"
       - name: Upload the validated package as the exact private runtime artifact
         id: upload
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: lwc-release-notes-${{ steps.prepare.outputs.product_version }}-development-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ${{ inputs.history_result_artifact_id != '' && format('lwc-release-notes-{0}-development-history-{1}-{2}-{3}-{4}', steps.prepare.outputs.product_version, inputs.history_operation, inputs.history_result_artifact_id, github.run_id, github.run_attempt) || format('lwc-release-notes-{0}-development-{1}-{2}', steps.prepare.outputs.product_version, github.run_id, github.run_attempt) }}
           path: ${{ runner.temp }}/release-notes-input
           retention-days: ${{ inputs.retention_days }}
           if-no-files-found: error
@@ -129,9 +199,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PACKAGE_DIR: ${{ runner.temp }}/release-notes-input
-          PLAN_PATH: ${{ runner.temp }}/ready-plan/plan.json
+          READY_PLAN_PATH: ${{ runner.temp }}/ready-plan/plan.json
+          HISTORY_PLAN_PATH: ${{ runner.temp }}/history-result/plan.json
+          HISTORY_BINDING_PATH: ${{ runner.temp }}/history-result-binding.json
+          HISTORY_RESULT_ARTIFACT_ID: ${{ inputs.history_result_artifact_id }}
+          HISTORY_OPERATION: ${{ inputs.history_operation }}
           ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
-          ARTIFACT_NAME: lwc-release-notes-${{ steps.prepare.outputs.product_version }}-development-${{ github.run_id }}-${{ github.run_attempt }}
+          ARTIFACT_NAME: ${{ inputs.history_result_artifact_id != '' && format('lwc-release-notes-{0}-development-history-{1}-{2}-{3}-{4}', steps.prepare.outputs.product_version, inputs.history_operation, inputs.history_result_artifact_id, github.run_id, github.run_attempt) || format('lwc-release-notes-{0}-development-{1}-{2}', steps.prepare.outputs.product_version, github.run_id, github.run_attempt) }}
           ACTION_DIGEST_RAW: ${{ steps.upload.outputs.artifact-digest }}
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
@@ -139,12 +213,22 @@ jobs:
         run: |
           set -Eeuo pipefail
           [[ "$ARTIFACT_ID" =~ ^[1-9][0-9]*$ && "$RUN_ID" =~ ^[1-9][0-9]*$ &&
-             "$RUN_ATTEMPT" =~ ^[1-9][0-9]*$ && "$READY_ARTIFACT_ID" =~ ^[1-9][0-9]*$ &&
+             "$RUN_ATTEMPT" =~ ^[1-9][0-9]*$ &&
              "$ACTION_DIGEST_RAW" =~ ^[0-9a-f]{64}$ ]]
           gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID" > "$RUNNER_TEMP/release-notes-upload-metadata.json"
+          if [[ -n "$HISTORY_RESULT_ARTIFACT_ID" ]]; then
+            PLAN_PATH="$HISTORY_PLAN_PATH"
+            HISTORY_BINDING_ARGS=(--history-binding "$HISTORY_BINDING_PATH")
+          else
+            PLAN_PATH="$READY_PLAN_PATH"
+            HISTORY_BINDING_ARGS=()
+          fi
           python3 deploy/engine/release_notes_workflow.py verify-upload \
             --package-dir "$PACKAGE_DIR" --plan "$PLAN_PATH" \
             --metadata "$RUNNER_TEMP/release-notes-upload-metadata.json" \
             --artifact-id "$ARTIFACT_ID" --artifact-name "$ARTIFACT_NAME" \
             --action-digest "$ACTION_DIGEST_RAW" --run-id "$RUN_ID" --run-attempt "$RUN_ATTEMPT" \
-            --ready-artifact-id "$READY_ARTIFACT_ID"
+            --ready-artifact-id "$READY_ARTIFACT_ID" \
+            --history-result-artifact-id "$HISTORY_RESULT_ARTIFACT_ID" \
+            --history-operation "$HISTORY_OPERATION" \
+            "${HISTORY_BINDING_ARGS[@]}"

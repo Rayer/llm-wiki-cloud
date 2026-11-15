@@ -60,13 +60,15 @@ test('r2 registered release and recovery workflows use explicit artifact inputs'
       default: 'run',
     });
     assert.deepEqual(noteInputs.release_notes_result_artifact_id, {
-      description: 'Exact retained release result artifact ID for operation notes-resend',
+      description: file === 'deploy-dev.yml'
+        ? 'Exact retained release result artifact ID for operation notes-resend or historical Notes package preparation'
+        : 'Exact retained release result artifact ID for operation notes-resend',
       type: 'string',
       default: '',
     });
     assert.deepEqual(noteInputs.release_notes_operation, file === 'deploy-dev.yml'
       ? {
-        description: 'Original retained runtime operation used only by notes-resend',
+        description: 'Original retained runtime operation used by notes-resend or historical Notes package preparation',
         required: false,
         type: 'choice',
         options: ['release', 'deploy', 'rollback', 'reactivate', 'promote'],
@@ -138,7 +140,7 @@ test('r2 registered release and recovery workflows use explicit artifact inputs'
   assert.equal(Object.keys(deployInputs).length, 25);
   assert.equal(deployDev['run-name'], "${{ inputs.prepare_release_notes_package && format('Prepare Release Notes package {0}', inputs.release_notes_package_request_id) || github.ref_name }}");
   assert.deepEqual(deployInputs.prepare_release_notes_package, {
-    description: 'Prepare the TPM-authored private Notes package for an exact retained Ready artifact; skips every deployment operation',
+    description: 'Prepare a TPM-authored private Notes package from an exact retained Ready or successful historical DEV result; skips every deployment operation',
     required: false, type: 'boolean', default: false,
   });
   assert.deepEqual(deployInputs.package_zip_base64, {
@@ -159,13 +161,17 @@ test('r2 registered release and recovery workflows use explicit artifact inputs'
   assert.deepEqual(packageEntry.permissions, { contents: 'read', actions: 'write' });
   assert.deepEqual(packageEntry.with, {
     ready_artifact_id: '${{ inputs.artifact_id }}',
+    history_result_artifact_id: '${{ inputs.release_notes_result_artifact_id }}',
+    history_operation: "${{ inputs.release_notes_result_artifact_id != '' && inputs.release_notes_operation || '' }}",
     retention_days: '${{ inputs.release_notes_package_retention_days }}',
     request_id: '${{ inputs.release_notes_package_request_id }}',
   });
   assert.doesNotMatch(JSON.stringify(packageEntry.with), /package_zip_base64/);
   const packageWorkflow = parseYaml(await workflow('prepare-release-notes-package.yml'));
   assert.deepEqual(Object.keys(packageWorkflow.on), ['workflow_call']);
-  assert.deepEqual(Object.keys(packageWorkflow.on.workflow_call.inputs), ['ready_artifact_id', 'retention_days', 'request_id']);
+  assert.deepEqual(Object.keys(packageWorkflow.on.workflow_call.inputs), [
+    'ready_artifact_id', 'history_result_artifact_id', 'history_operation', 'retention_days', 'request_id',
+  ]);
   assert.equal(packageWorkflow.jobs.package.permissions.contents, 'read');
   assert.equal(packageWorkflow.jobs.package.permissions.actions, 'write');
   assert.ok(packageWorkflow.jobs.package.steps.find((step) => step.name === 'Validate workflow source branch')
@@ -401,6 +407,18 @@ test('Notes resend has exact workflow inputs, a no-deploy authority, and retaine
   assert.equal(upload.with.path, runnerTemp + '/release');
   const auth = steps.find((step) => step.uses?.startsWith('google-github-actions/auth@'));
   assert.equal(auth.if, "inputs.release_notes_action == 'run' || inputs.release_notes_action == 'retry'");
+  const packageInspection = steps.find((step) => step.name === 'Inspect exact TPM Release Notes artifact');
+  assert.ok(packageInspection.run.includes('validate-resend-package-artifact'));
+  assert.ok(packageInspection.run.includes('--result-artifact-id "$RELEASE_NOTES_RESULT_ARTIFACT_ID"'));
+  const packageDownload = steps.find((step) => step.name === 'Download exact TPM Release Notes artifact');
+  assert.equal(packageDownload.with['run-id'], '${{ steps.notes-package.outputs.run_id }}');
+  const resend = steps.find((step) => step.name === 'Resend Notes without product deployment');
+  assert.equal(resend.env.NOTES_ARTIFACT_NAME, '${{ steps.notes-package.outputs.artifact_name }}');
+  assert.equal(resend.env.NOTES_PACKAGE_RUN_ID, '${{ steps.notes-package.outputs.package_run_id }}');
+  assert.equal(resend.env.NOTES_PACKAGE_RUN_ATTEMPT, '${{ steps.notes-package.outputs.package_run_attempt }}');
+  assert.ok(resend.run.includes('--artifact-name "$NOTES_ARTIFACT_NAME"'));
+  assert.ok(resend.run.includes('--package-run-id "$NOTES_PACKAGE_RUN_ID"'));
+  assert.ok(resend.run.includes('--package-run-attempt "$NOTES_PACKAGE_RUN_ATTEMPT"'));
   for (const name of ['Record explicit Notes skip without product deployment',
     'Record explicit Notes stop without product deployment']) {
     assert.ok(steps.some((step) => step.name === name));

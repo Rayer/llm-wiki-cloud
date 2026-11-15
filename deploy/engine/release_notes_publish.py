@@ -437,16 +437,29 @@ def execute(args) -> dict:
             write_evidence(directory, evidence)
             return evidence
         if args.action in ("prepare", "publish", "resend"):
-            store = GCSCLIStore(args.bucket)
             product_version, content_files, manifest = release_notes.validate_package(
                 args.package_dir, expected_environment=args.environment,
                 expected_artifact_digest=args.artifact_digest,
                 artifact_metadata_digest=args.artifact_metadata_digest, plan_bytes=plan_bytes)
+            historical_fields = release_notes.HISTORICAL_MANIFEST_FIELDS
+            historical_package = historical_fields <= set(manifest)
+            if historical_package:
+                if args.action != "resend" or args.environment != "dev":
+                    raise release_notes.ReleaseNotesError("validate", "historical-package-resend-required")
+                release_notes.validate_historical_package_artifact_binding(
+                    manifest, artifact_name=args.artifact_name,
+                    result_artifact_id=args.result_artifact_id, operation=args.operation,
+                    package_run_id=args.package_run_id,
+                    package_run_attempt=args.package_run_attempt)
+                sidecar_path = directory / "release-notes-operation.json"
+                if sidecar_path.is_symlink() or sidecar_path.exists():
+                    raise release_notes.ReleaseNotesError("service_readback", "historical-operation-sidecar-present")
+            elif release_notes.is_historical_package_artifact_name(args.artifact_name):
+                raise release_notes.ReleaseNotesError("validate", "historical-provenance-required")
+            store = GCSCLIStore(args.bucket)
             if args.action in ("publish", "resend"):
                 publication, publication_bytes = publication_record(directory, args, plan_bytes)
-                historical_fields = {"original_published_at", "historical_source_record_ref",
-                                     "historical_source_record_sha256", "imported_at"}
-                if historical_fields <= set(manifest):
+                if historical_package:
                     published_at = manifest["original_published_at"]
                     publication_time_source = "historical-manifest"
                 elif publication is not None:
@@ -512,6 +525,8 @@ def execute(args) -> dict:
                 "currentness": "verified" if marker is not None else "history-only",
                 "imported_at": manifest.get("imported_at") if publication_time_source == "historical-manifest" else None,
                 "historical_source_record_ref": manifest.get("historical_source_record_ref") if publication_time_source == "historical-manifest" else None,
+                "historical_package_artifact_name": args.artifact_name if historical_package else None,
+                "historical_result_artifact_id": args.result_artifact_id if historical_package else None,
             }
         elif args.action == "skip-before-release":
             evidence = {
@@ -616,6 +631,9 @@ def parser():
     result.add_argument("--result-artifact-id", default="")
     result.add_argument("--artifact-digest", default="")
     result.add_argument("--artifact-metadata-digest", default="")
+    result.add_argument("--artifact-name", default="")
+    result.add_argument("--package-run-id", default="")
+    result.add_argument("--package-run-attempt", default="")
     result.add_argument("--plan", required=True)
     result.add_argument("--operation", required=True, choices=sorted(release_notes.TRANSITION_OPS))
     result.add_argument("--run-id", required=True)
