@@ -182,6 +182,60 @@ describe('LWC-481 Nudge action navigation', () => {
     expect(mocks.setNudgeAttention).not.toHaveBeenCalled();
   });
 
+  it('reports when an accepted Notes navigation cannot save the seen read state', async () => {
+    const releaseView = structuredClone(view);
+    const item = releaseView.items[0]!;
+    item.category = 'release-notes';
+    item.attention_id = 'release-attention-a';
+    const action = item.observations[0]?.observation?.actions[0];
+    if (!action) throw new Error('test fixture is missing its action');
+    action.kind = 'link';
+    action.label = 'Open Release notes';
+    action.target = { kind: 'release-notes', mode: 'published-version', version: '1.0.0' };
+    mocks.reconcileNudges.mockResolvedValueOnce(releaseView);
+    mocks.getNudges.mockResolvedValueOnce(releaseView);
+    mocks.resolveNudgeTarget.mockReturnValue('/release-notes?version=1.0.0');
+    mocks.setNudgeAttention.mockRejectedValueOnce(new Error('HTTP 503'));
+    render(<NudgePanel onClose={vi.fn()} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Release notes' }));
+
+    await waitFor(() => expect(mocks.push).toHaveBeenCalledWith('/release-notes?version=1.0.0'));
+    await waitFor(() => expect(mocks.setNudgeAttention).toHaveBeenCalledWith(
+      'release-notes', 'release-attention-a', 'read',
+    ));
+    expect(await screen.findByText('release-notes')).toBeTruthy();
+    expect(await screen.findByText('Nudge.readNotConfirmed', { selector: '[role="alert"]' })).toBeTruthy();
+    expect(screen.getByText('Nudge.unread')).toBeTruthy();
+  });
+
+  it('keeps a stale read conflict on the original ID and reports the refreshed item as unread', async () => {
+    const releaseView = structuredClone(view);
+    const item = releaseView.items[0]!;
+    item.category = 'release-notes';
+    item.attention_id = 'release-attention-old';
+    const action = item.observations[0]?.observation?.actions[0];
+    if (!action) throw new Error('test fixture is missing its action');
+    action.kind = 'link';
+    action.label = 'Open Release notes';
+    action.target = { kind: 'release-notes', mode: 'published-version', version: '1.0.0' };
+    const refreshedView = structuredClone(releaseView);
+    refreshedView.items[0]!.attention_id = 'release-attention-new';
+    mocks.reconcileNudges.mockResolvedValueOnce(releaseView);
+    mocks.getNudges.mockResolvedValueOnce(refreshedView);
+    mocks.resolveNudgeTarget.mockReturnValue('/release-notes?version=1.0.0');
+    mocks.setNudgeAttention.mockRejectedValueOnce(new Error('HTTP 409'));
+    render(<NudgePanel onClose={vi.fn()} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Release notes' }));
+
+    await waitFor(() => expect(mocks.setNudgeAttention).toHaveBeenCalledTimes(1));
+    expect(mocks.setNudgeAttention).toHaveBeenCalledWith('release-notes', 'release-attention-old', 'read');
+    expect(await screen.findByText('Nudge.readNotConfirmed', { selector: '[role="alert"]' })).toBeTruthy();
+    expect(screen.getByText('Nudge.unread')).toBeTruthy();
+    expect(mocks.setNudgeAttention).toHaveBeenCalledTimes(1);
+  });
+
   it('shows explicit partial source status returned by manual reconcile', async () => {
     const partialView = structuredClone(view);
     partialView.partial = true;

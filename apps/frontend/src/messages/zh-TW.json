@@ -917,6 +917,7 @@
     "openTarget": "開啟相關項目",
     "refresh": "重新載入已儲存狀態",
     "actionFailed": "無法儲存此操作。請重新載入後再試。",
+    "readNotConfirmed": "已讀狀態不明；此項目可能仍未讀。",
     "close": "關閉近況提醒"
   },
   "Profile": {

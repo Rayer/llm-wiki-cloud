@@ -393,6 +393,10 @@
         "total"
       ]
     },
+    "Nudge.readNotConfirmed": {
+      "kind": "literal",
+      "context": "Status shown after the saved read state for an opened Nudge destination could not be confirmed."
+    },
     "Pipeline.quotaLine": {
       "kind": "literal",
       "params": [
