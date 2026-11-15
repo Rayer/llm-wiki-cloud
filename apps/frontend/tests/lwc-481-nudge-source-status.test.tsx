@@ -1,6 +1,6 @@
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import enMessages from '@/messages/en.json';
 import zhTWMessages from '@/messages/zh-TW.json';
 import type { NudgeView } from '@/lib/nudges';
@@ -63,7 +63,17 @@ function handlerResponse(value?: unknown, status = 200) {
   return { ok: status >= 200 && status < 300, status, json: async () => value } as Response;
 }
 
-function enqueueHandlerResponses(...responses: Response[]) {
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function enqueueHandlerResponses(...responses: Array<Response | Promise<Response>>) {
   const queue = [...responses];
   mocks.apiFetch.mockImplementation(async () => {
     const response = queue.shift();
@@ -234,6 +244,133 @@ describe('LWC-481 source status and attention transport', () => {
     render(<NudgePanel onClose={vi.fn()} />);
 
     expect(await screen.findByText(enMessages.Nudge.stale)).toBeTruthy();
+  });
+
+  it('does not resurrect a stale notice when an older partial attention GET follows successful recovery', async () => {
+    const initialStale = structuredClone(releaseOutageView);
+    const recovered = structuredClone(releaseOutageView);
+    recovered.partial = false;
+    recovered.failures = [];
+    recovered.notices = [];
+    recovered.items[0]!.observations[0]!.observation!.title = 'Recovered latest Release state';
+    const oldPartialGet = structuredClone(releaseOutageView);
+    oldPartialGet.failures = [{ project_id: 'project-other', safe_class: 'project_context_unavailable' }];
+    oldPartialGet.notices = [];
+    oldPartialGet.items[0]!.observations[0]!.observation!.title = 'Older partial attention GET';
+    const pendingPatch = deferred<Response>();
+    enqueueHandlerResponses(
+      handlerResponse(initialStale),
+      pendingPatch.promise,
+      handlerResponse(recovered),
+      handlerResponse(oldPartialGet),
+    );
+
+    render(<NudgePanel onClose={vi.fn()} />);
+    expect(await screen.findByText(enMessages.Nudge.stale)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Nudge.markRead' }));
+    await waitFor(() => expect(mocks.apiFetch).toHaveBeenCalledTimes(2));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Nudge.refresh' }));
+    expect(await screen.findByText('Recovered latest Release state')).toBeTruthy();
+    await waitFor(() => expect(screen.queryByText(enMessages.Nudge.stale)).toBeNull());
+    expect(screen.queryByText(enMessages.Nudge.partial)).toBeNull();
+
+    await act(async () => {
+      pendingPatch.resolve(handlerResponse(undefined, 204));
+      await pendingPatch.promise;
+    });
+
+    expect(await screen.findByText('Older partial attention GET')).toBeTruthy();
+    expect(screen.getByText(enMessages.Nudge.partial)).toBeTruthy();
+    expect(screen.queryByText(enMessages.Nudge.stale)).toBeNull();
+    expect(mocks.apiFetch.mock.calls.map(([path, options]) => [path, options?.method])).toEqual([
+      ['/api/v1/nudges/reconcile', 'POST'],
+      ['/api/v1/nudges/release-notes/attention', 'PATCH'],
+      ['/api/v1/nudges/reconcile', 'POST'],
+      ['/api/v1/nudges', 'GET'],
+    ]);
+  });
+
+  it('keeps a newer stale notice when an older partial attention GET follows a source outage', async () => {
+    const initialCurrent = structuredClone(releaseOutageView);
+    initialCurrent.partial = false;
+    initialCurrent.failures = [];
+    initialCurrent.notices = [];
+    initialCurrent.items[0]!.observations[0]!.observation!.title = 'Initially current Release';
+    const outage = structuredClone(releaseOutageView);
+    outage.items[0]!.observations[0]!.observation!.title = 'Latest Release outage';
+    const oldPartialGet = structuredClone(releaseOutageView);
+    oldPartialGet.notices = [];
+    oldPartialGet.failures = [{ project_id: 'project-other', safe_class: 'project_unavailable' }];
+    oldPartialGet.items[0]!.observations[0]!.observation!.title = 'Older partial GET after failed attention update';
+    const pendingPatch = deferred<Response>();
+    enqueueHandlerResponses(
+      handlerResponse(initialCurrent),
+      pendingPatch.promise,
+      handlerResponse(outage),
+      handlerResponse(oldPartialGet),
+    );
+
+    render(<NudgePanel onClose={vi.fn()} />);
+    expect(await screen.findByText('Initially current Release')).toBeTruthy();
+    expect(screen.queryByText(enMessages.Nudge.stale)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Nudge.markRead' }));
+    await waitFor(() => expect(mocks.apiFetch).toHaveBeenCalledTimes(2));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Nudge.refresh' }));
+    expect(await screen.findByText('Latest Release outage')).toBeTruthy();
+    expect(screen.getByText(enMessages.Nudge.stale)).toBeTruthy();
+
+    await act(async () => {
+      pendingPatch.reject(new Error('test-only attention write failure'));
+      await pendingPatch.promise.catch(() => {});
+    });
+
+    expect(await screen.findByText('Older partial GET after failed attention update')).toBeTruthy();
+    expect(screen.getByText(enMessages.Nudge.partial)).toBeTruthy();
+    expect(screen.getByText(enMessages.Nudge.stale)).toBeTruthy();
+    expect(mocks.apiFetch.mock.calls.map(([path, options]) => [path, options?.method])).toEqual([
+      ['/api/v1/nudges/reconcile', 'POST'],
+      ['/api/v1/nudges/release-notes/attention', 'PATCH'],
+      ['/api/v1/nudges/reconcile', 'POST'],
+      ['/api/v1/nudges', 'GET'],
+    ]);
+  });
+
+  it('ignores a pending old-session attention continuation after the mounted user switches', async () => {
+    const oldUserView = structuredClone(releaseOutageView);
+    const newUserView = structuredClone(releaseOutageView);
+    newUserView.partial = false;
+    newUserView.failures = [];
+    newUserView.notices = [];
+    newUserView.items[0]!.observations[0]!.observation!.title = 'New session Release item';
+    const pendingPatch = deferred<Response>();
+    enqueueHandlerResponses(handlerResponse(oldUserView), pendingPatch.promise, handlerResponse(newUserView));
+
+    const panel = render(<NudgePanel onClose={vi.fn()} />);
+    expect(await screen.findByText(enMessages.Nudge.stale)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Nudge.markRead' }));
+    await waitFor(() => expect(mocks.apiFetch).toHaveBeenCalledTimes(2));
+
+    mocks.auth.user = { id: 'user-b' };
+    mocks.auth.sessionIdentityEpoch = 2;
+    panel.rerender(<NudgePanel onClose={vi.fn()} />);
+    expect(await screen.findByText('New session Release item')).toBeTruthy();
+    expect(screen.queryByText(enMessages.Nudge.stale)).toBeNull();
+
+    await act(async () => {
+      pendingPatch.resolve(handlerResponse(undefined, 204));
+      await pendingPatch.promise;
+    });
+
+    await waitFor(() => expect(mocks.apiFetch).toHaveBeenCalledTimes(3));
+    expect(mocks.apiFetch.mock.calls.map(([path, options]) => [path, options?.method])).toEqual([
+      ['/api/v1/nudges/reconcile', 'POST'],
+      ['/api/v1/nudges/release-notes/attention', 'PATCH'],
+      ['/api/v1/nudges/reconcile', 'POST'],
+    ]);
+    expect(screen.getByText('New session Release item')).toBeTruthy();
+    expect(screen.queryByText(enMessages.Nudge.stale)).toBeNull();
   });
 
   it('keeps same-id Pipeline copy and copy-then-link feedback bound to each actual source', async () => {

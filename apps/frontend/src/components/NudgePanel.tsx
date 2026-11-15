@@ -52,19 +52,16 @@ export function NudgePanel({ onClose }: { onClose: () => void }) {
           value: { partial: saved.partial, failures: saved.failures, notices: saved.notices ?? [] },
         });
       } else if (saved.partial) {
-        const previousStaleNotices = sourceStatusState?.identity === identity
-          ? (sourceStatusState.value.notices ?? []).filter((notice) => notice.state === 'stale')
-          : [];
-        const notices = [...(saved.notices ?? [])];
-        for (const notice of previousStaleNotices) {
-          if (!notices.some((current) => current.source_key === notice.source_key && current.state === 'stale')) {
-            notices.push(notice);
-          }
-        }
-        setSourceStatusState({
+        setSourceStatusState((current) => ({
           identity,
-          value: { partial: true, failures: saved.failures, notices },
-        });
+          value: {
+            partial: true,
+            failures: saved.failures,
+            // GET is persisted-only. Keep source notices from the latest same-session
+            // reconciliation instead of reviving or dropping them from an old closure.
+            notices: current?.identity === identity ? current.value.notices ?? [] : saved.notices ?? [],
+          },
+        }));
       }
       setErrorState({ identity, value: '' });
     } catch {
