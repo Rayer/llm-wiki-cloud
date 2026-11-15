@@ -236,6 +236,24 @@ class MemoryNotesStore:
         return self.active_marker == marker
 
 
+class InterleavingNotesStore(MemoryNotesStore):
+    """Apply one competing writer immediately before the caller's first CAS."""
+
+    def __init__(self):
+        super().__init__()
+        self.contender = None
+
+    def active_marker_matches(self, marker, **_kwargs):
+        return super().active_marker_matches(marker)
+
+    def compare_and_swap_index(self, data, generation):
+        if self.contender is not None:
+            contender, self.contender = self.contender, None
+            contender(self)
+            raise GenerationConflict()
+        return super().compare_and_swap_index(data, generation)
+
+
 class ReleaseNotesContractTests(unittest.TestCase):
     def normalize(self, operation="rollback", **kwargs):
         fixture = operation_fixture(operation=operation, **kwargs)
@@ -339,6 +357,210 @@ class ReleaseNotesContractTests(unittest.TestCase):
         self.assertEqual(corrected["versions"][0]["published_at"], original_index["versions"][0]["published_at"])
         self.assertEqual(corrected["current_deployment"], original_index["current_deployment"])
         self.assertGreater(correction.index_generation, first.index_generation)
+
+    def test_first_create_race_with_different_digest_conflicts_and_preserves_winner(self):
+        marker = self.normalize(operation="deploy", service_generation=44,
+                                revision="rev-w", product_version="1.2.3")
+        store = InterleavingNotesStore()
+        store.active_marker = marker
+        winner = note(changed="Editor B")
+        store.contender = lambda current: release_notes.publish_package(
+            current, {"en": winner}, product_version="1.2.3",
+            published_at="2026-11-14T10:00:00Z", marker=marker)
+
+        with self.assertRaises(release_notes.ReleaseNotesError) as rejected:
+            release_notes.publish_package(store, {"en": note(changed="Editor A")}, product_version="1.2.3",
+                published_at="2026-11-14T10:00:00Z", marker=marker)
+
+        self.assertEqual((rejected.exception.stage, rejected.exception.safe_class),
+                         ("index_update", "generation-conflict"))
+        index = json.loads(store.index)
+        self.assertEqual(len(index["versions"]), 1)
+        row = index["versions"][0]
+        winner_path = row["locales"]["en"]["object_path"]
+        self.assertEqual(store.read_content(winner_path), winner)
+        self.assertEqual(row["published_at"], "2026-11-14T10:00:00Z")
+        self.assertEqual(index["current_deployment"], marker)
+        self.assertEqual((store.generation, store.writes), (1, 1))
+
+    def test_same_version_correction_race_conflicts_and_preserves_winner_t0_and_marker(self):
+        marker = self.normalize(operation="deploy", service_generation=44,
+                                revision="rev-w", product_version="1.2.3")
+        store = InterleavingNotesStore()
+        store.active_marker = marker
+        t0 = "2026-11-14T10:00:00Z"
+        release_notes.publish_package(store, {"en": note(changed="Initial")}, product_version="1.2.3",
+            published_at=t0, marker=marker)
+        winner = note(changed="Editor B")
+        store.contender = lambda current: release_notes.publish_package(
+            current, {"en": winner}, product_version="1.2.3",
+            published_at="2026-11-15T10:00:00Z", marker=marker)
+
+        with self.assertRaises(release_notes.ReleaseNotesError) as rejected:
+            release_notes.publish_package(store, {"en": note(changed="Editor A")}, product_version="1.2.3",
+                published_at="2026-11-15T10:00:00Z", marker=marker)
+
+        self.assertEqual((rejected.exception.stage, rejected.exception.safe_class),
+                         ("index_update", "generation-conflict"))
+        index = json.loads(store.index)
+        self.assertEqual(len(index["versions"]), 1)
+        row = index["versions"][0]
+        winner_path = row["locales"]["en"]["object_path"]
+        self.assertEqual(store.read_content(winner_path), winner)
+        self.assertEqual(row["published_at"], t0)
+        self.assertEqual(index["current_deployment"], marker)
+        self.assertEqual((store.generation, store.writes), (2, 2))
+
+    def test_same_package_first_create_race_is_idempotent(self):
+        marker = self.normalize(operation="deploy", service_generation=44,
+                                revision="rev-w", product_version="1.2.3")
+        store = InterleavingNotesStore()
+        store.active_marker = marker
+        body = note()
+        t0 = "2026-11-14T10:00:00Z"
+        store.contender = lambda current: release_notes.publish_package(
+            current, {"en": body}, product_version="1.2.3", published_at=t0, marker=marker)
+
+        replay = release_notes.publish_package(store, {"en": body}, product_version="1.2.3",
+            published_at="2026-11-15T10:00:00Z", marker=marker)
+
+        index = json.loads(store.index)
+        self.assertEqual((replay.index_generation, store.generation, store.writes), (1, 1, 1))
+        self.assertEqual(len(index["versions"]), 1)
+        self.assertEqual(index["versions"][0]["published_at"], t0)
+        self.assertEqual(store.read_content(index["versions"][0]["locales"]["en"]["object_path"]), body)
+        self.assertEqual(index["current_deployment"], marker)
+
+    def test_unrelated_version_commit_is_merged_after_same_version_correction_cas_retry(self):
+        marker = self.normalize(operation="deploy", service_generation=44,
+                                revision="rev-w", product_version="1.2.3")
+        store = InterleavingNotesStore()
+        store.active_marker = marker
+        t0 = "2026-11-14T10:00:00Z"
+        release_notes.publish_package(store, {"en": note(changed="Initial")}, product_version="1.2.3",
+            published_at=t0, marker=marker)
+        unrelated = note(version="2.0.0", changed="Historical import")
+        store.contender = lambda current: release_notes.publish_package(
+            current, {"en": unrelated}, product_version="2.0.0",
+            published_at="2026-11-15T10:00:00Z", marker=None, historical=True)
+
+        corrected = release_notes.publish_package(store, {"en": note(changed="Corrected")}, product_version="1.2.3",
+            published_at="2026-11-15T12:00:00Z", marker=marker)
+
+        index = json.loads(store.index)
+        rows = {row["product_version"]: row for row in index["versions"]}
+        corrected_row = rows["1.2.3"]
+        unrelated_row = rows["2.0.0"]
+        self.assertEqual((corrected.index_generation, store.generation, store.writes), (3, 3, 3))
+        self.assertEqual(len(index["versions"]), 2)
+        self.assertEqual(corrected_row["published_at"], t0)
+        self.assertEqual(store.read_content(corrected_row["locales"]["en"]["object_path"]), note(changed="Corrected"))
+        self.assertEqual(store.read_content(unrelated_row["locales"]["en"]["object_path"]), unrelated)
+        self.assertEqual(index["current_deployment"], marker)
+
+    def test_index_conflicts_remain_bounded_when_only_unrelated_rows_change(self):
+        class AlwaysConflictingStore(MemoryNotesStore):
+            def __init__(self):
+                super().__init__()
+                self.competitor_writes = 0
+
+            def compare_and_swap_index(self, data, generation):
+                index = json.loads(self.index) if self.index is not None else {"schema_version": 1, "versions": []}
+                version = f"{self.competitor_writes + 2}.0.0"
+                digest = f"{self.competitor_writes + 1:064x}"
+                index["versions"].append({
+                    "product_version": version,
+                    "published_at": "2026-11-14T10:00:00Z",
+                    "locales": {"en": {"sha256": digest,
+                                         "object_path": release_notes.exact_object_path(version, "en", digest)}},
+                })
+                self.index = canonical(index)
+                self.generation += 1
+                self.writes += 1
+                self.competitor_writes += 1
+                raise GenerationConflict()
+
+        store = AlwaysConflictingStore()
+        with self.assertRaises(release_notes.ReleaseNotesError) as rejected:
+            release_notes.publish_package(store, {"en": note()}, product_version="1.2.3",
+                published_at="2026-11-14T10:00:00Z", marker=None, historical=True, max_cas_attempts=2)
+
+        self.assertEqual((rejected.exception.stage, rejected.exception.safe_class),
+                         ("index_update", "index-conflict-exhausted"))
+        index = json.loads(store.index)
+        self.assertEqual({row["product_version"] for row in index["versions"]}, {"2.0.0", "3.0.0"})
+        self.assertEqual(store.competitor_writes, 2)
+
+    def test_resend_caller_records_same_version_correction_conflict_for_owner(self):
+        fixture = operation_fixture(operation="release", product_version="1.2.3")
+        plan_bytes, state_bytes, result_bytes, sidecar_bytes, receipt_bytes, _ = fixture
+        marker, _ = release_notes.normalize_operation(
+            *fixture[:4], environment="dev", workflow_operation="release", run_id="701", run_attempt=1,
+            service="svc", receipt_bytes=receipt_bytes)
+        store = InterleavingNotesStore()
+        store.active_marker = marker
+        t0 = "2026-11-14T10:00:00Z"
+        release_notes.publish_package(store, {"en": note(changed="Initial")}, product_version="1.2.3",
+            published_at=t0, marker=marker)
+        winner = note(changed="Editor B")
+        store.contender = lambda current: release_notes.publish_package(
+            current, {"en": winner}, product_version="1.2.3", published_at="2026-11-15T10:00:00Z",
+            marker=marker)
+
+        with TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            plan_path = directory / "plan.json"
+            plan_path.write_bytes(plan_bytes)
+            (directory / "state.json").write_bytes(state_bytes)
+            (directory / "result.json").write_bytes(result_bytes)
+            (directory / "release-notes-operation.json").write_bytes(sidecar_bytes + b"\n")
+            (directory / "receipts").mkdir()
+            (directory / "receipts" / "bff.json").write_bytes(receipt_bytes)
+            package = directory / "package"
+            package.mkdir()
+            body = note(changed="Editor A")
+            manifest = {
+                "schema_version": 1, "product": "llm-wiki-cloud", "product_version": "1.2.3", "environment": "dev",
+                "release_plan_sha256": release_notes.digest_bytes(plan_bytes),
+                "release_note_snapshot_ref": "LWC-A-57:4-123",
+                "release_note_snapshot_sha256": "sha256:" + "a" * 64,
+                "delivered_scope_evidence_sha256": "sha256:" + "b" * 64,
+                "files": {"en": {"path": "en.json", "sha256": release_notes.digest_bytes(body)}},
+                "original_published_at": t0,
+                "historical_source_record_ref": "LWC-A-57:4-123",
+                "historical_source_record_sha256": "sha256:" + "d" * 64,
+                "imported_at": "2026-11-15T00:00:00Z",
+            }
+            (package / "release-notes-manifest.json").write_bytes(canonical(manifest))
+            (package / "en.json").write_bytes(body)
+            args = release_notes_publish.parser().parse_args([
+                "--action", "resend", "--directory", str(directory), "--package-dir", str(package),
+                "--environment", "dev", "--bucket", "unused", "--artifact-id", "8001",
+                "--artifact-digest", "sha256:" + "c" * 64,
+                "--artifact-metadata-digest", "sha256:" + "c" * 64,
+                "--plan", str(plan_path), "--operation", "release", "--run-id", "701",
+                "--run-attempt", "1", "--result-artifact-id", "9001", "--product-status", "released",
+            ])
+            with patch.object(release_notes_publish, "GCSCLIStore", return_value=store), \
+                    patch.object(release_notes_capture, "active_marker_matches", return_value=True):
+                with self.assertRaises(release_notes.ReleaseNotesError) as rejected:
+                    release_notes_publish.execute(args)
+
+            self.assertEqual((rejected.exception.stage, rejected.exception.safe_class),
+                             ("index_update", "generation-conflict"))
+            index = json.loads(store.index)
+            row = index["versions"][0]
+            self.assertEqual(len(index["versions"]), 1)
+            self.assertEqual(row["published_at"], t0)
+            self.assertEqual(index["current_deployment"], marker)
+            self.assertEqual(store.read_content(row["locales"]["en"]["object_path"]), winner)
+            stages = json.loads((directory / "release-notes-evidence.json").read_text())["stages"]
+            failure = stages[-1]
+            self.assertEqual((failure["stage"], failure["safe_class"], failure["status"]),
+                             ("index_update", "generation-conflict", "failed"))
+            self.assertEqual(failure["next_actions"], ["retry", "skip", "stop"])
+            self.assertTrue(failure["owner_choice_required"])
+            self.assertFalse(failure["automatic_skip"])
 
     def test_marker_only_skip_updates_currentness_without_content_or_timestamp(self):
         marker = self.normalize()
