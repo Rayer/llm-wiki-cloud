@@ -417,6 +417,7 @@ def execute(args) -> dict:
     generations = {}
     content_files = {}
     manifest = {}
+    historical_package = False
     publication = None
     publication_bytes = b""
     publication_time_source = None

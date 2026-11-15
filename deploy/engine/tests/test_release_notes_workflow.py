@@ -1289,6 +1289,138 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
                     fixture["metadata"], fixture["run"], fixture["result_dir"],
                     expected_artifact_id=fixture["result_id"], operation="deploy")
 
+    def test_parent_authentic_a58_dev_history_passes_full_run_admission(self):
+        metadata_path = os.environ.get("LWC478_AUTHENTIC_A58_ARTIFACT_METADATA")
+        run_path = os.environ.get("LWC478_AUTHENTIC_A58_WORKFLOW_RUN")
+        result_directory = os.environ.get("LWC478_AUTHENTIC_A58_RESULT_DIRECTORY")
+        if not all((metadata_path, run_path, result_directory)):
+            self.skipTest("Parent authentic A58 inputs are supplied only to retained source qualification")
+
+        metadata = json.loads(Path(metadata_path).read_bytes())
+        run = json.loads(Path(run_path).read_bytes())
+        with TemporaryDirectory() as temporary:
+            output = Path(temporary) / "github-output"
+            binding_path = Path(temporary) / "history-binding.json"
+            binding = release_notes_workflow.validate_history_result_handoff(
+                metadata, run, Path(result_directory), expected_artifact_id="13087604252",
+                operation="deploy", output_path=str(output), binding_path=binding_path)
+
+            self.assertEqual(binding["result_artifact_id"], "13087604252")
+            self.assertEqual(binding["result_artifact_name"], "lwc-result-development-41315481313-1")
+            self.assertEqual(binding["run_id"], "41315481313")
+            self.assertEqual(binding["run_attempt"], "1")
+            self.assertEqual(binding["head_sha"], "21668758391871a9e4e99cf9319a8aebb1a09051")
+            self.assertEqual(binding["source_sha"], "21668758391871a9e4e99cf9319a8aebb1a09051")
+            self.assertEqual(binding["plan_sha256"],
+                             "96ed3330b62ca1bd73dba047fe072f051e1aa71a7569d788214cd1178cb708ad")
+            self.assertEqual(json.loads(binding_path.read_bytes()), binding)
+            self.assertIn(f"plan_sha256={binding['plan_sha256']}\n", output.read_text())
+
+    def test_marker_and_explicit_skip_execute_complete_and_record_stage_evidence(self):
+        for action, operation in (("marker", "deploy"), ("skip", "release")):
+            with self.subTest(action=action), TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                previous_fixture = operation_fixture(operation=operation, service_generation=42)
+                current_fixture = operation_fixture(operation=operation, service_generation=43)
+                previous_marker = release_notes.normalize_operation(
+                    *previous_fixture[:4], environment="dev", workflow_operation=operation,
+                    run_id="701", run_attempt=1, service="svc", receipt_bytes=previous_fixture[4])[0]
+                current_marker = release_notes.normalize_operation(
+                    *current_fixture[:4], environment="dev", workflow_operation=operation,
+                    run_id="701", run_attempt=1, service="svc", receipt_bytes=current_fixture[4])[0]
+
+                body = note("1.2.3", "en")
+                digest = release_notes.digest_bytes(body)
+                object_path = release_notes.exact_object_path("1.2.3", "en", digest)
+                store = MemoryNotesStore()
+                store.objects[object_path] = (body, 7)
+                store.next_generation = 8
+                store.generation = 11
+                store.active_marker = current_marker
+                store.active_marker_matches = lambda marker, **_kwargs: store.active_marker == marker
+                store.index = canonical({
+                    "schema_version": release_notes.SCHEMA_VERSION,
+                    "versions": [{
+                        "product_version": "1.2.3",
+                        "published_at": "2026-11-01T22:58:30+08:00",
+                        "locales": {"en": {"sha256": digest, "object_path": object_path}},
+                    }],
+                    "current_deployment": previous_marker,
+                })
+
+                (root / "receipts").mkdir()
+                (root / "plan.json").write_bytes(current_fixture[0])
+                (root / "state.json").write_bytes(current_fixture[1])
+                (root / "result.json").write_bytes(current_fixture[2])
+                (root / "receipts" / "bff.json").write_bytes(current_fixture[4])
+                (root / "release-notes-operation.json").write_bytes(current_fixture[3] + b"\n")
+
+                class Handler(http.server.BaseHTTPRequestHandler):
+                    def do_GET(self):
+                        index = json.loads(store.index)
+                        if self.path == "/api/v1/public/release-notes":
+                            value = {
+                                "schema_version": release_notes.SCHEMA_VERSION,
+                                "environment": "dev",
+                                "history": index["versions"],
+                                "runtime_product_version": current_marker["product_version"],
+                                "current_product_version": current_marker["product_version"],
+                                "current_status": "available",
+                            }
+                        else:
+                            self.send_error(404)
+                            return
+                        encoded = canonical(value)
+                        self.send_response(200)
+                        self.send_header("Cache-Control", "no-store")
+                        self.send_header("Content-Type", "application/json")
+                        self.end_headers()
+                        self.wfile.write(encoded)
+
+                    def log_message(self, _format, *_args):
+                        pass
+
+                server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+                thread = threading.Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+                try:
+                    args = release_notes_publish.parser().parse_args([
+                        "--action", action, "--directory", str(root), "--environment", "dev",
+                        "--bucket", "synthetic-no-cloud", "--plan", str(root / "plan.json"),
+                        "--operation", operation, "--run-id", "701", "--run-attempt", "1",
+                        "--product-status", "released",
+                    ])
+                    with patch.object(release_notes_publish, "GCSCLIStore", return_value=store), \
+                            patch.object(release_notes_capture, "active_service_url",
+                                         return_value=f"http://127.0.0.1:{server.server_port}"):
+                        try:
+                            evidence = release_notes_publish.execute(args)
+                        except UnboundLocalError:
+                            # The publication is already committed; this assertion makes the old
+                            # unhandled evidence-serialization regression observable as such.
+                            self.assertEqual(store.writes, 1)
+                            self.assertFalse((root / "release-notes-evidence.json").exists())
+                            raise
+                finally:
+                    server.shutdown()
+                    server.server_close()
+                    thread.join(timeout=2)
+
+                self.assertEqual(evidence["status"], "verified")
+                self.assertEqual(evidence["stage"], "exact_readback")
+                self.assertEqual(evidence["currentness"], "verified")
+                self.assertEqual(store.writes, 1)
+                updated_index = json.loads(store.index)
+                self.assertEqual(updated_index["current_deployment"], current_marker)
+                self.assertEqual(updated_index["versions"][0]["published_at"],
+                                 "2026-11-01T22:58:30+08:00")
+                recorded = json.loads((root / "release-notes-evidence.json").read_bytes())["stages"]
+                self.assertEqual(len(recorded), 1)
+                self.assertEqual(recorded[0]["action"], action)
+                self.assertEqual(recorded[0]["status"], "verified")
+                self.assertEqual(recorded[0]["index_generation"], store.generation)
+                self.assertIsNone(recorded[0]["historical_package_artifact_name"])
+
     def test_historical_package_event_upload_receipt_and_resend_identity_are_bound(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
