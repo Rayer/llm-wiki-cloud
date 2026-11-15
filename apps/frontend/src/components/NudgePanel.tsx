@@ -101,7 +101,12 @@ export function NudgePanel({ onClose }: { onClose: () => void }) {
       await setNudgeAttention(item.category, item.attention_id, 'read');
       if (requestIdentityRef.current === identity) await refresh(identity);
     } catch {
-      if (requestIdentityRef.current === identity) await refresh(identity);
+      if (requestIdentityRef.current === identity) {
+        await refresh(identity);
+        if (requestIdentityRef.current === identity) {
+          setErrorState({ identity, value: t('Nudge.readNotConfirmed') });
+        }
+      }
     }
   };
 

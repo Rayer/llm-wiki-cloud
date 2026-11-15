@@ -917,6 +917,7 @@
     "openTarget": "Open the related item",
     "refresh": "Refresh saved state",
     "actionFailed": "This action could not be saved. Refresh and try again.",
+    "readNotConfirmed": "The read state is unknown. This item may still be unread.",
     "close": "Close Near Status"
   },
   "Profile": {
