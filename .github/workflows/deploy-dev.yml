@@ -26,11 +26,11 @@ on:
         options: [run, retry, skip, stop]
         default: run
       release_notes_result_artifact_id:
-        description: Exact retained release result artifact ID for operation notes-resend
+        description: Exact retained release result artifact ID for operation notes-resend or historical Notes package preparation
         type: string
         default: ''
       release_notes_operation:
-        description: Original retained runtime operation used only by notes-resend
+        description: Original retained runtime operation used by notes-resend or historical Notes package preparation
         required: false
         type: choice
         options: [release, deploy, rollback, reactivate, promote]
@@ -98,7 +98,7 @@ on:
         type: number
         default: 0
       prepare_release_notes_package:
-        description: Prepare the TPM-authored private Notes package for an exact retained Ready artifact; skips every deployment operation
+        description: Prepare a TPM-authored private Notes package from an exact retained Ready or successful historical DEV result; skips every deployment operation
         required: false
         type: boolean
         default: false
@@ -131,6 +131,8 @@ jobs:
     uses: ./.github/workflows/prepare-release-notes-package.yml
     with:
       ready_artifact_id: ${{ inputs.artifact_id }}
+      history_result_artifact_id: ${{ inputs.release_notes_result_artifact_id }}
+      history_operation: ${{ inputs.release_notes_result_artifact_id != '' && inputs.release_notes_operation || '' }}
       retention_days: ${{ inputs.release_notes_package_retention_days }}
       request_id: ${{ inputs.release_notes_package_request_id }}
   release:

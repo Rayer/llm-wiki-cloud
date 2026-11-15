@@ -298,6 +298,8 @@ class EngineWorkflowContract(unittest.TestCase):
         self.assertEqual(package_entry['permissions'], {'contents': 'read', 'actions': 'write'})
         self.assertEqual(package_entry['with'], {
             'ready_artifact_id': '${{ inputs.artifact_id }}',
+            'history_result_artifact_id': '${{ inputs.release_notes_result_artifact_id }}',
+            'history_operation': "${{ inputs.release_notes_result_artifact_id != '' && inputs.release_notes_operation || '' }}",
             'retention_days': '${{ inputs.release_notes_package_retention_days }}',
             'request_id': '${{ inputs.release_notes_package_request_id }}',
         })
@@ -313,7 +315,10 @@ class EngineWorkflowContract(unittest.TestCase):
         manual = yaml.safe_load(manual_path.read_text())
         trigger = manual.get('on', manual.get(True, {}))
         self.assertEqual(set(trigger), {'workflow_call'})
-        self.assertEqual(set(trigger['workflow_call']['inputs']), {'ready_artifact_id', 'retention_days', 'request_id'})
+        self.assertEqual(set(trigger['workflow_call']['inputs']), {
+            'ready_artifact_id', 'history_result_artifact_id', 'history_operation',
+            'retention_days', 'request_id',
+        })
         self.assertNotIn('package_zip_base64', trigger['workflow_call']['inputs'])
         self.assertEqual(manual['permissions'], {'contents': 'read', 'actions': 'write'})
         job = manual['jobs']['package']
@@ -321,18 +326,35 @@ class EngineWorkflowContract(unittest.TestCase):
         manual_steps = job['steps']
         self.assertEqual(manual_steps[0]['uses'], 'actions/checkout@11d5960a326750d5838078e36cf38b85af677262')
         downloads = [step for step in manual_steps if step.get('uses', '').startswith('actions/download-artifact@')]
-        self.assertEqual(len(downloads), 2)
+        self.assertEqual([step['name'] for step in downloads], [
+            'Download the exact ready-plan artifact',
+            'Download the exact final result from the same producer attempt',
+            'Download the exact historical DEV result artifact',
+        ])
         download = downloads[0]
         upload = next(step for step in manual_steps if step.get('uses', '').startswith('actions/upload-artifact@'))
         self.assertEqual(download['uses'], 'actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093')
+        self.assertEqual(download['if'], "inputs.ready_artifact_id != ''")
         self.assertIn('artifact-ids', download['with'])
         self.assertEqual(download['with']['merge-multiple'], True)
         self.assertEqual(download['with']['artifact-ids'], '${{ inputs.ready_artifact_id }}')
         self.assertEqual(downloads[1]['with']['artifact-ids'], '${{ steps.ready.outputs.result_artifact_id }}')
         self.assertEqual(downloads[1]['with']['run-id'], '${{ steps.ready.outputs.run_id }}')
+        self.assertEqual(downloads[1]['if'], "inputs.ready_artifact_id != ''")
+        self.assertEqual(downloads[2]['if'], "inputs.history_result_artifact_id != ''")
+        self.assertEqual(downloads[2]['with']['artifact-ids'], '${{ inputs.history_result_artifact_id }}')
+        self.assertEqual(downloads[2]['with']['run-id'], '${{ steps.history-identity.outputs.run_id }}')
+        self.assertEqual(downloads[2]['with']['merge-multiple'], True)
         self.assertEqual(upload['uses'], 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02')
-        self.assertIn('lwc-release-notes-${{ steps.prepare.outputs.product_version }}-development-${{ github.run_id }}-${{ github.run_attempt }}',
-                      upload['with']['name'])
+        self.assertEqual(
+            upload['with']['name'],
+            "${{ inputs.history_result_artifact_id != '' && "
+            "format('lwc-release-notes-{0}-development-history-{1}-{2}-{3}-{4}', "
+            "steps.prepare.outputs.product_version, inputs.history_operation, "
+            "inputs.history_result_artifact_id, github.run_id, github.run_attempt) || "
+            "format('lwc-release-notes-{0}-development-{1}-{2}', "
+            "steps.prepare.outputs.product_version, github.run_id, github.run_attempt) }}",
+        )
         self.assertEqual(upload['with']['retention-days'], '${{ inputs.retention_days }}')
         source_gate = next(step for step in manual_steps if step.get('name') == 'Validate workflow source branch')
         self.assertIn('validate-package-event', source_gate['run'])

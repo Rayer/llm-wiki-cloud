@@ -15,6 +15,14 @@ from typing import Callable, Protocol
 
 
 SCHEMA_VERSION = 1
+HISTORICAL_MANIFEST_FIELDS = frozenset({
+    "original_published_at", "historical_source_record_ref",
+    "historical_source_record_sha256", "imported_at",
+})
+HISTORICAL_PACKAGE_NAME_RE = re.compile(
+    r"^lwc-release-notes-.+-development-history-(?:release|deploy|rollback|reactivate|promote)-"
+    r"[1-9][0-9]*-[1-9][0-9]*-[1-9][0-9]*$"
+)
 MAX_CONTENT_BYTES = 64 * 1024
 MAX_INDEX_BYTES = 1024 * 1024
 MAX_OPERATION_ARTIFACT_BYTES = 16 * 1024 * 1024
@@ -137,10 +145,11 @@ def validate_package(directory, *, expected_environment: str, expected_artifact_
         "schema_version", "product", "product_version", "environment", "release_plan_sha256",
         "release_note_snapshot_ref", "release_note_snapshot_sha256", "delivered_scope_evidence_sha256", "files",
     }
-    historical_fields = {"original_published_at", "historical_source_record_ref", "historical_source_record_sha256", "imported_at"}
-    manifest = _json_object(manifest_bytes, "validate", 32 * 1024, manifest_fields | historical_fields)
-    present_historical = set(manifest).intersection(historical_fields)
-    _require(manifest_fields <= set(manifest) and (not present_historical or present_historical == historical_fields) and
+    manifest = _json_object(manifest_bytes, "validate", 32 * 1024,
+                            manifest_fields | HISTORICAL_MANIFEST_FIELDS)
+    present_historical = set(manifest).intersection(HISTORICAL_MANIFEST_FIELDS)
+    _require(manifest_fields <= set(manifest) and
+             (not present_historical or present_historical == HISTORICAL_MANIFEST_FIELDS) and
              type(manifest.get("schema_version")) is int and manifest.get("schema_version") == SCHEMA_VERSION and
              manifest.get("product") == "llm-wiki-cloud" and valid_version(manifest.get("product_version")) and
              manifest.get("environment") == expected_environment and
@@ -181,6 +190,37 @@ def validate_package(directory, *, expected_environment: str, expected_artifact_
         actual.add(path.name)
     _require(actual == package_files, "validate", "unexpected-package-file")
     return manifest["product_version"], files, manifest
+
+
+def historical_package_artifact_name(product_version: str, operation: str,
+                                     result_artifact_id: str, package_run_id: str,
+                                     package_run_attempt: str) -> str:
+    """Name a private historical package artifact with its exact source result identity."""
+    _require(valid_version(product_version) and operation in TRANSITION_OPS and
+             all(isinstance(value, str) and re.fullmatch(r"[1-9][0-9]*", value) is not None
+                 for value in (result_artifact_id, package_run_id, package_run_attempt)),
+             "validate", "historical-artifact-identity-invalid")
+    return (f"lwc-release-notes-{product_version}-development-history-"
+            f"{operation}-{result_artifact_id}-{package_run_id}-{package_run_attempt}")
+
+
+def is_historical_package_artifact_name(artifact_name: str) -> bool:
+    return isinstance(artifact_name, str) and HISTORICAL_PACKAGE_NAME_RE.fullmatch(artifact_name) is not None
+
+
+def validate_historical_package_artifact_binding(manifest: dict, *, artifact_name: str,
+                                                 result_artifact_id: str, operation: str,
+                                                 package_run_id: str,
+                                                 package_run_attempt: str) -> str:
+    """Require a historical package upload identity to name its exact resend source."""
+    if not isinstance(manifest, dict) or not HISTORICAL_MANIFEST_FIELDS <= set(manifest):
+        raise ReleaseNotesError("validate", "historical-provenance-required")
+    expected = historical_package_artifact_name(
+        manifest.get("product_version", ""), operation, result_artifact_id,
+        package_run_id, package_run_attempt)
+    _require(isinstance(artifact_name, str) and artifact_name == expected,
+             "validate", "historical-artifact-binding-mismatch")
+    return expected
 
 
 def upload_content(store: NotesStore, files: dict[str, bytes], *, product_version: str) -> dict[str, int]:

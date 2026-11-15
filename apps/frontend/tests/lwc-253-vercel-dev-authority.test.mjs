@@ -419,10 +419,10 @@ test('DEV workflow invokes the shared engine and isolates the fixed diagnostic r
     required: true, type: 'choice', options: ['run', 'retry', 'skip', 'stop'], default: 'run',
   });
   assert.deepEqual(noteInputs.release_notes_result_artifact_id, {
-    description: 'Exact retained release result artifact ID for operation notes-resend', type: 'string', default: '',
+    description: 'Exact retained release result artifact ID for operation notes-resend or historical Notes package preparation', type: 'string', default: '',
   });
   assert.deepEqual(noteInputs.release_notes_operation, {
-    description: 'Original retained runtime operation used only by notes-resend', required: false, type: 'choice',
+    description: 'Original retained runtime operation used by notes-resend or historical Notes package preparation', required: false, type: 'choice',
     options: ['release', 'deploy', 'rollback', 'reactivate', 'promote'], default: 'release',
   });
   assert.equal(workflow.on.workflow_dispatch.inputs.release_tag.required, false);
@@ -464,6 +464,8 @@ test('DEV workflow invokes the shared engine and isolates the fixed diagnostic r
   assert.deepEqual(packageJob.permissions, { contents: 'read', actions: 'write' });
   assert.deepEqual(packageJob.with, {
     ready_artifact_id: '${{ inputs.artifact_id }}',
+    history_result_artifact_id: '${{ inputs.release_notes_result_artifact_id }}',
+    history_operation: "${{ inputs.release_notes_result_artifact_id != '' && inputs.release_notes_operation || '' }}",
     retention_days: '${{ inputs.release_notes_package_retention_days }}',
     request_id: '${{ inputs.release_notes_package_request_id }}',
   });

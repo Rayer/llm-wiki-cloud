@@ -566,13 +566,13 @@ jobs:
           set -Eeuo pipefail
           gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$RELEASE_NOTES_ARTIFACT_ID" > "$RUNNER_TEMP/notes-package-metadata.json"
           run_id="$(jq -er '.workflow_run.id | select(type=="number" and .>0) | tostring' "$RUNNER_TEMP/notes-package-metadata.json")"
-          digest="$(jq -er '.digest | select(type=="string" and test("^sha256:[0-9a-f]{64}$"))' "$RUNNER_TEMP/notes-package-metadata.json")"
-          name="$(jq -er '.name | select(type=="string")' "$RUNNER_TEMP/notes-package-metadata.json")"
-          expired="$(jq -er '.expired | tostring' "$RUNNER_TEMP/notes-package-metadata.json")"
-          [[ "$name" == lwc-release-notes-* && "$expired" == false ]]
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" > "$RUNNER_TEMP/notes-package-run.json"
-          jq -e '.event == "workflow_dispatch" and .conclusion == "success"' "$RUNNER_TEMP/notes-package-run.json" >/dev/null
-          printf 'run_id=%s\ndigest=%s\n' "$run_id" "$digest" >> "$GITHUB_OUTPUT"
+          python3 deploy/engine/release_notes_workflow.py validate-resend-package-artifact \
+            --metadata "$RUNNER_TEMP/notes-package-metadata.json" \
+            --run "$RUNNER_TEMP/notes-package-run.json" \
+            --artifact-id "$RELEASE_NOTES_ARTIFACT_ID" \
+            --result-artifact-id "$RELEASE_NOTES_RESULT_ARTIFACT_ID" \
+            --operation "$RELEASE_NOTES_OPERATION" --output "$GITHUB_OUTPUT"
       - name: Download exact TPM Release Notes artifact
         if: inputs.release_notes_action == 'run' || inputs.release_notes_action == 'retry'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
@@ -594,6 +594,9 @@ jobs:
         if: inputs.release_notes_action == 'run' || inputs.release_notes_action == 'retry'
         env:
           NOTES_ARTIFACT_DIGEST: ${{ steps.notes-package.outputs.digest }}
+          NOTES_ARTIFACT_NAME: ${{ steps.notes-package.outputs.artifact_name }}
+          NOTES_PACKAGE_RUN_ID: ${{ steps.notes-package.outputs.package_run_id }}
+          NOTES_PACKAGE_RUN_ATTEMPT: ${{ steps.notes-package.outputs.package_run_attempt }}
         run: |
           set -Eeuo pipefail
           python3 deploy/engine/release_notes_publish.py --action resend \
@@ -601,6 +604,8 @@ jobs:
             --environment "$TARGET_ENVIRONMENT" --bucket "$NOTES_BUCKET" \
             --artifact-id "$RELEASE_NOTES_ARTIFACT_ID" --artifact-digest "$NOTES_ARTIFACT_DIGEST" \
             --artifact-metadata-digest "$NOTES_ARTIFACT_DIGEST" --plan "$RUNNER_TEMP/release/plan.json" \
+            --artifact-name "$NOTES_ARTIFACT_NAME" --package-run-id "$NOTES_PACKAGE_RUN_ID" \
+            --package-run-attempt "$NOTES_PACKAGE_RUN_ATTEMPT" \
             --result-artifact-id "$RELEASE_NOTES_RESULT_ARTIFACT_ID" \
             --operation "$RELEASE_NOTES_OPERATION" --run-id "${{ steps.notes-result.outputs.run_id }}" \
             --run-attempt "${{ steps.notes-result.outputs.attempt }}" --product-status released

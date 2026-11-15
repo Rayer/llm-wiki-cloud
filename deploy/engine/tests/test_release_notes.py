@@ -513,7 +513,6 @@ class ReleaseNotesContractTests(unittest.TestCase):
             plan_path.write_bytes(plan_bytes)
             (directory / "state.json").write_bytes(state_bytes)
             (directory / "result.json").write_bytes(result_bytes)
-            (directory / "release-notes-operation.json").write_bytes(sidecar_bytes + b"\n")
             (directory / "receipts").mkdir()
             (directory / "receipts" / "bff.json").write_bytes(receipt_bytes)
             package = directory / "package"
@@ -533,11 +532,15 @@ class ReleaseNotesContractTests(unittest.TestCase):
             }
             (package / "release-notes-manifest.json").write_bytes(canonical(manifest))
             (package / "en.json").write_bytes(body)
+            package_artifact_name = release_notes.historical_package_artifact_name(
+                "1.2.3", "release", "9001", "8002", "1")
             args = release_notes_publish.parser().parse_args([
                 "--action", "resend", "--directory", str(directory), "--package-dir", str(package),
                 "--environment", "dev", "--bucket", "unused", "--artifact-id", "8001",
                 "--artifact-digest", "sha256:" + "c" * 64,
                 "--artifact-metadata-digest", "sha256:" + "c" * 64,
+                "--artifact-name", package_artifact_name, "--package-run-id", "8002",
+                "--package-run-attempt", "1",
                 "--plan", str(plan_path), "--operation", "release", "--run-id", "701",
                 "--run-attempt", "1", "--result-artifact-id", "9001", "--product-status", "released",
             ])
@@ -561,6 +564,48 @@ class ReleaseNotesContractTests(unittest.TestCase):
             self.assertEqual(failure["next_actions"], ["retry", "skip", "stop"])
             self.assertTrue(failure["owner_choice_required"])
             self.assertFalse(failure["automatic_skip"])
+
+    def test_historical_artifact_name_requires_complete_historical_manifest_before_store(self):
+        fixture = operation_fixture(operation="release", product_version="1.2.3")
+        plan_bytes, state_bytes, result_bytes, _, receipt_bytes, _ = fixture
+        with TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            plan_path = directory / "plan.json"
+            plan_path.write_bytes(plan_bytes)
+            (directory / "state.json").write_bytes(state_bytes)
+            (directory / "result.json").write_bytes(result_bytes)
+            (directory / "receipts").mkdir()
+            (directory / "receipts" / "bff.json").write_bytes(receipt_bytes)
+            package = directory / "package"
+            package.mkdir()
+            body = note()
+            manifest = {
+                "schema_version": 1, "product": "llm-wiki-cloud", "product_version": "1.2.3", "environment": "dev",
+                "release_plan_sha256": release_notes.digest_bytes(plan_bytes),
+                "release_note_snapshot_ref": "LWC-A-57:4-123",
+                "release_note_snapshot_sha256": "sha256:" + "a" * 64,
+                "delivered_scope_evidence_sha256": "sha256:" + "b" * 64,
+                "files": {"en": {"path": "en.json", "sha256": release_notes.digest_bytes(body)}},
+            }
+            (package / "release-notes-manifest.json").write_bytes(canonical(manifest))
+            (package / "en.json").write_bytes(body)
+            artifact_name = release_notes.historical_package_artifact_name(
+                "1.2.3", "release", "9001", "8002", "1")
+            args = release_notes_publish.parser().parse_args([
+                "--action", "resend", "--directory", str(directory), "--package-dir", str(package),
+                "--environment", "dev", "--bucket", "unused", "--artifact-id", "8001",
+                "--artifact-digest", "sha256:" + "c" * 64,
+                "--artifact-metadata-digest", "sha256:" + "c" * 64,
+                "--artifact-name", artifact_name, "--package-run-id", "8002",
+                "--package-run-attempt", "1", "--plan", str(plan_path),
+                "--operation", "release", "--run-id", "701", "--run-attempt", "1",
+                "--result-artifact-id", "9001", "--product-status", "released",
+            ])
+            with patch.object(release_notes_publish, "GCSCLIStore",
+                              side_effect=AssertionError("invalid history package must fail before storage")):
+                with self.assertRaisesRegex(release_notes.ReleaseNotesError,
+                                            "historical-provenance-required"):
+                    release_notes_publish.execute(args)
 
     def test_marker_only_skip_updates_currentness_without_content_or_timestamp(self):
         marker = self.normalize()

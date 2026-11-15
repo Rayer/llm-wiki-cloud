@@ -278,15 +278,20 @@ class SharedCDContractTest(unittest.TestCase):
                 "required": True, "type": "choice", "options": ["run", "retry", "skip", "stop"], "default": "run",
             })
             self.assertEqual(notes_inputs["release_notes_result_artifact_id"], {
-                "description": "Exact retained release result artifact ID for operation notes-resend",
+                "description": ("Exact retained release result artifact ID for operation notes-resend or historical Notes package preparation"
+                                if path == "deploy-dev.yml" else
+                                "Exact retained release result artifact ID for operation notes-resend"),
                 "type": "string", "default": "",
             })
+            operation_description = ("Original retained runtime operation used by notes-resend or historical Notes package preparation"
+                                     if path == "deploy-dev.yml" else
+                                     "Original retained runtime operation used only by notes-resend")
             expected_notes_operation = {
-                "description": "Original retained runtime operation used only by notes-resend",
+                "description": operation_description,
                 "required": False, "type": "choice",
                 "options": ["release", "deploy", "rollback", "reactivate", "promote"], "default": "release",
             } if path == "deploy-dev.yml" else {
-                "description": "Original retained runtime operation used only by notes-resend",
+                "description": operation_description,
                 "type": "string", "default": "release",
             }
             self.assertEqual(notes_inputs["release_notes_operation"], expected_notes_operation)
@@ -321,6 +326,8 @@ class SharedCDContractTest(unittest.TestCase):
                 self.assertEqual(package_job["permissions"], {"contents": "read", "actions": "write"})
                 self.assertEqual(package_job["with"], {
                     "ready_artifact_id": "${{ inputs.artifact_id }}",
+                    "history_result_artifact_id": "${{ inputs.release_notes_result_artifact_id }}",
+                    "history_operation": "${{ inputs.release_notes_result_artifact_id != '' && inputs.release_notes_operation || '' }}",
                     "retention_days": "${{ inputs.release_notes_package_retention_days }}",
                     "request_id": "${{ inputs.release_notes_package_request_id }}",
                 })
