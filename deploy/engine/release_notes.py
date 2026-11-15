@@ -485,6 +485,14 @@ def publish_package(store: NotesStore, files: dict[str, bytes], *, product_versi
     except Exception:
         raise ReleaseNotesError("content_upload", "content-stage-failed") from None
 
+    def locale_state(locales: dict) -> tuple:
+        return tuple(sorted((locale, entry["sha256"], entry["object_path"])
+                            for locale, entry in locales.items()))
+
+    unobserved = object()
+    observed_version_state = unobserved
+    intended_version_state = None
+    generation_conflict_seen = False
     for _ in range(max_cas_attempts):
         try:
             current_bytes, generation = store.read_index()
@@ -504,6 +512,18 @@ def publish_package(store: NotesStore, files: dict[str, bytes], *, product_versi
                 raise ReleaseNotesError("index_update", "release-transition-stale")
         versions = index["versions"]
         existing = next((row for row in versions if row["product_version"] == product_version), None)
+        current_version_state = None if existing is None else locale_state(existing["locales"])
+        if observed_version_state is unobserved:
+            observed_version_state = current_version_state
+            intended_locales = dict(existing["locales"]) if existing else {}
+            intended_locales.update({locale: {"sha256": item["sha256"], "object_path": item["object_path"]}
+                                     for locale, item in prepared.items()})
+            intended_version_state = locale_state(intended_locales)
+        elif generation_conflict_seen and current_version_state not in (
+                observed_version_state, intended_version_state):
+            # A conditional write lost and this version changed to different bytes meanwhile.
+            # Keep the winner and let the existing index_update failure path record the conflict.
+            raise ReleaseNotesError("index_update", "generation-conflict")
         if existing:
             old_locales = existing["locales"]
             updated_locales = dict(old_locales)
@@ -527,6 +547,7 @@ def publish_package(store: NotesStore, files: dict[str, bytes], *, product_versi
             new_generation = store.compare_and_swap_index(serialized, generation)
         except Exception as error:
             if getattr(error, "safe_class", "") == "generation-conflict":
+                generation_conflict_seen = True
                 continue
             raise ReleaseNotesError("index_update", "index-write-failed") from None
         try:
