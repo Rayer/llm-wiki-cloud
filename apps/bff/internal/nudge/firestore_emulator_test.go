@@ -26,7 +26,8 @@ func TestRepositorySourceCASAttentionAndTombstoneRecovery(t *testing.T) {
 	projectID := fmt.Sprintf("nudge-project-%d", time.Now().UnixNano())
 	sourceKey := "pipeline-fail:" + projectID
 	repo := NewRepository(client.Raw())
-	repo.SetClockForTest(func() time.Time { return time.Date(2026, 11, 14, 1, 2, 3, 0, time.UTC) })
+	clockNow := time.Date(2026, 11, 14, 1, 2, 3, 0, time.UTC)
+	repo.SetClockForTest(func() time.Time { return clockNow })
 	projectRef := scopedfirestore.Collection(client.Raw(), "projects").Doc(ownerID + "_" + projectID)
 	if _, err := projectRef.Set(ctx, map[string]interface{}{"user_id": ownerID, "project_id": projectID, "name": "Test Wiki"}); err != nil {
 		t.Fatalf("seed owner Project: %v", err)
@@ -42,8 +43,63 @@ func TestRepositorySourceCASAttentionAndTombstoneRecovery(t *testing.T) {
 		t.Fatalf("initial view=%+v err=%v", view, err)
 	}
 	attentionID := view.Items[0].AttentionID
+	sourceRef, err := repo.slotRef(ownerID, CategoryPipelineFailure, sourceKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceSnapshot, err := sourceRef.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceBefore, err := decodeSlot(sourceSnapshot.Data())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := repo.PatchAttention(ctx, ownerID, CategoryPipelineFailure, attentionID, "read"); err != nil {
 		t.Fatalf("mark read: %v", err)
+	}
+	if err := repo.PatchAttention(ctx, ownerID, CategoryPipelineFailure, attentionID, "unread"); err != nil {
+		t.Fatalf("mark unread: %v", err)
+	}
+	categoryRef, err := repo.categoryRef(ownerID, CategoryPipelineFailure)
+	if err != nil {
+		t.Fatal(err)
+	}
+	categorySnapshot, err := categoryRef.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	categoryBeforeDuplicate, err := decodeCategory(categorySnapshot.Data())
+	if err != nil {
+		t.Fatal(err)
+	}
+	clockNow = clockNow.Add(time.Minute)
+	if err := repo.PatchAttention(ctx, ownerID, CategoryPipelineFailure, attentionID, "unread"); err != nil {
+		t.Fatalf("repeat unread: %v", err)
+	}
+	categorySnapshot, err = categoryRef.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	categoryAfterDuplicate, err := decodeCategory(categorySnapshot.Data())
+	if err != nil || !categoryAfterDuplicate.UpdatedAt.Equal(categoryBeforeDuplicate.UpdatedAt) {
+		t.Fatalf("idempotent unread changed category timestamp: before=%+v after=%+v err=%v", categoryBeforeDuplicate, categoryAfterDuplicate, err)
+	}
+	view, err = repo.Read(ctx, ownerID, nil, nil)
+	if err != nil || len(view.Items) != 1 || view.Items[0].AttentionID != attentionID || view.Items[0].AttentionState != AttentionUnread {
+		t.Fatalf("unread transition did not persist: view=%+v err=%v", view, err)
+	}
+	if err := repo.PatchAttention(ctx, ownerID, CategoryPipelineFailure, attentionID, "read"); err != nil {
+		t.Fatalf("mark read again: %v", err)
+	}
+	sourceSnapshot, err = sourceRef.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceAfter, err := decodeSlot(sourceSnapshot.Data())
+	if err != nil || sourceAfter.SourceRevision != sourceBefore.SourceRevision || sourceAfter.ProducerWitness != sourceBefore.ProducerWitness ||
+		sourceAfter.PayloadDigest != sourceBefore.PayloadDigest || sourceAfter.ObservedAt != sourceBefore.ObservedAt {
+		t.Fatalf("attention transition changed source state: before=%+v after=%+v err=%v", sourceBefore, sourceAfter, err)
 	}
 
 	corrected := pipelineObservation(projectID, 2, "run-2", "a")
@@ -89,7 +145,7 @@ func TestRepositorySourceCASAttentionAndTombstoneRecovery(t *testing.T) {
 	}
 }
 
-func TestPatchAttentionRejectsUrgentReadAndDismiss(t *testing.T) {
+func TestPatchAttentionRejectsUrgentReadDismissAndUnread(t *testing.T) {
 	client := newNudgeFirestoreEmulator(t)
 	defer client.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -113,6 +169,9 @@ func TestPatchAttentionRejectsUrgentReadAndDismiss(t *testing.T) {
 			t.Fatalf("urgent %s returned %v", action, err)
 		}
 	}
+	if err := repo.PatchAttention(ctx, ownerID, CategoryPipelineFailure, cat.AttentionID, "unread"); err != ErrAttentionNotChangeable {
+		t.Fatalf("urgent unread returned %v", err)
+	}
 	stored, err := ref.Get(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -120,6 +179,38 @@ func TestPatchAttentionRejectsUrgentReadAndDismiss(t *testing.T) {
 	decoded, err := decodeCategory(stored.Data())
 	if err != nil || decoded.AttentionState != AttentionUnread || decoded.UrgentCount != 1 {
 		t.Fatalf("urgent state changed by direct interaction: %+v err=%v", decoded, err)
+	}
+}
+
+func TestPatchAttentionCannotResurrectDismissedCategory(t *testing.T) {
+	client := newNudgeFirestoreEmulator(t)
+	defer client.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	repo := NewRepository(client.Raw())
+	ownerID := "dismissed-owner"
+	ref, err := repo.categoryRef(ownerID, CategoryPurposeGap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cat := emptyCategory(CategoryPurposeGap)
+	cat.AttentionID, cat.AttentionState, cat.ActiveCount = "dismissed-attention", AttentionDismissed, 1
+	cat.MaterialBySource["purpose-source"] = "purpose"
+	cat.SeverityBySource["purpose-source"] = SeverityAttention
+	if _, err := ref.Set(ctx, cat); err != nil {
+		t.Fatal(err)
+	}
+	for _, action := range []string{"read", "unread"} {
+		if err := repo.PatchAttention(ctx, ownerID, CategoryPurposeGap, cat.AttentionID, action); err != ErrAttentionNotChangeable {
+			t.Fatalf("dismissed %s returned %v", action, err)
+		}
+	}
+	if err := repo.PatchAttention(ctx, ownerID, CategoryPurposeGap, cat.AttentionID, "dismiss"); err != nil {
+		t.Fatalf("repeated dismiss returned %v", err)
+	}
+	view, err := repo.Read(ctx, ownerID, nil, nil)
+	if err != nil || len(view.Items) != 0 {
+		t.Fatalf("dismissed category became visible: view=%+v err=%v", view, err)
 	}
 }
 

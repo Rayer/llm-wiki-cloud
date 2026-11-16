@@ -48,6 +48,10 @@ describe('LWC-447 runtime catalogs and locale UI', () => {
     expect(translate('zh-TW', 'MCPOAuth.sharedInstructions')).toContain('不代表已獲授權');
     expect(translate('zh-TW', 'MCPOAuth.sharedInstructions')).not.toContain('@cac:');
     expect(translate('zh-TW', 'Nudge.coverage', { selected: 2, total: 3 })).toBe('概述使用 3 個概念中的 2 個。');
+    expect(translate('en', 'Nudge.markUnread')).toBe('Mark unread');
+    expect(translate('zh-TW', 'Nudge.markUnread')).toBe('標示為未讀');
+    expect(translate('en', 'Nudge.unreadCue')).toBe('Unread items');
+    expect(translate('zh-TW', 'Nudge.unreadCue')).toBe('有未讀項目');
     expect(translate('zh-TW', 'ProjectDescription.help')).toContain('不會取代 Profile 指引');
   });
 

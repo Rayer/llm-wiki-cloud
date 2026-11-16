@@ -328,7 +328,7 @@ func purposeNotificationEligible(lastNotifiedAt *time.Time, attemptStartedAt, co
 }
 
 func (r *Repository) PatchAttention(ctx context.Context, userID, category, attentionID, action string) error {
-	if !validCategory(category) || attentionID == "" || (action != "read" && action != "dismiss") {
+	if !validCategory(category) || attentionID == "" || (action != "read" && action != "unread" && action != "dismiss") {
 		return ErrInvalidInput
 	}
 	ref, err := r.categoryRef(userID, category)
@@ -351,13 +351,25 @@ func (r *Repository) PatchAttention(ctx context.Context, userID, category, atten
 			return ErrAttentionConflict
 		}
 		if cat.UrgentCount > 0 {
+			if action == "unread" {
+				return ErrAttentionNotChangeable
+			}
 			return ErrAttentionNotDismissible
 		}
-		if action == "read" {
-			cat.AttentionState = AttentionRead
-		} else {
-			cat.AttentionState = AttentionDismissed
+		if cat.AttentionState == AttentionDismissed && action != "dismiss" {
+			return ErrAttentionNotChangeable
 		}
+		nextState := AttentionDismissed
+		switch action {
+		case "read":
+			nextState = AttentionRead
+		case "unread":
+			nextState = AttentionUnread
+		}
+		if cat.AttentionState == nextState {
+			return nil
+		}
+		cat.AttentionState = nextState
 		cat.UpdatedAt = r.now().UTC().Truncate(time.Microsecond)
 		return tx.Set(ref, cat)
 	})

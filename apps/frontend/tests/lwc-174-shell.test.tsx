@@ -62,7 +62,10 @@ vi.mock('@/lib/auth', () => ({
   }),
 }));
 vi.mock('@/components/NudgePanel', () => ({
-  NudgePanel: ({ onClose }: { onClose: () => void }) => <div role="dialog" aria-label="Nudge test panel"><button type="button" onClick={onClose}>close test panel</button></div>,
+  NudgePanel: ({ open, onOpen, onClose }: { open: boolean; onOpen: () => void; onClose: () => void }) => <>
+    <button type="button" aria-label="Near Status" onClick={onOpen}>Near Status</button>
+    {open ? <div role="dialog" aria-label="Nudge test panel"><button type="button" onClick={onClose}>close test panel</button></div> : null}
+  </>,
 }));
 
 import { Shell } from '@/components/Shell';
@@ -141,6 +144,7 @@ describe('LWC-174 production Shell rename behavior', () => {
     localStorage.setItem('locale', 'en');
     const view = renderShell();
     const open = await screen.findByRole('button', { name: 'Near Status' });
+    expect(screen.getAllByRole('button', { name: 'Near Status' })).toHaveLength(1);
     fireEvent.click(open);
     expect(screen.getByRole('dialog', { name: 'Nudge test panel' })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'close test panel' }));

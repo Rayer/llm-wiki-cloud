@@ -397,6 +397,18 @@
       "kind": "literal",
       "context": "Status shown after the saved read state for an opened Nudge destination could not be confirmed."
     },
+    "Nudge.statusUnknown": {
+      "kind": "literal",
+      "context": "Closed Shell status shown until a saved Nudge view has been confirmed."
+    },
+    "Nudge.markUnread": {
+      "kind": "literal",
+      "context": "Action that returns an ordinary Nudge item to unread without changing its source."
+    },
+    "Nudge.unreadCue": {
+      "kind": "literal",
+      "context": "Accessible description for the Shell Nudge trigger when ordinary unread items exist."
+    },
     "Pipeline.quotaLine": {
       "kind": "literal",
       "params": [
