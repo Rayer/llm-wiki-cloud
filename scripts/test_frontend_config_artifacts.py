@@ -299,9 +299,7 @@ class FrontendConfigArtifactTests(unittest.TestCase):
         self.assertIn("frontend_config_artifact_id", production["on"]["workflow_dispatch"]["inputs"])
         for wrapper, environment in ((development, "dev"), (production, "prod")):
             generate_job = wrapper["jobs"]["frontend-config-generate"]
-            expected_generation_guard = "github.ref == 'refs/heads/develop' && inputs.operation == 'frontend-config-generate'"
-            if wrapper is development:
-                expected_generation_guard = "github.ref == 'refs/heads/develop' && inputs.prepare_release_notes_package != true && inputs.operation == 'frontend-config-generate'"
+            expected_generation_guard = "github.ref == 'refs/heads/develop' && inputs.prepare_release_notes_package != true && inputs.operation == 'frontend-config-generate'"
             self.assertEqual(generate_job["if"], expected_generation_guard)
             self.assertEqual(generate_job["permissions"], {"contents": "read"})
             self.assertEqual(generate_job["uses"], "./.github/workflows/generate-frontend-config.yml")
