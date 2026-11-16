@@ -39,7 +39,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
   const { t } = useT();
   const pathname = usePathname();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
-  const { user } = useAuth();
+  const { user, sessionIdentityEpoch, sessionEpoch } = useAuth();
   const { open: paletteOpen, setOpen: setPaletteOpen } = useCommandPalette();
 
   const {
@@ -71,7 +71,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
   const [versionDialogOpen, setVersionDialogOpen] = useState(false);
   const [versionCopied, setVersionCopied] = useState(false);
   const [versionCopyFailed, setVersionCopyFailed] = useState(false);
-  const [nudgeOpen, setNudgeOpen] = useState(false);
+  const [nudgeOpenIdentity, setNudgeOpenIdentity] = useState<string | null>(null);
   const versionButtonRef = useRef<HTMLButtonElement>(null);
   const dialogCloseRef = useRef<HTMLButtonElement>(null);
   const versionWasOpenRef = useRef(false);
@@ -254,6 +254,8 @@ function ShellContent({ children }: { children: React.ReactNode }) {
   const dailyBriefLanding = hydrated && !token && isMCPConsentRoute
     ? dailyBriefSignedOutLandingURL()
     : null;
+  const nudgeIdentity = JSON.stringify([user?.id ?? null, sessionIdentityEpoch, sessionEpoch, isDemoSession]);
+  const nudgeOpen = nudgeOpenIdentity === nudgeIdentity;
 
   return (
     <div className="min-h-dvh text-zinc-100 lg:flex lg:items-stretch">
@@ -352,12 +354,6 @@ function ShellContent({ children }: { children: React.ReactNode }) {
                   </NavigationLink>
                 );
               })}
-              {!isDemoSession ? (
-                <button type="button" onClick={() => setNudgeOpen(true)} className="relative flex min-h-11 items-center gap-3 rounded px-3 py-2.5 text-left text-sm font-medium text-zinc-400 transition hover:bg-white/5 hover:text-zinc-200">
-                  <Activity className="size-4 shrink-0 text-zinc-500" />
-                  <span className="min-w-0 flex-1 truncate">{t('Nudge.open')}</span>
-                </button>
-              ) : null}
             </nav>
 
             <div className="mx-3 my-2 border-t border-white/8" />
@@ -432,6 +428,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
         <div className="lwc-utilities mx-auto max-w-6xl px-4 pt-4 sm:px-6 lg:px-10">
           {pathname === '/login' || !loginOpen ? <LocaleControl /> : null}
           <RequestIDPanel />
+          {token && !isDemoSession ? <NudgePanel open={nudgeOpen} onOpen={() => setNudgeOpenIdentity(nudgeIdentity)} onClose={() => setNudgeOpenIdentity(null)} /> : null}
         </div>
         {!hydrated ? (
           <div className="flex min-h-screen items-center justify-center text-sm text-zinc-500">
@@ -564,8 +561,6 @@ function ShellContent({ children }: { children: React.ReactNode }) {
           </section>
         </div>
       ) : null}
-
-      {nudgeOpen ? <NudgePanel onClose={() => setNudgeOpen(false)} /> : null}
 
     </div>
   );

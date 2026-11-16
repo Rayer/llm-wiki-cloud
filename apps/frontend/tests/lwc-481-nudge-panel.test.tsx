@@ -28,7 +28,12 @@ vi.mock('@/lib/nudges', () => ({
   setNudgeAttention: mocks.setNudgeAttention,
   resolveNudgeTarget: mocks.resolveNudgeTarget,
 }));
-vi.mock('@/components/NavigationBlocker', () => ({ useNavigationBlocker: () => ({ confirmNavigation: mocks.confirmNavigation }) }));
+vi.mock('@/components/NavigationBlocker', () => ({
+  useNavigationBlocker: () => ({ confirmNavigation: mocks.confirmNavigation }),
+  NavigationLink: ({ href, onNavigate, children, ...props }: {
+    href: string; onNavigate?: (event: { preventDefault: () => void }) => void; children: React.ReactNode; [key: string]: unknown;
+  }) => <a href={href} {...props} onClick={(event) => { event.preventDefault(); if (mocks.confirmNavigation()) onNavigate?.(event); }}>{children}</a>,
+}));
 
 import { NudgePanel } from '@/components/NudgePanel';
 
@@ -94,6 +99,142 @@ describe('LWC-481 Nudge action navigation', () => {
     vi.clearAllMocks();
   });
 
+  it('reconciles once while closed, shows the unread cue, and reuses that view when opened', async () => {
+    const onOpen = vi.fn();
+    const onClose = vi.fn();
+    const { rerender } = render(<NudgePanel open={false} onOpen={onOpen} onClose={onClose} />);
+
+    const trigger = await screen.findByRole('button', { name: 'Nudge.open, Nudge.unreadCue' });
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(mocks.reconcileNudges).toHaveBeenCalledTimes(1);
+    fireEvent.click(trigger);
+    expect(onOpen).toHaveBeenCalledTimes(1);
+
+    rerender(<NudgePanel open onOpen={onOpen} onClose={onClose} />);
+    expect(await screen.findByText('content-purpose-gap')).toBeTruthy();
+    expect(mocks.reconcileNudges).toHaveBeenCalledTimes(1);
+    expect(mocks.setNudgeAttention).not.toHaveBeenCalled();
+  });
+
+  it('toggles ordinary attention read and unread with the same captured ID and persisted readback', async () => {
+    const readView = structuredClone(view);
+    readView.items[0]!.attention_state = 'read';
+    const unreadView = structuredClone(view);
+    mocks.getNudges.mockResolvedValueOnce(readView).mockResolvedValueOnce(unreadView);
+    render(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} />);
+    await screen.findByText('content-purpose-gap');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Nudge.markRead' }));
+    expect(await screen.findByRole('button', { name: 'Nudge.markUnread' })).toBeTruthy();
+    expect(mocks.setNudgeAttention).toHaveBeenNthCalledWith(1, 'content-purpose-gap', 'attention-a', 'read');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Nudge.markUnread' }));
+    expect(await screen.findByRole('button', { name: 'Nudge.markRead' })).toBeTruthy();
+    expect(mocks.setNudgeAttention).toHaveBeenNthCalledWith(2, 'content-purpose-gap', 'attention-a', 'unread');
+    expect(screen.getByRole('button', { name: 'Nudge.open, Nudge.unreadCue' })).toBeTruthy();
+  });
+
+  it('keeps the Shell unread cue until every ordinary item is read', async () => {
+    const first = structuredClone(view.items[0]!);
+    const second = structuredClone(view.items[0]!);
+    first.attention_id = 'attention-first';
+    second.category = 'release-notes';
+    second.attention_id = 'attention-second';
+    second.observations[0]!.source_key = 'release-notes:test';
+    second.observations[0]!.observation!.title = 'Second unread item';
+    const twoUnread = structuredClone(view);
+    twoUnread.items = [first, second];
+    const oneUnread = structuredClone(twoUnread);
+    oneUnread.items[0]!.attention_state = 'read';
+    const allRead = structuredClone(oneUnread);
+    allRead.items[1]!.attention_state = 'read';
+    mocks.reconcileNudges.mockResolvedValueOnce(twoUnread);
+    mocks.getNudges.mockResolvedValueOnce(oneUnread).mockResolvedValueOnce(allRead);
+    render(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} />);
+
+    await screen.findByText('Second unread item');
+    expect(screen.getByRole('button', { name: 'Nudge.open, Nudge.unreadCue' })).toBeTruthy();
+    fireEvent.click(within(screen.getByText('content-purpose-gap').closest('article')!).getByRole('button', { name: 'Nudge.markRead' }));
+    await waitFor(() => expect(mocks.setNudgeAttention).toHaveBeenNthCalledWith(1, 'content-purpose-gap', 'attention-first', 'read'));
+    expect(screen.getByRole('button', { name: 'Nudge.open, Nudge.unreadCue' })).toBeTruthy();
+
+    fireEvent.click(within(screen.getByText('release-notes').closest('article')!).getByRole('button', { name: 'Nudge.markRead' }));
+    await waitFor(() => expect(mocks.setNudgeAttention).toHaveBeenNthCalledWith(2, 'release-notes', 'attention-second', 'read'));
+    expect(screen.getByRole('button', { name: 'Nudge.open' })).toBeTruthy();
+  });
+
+  it('does not mark a typed target read when NavigationBlocker cancels it', async () => {
+    const linkView = structuredClone(view);
+    const action = linkView.items[0]?.observations[0]?.observation?.actions[0];
+    if (!action) throw new Error('test fixture is missing its action');
+    action.kind = 'link';
+    action.label = 'Open Project description';
+    mocks.reconcileNudges.mockResolvedValueOnce(linkView);
+    mocks.confirmNavigation.mockReturnValueOnce(false);
+    render(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} />);
+
+    fireEvent.click(await screen.findByRole('link', { name: 'Open Project description' }));
+    expect(mocks.setNudgeAttention).not.toHaveBeenCalled();
+    expect(screen.getByText('Nudge.unread')).toBeTruthy();
+  });
+
+  it('does not copy, open, or mark seen when NavigationBlocker cancels copy-then-link', async () => {
+    mocks.confirmNavigation.mockReturnValueOnce(false);
+    const opened = popup();
+    vi.mocked(window.open).mockReturnValue(opened);
+    render(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Copy and open description' }));
+
+    expect(writeText).not.toHaveBeenCalled();
+    expect(window.open).not.toHaveBeenCalled();
+    expect(opened.location.replace).not.toHaveBeenCalled();
+    expect(mocks.setNudgeAttention).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { gesture: 'plain click', modifiers: {} },
+    { gesture: 'Cmd-click', modifiers: { metaKey: true } },
+    { gesture: 'Ctrl-click', modifiers: { ctrlKey: true } },
+  ])('keeps copy-then-link copy-first for $gesture', async ({ modifiers }) => {
+    const opened = popup();
+    vi.mocked(window.open).mockReturnValue(opened);
+    let finishCopy!: () => void;
+    writeText.mockReturnValueOnce(new Promise<void>((resolve) => { finishCopy = resolve; }));
+    render(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} />);
+
+    const action = await screen.findByRole('button', { name: 'Copy and open description' });
+    expect(action.getAttribute('href')).toBeNull();
+    expect(screen.queryByRole('link', { name: 'Copy and open description' })).toBeNull();
+    fireEvent.click(action, modifiers);
+
+    expect(mocks.confirmNavigation).toHaveBeenCalledOnce();
+    expect(window.open).toHaveBeenCalledWith('about:blank', '_blank');
+    expect(writeText).toHaveBeenCalledWith('Published overview text to preserve');
+    expect(opened.location.replace).not.toHaveBeenCalled();
+    expect(mocks.setNudgeAttention).not.toHaveBeenCalled();
+
+    await act(async () => {
+      finishCopy();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(opened.location.replace).toHaveBeenCalledWith('/profile?project_id=project-a#project-description'));
+    await waitFor(() => expect(mocks.setNudgeAttention).toHaveBeenCalledWith('content-purpose-gap', 'attention-a', 'read'));
+  });
+
+  it('does not navigate, copy, or mark seen on a middle-button action', async () => {
+    render(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} />);
+
+    const action = await screen.findByRole('button', { name: 'Copy and open description' });
+    expect(action.getAttribute('href')).toBeNull();
+    fireEvent(action, new MouseEvent('auxclick', { bubbles: true, cancelable: true, button: 1 }));
+
+    expect(mocks.confirmNavigation).not.toHaveBeenCalled();
+    expect(writeText).not.toHaveBeenCalled();
+    expect(window.open).not.toHaveBeenCalled();
+    expect(mocks.setNudgeAttention).not.toHaveBeenCalled();
+  });
+
   it('renders yellow attention while preserving red urgent and green info treatments', async () => {
     const itemWithSeverity = (severity: 'urgent' | 'attention' | 'info', category: string) => {
       const item = structuredClone(view.items[0]!);
@@ -111,7 +252,7 @@ describe('LWC-481 Nudge action navigation', () => {
       itemWithSeverity('info', 'release-notes'),
     ];
     mocks.reconcileNudges.mockResolvedValueOnce(tieredView);
-    render(<NudgePanel onClose={vi.fn()} />);
+    render(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} />);
 
     await screen.findByText('pipeline-failure');
     const article = (category: string) => {
@@ -143,7 +284,7 @@ describe('LWC-481 Nudge action navigation', () => {
   it('opens the actual same-Project target only after the exact copy succeeds', async () => {
     const opened = popup();
     vi.mocked(window.open).mockReturnValue(opened);
-    render(<NudgePanel onClose={vi.fn()} />);
+    render(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Copy and open description' }));
 
@@ -154,11 +295,31 @@ describe('LWC-481 Nudge action navigation', () => {
     expect(mocks.push).not.toHaveBeenCalled();
   });
 
+  it('keeps the accepted destination blank until clipboard success', async () => {
+    const opened = popup();
+    vi.mocked(window.open).mockReturnValue(opened);
+    let finishCopy!: () => void;
+    writeText.mockReturnValueOnce(new Promise<void>((resolve) => { finishCopy = resolve; }));
+    render(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Copy and open description' }));
+    expect(window.open).toHaveBeenCalledWith('about:blank', '_blank');
+    expect(opened.location.replace).not.toHaveBeenCalled();
+    expect(mocks.setNudgeAttention).not.toHaveBeenCalled();
+
+    await act(async () => {
+      finishCopy();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(opened.location.replace).toHaveBeenCalledWith('/profile?project_id=project-a#project-description'));
+    await waitFor(() => expect(mocks.setNudgeAttention).toHaveBeenCalledWith('content-purpose-gap', 'attention-a', 'read'));
+  });
+
   it('shows selectable exact text and an explicit link when clipboard access is denied', async () => {
     const opened = popup();
     writeText.mockRejectedValueOnce(new Error('clipboard denied'));
     vi.mocked(window.open).mockReturnValue(opened);
-    render(<NudgePanel onClose={vi.fn()} />);
+    render(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Copy and open description' }));
 
@@ -171,7 +332,7 @@ describe('LWC-481 Nudge action navigation', () => {
 
   it('keeps copy success truthful and exposes a target link when the popup is blocked', async () => {
     vi.mocked(window.open).mockReturnValue(null);
-    render(<NudgePanel onClose={vi.fn()} />);
+    render(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Copy and open description' }));
 
@@ -196,11 +357,10 @@ describe('LWC-481 Nudge action navigation', () => {
     mocks.getNudges.mockResolvedValueOnce(releaseView);
     mocks.resolveNudgeTarget.mockReturnValue('/release-notes?version=1.0.0');
     mocks.setNudgeAttention.mockRejectedValueOnce(new Error('HTTP 503'));
-    render(<NudgePanel onClose={vi.fn()} />);
+    render(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} />);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Open Release notes' }));
+    fireEvent.click(await screen.findByRole('link', { name: 'Open Release notes' }));
 
-    await waitFor(() => expect(mocks.push).toHaveBeenCalledWith('/release-notes?version=1.0.0'));
     await waitFor(() => expect(mocks.setNudgeAttention).toHaveBeenCalledWith(
       'release-notes', 'release-attention-a', 'read',
     ));
@@ -225,9 +385,9 @@ describe('LWC-481 Nudge action navigation', () => {
     mocks.getNudges.mockResolvedValueOnce(refreshedView);
     mocks.resolveNudgeTarget.mockReturnValue('/release-notes?version=1.0.0');
     mocks.setNudgeAttention.mockRejectedValueOnce(new Error('HTTP 409'));
-    render(<NudgePanel onClose={vi.fn()} />);
+    render(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} />);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Open Release notes' }));
+    fireEvent.click(await screen.findByRole('link', { name: 'Open Release notes' }));
 
     await waitFor(() => expect(mocks.setNudgeAttention).toHaveBeenCalledTimes(1));
     expect(mocks.setNudgeAttention).toHaveBeenCalledWith('release-notes', 'release-attention-old', 'read');
@@ -241,7 +401,7 @@ describe('LWC-481 Nudge action navigation', () => {
     partialView.partial = true;
     partialView.failures = [{ safe_class: 'pipeline_observer_not_qualified' }];
     mocks.reconcileNudges.mockResolvedValueOnce(partialView);
-    render(<NudgePanel onClose={vi.fn()} />);
+    render(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} />);
 
     expect(await screen.findByText('Nudge.partial')).toBeTruthy();
     expect(mocks.reconcileNudges).toHaveBeenCalledTimes(1);
@@ -270,13 +430,13 @@ describe('LWC-481 Nudge action navigation', () => {
         refreshedObservation.title = 'Refreshed after attention GET';
       }
       mocks.getNudges.mockResolvedValueOnce(attentionRead);
-      render(<NudgePanel onClose={vi.fn()} />);
+      render(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} />);
       expect(await screen.findByText('Nudge.partial')).toBeTruthy();
 
       if (attentionPath === 'read') {
         fireEvent.click(screen.getByRole('button', { name: 'Nudge.markRead' }));
       } else if (attentionPath === 'navigation-read') {
-        fireEvent.click(await screen.findByRole('button', { name: 'Copy and open description' }));
+        fireEvent.click(await screen.findByRole('link', { name: 'Copy and open description' }));
       } else {
         fireEvent.click(screen.getByRole('button', { name: 'Nudge.dismiss' }));
       }
@@ -299,7 +459,7 @@ describe('LWC-481 Nudge action navigation', () => {
     partialView.partial = true;
     partialView.failures = [{ safe_class: 'pipeline_observer_not_qualified' }];
     mocks.reconcileNudges.mockResolvedValueOnce(partialView);
-    render(<NudgePanel onClose={vi.fn()} />);
+    render(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} />);
     expect(await screen.findByText('Nudge.partial')).toBeTruthy();
 
     mocks.reconcileNudges.mockResolvedValueOnce(view);
@@ -313,7 +473,7 @@ describe('LWC-481 Nudge action navigation', () => {
     let resolveInitial!: (value: NudgeView) => void;
     const initialReconciliation = new Promise<NudgeView>((resolve) => { resolveInitial = resolve; });
     mocks.reconcileNudges.mockReset().mockReturnValueOnce(initialReconciliation).mockResolvedValueOnce(view);
-    render(<NudgePanel onClose={vi.fn()} />);
+    render(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} />);
     await waitFor(() => expect(mocks.reconcileNudges).toHaveBeenCalledTimes(1));
 
     fireEvent.click(screen.getByRole('button', { name: 'Nudge.refresh' }));
@@ -333,13 +493,13 @@ describe('LWC-481 Nudge action navigation', () => {
     const oldRead = new Promise<typeof view>((resolve) => { resolveOld = resolve; });
     const newRead = new Promise<typeof view>((resolve) => { resolveNew = resolve; });
     mocks.reconcileNudges.mockReset().mockImplementationOnce(() => oldRead).mockImplementationOnce(() => newRead);
-    const { rerender } = render(<NudgePanel onClose={vi.fn()} />);
+    const { rerender } = render(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} />);
 
     await waitFor(() => expect(mocks.reconcileNudges).toHaveBeenCalledTimes(1));
     mocks.auth.user = { id: 'user-b' };
     mocks.auth.sessionIdentityEpoch = 2;
     mocks.auth.sessionEpoch = 2;
-    rerender(<NudgePanel onClose={vi.fn()} />);
+    rerender(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} />);
     await waitFor(() => expect(mocks.reconcileNudges).toHaveBeenCalledTimes(2));
 
     const oldView = structuredClone(view);

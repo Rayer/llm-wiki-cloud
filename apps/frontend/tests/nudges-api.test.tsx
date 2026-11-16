@@ -4,7 +4,7 @@ const mocks = vi.hoisted(() => ({ apiFetch: vi.fn() }));
 
 vi.mock('@/lib/api', () => ({ apiFetch: mocks.apiFetch }));
 
-import { getNudges, reconcileNudges, resolveNudgeTarget } from '@/lib/nudges';
+import { getNudges, reconcileNudges, resolveNudgeTarget, setNudgeAttention } from '@/lib/nudges';
 
 describe('Nudge API read and reconcile contracts', () => {
   beforeEach(() => {
@@ -25,6 +25,15 @@ describe('Nudge API read and reconcile contracts', () => {
 
     expect(mocks.apiFetch).toHaveBeenCalledWith('/api/v1/nudges/reconcile', { method: 'POST', requireProject: false });
     expect(view.partial).toBe(true);
+  });
+
+  it('sends unread as an explicit attention action', async () => {
+    mocks.apiFetch.mockResolvedValueOnce({ ok: true, status: 204 } as Response);
+    await setNudgeAttention('content-purpose-gap', 'attention-exact', 'unread');
+    expect(mocks.apiFetch).toHaveBeenCalledWith('/api/v1/nudges/content-purpose-gap/attention', expect.objectContaining({
+      method: 'PATCH',
+      body: JSON.stringify({ attention_id: 'attention-exact', action: 'unread' }),
+    }));
   });
 
   it('resolves a same-Project target from the nested HTTP observation shape', async () => {

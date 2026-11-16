@@ -19,7 +19,12 @@ vi.mock('@/lib/api', () => ({ apiFetch: mocks.apiFetch }));
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: mocks.push }) }));
 vi.mock('@/lib/i18n', () => ({ useT: () => ({ t: mocks.t }) }));
 vi.mock('@/lib/auth', () => ({ useAuth: () => mocks.auth }));
-vi.mock('@/components/NavigationBlocker', () => ({ useNavigationBlocker: () => ({ confirmNavigation: mocks.confirmNavigation }) }));
+vi.mock('@/components/NavigationBlocker', () => ({
+  useNavigationBlocker: () => ({ confirmNavigation: mocks.confirmNavigation }),
+  NavigationLink: ({ href, onNavigate, children, ...props }: {
+    href: string; onNavigate?: (event: { preventDefault: () => void }) => void; children: React.ReactNode; [key: string]: unknown;
+  }) => <a href={href} {...props} onClick={(event) => { event.preventDefault(); if (mocks.confirmNavigation()) onNavigate?.(event); }}>{children}</a>,
+}));
 
 import { NudgePanel } from '@/components/NudgePanel';
 
@@ -123,7 +128,7 @@ describe('LWC-481 source status and attention transport', () => {
     if (!observation) throw new Error('test fixture is missing its observation');
     observation.title = 'Refreshed by persisted GET';
     enqueueHandlerResponses(handlerResponse(partialView), handlerResponse(undefined, 204), handlerResponse(refreshed));
-    render(<NudgePanel onClose={vi.fn()} />);
+    render(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} />);
     expect(await screen.findByText(enMessages.Nudge.partial)).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: 'Nudge.markRead' }));
@@ -147,11 +152,10 @@ describe('LWC-481 source status and attention transport', () => {
       handlerResponse(partialView), handlerResponse(undefined, 204), handlerResponse(afterRead),
       handlerResponse(undefined, 204), handlerResponse(afterDismiss),
     );
-    render(<NudgePanel onClose={vi.fn()} />);
+    render(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} />);
     expect(await screen.findByText(enMessages.Nudge.partial)).toBeTruthy();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Open Project description' }));
-    await waitFor(() => expect(mocks.push).toHaveBeenCalledWith('/profile?project_id=project-a#project-description'));
+    fireEvent.click(screen.getByRole('link', { name: 'Open Project description' }));
     await waitFor(() => expect(mocks.apiFetch).toHaveBeenCalledTimes(3));
     expect(screen.getByText(enMessages.Nudge.partial)).toBeTruthy();
 
@@ -172,7 +176,7 @@ describe('LWC-481 source status and attention transport', () => {
     recovered.partial = false;
     recovered.failures = [];
     enqueueHandlerResponses(handlerResponse(partialView), handlerResponse(recovered));
-    render(<NudgePanel onClose={vi.fn()} />);
+    render(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} />);
     expect(await screen.findByText(enMessages.Nudge.partial)).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: 'Nudge.refresh' }));
@@ -207,7 +211,7 @@ describe('LWC-481 source status and attention transport', () => {
       handlerResponse(afterRead),
       handlerResponse(recovered),
     );
-    render(<NudgePanel onClose={vi.fn()} />);
+    render(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} />);
     expect(await screen.findByText(staleLabel)).toBeTruthy();
     expect(screen.getByText(partialLabel)).toBeTruthy();
 
@@ -241,7 +245,7 @@ describe('LWC-481 source status and attention transport', () => {
     observation.stale = true;
     enqueueHandlerResponses(handlerResponse(persistedStale));
 
-    render(<NudgePanel onClose={vi.fn()} />);
+    render(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} />);
 
     expect(await screen.findByText(enMessages.Nudge.stale)).toBeTruthy();
   });
@@ -265,7 +269,7 @@ describe('LWC-481 source status and attention transport', () => {
       handlerResponse(oldPartialGet),
     );
 
-    render(<NudgePanel onClose={vi.fn()} />);
+    render(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} />);
     expect(await screen.findByText(enMessages.Nudge.stale)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Nudge.markRead' }));
     await waitFor(() => expect(mocks.apiFetch).toHaveBeenCalledTimes(2));
@@ -311,7 +315,7 @@ describe('LWC-481 source status and attention transport', () => {
       handlerResponse(oldPartialGet),
     );
 
-    render(<NudgePanel onClose={vi.fn()} />);
+    render(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} />);
     expect(await screen.findByText('Initially current Release')).toBeTruthy();
     expect(screen.queryByText(enMessages.Nudge.stale)).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Nudge.markRead' }));
@@ -347,14 +351,14 @@ describe('LWC-481 source status and attention transport', () => {
     const pendingPatch = deferred<Response>();
     enqueueHandlerResponses(handlerResponse(oldUserView), pendingPatch.promise, handlerResponse(newUserView));
 
-    const panel = render(<NudgePanel onClose={vi.fn()} />);
+    const panel = render(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} />);
     expect(await screen.findByText(enMessages.Nudge.stale)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Nudge.markRead' }));
     await waitFor(() => expect(mocks.apiFetch).toHaveBeenCalledTimes(2));
 
     mocks.auth.user = { id: 'user-b' };
     mocks.auth.sessionIdentityEpoch = 2;
-    panel.rerender(<NudgePanel onClose={vi.fn()} />);
+    panel.rerender(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} />);
     expect(await screen.findByText('New session Release item')).toBeTruthy();
     expect(screen.queryByText(enMessages.Nudge.stale)).toBeNull();
 
@@ -387,7 +391,7 @@ describe('LWC-481 source status and attention transport', () => {
       handlerResponse(undefined, 204), handlerResponse(wire),
       handlerResponse(undefined, 204), handlerResponse(wire),
     );
-    render(<NudgePanel onClose={vi.fn()} />);
+    render(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} />);
     await screen.findByText(alphaBody);
     await screen.findByText(betaBody);
 

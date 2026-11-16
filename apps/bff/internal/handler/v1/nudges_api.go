@@ -268,6 +268,8 @@ func (h *Handler) PatchNudgeAttention(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, handler.ErrorResponse{Error: "invalid nudge attention request"})
 	case errors.Is(err, nudge.ErrAttentionNotDismissible):
 		c.JSON(http.StatusConflict, gin.H{"error": "attention_not_dismissible"})
+	case errors.Is(err, nudge.ErrAttentionNotChangeable):
+		c.JSON(http.StatusConflict, gin.H{"error": "attention_not_changeable"})
 	case errors.Is(err, nudge.ErrAttentionConflict):
 		c.JSON(http.StatusConflict, gin.H{"error": "attention_revision_stale"})
 	default:

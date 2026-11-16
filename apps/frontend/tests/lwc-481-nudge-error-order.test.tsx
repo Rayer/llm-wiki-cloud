@@ -22,7 +22,7 @@ it('obsolete mount rejection cannot overwrite successful manual reconcile', asyn
   let rejectOld!: (reason: Error) => void;
   const old = new Promise((_, reject) => { rejectOld = reject; });
   mocks.reconcile.mockReturnValueOnce(old).mockResolvedValueOnce({ schema_version: 1, partial: false, failures: [], notices: [], items: [] });
-  render(<NudgePanel onClose={() => {}} />);
+  render(<NudgePanel open onOpen={() => {}} onClose={() => {}} />);
   await waitFor(() => expect(mocks.reconcile).toHaveBeenCalledTimes(1));
   fireEvent.click(screen.getByRole('button', { name: 'Nudge.refresh' }));
   await screen.findByText('Nudge.empty');
@@ -33,6 +33,6 @@ it('obsolete mount rejection cannot overwrite successful manual reconcile', asyn
 
 it('current mount reconciliation failure remains visible', async () => {
   mocks.reconcile.mockRejectedValueOnce(new Error('current source failure'));
-  render(<NudgePanel onClose={() => {}} />);
+  render(<NudgePanel open onOpen={() => {}} onClose={() => {}} />);
   expect((await screen.findByRole('alert')).textContent).toBe('Nudge.loadFailed');
 });
