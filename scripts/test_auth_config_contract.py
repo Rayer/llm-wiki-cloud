@@ -83,6 +83,20 @@ def bff_plan(environment):
 def deployment_plan(environment, components, source_sha='c' * 40):
     target = {'development': 'dev', 'production': 'prod'}[environment]
     env = dict(os.environ, LWC_REPOSITORY_ROOT=str(ROOT))
+    # These descriptor fixtures run local Go normalization only. Prevent ADC
+    # fallback or metadata probes from reaching any machine or provider identity.
+    env.update({
+        'GOOGLE_APPLICATION_CREDENTIALS': '/dev/null',
+        'CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE': '/dev/null',
+        'GCE_METADATA_HOST': '127.0.0.1:9',
+        'GCE_METADATA_IP': '127.0.0.1',
+        'AWS_EC2_METADATA_DISABLED': 'true',
+        'HTTP_PROXY': 'http://127.0.0.1:9', 'HTTPS_PROXY': 'http://127.0.0.1:9',
+        'ALL_PROXY': 'http://127.0.0.1:9',
+        'http_proxy': 'http://127.0.0.1:9', 'https_proxy': 'http://127.0.0.1:9',
+        'all_proxy': 'http://127.0.0.1:9',
+        'NO_PROXY': '127.0.0.1,localhost', 'no_proxy': '127.0.0.1,localhost',
+    })
     with tempfile.TemporaryDirectory(prefix='lwc-bff-test-inputs-') as tmp:
         args = [GO, 'run', './cmd/deploy_config', '--environment', environment,
                 '--config', '../../deploy/environments/' + environment + '.yaml', '--components', components]
