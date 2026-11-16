@@ -41,7 +41,7 @@ test('r2 registered release and recovery workflows use explicit artifact inputs'
       expectedInputs.push('auth_repository_id', 'auth_revision', 'auth_tree_sha256',
         'auth_artifact_id', 'auth_run_id', 'auth_run_attempt');
       expectedInputs.push('prepare_release_notes_package', 'package_zip_base64',
-        'release_notes_package_retention_days', 'release_notes_package_request_id');
+        'release_notes_package_request_id');
     } else {
       expectedInputs.push('auth_schema_version');
     }
@@ -144,7 +144,7 @@ test('r2 registered release and recovery workflows use explicit artifact inputs'
   }
   const deployDev = parseYaml(await workflow('deploy-dev.yml'));
   const deployInputs = deployDev.on.workflow_dispatch.inputs;
-  assert.equal(Object.keys(deployInputs).length, 26);
+  assert.equal(Object.keys(deployInputs).length, 25);
   assert.equal(deployDev['run-name'], "${{ inputs.prepare_release_notes_package && format('Prepare Release Notes package {0}', inputs.release_notes_package_request_id) || github.ref_name }}");
   assert.deepEqual(deployInputs.prepare_release_notes_package, {
     description: 'Prepare a TPM-authored private Notes package from an exact retained Ready or successful historical DEV result; skips every deployment operation',
@@ -153,10 +153,6 @@ test('r2 registered release and recovery workflows use explicit artifact inputs'
   assert.deepEqual(deployInputs.package_zip_base64, {
     description: 'Private bounded base64 ZIP of the existing TPM-authored Notes package; consumed from this dispatch event file only',
     required: false, type: 'string', default: '',
-  });
-  assert.deepEqual(deployInputs.release_notes_package_retention_days, {
-    description: 'Retention for the private package artifact',
-    required: false, type: 'choice', options: ['30', '90'], default: '90',
   });
   assert.deepEqual(deployInputs.release_notes_package_request_id, {
     description: 'Unique lowercase 32-hex correlation value for private package preparation',
@@ -170,7 +166,7 @@ test('r2 registered release and recovery workflows use explicit artifact inputs'
     ready_artifact_id: '${{ inputs.artifact_id }}',
     history_result_artifact_id: '${{ inputs.release_notes_result_artifact_id }}',
     history_operation: "${{ inputs.release_notes_result_artifact_id != '' && inputs.release_notes_operation || '' }}",
-    retention_days: '${{ inputs.release_notes_package_retention_days }}',
+    retention_days: '90',
     request_id: '${{ inputs.release_notes_package_request_id }}',
   });
   assert.doesNotMatch(JSON.stringify(packageEntry.with), /package_zip_base64/);

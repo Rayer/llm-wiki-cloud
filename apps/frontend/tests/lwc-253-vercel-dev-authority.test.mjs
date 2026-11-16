@@ -406,7 +406,7 @@ test('DEV workflow invokes the shared engine and isolates the fixed diagnostic r
   const workflow = (await import('js-yaml')).load(await readFile(join(monorepoRoot, '.github/workflows/deploy-dev.yml'), 'utf8'));
   const job = workflow.jobs.release;
   assert.equal(workflow.on.push, undefined);
-  assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), ['components', 'release_tag', 'release_version', 'artifact_id', 'release_notes_artifact_id', 'release_notes_action', 'release_notes_result_artifact_id', 'release_notes_operation', 'dev_artifact_id', 'frontend_config_artifact_id', 'source_sha', 'force', 'operation', 'pipeline_run_timeout_seconds', 'release_source_mode', 'auth_schema_version', 'auth_repository_id', 'auth_revision', 'auth_tree_sha256', 'auth_artifact_id', 'auth_run_id', 'auth_run_attempt', 'prepare_release_notes_package', 'package_zip_base64', 'release_notes_package_retention_days', 'release_notes_package_request_id']);
+  assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), ['components', 'release_tag', 'release_version', 'artifact_id', 'release_notes_artifact_id', 'release_notes_action', 'release_notes_result_artifact_id', 'release_notes_operation', 'dev_artifact_id', 'frontend_config_artifact_id', 'source_sha', 'force', 'operation', 'pipeline_run_timeout_seconds', 'release_source_mode', 'auth_schema_version', 'auth_repository_id', 'auth_revision', 'auth_tree_sha256', 'auth_artifact_id', 'auth_run_id', 'auth_run_attempt', 'prepare_release_notes_package', 'package_zip_base64', 'release_notes_package_request_id']);
   assert.equal(workflow.on.workflow_dispatch.inputs.operation.type, 'choice');
   assert.deepEqual(workflow.on.workflow_dispatch.inputs.operation.options, ['release', 'config-only', 'frontend-config-only', 'frontend-config-generate', 'deploy', 'rollback', 'reactivate', 'tag', 'readback', 'notes-resend', 'diagnose-auth-image']);
   assert.equal(workflow.on.workflow_dispatch.inputs.operation.default, 'release');
@@ -456,8 +456,6 @@ test('DEV workflow invokes the shared engine and isolates the fixed diagnostic r
   assert.equal(workflow.on.workflow_dispatch.inputs.prepare_release_notes_package.default, false);
   assert.equal(workflow.on.workflow_dispatch.inputs.package_zip_base64.type, 'string');
   assert.equal(workflow.on.workflow_dispatch.inputs.package_zip_base64.default, '');
-  assert.equal(workflow.on.workflow_dispatch.inputs.release_notes_package_retention_days.type, 'choice');
-  assert.deepEqual(workflow.on.workflow_dispatch.inputs.release_notes_package_retention_days.options, ['30', '90']);
   assert.equal(workflow.on.workflow_dispatch.inputs.release_notes_package_request_id.type, 'string');
   const packageJob = workflow.jobs['prepare-release-notes-package'];
   assert.equal(packageJob.if, 'inputs.prepare_release_notes_package == true');
@@ -467,7 +465,7 @@ test('DEV workflow invokes the shared engine and isolates the fixed diagnostic r
     ready_artifact_id: '${{ inputs.artifact_id }}',
     history_result_artifact_id: '${{ inputs.release_notes_result_artifact_id }}',
     history_operation: "${{ inputs.release_notes_result_artifact_id != '' && inputs.release_notes_operation || '' }}",
-    retention_days: '${{ inputs.release_notes_package_retention_days }}',
+    retention_days: '90',
     request_id: '${{ inputs.release_notes_package_request_id }}',
   });
   assert.equal(packageJob.secrets, undefined);
