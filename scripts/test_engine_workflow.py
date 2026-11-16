@@ -272,12 +272,23 @@ class EngineWorkflowContract(unittest.TestCase):
             'Publish current-operation marker after explicit Notes skip',
         )
         for name in notes_names:
-            self.assertIn("steps.release-notes-selection.outputs.bff_selected == 'true'",
-                          by_name[name]['if'], name)
+            self.assertEqual(by_name[name]['if'].split(' && ', 1)[0], "inputs.operation == 'release'", name)
+            self.assertNotIn("release-notes-selection.outputs.bff_selected", by_name[name]['if'], name)
             self.assertNotIn('inputs.components', by_name[name]['if'], name)
         runtime = by_name['Execute bounded runtime or explicit recovery']
         self.assertEqual(runtime['if'],
-                         "(inputs.operation == 'release' && steps.release-notes-selection.outputs.bff_selected != 'true') || inputs.release_notes_action != 'stop'")
+                         "inputs.operation != 'release' || inputs.release_notes_action != 'stop'")
+        release_version = by_name['Validate explicit public release version']
+        self.assertIn('REUSE_ID', release_version['env'])
+        self.assertIn('release_version', release_version['run'])
+        self.assertIn('REUSE_ID', release_version['run'])
+        engine_source = (ROOT / 'deploy/engine/engine.py').read_text()
+        self.assertIn('retained_legacy_resume_plan(args)', engine_source)
+        self.assertIn("plan.get('schema') not in (2, 3) or 'release_version' in plan", engine_source)
+        action_source = (ROOT / '.github/actions/deployment-engine/index.cjs').read_text()
+        self.assertIn("if (process.env.RELEASE_VERSION) args.push('--release-version',process.env.RELEASE_VERSION)",
+                      action_source)
+        self.assertIn("if (reuse) args.push('--reuse',reuse)", action_source)
         recovery_selection = next(step for step in steps if step.get('id') == 'recovery-notes-selection')
         self.assertEqual(recovery_selection['if'], "inputs.operation != 'release'")
         marker = by_name['Publish marker for explicit BFF deploy, rollback, or reactivation']
@@ -300,7 +311,7 @@ class EngineWorkflowContract(unittest.TestCase):
             'ready_artifact_id': '${{ inputs.artifact_id }}',
             'history_result_artifact_id': '${{ inputs.release_notes_result_artifact_id }}',
             'history_operation': "${{ inputs.release_notes_result_artifact_id != '' && inputs.release_notes_operation || '' }}",
-            'retention_days': '${{ inputs.release_notes_package_retention_days }}',
+            'retention_days': '90',
             'request_id': '${{ inputs.release_notes_package_request_id }}',
         })
         self.assertNotIn('package_zip_base64', str(package_entry['with']))
@@ -309,7 +320,7 @@ class EngineWorkflowContract(unittest.TestCase):
         self.assertIn('inputs.prepare_release_notes_package != true', dev['jobs']['main-fast-forward-eligible']['if'])
         self.assertEqual(dev_inputs['prepare_release_notes_package']['type'], 'boolean')
         self.assertEqual(dev_inputs['prepare_release_notes_package']['default'], False)
-        self.assertEqual(dev_inputs['release_notes_package_retention_days']['options'], ['30', '90'])
+        self.assertNotIn('release_notes_package_retention_days', dev_inputs)
 
         manual_path = ROOT / '.github/workflows/prepare-release-notes-package.yml'
         manual = yaml.safe_load(manual_path.read_text())
@@ -397,7 +408,7 @@ class EngineWorkflowContract(unittest.TestCase):
         self.assertIn("retainedDirectory(process.env.REUSE_ID,'reuse')", action_source)
         self.assertIn("args.push('--reuse',reuse)", action_source)
         engine_source = (ROOT / 'deploy/engine/engine.py').read_text()
-        for invariant in ("compatible_release_identity(retained_plan) == compatible_release_identity(self.plan)",
+        for invariant in ("if resumable_release_identity_matches(retained_plan, self.plan):",
                           "retained_state.get('status') not in ('prepared', 'ready')",
                           "if retained_state['components']:", "self.plan = copy.deepcopy(retained_plan)"):
             self.assertIn(invariant, engine_source)
@@ -446,6 +457,7 @@ class EngineWorkflowContract(unittest.TestCase):
             'environment':'development','source_sha':"${{ inputs.operation == 'release' && (inputs.source_sha || github.sha) || inputs.source_sha }}",
             'executor_sha':'${{ github.sha }}',
             'components':'${{ inputs.components }}','release_tag':'${{ inputs.release_tag }}',
+            'release_version':'${{ inputs.release_version }}',
             'release_source_mode':'${{ inputs.release_source_mode }}',
             'auth_schema_version':'${{ inputs.auth_schema_version }}',
             'auth_repository_id':'${{ fromJSON(inputs.auth_repository_id) }}',

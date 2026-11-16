@@ -83,7 +83,7 @@ test('production workflow invokes the shared engine with fixed authority and DEV
   const workflow = parseYaml(await readFile(workflowPath, 'utf8'));
   const job = workflow.jobs.release;
   assert.equal(workflow.on.push, undefined);
-  assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), ['components', 'release_tag', 'artifact_id', 'release_notes_artifact_id', 'release_notes_action', 'release_notes_result_artifact_id', 'release_notes_operation', 'dev_artifact_id', 'frontend_config_artifact_id', 'operation', 'pipeline_run_timeout_seconds', 'release_source_mode', 'auth_schema_version']);
+  assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), ['components', 'release_tag', 'release_version', 'artifact_id', 'release_notes_artifact_id', 'release_notes_action', 'release_notes_result_artifact_id', 'release_notes_operation', 'dev_artifact_id', 'frontend_config_artifact_id', 'operation', 'pipeline_run_timeout_seconds', 'release_source_mode', 'auth_schema_version']);
   assert.deepEqual(workflow.on.workflow_dispatch.inputs.operation.options, ['release', 'config-only', 'frontend-config-only', 'frontend-config-generate', 'notes-resend']);
   const noteInputs = workflow.on.workflow_dispatch.inputs;
   assert.deepEqual(noteInputs.release_notes_artifact_id, {
@@ -113,6 +113,7 @@ test('production workflow invokes the shared engine with fixed authority and DEV
     environment: 'production', source_sha: '${{ github.sha }}',
     executor_sha: '${{ github.sha }}',
     components: '${{ inputs.components }}', release_tag: '${{ inputs.release_tag }}',
+    release_version: '${{ inputs.release_version }}',
     artifact_id: '${{ inputs.artifact_id }}', dev_artifact_id: '${{ inputs.dev_artifact_id }}',
     release_notes_artifact_id: '${{ inputs.release_notes_artifact_id }}',
     release_notes_result_artifact_id: '${{ inputs.release_notes_result_artifact_id }}',

@@ -113,11 +113,62 @@ def release_identity(plan):
     return identity
 
 
+def release_identity_v4(plan):
+    identity = release_identity(plan)
+    identity['release_version'] = plan['release_version']
+    return identity
+
+
 def compatible_release_identity(plan):
     identity = release_identity(plan)
+    if plan.get('schema') == 4:
+        identity['release_version'] = plan.get('release_version')
     if 'release_source_mode' not in identity and release_source_mode(plan) == 'legacy_monorepo':
         identity['release_source_mode'] = 'legacy_monorepo'
     return identity
+
+
+def resumable_release_identity_matches(retained_plan, requested_plan):
+    retained_identity = compatible_release_identity(retained_plan)
+    requested_identity = compatible_release_identity(requested_plan)
+    if retained_plan.get('schema') in (2, 3):
+        # Resume the immutable legacy plan as stored. A newly required public
+        # version belongs to schema 4 and must not be retrofitted onto an old ID.
+        requested_identity.pop('release_version', None)
+    return retained_identity == requested_identity
+
+
+def retained_legacy_resume_plan(args):
+    """Return exact schema-2/3 plan bytes for a versionless prepare or Auth preflight."""
+    if args.operation not in ('prepare', 'auth-preflight') or \
+            getattr(args, 'release_version', None) or not args.reuse:
+        return None
+    path = Path(args.reuse).resolve() / 'plan.json'
+    try:
+        if not path.is_file() or path.is_symlink() or path.stat().st_size > 4 * 1024 * 1024:
+            return None
+        raw = path.read_bytes()
+        plan = json.loads(raw.decode('utf-8'))
+    except (OSError, UnicodeError, ValueError, TypeError):
+        return None
+    if not isinstance(plan, dict) or plan.get('schema') not in (2, 3) or 'release_version' in plan:
+        raise Breakpoint('legacy-resume-plan-invalid', 'failed', False,
+                         'inspect-retained-artifact', stage='prepare')
+    try:
+        selected = selection(args.components)
+        branch = 'develop' if args.environment == 'development' else 'main'
+        valid = (plan.get('id') == plan_id(plan) and plan.get('source') == args.source and
+                 plan.get('tag') == args.tag and plan.get('selected') == selected and
+                 plan.get('branch') == branch and
+                 plan.get('normalized', {}).get('environment') == args.environment and
+                 release_source_mode(plan) == args.release_source_mode and
+                 re.fullmatch(r'[0-9a-f]{40}', plan.get('source', '')) is not None)
+    except (Breakpoint, AttributeError, KeyError, TypeError, ValueError):
+        valid = False
+    if not valid:
+        raise Breakpoint('legacy-resume-plan-mismatch', 'failed', False,
+                         'inspect-retained-artifact', stage='prepare')
+    return raw
 
 
 def plan_id(plan):
@@ -125,7 +176,23 @@ def plan_id(plan):
         return digest({key: value for key, value in plan.items() if key != 'id'})
     if plan.get('schema') == 3:
         return digest(release_identity(plan))
+    if plan.get('schema') == 4:
+        if not valid_release_version(plan.get('release_version')):
+            raise Breakpoint('invalid-release-version', 'failed', False, 'inspect-retained-artifact')
+        return digest(release_identity_v4(plan))
     raise Breakpoint('unsupported-plan-schema', 'failed', False, 'inspect-retained-artifact')
+
+
+def valid_release_version(value):
+    if not isinstance(value, str):
+        return False
+    match = re.fullmatch(
+        r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?',
+        value)
+    if match is None:
+        return False
+    return all(not (part.isdigit() and len(part) > 1 and part.startswith('0'))
+               for part in (match.group(4) or '').split('.'))
 
 
 def _phase_cause(phase, exc, stage):
@@ -294,6 +361,8 @@ def admit(args):
     require(run(['git', 'rev-parse', 'HEAD']) == executor_sha, 'executor-checkout-mismatch')
     require(run(['git', 'rev-parse', args.source+'^{commit}']) == args.source, 'invalid-source')
     require(args.tag and not args.tag.startswith('-'), 'invalid-release-tag')
+    release_version = getattr(args, 'release_version', None)
+    require(valid_release_version(release_version), 'invalid-release-version')
     run(['git', 'check-ref-format', 'refs/tags/'+args.tag])
     branch = 'develop' if args.environment == 'development' else 'main'
     cfg = 'deploy/environments/'+args.environment+'.yaml'
@@ -396,13 +465,13 @@ def admit(args):
             args.reuse, normalized.get('auth', {}).get('runtime_inputs'), auth_source,
             source_identity('auth', args.source, auth_source)),
             'auth-schema3-staging-requires-runtime3-pair')
-    body = {'schema': 3, 'source': args.source, 'branch': branch, 'tag': args.tag,
+    body = {'schema': 4, 'source': args.source, 'branch': branch, 'tag': args.tag,
             'executor_sha': executor_sha, 'normalized': normalized, 'identities': identities,
-            'dev_reference': args.dev_reference, 'selected': selected,
+            'dev_reference': args.dev_reference, 'selected': selected, 'release_version': release_version,
             'release_source_mode': release_source_mode}
     if auth_source is not None:
         body['auth_source'] = auth_source
-    body['id'] = digest(release_identity(body))
+    body['id'] = plan_id(body)
     return body
 
 
@@ -431,9 +500,13 @@ class Engine:
             require(re.fullmatch(r'[0-9a-f]{64}', self.plan.get('engine_content', '')) is not None and
                     re.fullmatch(r'[0-9a-f]{40}', self.plan.get('engine', '')) is not None,
                     'plan-content-mismatch')
-        else:
+        elif self.plan['schema'] in (3, 4):
             require(re.fullmatch(r'[0-9a-f]{40}', self.plan.get('executor_sha', '')) is not None,
                     'plan-content-mismatch')
+            if self.plan['schema'] == 4:
+                require(valid_release_version(self.plan.get('release_version')), 'plan-content-mismatch')
+        else:
+            require(False, 'unsupported-plan-schema')
         require(self.plan['selected'] == selection(','.join(self.plan['selected'])), 'invalid-plan-selection')
         self.provider = Providers(self.plan, self.directory)
         self.state_path = self.directory / 'state.json'
@@ -774,13 +847,13 @@ class Engine:
         try:
             selected = retained_plan['selected']
             plan_shape_valid = (
-                retained_plan.get('schema') in (2, 3) and
+                retained_plan.get('schema') in (2, 3, 4) and
                 selected == selection(','.join(selected) if isinstance(selected, list) else '') and
                 re.fullmatch(r'[0-9a-f]{40}', retained_plan.get('source', '')) is not None and
                 ((retained_plan.get('schema') == 2 and
                   re.fullmatch(r'[0-9a-f]{64}', retained_plan.get('engine_content', '')) is not None and
                   re.fullmatch(r'[0-9a-f]{40}', retained_plan.get('engine', '')) is not None) or
-                 (retained_plan.get('schema') == 3 and
+                 (retained_plan.get('schema') in (3, 4) and
                   re.fullmatch(r'[0-9a-f]{40}', retained_plan.get('executor_sha', '')) is not None)) and
                 retained_plan.get('normalized', {}).get('environment') in ('development', 'production') and
                 isinstance(retained_plan.get('identities'), dict) and
@@ -835,7 +908,7 @@ class Engine:
                 raise Breakpoint('stage1-checkpoint-invalid', 'failed', False,
                                  'inspect-retained-artifact', stage='prepare')
 
-        if compatible_release_identity(retained_plan) == compatible_release_identity(self.plan):
+        if resumable_release_identity_matches(retained_plan, self.plan):
             if retained_state.get('status') not in ('prepared', 'ready'):
                 raise Breakpoint('stage1-checkpoint-runtime-started', 'failed', False,
                                  'inspect-latest-checkpoint', stage='prepare')
@@ -1533,6 +1606,7 @@ def main():
     parser.add_argument('--environment', choices=('development', 'production'))
     parser.add_argument('--source')
     parser.add_argument('--tag')
+    parser.add_argument('--release-version')
     parser.add_argument('--components')
     parser.add_argument('--reuse')
     parser.add_argument('--dev')
@@ -1561,7 +1635,12 @@ def main():
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             if args.operation in ('prepare', 'auth-preflight') and not (directory / 'plan.json').exists():
                 require(all((args.environment, args.source, args.tag, args.components)), 'missing-admission-input')
-                write(directory / 'plan.json', admit(args))
+                legacy_resume_plan = retained_legacy_resume_plan(args)
+                if legacy_resume_plan is None:
+                    write(directory / 'plan.json', admit(args))
+                else:
+                    # The legacy plan ID covers the original plan schema; preserve its bytes exactly.
+                    (directory / 'plan.json').write_bytes(legacy_resume_plan)
             engine = Engine(directory, args.executor_sha)
             if args.rejection_evidence is not None or args.rejection_artifact_id is not None:
                 require(args.operation == 'deploy' and args.rejection_evidence is not None and
@@ -1574,6 +1653,13 @@ def main():
                 engine.quota_rejection_evidence_dir = Path(args.rejection_evidence).resolve()
                 engine.quota_rejection_artifact_id = args.rejection_artifact_id
             if args.operation in ('prepare', 'auth-preflight'):
+                if engine.plan.get('schema') in (2, 3) and not args.release_version:
+                    require(args.operation in ('prepare', 'auth-preflight') and args.reuse and
+                            (Path(args.reuse).resolve() / 'plan.json').is_file() and
+                            (Path(args.reuse).resolve() / 'plan.json').read_bytes() ==
+                            (directory / 'plan.json').read_bytes() and
+                            release_source_mode(engine.plan) == args.release_source_mode,
+                            'legacy-resume-artifact-required')
                 pinned_auth = engine.auth_input_snapshot()
                 require(args.auth_schema_version is None or pinned_auth is None or
                         pinned_auth['schema_version'] == args.auth_schema_version,
@@ -1581,6 +1667,9 @@ def main():
                 require(not args.components or selection(args.components) == engine.plan['selected'], 'selection-change-requires-new-plan')
                 require(not args.source or args.source == engine.plan['source'], 'source-change-requires-new-plan')
                 require(not args.tag or args.tag == engine.plan['tag'], 'tag-change-requires-new-plan')
+                require(not args.release_version or
+                        (engine.plan.get('schema') == 4 and args.release_version == engine.plan.get('release_version')),
+                        'release-version-change-requires-new-plan')
                 require(not args.environment or args.environment == engine.plan['normalized']['environment'], 'target-change-requires-new-plan')
                 if args.operation == 'auth-preflight':
                     needs_package = engine.auth_package_preflight(args.reuse, args.dev)

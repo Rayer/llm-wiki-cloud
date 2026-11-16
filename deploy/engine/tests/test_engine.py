@@ -192,6 +192,37 @@ class Acceptance(unittest.TestCase):
                 self.assertEqual(restored.provider._build_source_environment('auth')[:2],
                                  (restored.plan['source'], restored.plan['branch']))
 
+    def test_schema_four_plan_identity_binds_explicit_public_release_version(self):
+        plan = {
+            'schema': 4, 'source': 'a' * 40, 'branch': 'develop', 'tag': 'release-2026.11.4',
+            'normalized': {'environment': 'development'}, 'identities': {'bff': {'inputs': 'x'}},
+            'dev_reference': None, 'selected': ['bff'], 'executor_sha': 'b' * 40,
+            'release_source_mode': 'legacy_monorepo', 'release_version': '2026.11.4',
+        }
+        first = engine.plan_id(plan)
+        changed = {**plan, 'release_version': '2026.11.5'}
+        self.assertNotEqual(first, engine.plan_id(changed))
+        self.assertEqual(first, engine.digest(engine.release_identity_v4(plan)))
+        for invalid in ('', None, '2026.011.4', 'v2026.11.4'):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(Breakpoint, 'invalid-release-version'):
+                engine.plan_id({**plan, 'release_version': invalid})
+
+    def test_legacy_plan_resume_keeps_its_identity_without_injecting_release_version(self):
+        legacy = {
+            'schema': 3, 'source': 'a' * 40, 'branch': 'develop', 'tag': 'legacy-tag',
+            'normalized': {'environment': 'development'}, 'identities': {'bff': {'inputs': 'x'}},
+            'dev_reference': None, 'selected': ['bff'], 'executor_sha': 'b' * 40,
+            'release_source_mode': 'legacy_monorepo',
+        }
+        requested = {**legacy, 'schema': 4, 'release_version': '2026.11.4'}
+        self.assertTrue(engine.resumable_release_identity_matches(legacy, requested))
+        self.assertEqual(engine.plan_id(legacy), engine.digest(engine.release_identity(legacy)))
+        self.assertFalse(engine.resumable_release_identity_matches(
+            legacy, {**requested, 'source': 'c' * 40}))
+        self.assertFalse(engine.resumable_release_identity_matches(
+            {**legacy, 'schema': 4, 'release_version': '2026.11.4'},
+            {**requested, 'release_version': '2026.11.5'}))
+
     def _admit_schema_three_bff_only(self, reuse):
         source = 'a' * 40
         executor = 'b' * 40
@@ -230,6 +261,7 @@ class Acceptance(unittest.TestCase):
 
         args = SimpleNamespace(environment='development', source=source, executor_sha=executor,
                                components='bff', tag='schema-three-staging',
+                               release_version='2026.11.4',
                                release_source_mode='independent', auth_schema_version=3,
                                reuse=str(reuse), auth_repository_id=None, auth_revision=None,
                                auth_tree_sha256=None, auth_artifact_id=None, auth_run_id=None,
@@ -246,7 +278,7 @@ class Acceptance(unittest.TestCase):
             reuse.mkdir()
             _write_runtime_pair(reuse, envelope=4, runtime=3)
             base = dict(environment='development', source='a' * 40, components='auth,bff',
-                        tag='schema-three-staging', release_source_mode='independent',
+                        tag='schema-three-staging', release_version='2026.11.4', release_source_mode='independent',
                         auth_schema_version=3, reuse=str(reuse))
             with self.assertRaisesRegex(Breakpoint, 'auth-schema3-selection-not-supported'):
                 engine.admit(SimpleNamespace(**base))
@@ -479,6 +511,7 @@ class Acceptance(unittest.TestCase):
         args = SimpleNamespace(
             environment=environment, source=source, executor_sha=executor,
             components='auth', tag='schema-three-auth-only',
+            release_version='2026.11.4',
             release_source_mode='independent', auth_schema_version=3,
             auth_repository_id='999999', auth_revision='c' * 40,
             auth_tree_sha256='sha256:' + 'd' * 64, auth_artifact_id='456',
@@ -537,6 +570,7 @@ class Acceptance(unittest.TestCase):
                     engine.admit(SimpleNamespace(
                         release_source_mode=mode, auth_schema_version=3,
                         environment=environment, components=components, reuse=None,
+                        release_version='2026.11.4',
                     ))
 
     def test_prepare_cli_uses_persisted_auth_schema_when_flag_is_omitted(self):
@@ -583,6 +617,101 @@ class Acceptance(unittest.TestCase):
             self.assertEqual(existing.result_calls[-1].reason,
                              'auth-schema-version-change-requires-new-plan')
 
+            class ExistingSchemaFourPlan(ExistingSchemaThreePlan):
+                def __init__(self):
+                    super().__init__()
+                    self.plan = {'schema': 4, 'selected': ['bff'], 'source': 'a' * 40, 'tag': 'schema-four-cli',
+                                 'release_version': '2026.11.4',
+                                 'normalized': {'environment': 'development'}}
+                    self.plan['id'] = engine.plan_id({**self.plan, 'branch': 'develop', 'identities': {},
+                        'dev_reference': None, 'release_source_mode': 'legacy_monorepo', 'executor_sha': 'b' * 40})
+                    # main only reads these fields for a persisted plan; keep a valid immutable v4 identity.
+                    self.plan.update(branch='develop', identities={}, dev_reference=None,
+                                     release_source_mode='legacy_monorepo', executor_sha='b' * 40)
+
+            existing_v4 = ExistingSchemaFourPlan()
+            stdout = io.StringIO()
+            with patch.object(engine, 'Engine', return_value=existing_v4), \
+                 patch('sys.argv', ['engine.py', 'prepare', '--directory', str(directory),
+                                    '--release-version', '2026.11.5']), \
+                 patch('sys.stdout', stdout):
+                exit_code = engine.main()
+            self.assertEqual(exit_code, 1)
+            self.assertEqual(existing_v4.prepare_calls, 0)
+            self.assertEqual(existing_v4.result_calls[-1].reason,
+                             'release-version-change-requires-new-plan')
+
+    def test_versionless_workflow_imports_only_exact_retained_schema2_or3_plan_bytes(self):
+        for schema in (2, 3):
+            with self.subTest(schema=schema), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                reuse = root / 'retained'
+                reuse.mkdir()
+                plan = {
+                    'schema': schema, 'source': 'a' * 40, 'branch': 'develop', 'tag': 'legacy-stage1',
+                    'normalized': {'environment': 'development'}, 'identities': {'bff': {'digest': 'old'}},
+                    'dev_reference': None, 'selected': ['bff'], 'release_source_mode': 'legacy_monorepo',
+                }
+                if schema == 2:
+                    plan.update(engine='b' * 40, engine_content='c' * 64)
+                else:
+                    plan['executor_sha'] = 'd' * 40
+                plan['id'] = engine.plan_id(plan)
+                retained_bytes = (json.dumps(plan, indent=2) + '\n').encode()
+                (reuse / 'plan.json').write_bytes(retained_bytes)
+
+                class RetainedPlanEngine:
+                    def __init__(self, _directory, _executor_sha=None):
+                        self.plan = plan
+                        self.calls = []
+                    def auth_input_snapshot(self):
+                        return None
+                    def prepare(self, reuse=None, dev=None):
+                        self.calls.append((reuse, dev))
+                    def result(self, _error=None):
+                        pass
+
+                destination = root / 'new-run'
+                fake = RetainedPlanEngine(destination)
+                stdout = io.StringIO()
+                argv = ['engine.py', 'prepare', '--directory', str(destination), '--environment', 'development',
+                        '--source', plan['source'], '--tag', plan['tag'], '--components', 'bff',
+                        '--reuse', str(reuse), '--release-source-mode', 'legacy_monorepo',
+                        '--executor-sha', 'e' * 40]
+                with patch.object(engine, 'Engine', return_value=fake), patch('sys.argv', argv), patch('sys.stdout', stdout):
+                    self.assertEqual(engine.main(), 0, stdout.getvalue())
+                self.assertEqual((destination / 'plan.json').read_bytes(), retained_bytes)
+                self.assertEqual(len(fake.calls), 1)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            reuse = root / 'retained'
+            reuse.mkdir()
+            plan = {'schema': 3, 'source': 'a' * 40, 'branch': 'develop', 'tag': 'legacy-stage1',
+                    'normalized': {'environment': 'development'}, 'identities': {'bff': {'digest': 'old'}},
+                    'dev_reference': None, 'selected': ['bff'], 'release_source_mode': 'legacy_monorepo',
+                    'executor_sha': 'd' * 40}
+            plan['id'] = engine.plan_id(plan)
+            (reuse / 'plan.json').write_bytes(json.dumps(plan).encode())
+            base_argv = ['engine.py', 'prepare', '--directory', str(root / 'new-run'),
+                         '--environment', 'development', '--source', plan['source'], '--tag', plan['tag'],
+                         '--components', 'bff', '--reuse', str(reuse), '--release-source-mode', 'legacy_monorepo',
+                         '--executor-sha', 'e' * 40]
+            for changed in (
+                    ['--source', 'f' * 40], ['--environment', 'production'], ['--components', 'frontend']):
+                argv = list(base_argv)
+                flag = changed[0]
+                argv[argv.index(flag) + 1] = changed[1]
+                with self.subTest(changed=changed), patch('sys.argv', argv), patch('sys.stdout', io.StringIO()):
+                    self.assertEqual(engine.main(), 1)
+
+            schema4 = dict(plan, schema=4, release_version='2026.11.4')
+            schema4.pop('engine_content', None)
+            schema4['id'] = engine.plan_id(schema4)
+            (reuse / 'plan.json').write_text(json.dumps(schema4))
+            with patch('sys.argv', base_argv), patch('sys.stdout', io.StringIO()):
+                self.assertEqual(engine.main(), 1, 'new schema-4 plans must keep the explicit public version')
+
     def setUp(self):
         self.real_node = shutil.which('node')
         self.vercel_chunk = os.environ.get('LWC_TEST_VERCEL_CHUNK')
@@ -592,7 +721,8 @@ class Acceptance(unittest.TestCase):
         fake=HERE/'tests/fake_provider.py';fake.chmod(0o755)
         for name in ('gcloud','docker','go','curl','vercel','npm','git','gh'):(bin/name).symlink_to(fake)
         # Keep tool discovery/cache paths, never inherited CI authority or credentials.
-        offline_env={k:os.environ[k] for k in ('HOME','TMPDIR','LANG','LC_ALL','SYSTEMROOT') if k in os.environ}
+        offline_env={k:os.environ[k] for k in ('HOME','TMPDIR','LANG','LC_ALL','SYSTEMROOT',
+                                               'GOPATH','GOMODCACHE','GOCACHE') if k in os.environ}
         self.env=patch.dict(os.environ,{**offline_env,'PATH':str(bin)+os.pathsep+os.environ['PATH'],'LWC_TEST_STATE':str(self.root/'provider.json'),
             'VERCEL_PROJECT_ID':'prj_test','VERCEL_TEAM_ID':'team_test','VERCEL_TOKEN':'test-only','GITHUB_REPOSITORY':'test/repo'},clear=True)
         self.env.start();self.addCleanup(self.env.stop)

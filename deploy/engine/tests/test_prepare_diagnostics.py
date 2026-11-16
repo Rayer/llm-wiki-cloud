@@ -292,8 +292,9 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
         frontend = {'project_name': 'llm-wiki-frontend-test', 'team_slug': 'test-team',
                     'repository': 'Rayer/llm-wiki-cloud', 'root_directory': 'apps/frontend',
                     'config_schema_version': 1, 'config_url': 'https://config.test.invalid/frontend-config.json'}
-        plan = {'schema': 3, 'source': 'c' * 40, 'branch': 'develop', 'tag': 'offline-diagnostic',
+        plan = {'schema': 4, 'source': 'c' * 40, 'branch': 'develop', 'tag': 'offline-diagnostic',
                 'executor_sha': 'e' * 40,
+                'release_version': '2026.11.4',
                 'normalized': {'environment': 'development',
                                'gcp': {'project_id': 'llm-wiki-cloud',
                                        'artifact_registry': 'asia-east1-docker.pkg.dev/llm-wiki-cloud/cloud-run-images'},
@@ -301,7 +302,7 @@ class FrontendPrepareDiagnostics(unittest.TestCase):
                 'selected': ['auth', 'frontend'], 'identities': identities,
                 'dev_reference': None}
         plan['release_source_mode'] = 'legacy_monorepo'
-        plan['id'] = digest(engine.release_identity(plan))
+        plan['id'] = engine.plan_id(plan)
         write(directory / 'plan.json', plan)
         auth_receipt = {'schema': 2, 'component': 'auth', 'identity': identities['auth'],
                         'build_sha': plan['source'],
@@ -1461,6 +1462,7 @@ else:
 class PipelineConfigPrepareDiagnostics(unittest.TestCase):
     token = 'TEST_ONLY_PIPELINE_TOKEN_SENTINEL'
     image_digest = 'sha256:' + 'b' * 64
+    release_version = '2026.11.4'
 
     def run_action(self, make_case):
         with tempfile.TemporaryDirectory() as temp:
@@ -1468,8 +1470,10 @@ class PipelineConfigPrepareDiagnostics(unittest.TestCase):
             release = work / 'release'
             (release / 'receipts').mkdir(parents=True)
             plan = {
-                'schema': 3, 'source': 'c' * 40, 'branch': 'develop',
+                'schema': 4, 'source': 'c' * 40, 'branch': 'develop',
                 'tag': 'offline-pipeline-config-diagnostic', 'executor_sha': 'e' * 40,
+                'release_version': self.release_version,
+                'release_source_mode': 'legacy_monorepo',
                 'normalized': {
                     'environment': 'development',
                     'gcp': {'project_id': 'test-project',
@@ -1533,6 +1537,7 @@ public = {'environment': 'dev', 'bucket': 'llm-wiki-data-dev',
                 'GAT4_RELEASE_SOURCE_MODE': 'legacy_monorepo',
                 'TARGET': 'development', 'SOURCE': 'c' * 40,
                 'COMPONENTS': 'worker', 'RELEASE_TAG': plan['tag'],
+                'RELEASE_VERSION': self.release_version,
                 'LWC_PIPELINE_RUN_TIMEOUT_SECONDS': '321',
                 'TEST_MAKE_CASE': make_case, 'VERCEL_TOKEN': self.token,
             }
@@ -1541,6 +1546,9 @@ public = {'environment': 'dev', 'bucket': 'llm-wiki-data-dev',
                 ['node', str(action)], cwd=SUPPORT_ROOT, env=env,
                 capture_output=True, text=True, timeout=30)
             result = json.loads(completed.stdout)
+            admitted_plan = read(release / 'plan.json')
+            self.assertEqual((admitted_plan['schema'], admitted_plan['release_version']),
+                             (4, self.release_version))
             retained = read(release / 'result.json')
             self.assertEqual(result, retained)
             receipt = (read(release / 'receipts/worker.json')

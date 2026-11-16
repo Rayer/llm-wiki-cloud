@@ -11,6 +11,11 @@ on:
         description: Explicit immutable release tag; not used by config-only
         required: false
         type: string
+      release_version:
+        description: Explicit public product release version; included in the immutable release plan and never inferred from the tag or BFF build
+        required: false
+        type: string
+        default: ''
       artifact_id:
         description: Optional retained artifact ID for reuse
         type: string
@@ -107,12 +112,6 @@ on:
         required: false
         type: string
         default: ''
-      release_notes_package_retention_days:
-        description: Retention for the private package artifact
-        required: false
-        type: choice
-        options: ['30', '90']
-        default: '90'
       release_notes_package_request_id:
         description: Unique lowercase 32-hex correlation value for private package preparation
         required: false
@@ -133,7 +132,7 @@ jobs:
       ready_artifact_id: ${{ inputs.artifact_id }}
       history_result_artifact_id: ${{ inputs.release_notes_result_artifact_id }}
       history_operation: ${{ inputs.release_notes_result_artifact_id != '' && inputs.release_notes_operation || '' }}
-      retention_days: ${{ inputs.release_notes_package_retention_days }}
+      retention_days: '90'
       request_id: ${{ inputs.release_notes_package_request_id }}
   release:
     if: github.ref == 'refs/heads/develop' && inputs.prepare_release_notes_package != true && inputs.operation != 'diagnose-auth-image' && inputs.operation != 'frontend-config-generate'
@@ -145,6 +144,7 @@ jobs:
       executor_sha: ${{ github.sha }}
       components: ${{ inputs.components }}
       release_tag: ${{ inputs.release_tag }}
+      release_version: ${{ inputs.release_version }}
       release_source_mode: ${{ inputs.release_source_mode }}
       auth_schema_version: ${{ inputs.auth_schema_version }}
       auth_repository_id: ${{ fromJSON(inputs.auth_repository_id) }}

@@ -29,6 +29,7 @@ const mocks = vi.hoisted(() => ({
     signOut: vi.fn(),
   },
   getBuildInfo: vi.fn(),
+  getReleaseNotesIndex: vi.fn(),
   reconcileNudges: vi.fn(),
   getNudges: vi.fn(),
   setNudgeAttention: vi.fn(),
@@ -60,7 +61,10 @@ vi.mock('next/link', () => ({
 }));
 vi.mock('@/lib/i18n', () => ({ useT: () => ({ t: (key: string) => key }) }));
 vi.mock('@/lib/auth', () => ({ useAuth: () => mocks.auth }));
-vi.mock('@/lib/api', () => ({ getBuildInfo: mocks.getBuildInfo }));
+vi.mock('@/lib/api', () => ({
+  getBuildInfo: mocks.getBuildInfo,
+  getReleaseNotesIndex: mocks.getReleaseNotesIndex,
+}));
 vi.mock('@/lib/nudges', () => ({
   getNudges: mocks.getNudges,
   reconcileNudges: mocks.reconcileNudges,
@@ -146,6 +150,10 @@ describe('LWC-481 closed Shell Nudge feedback and accepted navigation lifecycle'
     mocks.resolveNudgeTarget.mockReset().mockReturnValue('/status?project_id=project-b&execution_id=run-b');
     mocks.getBuildInfo.mockReset().mockResolvedValue({
       environment: 'local', product_version: 'test', commit: 'test', revision: 'test', branch: 'test', tag: '', image_tag: '', service: 'test',
+    });
+    mocks.getReleaseNotesIndex.mockReset().mockResolvedValue({
+      schema_version: 1, environment: 'local', runtime_product_version: 'test', current_status: 'missing',
+      history: [], component_details_status: 'unavailable', current_components: [], compatibility_aliases: [],
     });
     mocks.workspace.selectProject.mockReset();
   });

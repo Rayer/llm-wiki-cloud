@@ -121,9 +121,14 @@ def capture(directory: Path, operation: str, run_id: str, run_attempt: int, *, w
     plan_bytes = read_bytes(directory / "plan.json")
     state_bytes = read_bytes(directory / "state.json")
     result_bytes = read_bytes(directory / "result.json")
-    receipt_bytes = read_bytes(directory / "receipts" / "bff.json")
     plan, state, result = (read_object(data, name) for name, data in
                            (("plan", plan_bytes), ("state", state_bytes), ("result", result_bytes)))
+    selected = plan.get("selected", [])
+    receipt_bytes = read_bytes(directory / "receipts" / "bff.json") if "bff" in selected else None
+    component_receipts = {
+        component: read_bytes(directory / "receipts" / f"{component}.json")
+        for component in ("frontend", "worker") if component in selected
+    }
     target = plan.get("normalized", {}).get("environment")
     environment = {"development": "dev", "production": "prod"}.get(target)
     if environment not in ("dev", "prod"):
@@ -137,7 +142,7 @@ def capture(directory: Path, operation: str, run_id: str, run_attempt: int, *, w
         prior = state.get("components", {}).get("bff", {}).get("prior")
         if not isinstance(prior, dict) or prior.get("revision") != revision or prior.get("image") != image:
             raise release_notes.ReleaseNotesError("index_update", "rollback-prior-readback-mismatch")
-    else:
+    elif "bff" in selected:
         candidate = state.get("components", {}).get("bff", {}).get("candidate") or {}
         if candidate.get("revision") and candidate["revision"] != revision:
             raise release_notes.ReleaseNotesError("index_update", "selected-target-readback-mismatch")
@@ -161,7 +166,8 @@ def capture(directory: Path, operation: str, run_id: str, run_attempt: int, *, w
     marker, _ = release_notes.normalize_operation(plan_bytes, state_bytes, result_bytes,
         json.dumps(sidecar, sort_keys=True, separators=(",", ":")).encode("utf-8"),
         environment=environment, workflow_operation=operation, run_id=run_id,
-        run_attempt=run_attempt, service=service, receipt_bytes=receipt_bytes)
+        run_attempt=run_attempt, service=service, receipt_bytes=receipt_bytes,
+        component_receipts=component_receipts)
     output = json.dumps(sidecar, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
     sidecar_path = directory / "release-notes-operation.json"
     if write_sidecar and sidecar_path.exists():

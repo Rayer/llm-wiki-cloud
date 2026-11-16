@@ -287,6 +287,24 @@ export type ReleaseNotesVersionSummary = {
   locales: string[];
 };
 
+export type ReleaseNotesCompatibilityAlias = {
+  requested_version: string;
+  canonical_version: string;
+  legacy_row_version: string;
+};
+
+export type ReleaseNotesPublicComponent = {
+  component: 'bff' | 'frontend' | 'worker';
+  product_version?: string;
+  commit?: string;
+  image_tag?: string;
+  image_digest?: string;
+  revision?: string;
+  deployment_id?: string;
+  job_name?: string;
+  source_sha?: string;
+};
+
 export type ReleaseNotesIndex = {
   schema_version: 1;
   environment: BuildInfo['environment'];
@@ -295,6 +313,9 @@ export type ReleaseNotesIndex = {
   current_product_version?: string;
   current?: ReleaseNotesVersionSummary;
   history: ReleaseNotesVersionSummary[];
+  component_details_status: 'complete' | 'partial' | 'unavailable';
+  current_components: ReleaseNotesPublicComponent[];
+  compatibility_aliases: ReleaseNotesCompatibilityAlias[];
 };
 
 export type ReleaseNoteDocument = {
@@ -307,6 +328,10 @@ export type ReleaseNoteDocument = {
   locale_fallback: boolean;
   is_current: boolean;
   entries: ReleaseNoteEntry[];
+  requested_product_version: string;
+  canonical_product_version: string;
+  legacy_alias: boolean;
+  legacy_fallback: boolean;
 };
 
 export class ApiError extends Error {
@@ -2443,28 +2468,106 @@ async function getPublicReleaseNotes(path: string): Promise<unknown> {
 }
 
 function releaseNotesVersionSummary(value: unknown): ReleaseNotesVersionSummary {
-  if (!isRecord(value) || typeof value.product_version !== 'string' ||
-      !RELEASE_NOTES_VERSION_PATTERN.test(value.product_version) ||
-      typeof value.published_at !== 'string' || !Number.isFinite(Date.parse(value.published_at)) ||
-      !Array.isArray(value.locales) || value.locales.some((locale) => locale !== 'en' && locale !== 'zh-TW') ||
+  if (!isRecord(value) || !hasExactKeys(value, ['product_version', 'published_at', 'locales']) ||
+      !isReleaseNotesVersion(value.product_version) || !isReleaseNotesTimestamp(value.published_at) ||
+      !Array.isArray(value.locales) || value.locales.length < 1 || value.locales.length > 2 ||
+      value.locales.some((locale) => locale !== 'en' && locale !== 'zh-TW') ||
       new Set(value.locales).size !== value.locales.length) {
     throw new Error('Invalid release notes version summary');
   }
   return { product_version: value.product_version, published_at: value.published_at, locales: value.locales as string[] };
 }
 
+function hasExactKeys(value: Record<string, unknown>, required: string[], optional: string[] = []): boolean {
+  const keys = Object.keys(value);
+  const allowed = new Set([...required, ...optional]);
+  return required.every((key) => Object.hasOwn(value, key)) && keys.every((key) => allowed.has(key));
+}
+
+function isReleaseNotesVersion(value: unknown): value is string {
+  if (typeof value !== 'string' || !RELEASE_NOTES_VERSION_PATTERN.test(value)) return false;
+  const prerelease = value.split('+', 1)[0].split('-', 2)[1];
+  return !prerelease || prerelease.split('.').every((identifier) => !/^\d+$/.test(identifier) || identifier === '0' || identifier[0] !== '0');
+}
+
+function isReleaseNotesTimestamp(value: unknown): value is string {
+  return typeof value === 'string' &&
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value) &&
+    Number.isFinite(Date.parse(value));
+}
+
+function validReleaseNotesText(value: unknown, maxRunes: number, empty = false): value is string {
+  return typeof value === 'string' && (empty || value.trim().length > 0) &&
+    Array.from(value).length <= maxRunes && !/[\u0000-\u001f\u007f-\u009f]/.test(value);
+}
+
 export async function getReleaseNotesIndex(): Promise<ReleaseNotesIndex> {
   const payload = await getPublicReleaseNotes('/api/v1/public/release-notes');
   if (!isRecord(payload) || payload.schema_version !== 1 || typeof payload.runtime_product_version !== 'string' ||
       !['local', 'dev', 'prod', 'unknown'].includes(String(payload.environment)) ||
-      !['available', 'missing', 'unavailable'].includes(String(payload.current_status)) || !Array.isArray(payload.history)) {
+      !['available', 'missing', 'unavailable'].includes(String(payload.current_status)) || !Array.isArray(payload.history) ||
+      !['complete', 'partial', 'unavailable'].includes(String(payload.component_details_status)) ||
+      !Array.isArray(payload.current_components) || !Array.isArray(payload.compatibility_aliases) ||
+      !hasExactKeys(payload, ['schema_version', 'environment', 'runtime_product_version', 'current_status', 'history',
+        'component_details_status', 'current_components', 'compatibility_aliases'], ['current_product_version', 'current'])) {
     throw new Error('Invalid release notes index response');
   }
+  if (!isReleaseNotesVersion(payload.runtime_product_version)) throw new Error('Invalid release notes runtime version');
   const current = payload.current === undefined ? undefined : releaseNotesVersionSummary(payload.current);
   const currentProductVersion = payload.current_product_version;
   if (currentProductVersion !== undefined &&
-      (typeof currentProductVersion !== 'string' || !RELEASE_NOTES_VERSION_PATTERN.test(currentProductVersion))) {
+      !isReleaseNotesVersion(currentProductVersion)) {
     throw new Error('Invalid release notes current version');
+  }
+  if ((payload.current_status === 'available' &&
+        (currentProductVersion === undefined || !current || current.product_version !== currentProductVersion)) ||
+      (payload.current_status === 'missing' && (currentProductVersion === undefined || current !== undefined)) ||
+      (payload.current_status === 'unavailable' && (currentProductVersion !== undefined || current !== undefined)) ||
+      (payload.current_status !== 'available' &&
+        (payload.component_details_status !== 'unavailable' || payload.current_components.length !== 0))) {
+    throw new Error('Invalid release notes current state');
+  }
+  const aliases = payload.compatibility_aliases.map((entry): ReleaseNotesCompatibilityAlias => {
+    if (!isRecord(entry) || Object.keys(entry).sort().join(',') !== 'canonical_version,legacy_row_version,requested_version' ||
+        entry.requested_version !== '1.0.0' || entry.canonical_version !== '2026.11.4' || entry.legacy_row_version !== '1.0.0') {
+      throw new Error('Invalid release notes compatibility alias');
+    }
+    return { requested_version: entry.requested_version, canonical_version: entry.canonical_version, legacy_row_version: entry.legacy_row_version };
+  });
+  if (aliases.length > 1) throw new Error('Invalid release notes compatibility aliases');
+  const components = payload.current_components.map((entry): ReleaseNotesPublicComponent => {
+    if (!isRecord(entry) || typeof entry.component !== 'string' || !['bff', 'frontend', 'worker'].includes(entry.component)) {
+      throw new Error('Invalid release notes component identity');
+    }
+    const allowed = entry.component === 'bff'
+      ? ['commit', 'component', 'image_digest', 'image_tag', 'product_version', 'revision']
+      : entry.component === 'frontend' ? ['component', 'deployment_id', 'source_sha'] : ['component', 'image_digest', 'job_name', 'source_sha'];
+    const required = entry.component === 'bff' ? allowed
+      : entry.component === 'frontend' ? ['component', 'deployment_id'] : ['component', 'image_digest', 'job_name'];
+    if (!hasExactKeys(entry, required, allowed.filter((key) => !required.includes(key))) ||
+        (entry.component === 'bff' && (!isReleaseNotesVersion(entry.product_version) ||
+          typeof entry.commit !== 'string' || !/^[0-9a-f]{40}$/.test(entry.commit) ||
+          !validReleaseNotesText(entry.image_tag, 256) || !/^sha256:[0-9a-f]{64}$/.test(String(entry.image_digest)) ||
+          !validReleaseNotesText(entry.revision, 256))) ||
+        (entry.component === 'frontend' && (!validReleaseNotesText(entry.deployment_id, 256) ||
+          (Object.hasOwn(entry, 'source_sha') && (typeof entry.source_sha !== 'string' || !/^[0-9a-f]{40}$/.test(entry.source_sha))))) ||
+        (entry.component === 'worker' && (!validReleaseNotesText(entry.job_name, 128) ||
+          !/^sha256:[0-9a-f]{64}$/.test(String(entry.image_digest)) ||
+          (Object.hasOwn(entry, 'source_sha') && (typeof entry.source_sha !== 'string' || !/^[0-9a-f]{40}$/.test(entry.source_sha)))))) {
+      throw new Error('Invalid release notes component identity');
+    }
+    return entry as unknown as ReleaseNotesPublicComponent;
+  });
+  const componentNames = components.map((component) => component.component);
+  if (new Set(componentNames).size !== componentNames.length ||
+      components.length > 0 && (components[0].component !== 'bff' ||
+        componentNames.slice(1).join(',') !== [...componentNames.slice(1)].sort().join(',')) ||
+      (payload.component_details_status === 'unavailable' && components.length > 0) ||
+      (payload.current_status === 'available' && payload.component_details_status !== 'unavailable' &&
+        (components.length === 0 || components[0].component !== 'bff' ||
+          components[0].product_version !== payload.runtime_product_version)) ||
+      (payload.component_details_status !== 'unavailable' && payload.current_status !== 'available')) {
+    throw new Error('Invalid release notes component projection');
   }
   return {
     schema_version: 1,
@@ -2474,25 +2577,46 @@ export async function getReleaseNotesIndex(): Promise<ReleaseNotesIndex> {
     ...(currentProductVersion !== undefined ? { current_product_version: currentProductVersion } : {}),
     ...(current ? { current } : {}),
     history: payload.history.map(releaseNotesVersionSummary),
+    component_details_status: payload.component_details_status as ReleaseNotesIndex['component_details_status'],
+    current_components: components,
+    compatibility_aliases: aliases,
   };
 }
 
-export async function getReleaseNote(version: string, locale: 'en' | 'zh-TW'): Promise<ReleaseNoteDocument> {
-  if (!RELEASE_NOTES_VERSION_PATTERN.test(version)) {
+export async function getReleaseNote(version: string, locale: 'en' | 'zh-TW', aliases: ReleaseNotesCompatibilityAlias[] = []): Promise<ReleaseNoteDocument> {
+  if (!isReleaseNotesVersion(version)) {
     throw new Error('Invalid release notes version');
   }
   const payload = await getPublicReleaseNotes(`/api/v1/public/release-notes/${encodeURIComponent(version)}?locale=${encodeURIComponent(locale)}`);
+  const alias = aliases.find((entry) => entry.requested_version === version);
+  const expectedCanonical = alias?.canonical_version ?? version;
+  const legacyAlias = alias !== undefined;
+  const legacyFallback = isRecord(payload) && payload.legacy_fallback === true;
+  const expectedBody = legacyFallback ? alias?.legacy_row_version : expectedCanonical;
   if (!isRecord(payload) || payload.schema_version !== 1 || payload.product !== 'llm-wiki-cloud' ||
-      payload.product_version !== version || typeof payload.published_at !== 'string' || !Number.isFinite(Date.parse(payload.published_at)) ||
+      !hasExactKeys(payload, ['schema_version', 'product', 'product_version', 'requested_product_version',
+        'canonical_product_version', 'legacy_alias', 'legacy_fallback', 'published_at', 'locale',
+        'requested_locale', 'locale_fallback', 'is_current', 'entries']) ||
+      !isReleaseNotesVersion(payload.product_version) || !isReleaseNotesVersion(payload.requested_product_version) ||
+      !isReleaseNotesVersion(payload.canonical_product_version) ||
+      payload.requested_product_version !== version || payload.canonical_product_version !== expectedCanonical ||
+      payload.product_version !== expectedBody || payload.legacy_alias !== legacyAlias ||
+      typeof payload.legacy_fallback !== 'boolean' || (!legacyAlias && payload.legacy_fallback) ||
+      (legacyFallback && (!legacyAlias || payload.is_current !== false)) ||
+      !isReleaseNotesTimestamp(payload.published_at) ||
       (payload.locale !== 'en' && payload.locale !== 'zh-TW') || payload.requested_locale !== locale ||
       typeof payload.locale_fallback !== 'boolean' ||
       (payload.locale_fallback ? !(locale === 'zh-TW' && payload.locale === 'en') : payload.locale !== locale) ||
       typeof payload.is_current !== 'boolean' || !Array.isArray(payload.entries)) {
     throw new Error('Invalid release note response');
   }
+  if (payload.entries.length < 1 || payload.entries.length > 20) throw new Error('Invalid release note entries');
   const entries = payload.entries.map((entry): ReleaseNoteEntry => {
-    if (!isRecord(entry) || ['title', 'what_changed', 'user_benefit', 'where_to_use'].some((key) => typeof entry[key] !== 'string') ||
-        !Array.isArray(entry.limitations) || entry.limitations.some((limitation) => typeof limitation !== 'string')) {
+    if (!isRecord(entry) || !hasExactKeys(entry, ['title', 'what_changed', 'user_benefit', 'where_to_use', 'limitations']) ||
+        !validReleaseNotesText(entry.title, 160) || !validReleaseNotesText(entry.what_changed, 2000) ||
+        !validReleaseNotesText(entry.user_benefit, 2000) || !validReleaseNotesText(entry.where_to_use, 2000) ||
+        !Array.isArray(entry.limitations) || entry.limitations.length > 6 ||
+        entry.limitations.some((limitation) => !validReleaseNotesText(limitation, 1000))) {
       throw new Error('Invalid release note entry');
     }
     return {
@@ -2505,6 +2629,8 @@ export async function getReleaseNote(version: string, locale: 'en' | 'zh-TW'): P
     schema_version: 1, product: 'llm-wiki-cloud', product_version: payload.product_version,
     published_at: payload.published_at, locale: payload.locale, requested_locale: locale,
     locale_fallback: payload.locale_fallback, is_current: payload.is_current, entries,
+    requested_product_version: version, canonical_product_version: expectedCanonical,
+    legacy_alias: legacyAlias, legacy_fallback: legacyFallback,
   };
 }
 

@@ -31,6 +31,7 @@ function admissionArgs(operation, directory, reuse, dev) {
     '--environment',process.env.TARGET,'--source',process.env.SOURCE,
     '--components',process.env.COMPONENTS,'--tag',process.env.RELEASE_TAG,
     '--executor-sha',executorSha];
+  if (process.env.RELEASE_VERSION) args.push('--release-version',process.env.RELEASE_VERSION);
   if (reuse) args.push('--reuse',reuse);
   if (dev) args.push('--dev',dev);
   if(dev) args.push('--dev-reference',process.env.DEV_ID);

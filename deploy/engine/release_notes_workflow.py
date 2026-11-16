@@ -43,6 +43,7 @@ ID_RE = re.compile(r"^[1-9][0-9]*$")
 REQUEST_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 ALLOWED_RETENTION_DAYS = {30, 90}
+DISPATCH_PACKAGE_RETENTION_DAYS = 90
 COMPONENT_ORDER = ("documentimport", "exportjob", "auth", "bff", "worker", "frontend")
 
 
@@ -133,7 +134,7 @@ def _read_package_input_from_event(event_path: Path, expected_request_id: str,
             inputs.get("release_notes_action") != "stop" or
             inputs.get("release_notes_package_request_id") != expected_request_id or
             inputs.get("artifact_id", "") != (expected_ready_artifact_id or "") or
-            inputs.get("release_notes_package_retention_days") != expected_retention_days):
+            "release_notes_package_retention_days" in inputs):
         _fail("workflow-event-invalid")
     history_result_artifact_id = inputs.get("release_notes_result_artifact_id", "")
     if history_result_artifact_id != (expected_history_result_artifact_id or ""):
@@ -176,7 +177,7 @@ def _write_private_json(path: Path, value: dict) -> None:
         _fail("history-binding-output-unavailable")
 
 
-def bff_selected_from_plan(plan_bytes: bytes) -> bool:
+def selected_components_from_plan(plan_bytes: bytes) -> list[str]:
     plan = _json_object(plan_bytes)
     selected = plan.get("selected")
     if (not isinstance(selected, list) or not selected or
@@ -184,7 +185,11 @@ def bff_selected_from_plan(plan_bytes: bytes) -> bool:
             len(selected) != len(set(selected)) or
             selected != [component for component in COMPONENT_ORDER if component in selected]):
         _fail("plan-selection-invalid")
-    return "bff" in selected
+    return selected
+
+
+def bff_selected_from_plan(plan_bytes: bytes) -> bool:
+    return "bff" in selected_components_from_plan(plan_bytes)
 
 
 def _workflow_path_matches(actual: object, expected: str) -> bool:
@@ -305,12 +310,16 @@ def _validate_development_plan(plan_bytes: bytes) -> dict:
     plan = _json_object(plan_bytes)
     normalized = plan.get("normalized")
     source = plan.get("source")
+    selected = selected_components_from_plan(plan_bytes)
+    identities = plan.get("identities")
     if (not isinstance(normalized, dict) or normalized.get("environment") != "development" or
             not isinstance(source, str) or re.fullmatch(r"[0-9a-f]{40}", source) is None or
             not isinstance(plan.get("id"), str) or not plan.get("id") or
             not isinstance(plan.get("tag"), str) or not plan.get("tag") or
-            not isinstance(plan.get("identities"), dict) or not isinstance(plan["identities"].get("bff"), dict) or
-            not bff_selected_from_plan(plan_bytes)):
+            not isinstance(identities, dict) or
+            set(identities) != set(selected) or
+            any(not isinstance(identities.get(component), dict) for component in selected) or
+            (plan.get("schema") == 4 and not release_notes.valid_version(plan.get("release_version")))):
         _fail("release-plan-not-bff-dev")
     return plan
 
@@ -411,7 +420,7 @@ def validate_history_result_handoff(metadata: dict, run: dict, result_directory:
             not isinstance(plan.get("id"), str) or re.fullmatch(r"[0-9a-f]{64}", plan["id"]) is None or
             plan.get("id") != _plan_id(plan)):
         _fail("history-plan-invalid")
-    if plan.get("schema") == 3:
+    if plan.get("schema") in (3, 4):
         producer_sha = plan.get("executor_sha")
     elif plan.get("schema") == 2:
         producer_sha = plan.get("source")
@@ -535,6 +544,16 @@ def _plan_id(plan: dict) -> str:
             identity["release_source_mode"] = plan["release_source_mode"]
         if "auth_source" in plan:
             identity["auth_source"] = plan["auth_source"]
+    elif schema == 4:
+        fields = ("source", "branch", "tag", "normalized", "identities", "dev_reference", "selected", "release_version")
+        if (any(field not in plan for field in fields) or
+                not release_notes.valid_version(plan.get("release_version"))):
+            _fail("ready-plan-invalid")
+        identity = {key: plan[key] for key in fields}
+        if "release_source_mode" in plan:
+            identity["release_source_mode"] = plan["release_source_mode"]
+        if "auth_source" in plan:
+            identity["auth_source"] = plan["auth_source"]
     else:
         _fail("ready-plan-invalid")
     return hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
@@ -565,6 +584,7 @@ def _resume_inputs(plan: dict, ready_artifact_id: str, notes_artifact_id: str) -
         "operation": "release",
         "source_sha": plan["source"],
         "release_tag": plan["tag"],
+        "release_version": plan.get("release_version", ""),
         "components": ",".join(plan["selected"]),
         "artifact_id": ready_artifact_id,
         "release_source_mode": source_mode,
@@ -633,7 +653,7 @@ def validate_ready_handoff(metadata: dict, run: dict, artifact_list: dict,
             plan.get("id") != _plan_id(plan)):
         _fail("ready-plan-invalid")
     run_sha = run.get("head_sha")
-    if plan.get("schema") == 3 and plan.get("executor_sha") != run_sha:
+    if plan.get("schema") in (3, 4) and plan.get("executor_sha") != run_sha:
         _fail("ready-plan-producer-mismatch")
 
     state = _json_object(state_bytes)
@@ -703,6 +723,9 @@ def _validate_package_from_plan(package_dir: Path, plan_path: Path, *, verify_ar
         expected_artifact_digest=artifact_digest if verify_artifact_digest else None,
         artifact_metadata_digest=metadata_digest if verify_artifact_digest else None,
         plan_bytes=plan_bytes)
+    plan = _json_object(plan_bytes)
+    if plan.get("schema") == 4 and product_version != plan.get("release_version"):
+        _fail("package-release-version-mismatch")
     return product_version, manifest, plan_bytes
 
 
@@ -789,9 +812,9 @@ def _validate_history_binding(binding: dict, *, result_artifact_id: str,
             binding["plan_sha256"] != hashlib.sha256(plan_bytes).hexdigest() or
             binding["plan_id"] != plan.get("id") or binding["source_sha"] != plan.get("source") or
             plan.get("branch") != "develop" or
-            (plan.get("schema") == 3 and plan.get("executor_sha") != binding["head_sha"]) or
+            (plan.get("schema") in (3, 4) and plan.get("executor_sha") != binding["head_sha"]) or
             (plan.get("schema") == 2 and plan.get("source") != binding["head_sha"]) or
-            plan.get("schema") not in (2, 3)):
+            plan.get("schema") not in (2, 3, 4)):
         _fail("history-result-binding-mismatch")
     return binding
 
@@ -896,7 +919,7 @@ def build_dispatch_payload(package_dir: Path, *, ready_artifact_id: str = "",
                            retention_days: int,
                            request_id: str | None = None) -> tuple[dict, str]:
     source = _package_source(ready_artifact_id, history_result_artifact_id, history_operation)
-    if retention_days not in ALLOWED_RETENTION_DAYS:
+    if type(retention_days) is not int or retention_days != DISPATCH_PACKAGE_RETENTION_DAYS:
         _fail("dispatch-input-invalid")
     version = _manifest_identity(package_dir)
     archive = package_directory_archive(package_dir)
@@ -910,7 +933,6 @@ def build_dispatch_payload(package_dir: Path, *, ready_artifact_id: str = "",
         "operation": "release",
         "release_notes_action": "stop",
         "package_zip_base64": archive_b64,
-        "release_notes_package_retention_days": str(retention_days),
         "release_notes_package_request_id": request_id,
         "release_notes_result_artifact_id": history_result_artifact_id,
     }
@@ -1120,7 +1142,8 @@ def _argument_parser():
     dispatch.add_argument("--history-result-artifact-id", default="")
     dispatch.add_argument("--history-operation", default="")
     dispatch.add_argument("--package-dir", required=True)
-    dispatch.add_argument("--retention-days", choices=("30", "90"), default="90")
+    dispatch.add_argument("--retention-days", choices=(str(DISPATCH_PACKAGE_RETENTION_DAYS),),
+                          default=str(DISPATCH_PACKAGE_RETENTION_DAYS))
     dispatch.add_argument("--timeout-seconds", type=int, default=900)
     return parser
 

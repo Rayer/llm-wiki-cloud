@@ -214,10 +214,15 @@ test('Release Notes public readers omit credentials, avoid caching, and validate
     current_product_version: '1.2.3',
     current: { product_version: '1.2.3', published_at: '2026-11-13T04:00:00Z', locales: ['en'] },
     history: [],
+    component_details_status: 'complete', current_components: [{
+      component: 'bff', product_version: '1.2.3', commit: '0123456789abcdef0123456789abcdef01234567',
+      image_tag: 'bff-dev-01234567', image_digest: `sha256:${'a'.repeat(64)}`, revision: 'llm-wiki-cloud-dev-00001-abc',
+    }], compatibility_aliases: [],
   };
   const note = {
     schema_version: 1, product: 'llm-wiki-cloud', product_version: '1.2.3', published_at: '2026-11-13T04:00:00Z',
     locale: 'en', requested_locale: 'en', locale_fallback: false, is_current: true,
+    requested_product_version: '1.2.3', canonical_product_version: '1.2.3', legacy_alias: false, legacy_fallback: false,
     entries: [{ title: 'Title', what_changed: 'Changed', user_benefit: 'Benefit', where_to_use: 'Workspace', limitations: [] }],
   };
   globalThis.fetch = async (url, init) => {
@@ -241,12 +246,73 @@ test('Release Notes public readers omit credentials, avoid caching, and validate
   }
 });
 
+test('Release Notes index rejects an available complete marker without its BFF identity', async () => {
+  const originalFetch = globalThis.fetch;
+  const index = {
+    schema_version: 1, environment: 'dev', runtime_product_version: '1.0.0', current_status: 'available',
+    current_product_version: '2026.11.4',
+    current: { product_version: '2026.11.4', published_at: '2026-11-13T04:00:00Z', locales: ['en'] },
+    history: [], component_details_status: 'complete', current_components: [], compatibility_aliases: [],
+  };
+  globalThis.fetch = async () => Response.json(index);
+  try {
+    await assert.rejects(() => getReleaseNotesIndex(), /Invalid release notes component projection/);
+    index.current_components = [{
+      component: 'bff', product_version: '1.0.1', commit: '0123456789abcdef0123456789abcdef01234567',
+      image_tag: 'bff-dev-01234567', image_digest: `sha256:${'a'.repeat(64)}`, revision: 'llm-wiki-cloud-dev-00001-abc',
+    }];
+    await assert.rejects(() => getReleaseNotesIndex(), /Invalid release notes component projection/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('Release Notes client resolves only the exact 1.0.0 compatibility alias and canonical fallback bodies', async () => {
+  const originalFetch = globalThis.fetch;
+  const aliases = [{ requested_version: '1.0.0', canonical_version: '2026.11.4', legacy_row_version: '1.0.0' }];
+  const canonical = {
+    schema_version: 1, product: 'llm-wiki-cloud', product_version: '2026.11.4',
+    requested_product_version: '1.0.0', canonical_product_version: '2026.11.4',
+    legacy_alias: true, legacy_fallback: false, published_at: '2026-11-13T04:00:00Z',
+    locale: 'en', requested_locale: 'en', locale_fallback: false, is_current: true,
+    entries: [{ title: 'Title', what_changed: 'Changed', user_benefit: 'Benefit', where_to_use: 'Workspace', limitations: [] }],
+  };
+  const fallback = {
+    ...canonical, product_version: '1.0.0', legacy_fallback: true, is_current: false,
+  };
+  globalThis.fetch = async () => Response.json(canonical);
+  try {
+    assert.deepEqual(await getReleaseNote('1.0.0', 'en', aliases), {
+      schema_version: 1, product: 'llm-wiki-cloud', product_version: '2026.11.4',
+      published_at: '2026-11-13T04:00:00Z', locale: 'en', requested_locale: 'en',
+      locale_fallback: false, is_current: true,
+      entries: [{ title: 'Title', what_changed: 'Changed', user_benefit: 'Benefit', where_to_use: 'Workspace', limitations: [] }],
+      requested_product_version: '1.0.0', canonical_product_version: '2026.11.4',
+      legacy_alias: true, legacy_fallback: false,
+    });
+    globalThis.fetch = async () => Response.json(fallback);
+    const result = await getReleaseNote('1.0.0', 'en', aliases);
+    assert.equal(result.product_version, '1.0.0');
+    assert.equal(result.requested_product_version, '1.0.0');
+    assert.equal(result.canonical_product_version, '2026.11.4');
+    assert.equal(result.legacy_alias, true);
+    assert.equal(result.legacy_fallback, true);
+    assert.equal(result.is_current, false);
+
+    globalThis.fetch = async () => Response.json({ ...canonical, canonical_product_version: '2026.11.5' });
+    await assert.rejects(() => getReleaseNote('1.0.0', 'en', aliases), /Invalid release note response/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('Release Notes client rejects arbitrary exact version paths and malformed entry fields', async () => {
   await assert.rejects(() => getReleaseNote('../current', 'en'), /Invalid release notes version/);
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => Response.json({
     schema_version: 1, product: 'llm-wiki-cloud', product_version: '1.2.3', published_at: '2026-11-13T04:00:00Z',
     locale: 'en', requested_locale: 'en', locale_fallback: false, is_current: false,
+    requested_product_version: '1.2.3', canonical_product_version: '1.2.3', legacy_alias: false, legacy_fallback: false,
     entries: [{ title: 'Title', what_changed: 'Changed', user_benefit: 'Benefit', where_to_use: 'Workspace', limitations: [false] }],
   });
   try {

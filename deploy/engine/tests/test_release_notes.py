@@ -135,11 +135,74 @@ def operation_fixture(operation="rollback", *, service_generation=43, prior_imag
     return plan_bytes, state_bytes, result_bytes, canonical(sidecar), canonical(receipt), sidecar
 
 
+def schema4_fixture(fixture, release_version, *, plan_id=None, run_id="701"):
+    plan, state, result, sidecar = (json.loads(fixture[index]) for index in range(4))
+    plan.update(schema=4, release_version=release_version)
+    if plan_id:
+        plan["id"] = plan_id
+    state["plan"] = plan["id"]
+    result["attempt"] = plan["id"]
+    plan_bytes, state_bytes, result_bytes = canonical(plan), canonical(state), canonical(result)
+    sidecar.update(run_id=run_id,
+                   plan_sha256=release_notes.digest_bytes(plan_bytes),
+                   state_sha256=release_notes.digest_bytes(state_bytes),
+                   result_sha256=release_notes.digest_bytes(result_bytes))
+    return plan_bytes, state_bytes, result_bytes, canonical(sidecar), fixture[4]
+
+
+def frontend_reuse_fixture(*, run_id="702", release_version="2026.11.5", deployment_id="frontend-deploy-702"):
+    base = operation_fixture(operation="release", service_generation=44, revision="rev-w", product_version="1.0.0")
+    plan, state, result, sidecar = (json.loads(base[index]) for index in range(4))
+    identity = {"profile": "frontend", "digest": "frontend-inputs-" + run_id}
+    plan.update(schema=4, id="frontend-only-plan-" + run_id, release_version=release_version,
+                selected=["frontend"], identities={"frontend": identity})
+    state.update(plan=plan["id"], status="success", sequence=44,
+                 components={"frontend": {"status": "verified", "candidate": {"deployment_id": deployment_id}}})
+    result.update(release=plan["tag"], attempt=plan["id"], stage="success", status="success",
+                  component="frontend", candidate=state["components"]["frontend"]["candidate"], prior=None,
+                  expected={"source": plan["source"], "identity": hashlib.sha256(canonical(identity)).hexdigest()},
+                  observed={"component_status": "verified"}, last_verified_checkpoint=state["sequence"])
+    plan_bytes, state_bytes, result_bytes = canonical(plan), canonical(state), canonical(result)
+    sidecar.update(operation="release", run_id=run_id,
+                   plan_sha256=release_notes.digest_bytes(plan_bytes),
+                   state_sha256=release_notes.digest_bytes(state_bytes),
+                   result_sha256=release_notes.digest_bytes(result_bytes))
+    receipt = {"schema": 2, "component": "frontend", "identity": identity, "build_sha": plan["source"],
+               "artifact": {"deployment_id": deployment_id}}
+    return plan_bytes, state_bytes, result_bytes, canonical(sidecar), None, {"frontend": canonical(receipt)}
+
+
 def normalized_marker(**kwargs):
     fixture = operation_fixture(**kwargs)
     return release_notes.normalize_operation(*fixture[:4], environment="dev",
         workflow_operation=kwargs.get("operation", "rollback"), run_id="701", run_attempt=1,
         service="svc", receipt_bytes=fixture[4])[0]
+
+
+def initial_schema2_migration_fixture():
+    old_marker = normalized_marker(operation="deploy", service_generation=43,
+                                   revision="rev-v", product_version="1.0.0")
+    old_marker_token = json.dumps(old_marker, ensure_ascii=False, indent=2).encode("utf-8")
+    index_bytes = b'{ "schema_version": 1, "versions": [], "current_deployment": ' + old_marker_token + b' }'
+    fixture = list(operation_fixture(operation="release", service_generation=44,
+                                     revision="rev-w", product_version="1.0.0"))
+    plan = json.loads(fixture[0])
+    plan["schema"] = 4
+    plan["release_version"] = release_notes.PUBLIC_RELEASE_VERSION
+    plan_bytes = canonical(plan)
+    sidecar = json.loads(fixture[3])
+    sidecar["plan_sha256"] = release_notes.digest_bytes(plan_bytes)
+    fixture[0] = plan_bytes
+    fixture[3] = canonical(sidecar)
+    marker, _ = release_notes.normalize_operation(
+        *fixture[:4], environment="dev", workflow_operation="release", run_id="701",
+        run_attempt=1, service="svc", receipt_bytes=fixture[4])
+    release_notes.bind_previous_release(marker, old_marker, old_marker_token)
+    store = MemoryNotesStore()
+    store.index = index_bytes
+    store.generation = 5
+    store.active_marker = marker
+    return store, marker, release_notes.digest_bytes(plan_bytes), old_marker_token
 
 
 def multi_component_fixture(operation):
@@ -338,6 +401,131 @@ class ReleaseNotesContractTests(unittest.TestCase):
                 self.assertEqual(native["result"]["component"], "frontend")
                 self.assertEqual(marker["revision"], "rev-v" if operation == "rollback" else "rev-w")
 
+    def test_schema4_frontend_only_release_reuses_fresh_bff_readback_and_selected_receipt(self):
+        fixture = frontend_reuse_fixture()
+        marker, bundle = release_notes.normalize_operation(
+            *fixture[:4], environment="dev", workflow_operation="release", run_id="702", run_attempt=1,
+            service="svc", receipt_bytes=fixture[4], component_receipts=fixture[5])
+        native = release_notes.validate_native_operation(
+            fixture[0], fixture[1], fixture[2], fixture[4], environment="dev",
+            workflow_operation="release", run_id="702", run_attempt=1, component_receipts=fixture[5])
+        self.assertEqual(bundle["plan"]["selected"], ["frontend"])
+        self.assertTrue(native["bff_reused"])
+        self.assertEqual(marker["service_generation"], 44)
+        self.assertEqual(marker["component_builds"][0]["deployment_id"], "frontend-deploy-702")
+
+        with self.assertRaisesRegex(release_notes.ReleaseNotesError, "selected-component-receipt-unavailable"):
+            release_notes.normalize_operation(
+                *fixture[:4], environment="dev", workflow_operation="release", run_id="702", run_attempt=1,
+                service="svc", receipt_bytes=None)
+        wrong_receipts = {"frontend": canonical({"component": "frontend", "identity": {"digest": "wrong"},
+                                                  "artifact": {"deployment_id": "frontend-deploy-702"}})}
+        with self.assertRaisesRegex(release_notes.ReleaseNotesError, "selected-component-receipt-invalid"):
+            release_notes.normalize_operation(
+                *fixture[:4], environment="dev", workflow_operation="release", run_id="702", run_attempt=1,
+                service="svc", receipt_bytes=None, component_receipts=wrong_receipts)
+
+    def test_bff_reuse_allows_only_same_full_identity_generation_with_newer_selected_run(self):
+        store, current, plan_sha, _ = initial_schema2_migration_fixture()
+        release_notes.publish_package(
+            store, {"en": note(version=release_notes.PUBLIC_RELEASE_VERSION)},
+            product_version=release_notes.PUBLIC_RELEASE_VERSION,
+            published_at="2026-11-15T01:14:01Z", marker=current, transition_plan_sha256=plan_sha)
+        fixture = frontend_reuse_fixture(run_id="702")
+        marker, _ = release_notes.normalize_operation(
+            *fixture[:4], environment="dev", workflow_operation="release", run_id="702", run_attempt=1,
+            service="svc", receipt_bytes=fixture[4], component_receipts=fixture[5])
+        denied_store = copy.deepcopy(store)
+        denied_store.active_marker = marker
+        with self.assertRaisesRegex(release_notes.ReleaseNotesError, "release-transition-stale"):
+            release_notes.publish_package(
+                denied_store, {"en": note(version="2026.11.5")}, product_version="2026.11.5",
+                published_at="2026-11-16T01:00:00Z", marker=copy.deepcopy(marker), bff_reused=False)
+        store.active_marker = marker
+        published = release_notes.publish_package(
+            store, {"en": note(version="2026.11.5")}, product_version="2026.11.5",
+            published_at="2026-11-16T01:00:00Z", marker=marker, bff_reused=True)
+        self.assertEqual(published.index_generation, store.generation)
+        self.assertEqual(release_notes.validate_index(store.index)["current_deployment"]["release_version"],
+                         "2026.11.5")
+
+        stale = copy.deepcopy(marker)
+        stale["operation_run_id"] = current["operation_run_id"]
+        stale["previous_release"] = marker["previous_release"]
+        store.active_marker = stale
+        with self.assertRaisesRegex(release_notes.ReleaseNotesError, "release-transition-stale"):
+            release_notes.publish_marker_only(store, stale)
+
+        changed_bff = copy.deepcopy(marker)
+        changed_bff["service_generation"] += 1
+        store.active_marker = changed_bff
+        with self.assertRaisesRegex(release_notes.ReleaseNotesError, "release-bff-reuse-mismatch"):
+            release_notes.publish_marker_only(store, changed_bff, bff_reused=True)
+
+    def test_schema4_rollback_restores_v_identity_with_fresh_operation_generation(self):
+        v_fixture = schema4_fixture(operation_fixture(
+            operation="release", service_generation=42, revision="rev-v", product_version="1.2.3"),
+            "2026.11.3", plan_id="plan-v")
+        v_plan, v_state, v_result, v_sidecar = (json.loads(v_fixture[index]) for index in range(4))
+        v_state["components"]["bff"]["candidate"]["revision"] = "rev-v"
+        v_result["candidate"] = copy.deepcopy(v_state["components"]["bff"]["candidate"])
+        v_state_bytes = canonical(v_state)
+        v_result_bytes = canonical(v_result)
+        v_sidecar.update(revision="rev-v", traffic=[{"revisionName": "rev-v", "percent": 100}],
+                         state_sha256=release_notes.digest_bytes(v_state_bytes),
+                         result_sha256=release_notes.digest_bytes(v_result_bytes))
+        v_sidecar["build_info"]["revision"] = "rev-v"
+        v_sidecar["build_info"].update(commit=V_COMMIT, tag="v2026.11.4", image_tag="bff-v")
+        v_sidecar["image_digest"] = V_IMAGE.rsplit("@", 1)[-1]
+        v_receipt = json.loads(v_fixture[4])
+        v_receipt["artifact"]["image"] = V_IMAGE
+        v_fixture = (canonical(v_plan), v_state_bytes, v_result_bytes, canonical(v_sidecar), canonical(v_receipt))
+        v, _ = release_notes.normalize_operation(
+            *v_fixture[:4], environment="dev", workflow_operation="release", run_id="701", run_attempt=1,
+            service="svc", receipt_bytes=v_fixture[4])
+        w_fixture = schema4_fixture(operation_fixture(
+            operation="release", service_generation=43, revision="rev-w", product_version="9.0.0"),
+            "2026.11.4", plan_id="plan-w", run_id="702")
+        w, _ = release_notes.normalize_operation(
+            *w_fixture[:4], environment="dev", workflow_operation="release", run_id="702", run_attempt=1,
+            service="svc", receipt_bytes=w_fixture[4])
+        release_notes._prepare_marker_transition(w, v)
+        rollback_fixture = schema4_fixture(operation_fixture(
+            operation="rollback", service_generation=44, revision="rev-v", product_version="1.2.3"),
+            "2026.11.4", plan_id="plan-rollback", run_id="703")
+        rollback, _ = release_notes.normalize_operation(
+            *rollback_fixture[:4], environment="dev", workflow_operation="rollback", run_id="703",
+            run_attempt=1, service="svc", receipt_bytes=rollback_fixture[4])
+        release_notes._prepare_marker_transition(rollback, w)
+        self.assertEqual(rollback["release_version"], "2026.11.3")
+        self.assertEqual(rollback["service_generation"], 44)
+        self.assertEqual(w["service_generation"], 43)
+        self.assertTrue(release_notes.marker_transition_allowed(w, rollback))
+
+        store = MemoryNotesStore()
+        store.index = canonical({"schema_version": release_notes.INDEX_SCHEMA_VERSION, "versions": [],
+                                 "current_deployment": w, "legacy_aliases": []})
+        store.generation = 8
+        store.active_marker = rollback
+        result = release_notes.publish_marker_only(store, rollback)
+        self.assertEqual(result.index_generation, 9)
+        self.assertEqual(release_notes.validate_index(store.index)["current_deployment"], rollback)
+
+        old_generation = copy.deepcopy(rollback)
+        old_generation["service_generation"] = w["service_generation"]
+        with self.assertRaisesRegex(release_notes.ReleaseNotesError, "rollback-target-mismatch"):
+            release_notes._prepare_marker_transition(old_generation, w)
+        wrong_revision = copy.deepcopy(rollback)
+        wrong_revision["revision"] = "rev-other"
+        with self.assertRaisesRegex(release_notes.ReleaseNotesError, "rollback-target-mismatch"):
+            release_notes._prepare_marker_transition(wrong_revision, w)
+        wrong_receipt = json.loads(rollback_fixture[4])
+        wrong_receipt["identity"] = {"profile": "bff", "digest": "old-v"}
+        with self.assertRaisesRegex(release_notes.ReleaseNotesError, "selected-target-evidence-invalid"):
+            release_notes.normalize_operation(
+                *rollback_fixture[:4], environment="dev", workflow_operation="rollback", run_id="703",
+                run_attempt=1, service="svc", receipt_bytes=canonical(wrong_receipt))
+
     def test_publish_is_idempotent_and_same_version_correction_preserves_original_time_and_marker(self):
         marker = self.normalize()
         store = MemoryNotesStore()
@@ -357,6 +545,306 @@ class ReleaseNotesContractTests(unittest.TestCase):
         self.assertEqual(corrected["versions"][0]["published_at"], original_index["versions"][0]["published_at"])
         self.assertEqual(corrected["current_deployment"], original_index["current_deployment"])
         self.assertGreater(correction.index_generation, first.index_generation)
+
+    def test_schema4_migration_binds_public_version_alias_and_exact_prior_marker_bytes(self):
+        store, marker, plan_sha256, old_marker_token = initial_schema2_migration_fixture()
+        marker_before = copy.deepcopy(marker)
+        result = release_notes.publish_package(
+            store, {"en": note(version=release_notes.PUBLIC_RELEASE_VERSION)},
+            product_version=release_notes.PUBLIC_RELEASE_VERSION,
+            published_at="2026-11-15T01:14:01Z", marker=marker,
+            transition_plan_sha256=plan_sha256)
+        self.assertEqual(marker, marker_before)
+        index = release_notes.validate_index(store.index)
+        created = index["legacy_aliases"][0]
+        self.assertEqual(index["schema_version"], release_notes.INDEX_SCHEMA_VERSION)
+        self.assertEqual(index["current_deployment"]["product_version"], "1.0.0")
+        self.assertEqual(index["current_deployment"]["release_version"], release_notes.PUBLIC_RELEASE_VERSION)
+        self.assertEqual(created["source_marker_sha256"], release_notes.digest_bytes(old_marker_token))
+        self.assertEqual(created["source_index_generation"], 5)
+        self.assertEqual(created["transition_plan_sha256"], plan_sha256)
+        self.assertEqual(created["transition_run_id"], "701")
+        self.assertEqual(created["creation_marker_sha256"], release_notes.digest_bytes(canonical(marker)))
+        self.assertEqual(result.legacy_alias_receipt["action"], "created")
+        self.assertEqual(result.legacy_alias_receipt["index_generation_before"], 5)
+        self.assertEqual(result.legacy_alias_receipt["index_generation_after"], 6)
+
+        carried_alias = copy.deepcopy(created)
+        prior_bytes = release_notes.current_deployment_token_bytes(store.index)
+        next_marker = copy.deepcopy(marker)
+        next_marker.update(operation="deploy", operation_run_id="702", service_generation=45,
+                           revision="rev-next", deployment_evidence_digest="sha256:" + "f" * 64)
+        release_notes.bind_previous_release(next_marker, index["current_deployment"], prior_bytes)
+        store.active_marker = next_marker
+        carry_result = release_notes.publish_marker_only(
+            store, next_marker, transition_plan_sha256="a" * 64)
+        carried_index = release_notes.validate_index(store.index)
+        self.assertEqual(carried_index["legacy_aliases"], [carried_alias])
+        self.assertEqual(carry_result.legacy_alias_receipt["action"], "carried")
+        self.assertEqual(carry_result.legacy_alias_receipt["alias_record_sha256"], carried_alias["alias_record_sha256"])
+
+    def test_initial_alias_creation_requires_publish_or_explicit_skip_and_resend_cannot_create_it(self):
+        store, marker, plan_sha256, _ = initial_schema2_migration_fixture()
+        with self.assertRaisesRegex(release_notes.ReleaseNotesError, "legacy-alias-creation-not-authorized"):
+            release_notes.publish_marker_only(store, marker, transition_plan_sha256=plan_sha256)
+        self.assertEqual((store.generation, store.writes), (5, 0))
+        denied = copy.deepcopy(store)
+        with self.assertRaisesRegex(release_notes.ReleaseNotesError, "legacy-alias-creation-not-authorized"):
+            release_notes.publish_package(
+                denied, {"en": note(version=release_notes.PUBLIC_RELEASE_VERSION)},
+                product_version=release_notes.PUBLIC_RELEASE_VERSION,
+                published_at="2026-11-15T01:14:01Z", marker=marker,
+                transition_plan_sha256=plan_sha256, allow_alias_creation=False)
+        self.assertEqual((denied.generation, denied.writes), (5, 0))
+
+        skipped_store, skipped_marker, skipped_plan_sha256, _ = initial_schema2_migration_fixture()
+        skip_result = release_notes.publish_marker_only(
+            skipped_store, skipped_marker, transition_plan_sha256=skipped_plan_sha256,
+            allow_alias_creation=True)
+        skipped_index = release_notes.validate_index(skipped_store.index)
+        self.assertEqual(skipped_index["current_deployment"]["release_version"], release_notes.PUBLIC_RELEASE_VERSION)
+        self.assertEqual(skipped_index["legacy_aliases"][0]["creation_marker_sha256"],
+                         release_notes.digest_bytes(canonical(skipped_index["current_deployment"])))
+        self.assertEqual(skip_result.legacy_alias_receipt["action"], "created")
+
+        history_store, _, _, _ = initial_schema2_migration_fixture()
+        original_current = json.loads(history_store.index)["current_deployment"]
+        history = release_notes.publish_package(
+            history_store, {"en": note(version="2026.11.1")}, product_version="2026.11.1",
+            published_at="2026-11-01T22:58:30+08:00", marker=None, historical=True,
+            allow_alias_creation=False)
+        history_index = release_notes.validate_index(history_store.index)
+        self.assertEqual(history_index["current_deployment"], original_current)
+        self.assertNotIn("legacy_aliases", history_index)
+        self.assertIsNone(history.legacy_alias_receipt)
+
+    def test_alias_fixed_legacy_row_rejects_resend_correction_but_keeps_exact_retry_and_canonical_edits(self):
+        store, marker, plan_sha, _ = initial_schema2_migration_fixture()
+        store.active_marker = marker
+        release_notes.publish_package(
+            store, {"en": note(version=release_notes.PUBLIC_RELEASE_VERSION)},
+            product_version=release_notes.PUBLIC_RELEASE_VERSION,
+            published_at="2026-11-15T01:14:01Z", marker=marker, transition_plan_sha256=plan_sha)
+        index = release_notes.validate_index(store.index)
+        old_body = note(version=release_notes.LEGACY_RELEASE_VERSION, changed="Original legacy text")
+        old_digest = release_notes.digest_bytes(old_body)
+        old_path = release_notes.exact_object_path(release_notes.LEGACY_RELEASE_VERSION, "en", old_digest)
+        store.objects[old_path] = (old_body, store.next_generation)
+        store.next_generation += 1
+        index["versions"].append({
+            "product_version": release_notes.LEGACY_RELEASE_VERSION,
+            "published_at": "2026-11-13T04:00:00Z",
+            "locales": {"en": {"sha256": old_digest, "object_path": old_path}},
+        })
+        store.index = canonical(index)
+        store.generation += 1
+        before_bytes, before_generation, before_writes = store.index, store.generation, store.writes
+        aliases_before = copy.deepcopy(index["legacy_aliases"])
+        with self.assertRaisesRegex(release_notes.ReleaseNotesError, "legacy-alias-row-immutable"):
+            release_notes.publish_package(
+                store, {"en": note(version=release_notes.LEGACY_RELEASE_VERSION, changed="Unauthorized correction")},
+                product_version=release_notes.LEGACY_RELEASE_VERSION, published_at="2026-11-16T01:00:00Z",
+                marker=None, historical=True)
+        self.assertEqual((store.index, store.generation, store.writes),
+                         (before_bytes, before_generation, before_writes))
+
+        exact = release_notes.publish_package(
+            store, {"en": old_body}, product_version=release_notes.LEGACY_RELEASE_VERSION,
+            published_at="2026-11-16T01:00:00Z", marker=None, historical=True)
+        self.assertEqual(exact.index_generation, before_generation)
+        self.assertEqual(store.index, before_bytes)
+
+        canonical_version = release_notes.PUBLIC_RELEASE_VERSION
+        original_time = next(row["published_at"] for row in index["versions"]
+                             if row["product_version"] == canonical_version)
+        release_notes.publish_package(
+            store, {"en": note(version=canonical_version, changed="Canonical correction")},
+            product_version=canonical_version, published_at="2026-11-16T02:00:00Z",
+            marker=marker, allow_alias_creation=False)
+        after = release_notes.validate_index(store.index)
+        self.assertEqual(after["legacy_aliases"], aliases_before)
+        self.assertEqual(next(row["published_at"] for row in after["versions"]
+                              if row["product_version"] == release_notes.LEGACY_RELEASE_VERSION),
+                         "2026-11-13T04:00:00Z")
+        self.assertEqual(next(row["published_at"] for row in after["versions"]
+                              if row["product_version"] == canonical_version), original_time)
+        self.assertEqual(after["current_deployment"], marker)
+
+    def test_current_marker_token_digest_uses_original_json_bytes(self):
+        marker = normalized_marker(operation="deploy", product_version="1.0.0")
+        token = json.dumps(marker, ensure_ascii=False, indent=2).encode("utf-8")
+        index_bytes = b'{"schema_version":1,"versions":[],"current_deployment": ' + token + b'}'
+        extracted = release_notes.current_deployment_token_bytes(index_bytes)
+        self.assertEqual(extracted, token)
+        previous = release_notes.previous_release_from_marker(marker, extracted)
+        self.assertEqual(previous["marker_sha256"], release_notes.digest_bytes(token))
+        self.assertNotEqual(previous["marker_sha256"], release_notes.digest_bytes(canonical(marker)))
+
+    def test_index_validation_rejects_both_mixed_marker_schema_pairs(self):
+        _, schema2_marker, _, _ = initial_schema2_migration_fixture()
+        schema1_marker = normalized_marker(operation="deploy", product_version="1.0.0")
+        mixed_v1_index = canonical({"schema_version": 1, "versions": [], "current_deployment": schema2_marker})
+        mixed_v2_index = canonical({"schema_version": release_notes.INDEX_SCHEMA_VERSION, "versions": [],
+                                    "current_deployment": schema1_marker, "legacy_aliases": []})
+        for data in (mixed_v1_index, mixed_v2_index):
+            with self.subTest(index=data[:20]), self.assertRaisesRegex(
+                    release_notes.ReleaseNotesError, "index-marker-schema-mismatch"):
+                release_notes.validate_index(data)
+
+    def test_http_reader_readback_requires_identity_and_exact_stored_content(self):
+        from io import BytesIO
+
+        expected_body = note(version=release_notes.PUBLIC_RELEASE_VERSION, changed="Canonical content")
+        legacy_body = note(version=release_notes.LEGACY_RELEASE_VERSION, changed="Immutable legacy content")
+        store, marker, plan_sha, _ = initial_schema2_migration_fixture()
+        canonical_time = "2026-11-15T01:14:01Z"
+        old_time = "2026-11-01T22:58:30+08:00"
+        published = release_notes.publish_package(
+            store, {"en": expected_body}, product_version=release_notes.PUBLIC_RELEASE_VERSION,
+            published_at=canonical_time, marker=marker, transition_plan_sha256=plan_sha)
+        index = release_notes.validate_index(store.index)
+        old_digest = release_notes.digest_bytes(legacy_body)
+        old_path = release_notes.exact_object_path(release_notes.LEGACY_RELEASE_VERSION, "en", old_digest)
+        store.objects[old_path] = (legacy_body, store.next_generation)
+        store.next_generation += 1
+        index["versions"].append({
+            "product_version": release_notes.LEGACY_RELEASE_VERSION, "published_at": old_time,
+            "locales": {"en": {"sha256": old_digest, "object_path": old_path}},
+        })
+        store.index = canonical(index)
+        store.generation += 1
+
+        def public_index(*, fallback=False):
+            row = None if fallback else next(row for row in index["versions"]
+                                            if row["product_version"] == release_notes.PUBLIC_RELEASE_VERSION)
+            return {
+                "schema_version": 1, "environment": "dev", "runtime_product_version": marker["product_version"],
+                "current_status": "missing" if fallback else "available",
+                "current_product_version": release_notes.PUBLIC_RELEASE_VERSION,
+                **({} if fallback else {"current": {"product_version": row["product_version"],
+                                                     "published_at": row["published_at"],
+                                                     "locales": ["en"]}}),
+                "history": [],
+                "component_details_status": "unavailable" if fallback else "complete",
+                "current_components": [] if fallback else [{
+                    "component": "bff", "product_version": marker["product_version"],
+                    "commit": marker["commit"], "image_tag": marker["image_tag"],
+                    "image_digest": marker["image_digest"], "revision": marker["revision"],
+                }],
+                "compatibility_aliases": [{"requested_version": release_notes.LEGACY_RELEASE_VERSION,
+                                           "canonical_version": release_notes.PUBLIC_RELEASE_VERSION,
+                                           "legacy_row_version": release_notes.LEGACY_RELEASE_VERSION}],
+            }
+
+        class Response:
+            status = 200
+            headers = {"Cache-Control": "no-store"}
+            def __init__(self, body): self.stream = BytesIO(body)
+            def read(self, size=-1): return self.stream.read(size)
+            def __enter__(self): return self
+            def __exit__(self, *_args): return False
+
+        def dto(body, requested, canonical_version, *, published_at, alias, fallback, current):
+            return {**json.loads(body), "published_at": published_at, "requested_locale": "en",
+                    "locale_fallback": False, "is_current": current,
+                    "requested_product_version": requested, "canonical_product_version": canonical_version,
+                    "legacy_alias": alias, "legacy_fallback": fallback}
+
+        def run(path_version, content, api_index, *, current_store=store, expected_content_files=None):
+            with TemporaryDirectory() as temporary, \
+                    patch.object(release_notes_capture, "active_service_url", return_value="https://notes.invalid"), \
+                    patch.object(release_notes_publish, "urlopen", side_effect=[
+                        Response(canonical(api_index)), Response(canonical(content))]):
+                return release_notes_publish.verify_reader_api(
+                    Path(temporary), "dev", None, path_version,
+                    expected_content_files or {"en": legacy_body}, historical=True,
+                    store=current_store, alias_receipt=published.legacy_alias_receipt,
+                    minimum_index_generation=published.index_generation)
+
+        canonical_response = dto(expected_body, release_notes.PUBLIC_RELEASE_VERSION,
+                                 release_notes.PUBLIC_RELEASE_VERSION, published_at=canonical_time,
+                                 alias=False, fallback=False, current=True)
+        verified = run(release_notes.PUBLIC_RELEASE_VERSION, canonical_response, public_index(),
+                       expected_content_files={"en": expected_body})
+        self.assertEqual(verified["reader_requested_product_version"], release_notes.PUBLIC_RELEASE_VERSION)
+        self.assertEqual(verified["reader_canonical_product_version"], release_notes.PUBLIC_RELEASE_VERSION)
+        self.assertTrue(verified["reader_current_flags"]["en"])
+        self.assertEqual(verified["reader_content_sha256"]["en"],
+                         release_notes.digest_bytes(canonical(json.loads(expected_body))))
+        with self.assertRaisesRegex(release_notes.ReleaseNotesError,
+                                    "reader-content-readback-mismatch"):
+            run(release_notes.PUBLIC_RELEASE_VERSION, canonical_response, public_index(),
+                expected_content_files={"en": legacy_body})
+
+        # The retained 1.0.0 URL resolves to the canonical public 2026.11.4 body.
+        alias_response = dto(expected_body, release_notes.LEGACY_RELEASE_VERSION,
+                             release_notes.PUBLIC_RELEASE_VERSION, published_at=canonical_time,
+                             alias=True, fallback=False, current=True)
+        alias_readback = run(release_notes.LEGACY_RELEASE_VERSION, alias_response, public_index())
+        self.assertEqual(alias_readback["reader_requested_product_version"], release_notes.LEGACY_RELEASE_VERSION)
+        self.assertEqual(alias_readback["reader_canonical_product_version"], release_notes.PUBLIC_RELEASE_VERSION)
+        self.assertTrue(alias_readback["reader_legacy_alias"])
+        self.assertFalse(alias_readback["reader_legacy_fallback"]["en"])
+        self.assertTrue(alias_readback["reader_current_flags"]["en"])
+
+        # If canonical content is absent, only the exact immutable legacy row is a valid false-current fallback.
+        fallback_index = copy.deepcopy(index)
+        fallback_index["versions"] = [row for row in fallback_index["versions"]
+                                      if row["product_version"] == release_notes.LEGACY_RELEASE_VERSION]
+        fallback_store = MemoryNotesStore()
+        fallback_store.index = canonical(fallback_index)
+        fallback_store.generation = store.generation + 1
+        fallback_store.objects = copy.deepcopy(store.objects)
+        fallback_response = dto(legacy_body, release_notes.LEGACY_RELEASE_VERSION,
+                                release_notes.PUBLIC_RELEASE_VERSION, published_at=old_time,
+                                alias=True, fallback=True, current=False)
+        fallback_api_index = public_index(fallback=True)
+        # It is the actual store snapshot used by the readback, so generation stability is still enforced.
+        fallback_api_index["history"] = []
+        fallback_readback = run(release_notes.LEGACY_RELEASE_VERSION, fallback_response,
+                                 fallback_api_index, current_store=fallback_store)
+        self.assertTrue(fallback_readback["reader_legacy_fallback"]["en"])
+        self.assertFalse(fallback_readback["reader_current_flags"]["en"])
+
+        for corrupt in (
+                {key: value for key, value in alias_response.items() if key != "requested_product_version"},
+                {**alias_response, "entries": [{"title": "wrong"}]},
+                {**alias_response, "canonical_product_version": "2026.11.3"},
+                {**alias_response, "is_current": False},
+                {**alias_response, "legacy_fallback": True},
+        ):
+            with self.subTest(corrupt=corrupt), self.assertRaisesRegex(
+                    release_notes.ReleaseNotesError, "reader-content-readback-mismatch"):
+                run(release_notes.LEGACY_RELEASE_VERSION, corrupt, public_index())
+
+        bad_mapping = public_index()
+        bad_mapping["compatibility_aliases"] = [{"requested_version": "1.0.0",
+                                                 "canonical_version": "2026.11.5",
+                                                 "legacy_row_version": "1.0.0"}]
+        with self.assertRaisesRegex(release_notes.ReleaseNotesError, "reader-index-readback-invalid"):
+            run(release_notes.LEGACY_RELEASE_VERSION, alias_response, bad_mapping)
+
+        # A same-version correction can win after this publisher wrote A but
+        # before its first readback snapshot.  Stable index/API bytes for B
+        # must not be reported as verification of A's package.
+        raced_store = copy.deepcopy(store)
+        winner_body = note(version=release_notes.PUBLIC_RELEASE_VERSION, changed="Concurrent correction B")
+        release_notes.publish_package(
+            raced_store, {"en": winner_body}, product_version=release_notes.PUBLIC_RELEASE_VERSION,
+            published_at=canonical_time, marker=marker, transition_plan_sha256=plan_sha)
+        with self.assertRaisesRegex(release_notes.ReleaseNotesError, "reader-content-readback-mismatch"):
+            run(release_notes.PUBLIC_RELEASE_VERSION,
+                dto(winner_body, release_notes.PUBLIC_RELEASE_VERSION,
+                    release_notes.PUBLIC_RELEASE_VERSION, published_at=canonical_time,
+                    alias=False, fallback=False, current=True),
+                public_index(), current_store=raced_store,
+                expected_content_files={"en": expected_body})
+        raced_index = release_notes.validate_index(raced_store.index)
+        raced_row = next(row for row in raced_index["versions"]
+                         if row["product_version"] == release_notes.PUBLIC_RELEASE_VERSION)
+        self.assertEqual(raced_store.read_content(raced_row["locales"]["en"]["object_path"]), winner_body)
+        self.assertEqual(raced_row["published_at"], canonical_time)
+        self.assertEqual(raced_index["current_deployment"], marker)
 
     def test_first_create_race_with_different_digest_conflicts_and_preserves_winner(self):
         marker = self.normalize(operation="deploy", service_generation=44,
@@ -780,8 +1268,14 @@ class ReleaseNotesContractTests(unittest.TestCase):
                 "--result-artifact-id", "9001", "--product-status", "released",
                 "--published-at", "2026-11-15T10:00:00Z",
             ])
+            expected_reader_content = json.loads(body)
             with patch.object(release_notes_publish, "GCSCLIStore", return_value=store), \
-                    patch.object(release_notes_publish, "verify_reader_api", return_value={"current_status": "unavailable"}), \
+                    patch.object(release_notes_publish, "verify_reader_api", return_value={
+                        "reader_current_status": "unavailable",
+                        "reader_current_product_version": None,
+                        "reader_current_flags": {},
+                        "reader_content_sha256": {"en": release_notes.digest_bytes(canonical(expected_reader_content))},
+                    }), \
                     patch.object(release_notes_capture, "capture", side_effect=AssertionError("must not synthesize a readback")):
                 evidence = release_notes_publish.execute(resend_args)
 
@@ -791,7 +1285,7 @@ class ReleaseNotesContractTests(unittest.TestCase):
             self.assertEqual(index["versions"][0]["product_version"], "1.2.3")
             self.assertEqual(index["versions"][0]["published_at"], "2026-11-14T10:00:00Z")
             self.assertEqual(evidence["published_at_source"], "retained-release-operation")
-            self.assertEqual(evidence["currentness"], "history-only")
+            self.assertEqual(evidence["currentness"], "unavailable")
             self.assertEqual(evidence["publication_evidence_sha256"], release_notes.digest_bytes(publication_bytes))
             self.assertIsNone(evidence["operation_sidecar_sha256"])
             self.assertFalse((directory / "release-notes-operation.json").exists())

@@ -52,7 +52,7 @@ export function ReleaseNotesReader({
       let loadedDocument: ReleaseNoteDocument | null = null;
       let loadFailed = false;
       try {
-        loadedDocument = await getReleaseNote(resolvedVersion, locale === 'en' ? 'en' : 'zh-TW');
+        loadedDocument = await getReleaseNote(resolvedVersion, locale === 'en' ? 'en' : 'zh-TW', loadedIndex.compatibility_aliases);
       } catch {
         loadFailed = true;
       }
@@ -63,7 +63,7 @@ export function ReleaseNotesReader({
       let loadFailed = true;
       if (selectedVersion !== 'current' && productVersionPattern.test(selectedVersion)) {
         try {
-          loadedDocument = await getReleaseNote(selectedVersion, locale === 'en' ? 'en' : 'zh-TW');
+          loadedDocument = await getReleaseNote(selectedVersion, locale === 'en' ? 'en' : 'zh-TW', []);
           loadFailed = false;
         } catch { /* Keep the exact requested version unavailable. */ }
       }
@@ -113,7 +113,7 @@ export function ReleaseNotesReader({
   );
 
   function renderNotesContent() {
-    const currentVersion = index?.current_product_version ?? index?.runtime_product_version ?? '';
+    const currentVersion = index?.current_product_version ?? '';
     const history = index?.history ?? [];
     const options = new Map<string, string>();
     if (index?.current_status === 'available' && index.current_product_version) {
@@ -128,7 +128,7 @@ export function ReleaseNotesReader({
         <div className="mt-3 flex flex-wrap items-center gap-3">
           <label htmlFor="release-notes-version" className="text-sm text-zinc-300">{t('ReleaseNotes.version')}</label>
           <select id="release-notes-version" value={selectedVersion} onChange={(event) => setSelectedVersion(event.target.value)} className="min-h-11 max-w-full rounded border border-white/15 bg-[#202324] px-3 text-sm text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400">
-            <option value="current">{t('ReleaseNotes.current')} · {currentVersion || t('ReleaseNotes.currentRuntime')}</option>
+            <option value="current">{t('ReleaseNotes.current')} · {currentVersion || t('ReleaseNotes.currentUnavailable')}</option>
             {[...options].map(([version, label]) => <option key={version} value={version}>{label}</option>)}
             {selectedVersion !== 'current' && !options.has(selectedVersion) ? <option value={selectedVersion}>{selectedVersion}</option> : null}
           </select>
@@ -153,10 +153,11 @@ export function ReleaseNotesReader({
         {document ? (
           <article className="mt-5 space-y-5 text-sm text-zinc-200">
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-zinc-400">
-              <span>{document.is_current ? t('ReleaseNotes.current') : t('ReleaseNotes.historical')} · {document.product_version}</span>
+              <span>{document.is_current ? t('ReleaseNotes.current') : t('ReleaseNotes.historical')} · {document.canonical_product_version}</span>
               <time dateTime={document.published_at}>{t('ReleaseNotes.publishedAt', { date: formatDate(document.published_at) })}</time>
               {document.locale_fallback ? <span role="note">{t('ReleaseNotes.englishFallback')}</span> : null}
             </div>
+            {document.legacy_alias ? <p role="note" className="text-xs text-zinc-400">{t('ReleaseNotes.legacyCompatibility')}</p> : null}
             {document.entries.map((entry, index) => (
               <section key={`${entry.title}-${index}`} className="border-t border-white/10 pt-4">
                 <h2 className="text-base font-semibold text-white">{entry.title}</h2>

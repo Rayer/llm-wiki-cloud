@@ -54,7 +54,7 @@ func (h *Handler) ReconcileNudges(c *gin.Context) {
 	}
 	repository := nudge.NewRepository(h.firestore.Raw())
 	failures, notices := h.reconcilePipelineFailureNudges(c.Request.Context(), userID, repository)
-	releaseFailures, releaseNotices := h.reconcileReleaseNotesNudge(c.Request.Context(), userID, repository)
+	releaseFailures, releaseNotices, releaseVisibility := h.reconcileReleaseNotesNudge(c.Request.Context(), userID, repository)
 	failures = append(failures, releaseFailures...)
 	notices = append(notices, releaseNotices...)
 	view, err := repository.ReadWithPublicationVerifier(c.Request.Context(), userID, failures, notices,
@@ -70,7 +70,7 @@ func (h *Handler) ReconcileNudges(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "nudge state unavailable"})
 		return
 	}
-	view = h.projectReleaseNotesNudgeVisibility(view)
+	view = h.projectReleaseNotesNudgeVisibility(view, releaseVisibility)
 	c.JSON(http.StatusOK, view)
 }
 
@@ -87,14 +87,15 @@ func (h *Handler) readNudgeView(ctx context.Context, userID string) (nudge.View,
 	if err != nil {
 		return view, err
 	}
-	return h.projectReleaseNotesNudgeVisibility(view), nil
+	visibility, _ := releasenotes.ReadVisibilitySnapshot(ctx, h.releaseNotesStore, h.releaseNotesRuntime)
+	return h.projectReleaseNotesNudgeVisibility(view, visibility), nil
 }
 
 // reconcileReleaseNotesNudge is the Notes-owned adapter call on the common
 // authenticated reconciliation path. It captures the common source revision
 // before each Notes read, applies only the exact common wrapper, and reobserves
 // once if another source update wins the common revision compare-and-swap.
-func (h *Handler) reconcileReleaseNotesNudge(ctx context.Context, userID string, repository *nudge.Repository) ([]nudge.SourceFailure, []nudge.SourceNotice) {
+func (h *Handler) reconcileReleaseNotesNudge(ctx context.Context, userID string, repository *nudge.Repository) ([]nudge.SourceFailure, []nudge.SourceNotice, *releasenotes.VisibilitySnapshot) {
 	runtime := h.releaseNotesRuntime
 	key := "release-notes:llm-wiki-cloud:" + runtime.Environment
 	partial := func(safeClass string) ([]nudge.SourceFailure, []nudge.SourceNotice) {
@@ -106,30 +107,41 @@ func (h *Handler) reconcileReleaseNotesNudge(ctx context.Context, userID string,
 		return failures, notices
 	}
 	if h.releaseNotesStore == nil {
-		return partial("release_source_unavailable")
+		failures, notices := partial("release_source_unavailable")
+		return failures, notices, nil
 	}
 
+	var visibility *releasenotes.VisibilitySnapshot
 	for attempt := 0; attempt < 2; attempt++ {
-		expectedRevision, err := repository.ReadSourceRevision(ctx, userID, nudge.CategoryReleaseNotes, key)
+		capturedSlot, err := repository.ReadSourceSlot(ctx, userID, nudge.CategoryReleaseNotes, key)
 		if err != nil {
-			return partial("release_state_unavailable")
+			failures, notices := partial("release_state_unavailable")
+			return failures, notices, visibility
 		}
-		result := releasenotes.ObserveSource(ctx, h.releaseNotesStore, runtime, expectedRevision)
+		result, observedVisibility := releasenotes.ObserveSourceWithSnapshot(ctx, h.releaseNotesStore, runtime, capturedSlot.SourceRevision)
+		visibility = observedVisibility
 		failures := append([]nudge.SourceFailure(nil), result.Failures...)
 		notices := append([]nudge.SourceNotice(nil), result.Notices...)
 		if result.Status == "unavailable" {
-			return failures, notices
+			return failures, notices, visibility
 		}
 		if len(result.Upserts) > 1 || len(result.AuthoritativeClears) > 1 ||
 			(len(result.Upserts) > 0 && len(result.AuthoritativeClears) > 0) {
-			return partial("release_source_result_invalid")
+			failed, noticed := partial("release_source_result_invalid")
+			return failed, noticed, visibility
 		}
 		if len(result.Upserts) == 0 && len(result.AuthoritativeClears) == 0 {
-			return failures, notices
+			return failures, notices, visibility
 		}
 
 		if len(result.Upserts) == 1 {
-			_, err = repository.ApplyObservation(ctx, userID, result.Upserts[0])
+			if result.ReleaseAliasTransfer != nil && capturedSlot.Active &&
+				capturedSlot.AttentionMaterialRevision == "version:"+result.ReleaseAliasTransfer.RequestedVersion {
+				_, err = repository.ApplyReleaseAliasTransfer(ctx, userID, result.Upserts[0],
+					*result.ReleaseAliasTransfer, capturedSlot)
+			} else {
+				_, err = repository.ApplyObservation(ctx, userID, result.Upserts[0])
+			}
 		} else {
 			_, err = repository.ApplyClear(ctx, userID, result.AuthoritativeClears[0])
 		}
@@ -137,38 +149,85 @@ func (h *Handler) reconcileReleaseNotesNudge(ctx context.Context, userID string,
 			if attempt == 0 {
 				continue
 			}
-			return partial("release_source_revision_conflict")
+			failed, noticed := partial("release_source_revision_conflict")
+			return failed, noticed, visibility
 		}
 		if err != nil {
-			return partial("release_state_unavailable")
+			failed, noticed := partial("release_state_unavailable")
+			return failed, noticed, visibility
 		}
-		return failures, notices
+		return failures, notices, visibility
 	}
-	return partial("release_source_revision_conflict")
+	failed, noticed := partial("release_source_revision_conflict")
+	return failed, noticed, visibility
 }
 
 // projectReleaseNotesNudgeVisibility is read-only. Old process instances keep
 // their persisted slot and attention state, but a Release observation for a
 // different trusted runtime version or environment is not shown as current.
-func (h *Handler) projectReleaseNotesNudgeVisibility(view nudge.View) nudge.View {
+func (h *Handler) projectReleaseNotesNudgeVisibility(view nudge.View,
+	visibility *releasenotes.VisibilitySnapshot) nudge.View {
 	runtime := h.releaseNotesRuntime
 	key := "release-notes:llm-wiki-cloud:" + runtime.Environment
+	marker := (*releasenotes.CurrentDeployment)(nil)
+	if visibility != nil {
+		marker = visibility.Index.CurrentDeployment
+	}
+	markerCurrent := releasenotes.MarkerMatches(marker, runtime)
+	publicVersion := ""
+	if marker != nil {
+		publicVersion = marker.ProductVersion
+		if marker.SchemaVersion == releasenotes.MarkerSchemaV2 {
+			publicVersion = marker.ReleaseVersion
+		}
+	}
 	items := make([]nudge.Item, 0, len(view.Items))
 	for _, item := range view.Items {
 		if item.Category != nudge.CategoryReleaseNotes {
 			items = append(items, item)
 			continue
 		}
-		current := false
+		currentObservations := make([]nudge.Slot, 0, 1)
+		staleSource := false
 		for _, slot := range item.Observations {
-			if slot.Active && slot.SourceKey == key && slot.ProducerWitness.Kind == "release-notes" &&
-				slot.ProducerWitness.Environment == runtime.Environment && slot.ProducerWitness.ProductVersion == runtime.ProductVersion {
-				current = true
-				break
+			if slot.SourceKey != key {
+				continue
+			}
+			staleSource = true
+			if markerCurrent && slot.Active && slot.ProducerWitness.Kind == "release-notes" &&
+				slot.ProducerWitness.Environment == runtime.Environment &&
+				slot.ProducerWitness.ProductVersion == publicVersion &&
+				slot.ProducerWitness.IndexRevision == visibility.IndexRevision &&
+				slot.ProducerWitness.IndexDigest == visibility.IndexDigest {
+				currentObservations = append(currentObservations, slot)
 			}
 		}
-		if current {
+		if len(currentObservations) > 0 {
+			item.Observations = currentObservations
 			items = append(items, item)
+		} else if staleSource {
+			view.Partial = true
+			foundFailure := false
+			for _, failure := range view.Failures {
+				if failure.SafeClass == "release_currentness_unverified" && failure.ProjectID == "" {
+					foundFailure = true
+					break
+				}
+			}
+			if !foundFailure {
+				view.Failures = append(view.Failures, nudge.SourceFailure{SafeClass: "release_currentness_unverified"})
+			}
+			foundNotice := false
+			for _, notice := range view.Notices {
+				if notice.SourceKey == key && notice.State == "stale" {
+					foundNotice = true
+					break
+				}
+			}
+			if !foundNotice {
+				view.Notices = append(view.Notices, nudge.SourceNotice{
+					SourceKey: key, State: "stale", SafeClass: "release_currentness_unverified"})
+			}
 		}
 	}
 	view.Items = items
