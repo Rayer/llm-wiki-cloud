@@ -455,6 +455,7 @@ class ReleaseNotesContractTests(unittest.TestCase):
                 self.assertEqual(marker["component_builds"][0]["deployment_id"], deployment_id)
 
         for label, candidate, artifact in (
+            ("missing native and legacy IDs", {}, {}),
             ("candidate aliases disagree", {"deployment": deployment_id, "deployment_id": "other-deployment"}, {}),
             ("receipt disagrees with native candidate", {"deployment": deployment_id},
              {"deployment_id": "other-deployment"}),
