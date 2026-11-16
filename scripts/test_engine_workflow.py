@@ -300,7 +300,7 @@ class EngineWorkflowContract(unittest.TestCase):
             'ready_artifact_id': '${{ inputs.artifact_id }}',
             'history_result_artifact_id': '${{ inputs.release_notes_result_artifact_id }}',
             'history_operation': "${{ inputs.release_notes_result_artifact_id != '' && inputs.release_notes_operation || '' }}",
-            'retention_days': '${{ inputs.release_notes_package_retention_days }}',
+            'retention_days': '90',
             'request_id': '${{ inputs.release_notes_package_request_id }}',
         })
         self.assertNotIn('package_zip_base64', str(package_entry['with']))
@@ -309,7 +309,7 @@ class EngineWorkflowContract(unittest.TestCase):
         self.assertIn('inputs.prepare_release_notes_package != true', dev['jobs']['main-fast-forward-eligible']['if'])
         self.assertEqual(dev_inputs['prepare_release_notes_package']['type'], 'boolean')
         self.assertEqual(dev_inputs['prepare_release_notes_package']['default'], False)
-        self.assertEqual(dev_inputs['release_notes_package_retention_days']['options'], ['30', '90'])
+        self.assertNotIn('release_notes_package_retention_days', dev_inputs)
 
         manual_path = ROOT / '.github/workflows/prepare-release-notes-package.yml'
         manual = yaml.safe_load(manual_path.read_text())
@@ -397,7 +397,7 @@ class EngineWorkflowContract(unittest.TestCase):
         self.assertIn("retainedDirectory(process.env.REUSE_ID,'reuse')", action_source)
         self.assertIn("args.push('--reuse',reuse)", action_source)
         engine_source = (ROOT / 'deploy/engine/engine.py').read_text()
-        for invariant in ("compatible_release_identity(retained_plan) == compatible_release_identity(self.plan)",
+        for invariant in ("if resumable_release_identity_matches(retained_plan, self.plan):",
                           "retained_state.get('status') not in ('prepared', 'ready')",
                           "if retained_state['components']:", "self.plan = copy.deepcopy(retained_plan)"):
             self.assertIn(invariant, engine_source)
@@ -446,6 +446,7 @@ class EngineWorkflowContract(unittest.TestCase):
             'environment':'development','source_sha':"${{ inputs.operation == 'release' && (inputs.source_sha || github.sha) || inputs.source_sha }}",
             'executor_sha':'${{ github.sha }}',
             'components':'${{ inputs.components }}','release_tag':'${{ inputs.release_tag }}',
+            'release_version':'${{ inputs.release_version }}',
             'release_source_mode':'${{ inputs.release_source_mode }}',
             'auth_schema_version':'${{ inputs.auth_schema_version }}',
             'auth_repository_id':'${{ fromJSON(inputs.auth_repository_id) }}',
