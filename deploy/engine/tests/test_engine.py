@@ -207,6 +207,22 @@ class Acceptance(unittest.TestCase):
             with self.subTest(invalid=invalid), self.assertRaisesRegex(Breakpoint, 'invalid-release-version'):
                 engine.plan_id({**plan, 'release_version': invalid})
 
+    def test_legacy_plan_resume_keeps_its_identity_without_injecting_release_version(self):
+        legacy = {
+            'schema': 3, 'source': 'a' * 40, 'branch': 'develop', 'tag': 'legacy-tag',
+            'normalized': {'environment': 'development'}, 'identities': {'bff': {'inputs': 'x'}},
+            'dev_reference': None, 'selected': ['bff'], 'executor_sha': 'b' * 40,
+            'release_source_mode': 'legacy_monorepo',
+        }
+        requested = {**legacy, 'schema': 4, 'release_version': '2026.11.4'}
+        self.assertTrue(engine.resumable_release_identity_matches(legacy, requested))
+        self.assertEqual(engine.plan_id(legacy), engine.digest(engine.release_identity(legacy)))
+        self.assertFalse(engine.resumable_release_identity_matches(
+            legacy, {**requested, 'source': 'c' * 40}))
+        self.assertFalse(engine.resumable_release_identity_matches(
+            {**legacy, 'schema': 4, 'release_version': '2026.11.4'},
+            {**requested, 'release_version': '2026.11.5'}))
+
     def _admit_schema_three_bff_only(self, reuse):
         source = 'a' * 40
         executor = 'b' * 40

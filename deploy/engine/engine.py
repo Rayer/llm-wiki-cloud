@@ -128,6 +128,16 @@ def compatible_release_identity(plan):
     return identity
 
 
+def resumable_release_identity_matches(retained_plan, requested_plan):
+    retained_identity = compatible_release_identity(retained_plan)
+    requested_identity = compatible_release_identity(requested_plan)
+    if retained_plan.get('schema') in (2, 3):
+        # Resume the immutable legacy plan as stored. A newly required public
+        # version belongs to schema 4 and must not be retrofitted onto an old ID.
+        requested_identity.pop('release_version', None)
+    return retained_identity == requested_identity
+
+
 def plan_id(plan):
     if plan.get('schema') == 2:
         return digest({key: value for key, value in plan.items() if key != 'id'})
@@ -865,7 +875,7 @@ class Engine:
                 raise Breakpoint('stage1-checkpoint-invalid', 'failed', False,
                                  'inspect-retained-artifact', stage='prepare')
 
-        if compatible_release_identity(retained_plan) == compatible_release_identity(self.plan):
+        if resumable_release_identity_matches(retained_plan, self.plan):
             if retained_state.get('status') not in ('prepared', 'ready'):
                 raise Breakpoint('stage1-checkpoint-runtime-started', 'failed', False,
                                  'inspect-latest-checkpoint', stage='prepare')
