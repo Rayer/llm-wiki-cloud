@@ -639,6 +639,15 @@ def verify_reader_api(directory: Path, expected_environment: str, marker: dict, 
             raise release_notes.ReleaseNotesError("exact_readback", "reader-content-readback-unavailable") from None
         if release_notes.digest_bytes(expected_stored_bytes) != entry["sha256"]:
             raise release_notes.ReleaseNotesError("exact_readback", "reader-content-readback-mismatch")
+        # Bind direct-canonical (and exact legacy-fallback) verification to the
+        # package that this execution published.  The index can be internally
+        # stable yet point at a legitimate same-version correction committed
+        # by another publisher before this first read.  Alias mappings are
+        # intentionally different: their requested package bytes are the
+        # immutable legacy row while the public body is the mapped canonical
+        # row, whose receipt and projection are checked below.
+        if body_version == product_version and expected_bytes != expected_stored_bytes:
+            raise release_notes.ReleaseNotesError("exact_readback", "reader-content-readback-mismatch")
         try:
             expected_content = release_notes.validate_content(expected_stored_bytes, body_version, actual_locale)
         except release_notes.ReleaseNotesError:

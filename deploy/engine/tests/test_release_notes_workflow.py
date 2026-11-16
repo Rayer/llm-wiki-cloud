@@ -941,18 +941,12 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
             package = self.make_package(root / "package")
-            archive_b64 = base64.b64encode(release_notes_workflow.package_directory_archive(package)).decode("ascii")
             request_id = "1" * 32
+            dispatch, _ = release_notes_workflow.build_dispatch_payload(
+                package, ready_artifact_id="701", retention_days=90, request_id=request_id)
+            archive_b64 = dispatch["inputs"]["package_zip_base64"]
             event_path = root / "event.json"
-            event_path.write_bytes(canonical({"inputs": {
-                "package_zip_base64": archive_b64,
-                "prepare_release_notes_package": True,
-                "operation": "release",
-                "release_notes_action": "stop",
-                "release_notes_package_request_id": request_id,
-                "artifact_id": "701",
-                "release_notes_package_retention_days": "90",
-            }}))
+            event_path.write_bytes(canonical(dispatch))
             plan_path = self.make_plan_file(root)
             destination = root / "staged-package"
             output = root / "github-output"
@@ -977,6 +971,7 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
                                  ("prepare_release_notes_package", 1),
                                  ("operation", "deploy"), ("release_notes_action", "run"),
                                  ("release_notes_package_request_id", "2" * 32), ("artifact_id", "702"),
+                                 ("release_notes_package_retention_days", "90"),
                                  ("release_notes_package_retention_days", "30")):
                 with self.subTest(field=field):
                     bad_path = root / f"bad-{field}.json"
@@ -1163,6 +1158,228 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
                 with self.assertRaises(release_notes_workflow.PackageWorkflowError):
                     release_notes_workflow._validate_development_plan(canonical(invalid_plan))
 
+    def test_component_only_ready_resume_capture_and_publication_do_not_prepare_bff(self):
+        for component in ("frontend", "worker"):
+            with self.subTest(component=component), TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                fixture = self.make_ready_handoff(root, selected=(component,), schema=4)
+                plan = fixture["plan"]
+                plan["normalized"].update({
+                    "gcp": {"project_id": "fixture-project", "region": "us-central1"},
+                    "bff": {"service_name": "bff-dev"},
+                    "frontend": {"environment": "development", "static_root": "public"},
+                    "worker": {"job_name": "pipeline-dev", "bucket": "fixture-bucket"},
+                })
+                plan["id"] = engine.plan_id(plan)
+                for directory in (fixture["ready_dir"], fixture["result_dir"]):
+                    engine.write(directory / "plan.json", plan)
+                plan_bytes = (fixture["ready_dir"] / "plan.json").read_bytes()
+                state = json.loads(fixture["state_bytes"])
+                state["plan"] = plan["id"]
+                state_bytes = None
+                result = json.loads(fixture["result_bytes"])
+                result.update(release=plan["tag"], attempt=plan["id"], expected={"source": plan["source"]})
+                for directory in (fixture["ready_dir"], fixture["result_dir"]):
+                    engine.write(directory / "state.json", state)
+                    engine.write(directory / "result.json", result)
+                state_bytes = (fixture["ready_dir"] / "state.json").read_bytes()
+                result_bytes = (fixture["ready_dir"] / "result.json").read_bytes()
+                evidence_path = fixture["result_dir"] / "release-notes-evidence.json"
+                evidence = json.loads(evidence_path.read_bytes())
+                evidence["stages"][0]["plan_sha256"] = hashlib.sha256(plan_bytes).hexdigest()
+                evidence_path.write_bytes(canonical(evidence))
+                fixture.update(plan=plan, plan_bytes=plan_bytes, state_bytes=state_bytes,
+                               result_bytes=result_bytes)
+
+                receipts = fixture["ready_dir"] / "receipts"
+                receipts.mkdir()
+                if component == "frontend":
+                    artifact = {"deployment_id": "fixture-frontend-deployment"}
+                    receipt = {"schema": 2, "component": component,
+                               "identity": plan["identities"][component], "build_sha": plan["source"],
+                               "artifact": artifact,
+                               "target_config": engine.digest(plan["normalized"]["frontend"])}
+                    (fixture["ready_dir"] / "frontend.tgz").write_bytes(b"synthetic frontend artifact")
+                else:
+                    artifact = {"image": "registry.example/pipeline@sha256:" + "a" * 64,
+                                "pipeline_config": {"fixture": True}}
+                    receipt = {"schema": 2, "component": component,
+                               "identity": plan["identities"][component], "build_sha": plan["source"],
+                               "artifact": artifact, "target_config": None}
+                (receipts / f"{component}.json").write_bytes(canonical(receipt))
+
+                # Exercise the same producer output contract used by workflow_dispatch.
+                package_dir = root / "package"
+                package_dir.mkdir()
+                body = note("2026.11.4", "en", f"Synthetic {component} package")
+                manifest = {
+                    "schema_version": 1, "product": "llm-wiki-cloud", "product_version": "2026.11.4",
+                    "environment": "dev", "release_plan_sha256": hashlib.sha256(plan_bytes).hexdigest(),
+                    "release_note_snapshot_ref": "LWC-A-62:test-only",
+                    "release_note_snapshot_sha256": "sha256:" + "f" * 64,
+                    "delivered_scope_evidence_sha256": "sha256:" + "e" * 64,
+                    "files": {"en": {"path": "en.json", "sha256": hashlib.sha256(body).hexdigest()}},
+                }
+                (package_dir / "release-notes-manifest.json").write_bytes(canonical(manifest))
+                (package_dir / "en.json").write_bytes(body)
+                ready_result = release_notes_workflow.validate_ready_handoff(
+                    fixture["metadata"], fixture["run"], fixture["artifact_list"],
+                    fixture["result_metadata"], expected_artifact_id=fixture["ready_id"],
+                    expected_result_artifact_id=fixture["result_id"],
+                    ready_directory=fixture["ready_dir"], result_directory=fixture["result_dir"],
+                    output_path=str(root / "ready-output"))
+                upload_metadata = {
+                    "id": 803, "name": "lwc-release-notes-2026.11.4-development-604-1",
+                    "digest": "sha256:" + "a" * 64, "expired": False,
+                    "expires_at": "2027-02-12T00:00:00Z", "workflow_run": {"id": 604},
+                }
+                package_receipt = release_notes_workflow.verify_uploaded_package(
+                    package_dir, fixture["ready_dir"] / "plan.json", upload_metadata,
+                    expected_artifact_id="803", expected_name=upload_metadata["name"],
+                    action_digest="a" * 64, run_id="604", run_attempt="1",
+                    ready_artifact_id=fixture["ready_id"], output_path=str(root / "package-output"))
+                resume_inputs = package_receipt["resume_inputs"]
+                self.assertEqual({key: resume_inputs[key] for key in ready_result["resume_inputs"]},
+                                 ready_result["resume_inputs"])
+                self.assertEqual(resume_inputs["components"], component)
+                self.assertEqual(resume_inputs["artifact_id"], fixture["ready_id"])
+                self.assertEqual(resume_inputs["release_notes_artifact_id"], "803")
+
+                requested_plan = dict(plan, executor_sha="c" * 40)
+                requested_plan["id"] = engine.plan_id(requested_plan)
+                resumed_dir = root / "resumed"
+                resumed_dir.mkdir()
+                engine.write(resumed_dir / "plan.json", requested_plan)
+                resumed = engine.Engine(resumed_dir, executor_sha=requested_plan["executor_sha"])
+                with patch.dict(os.environ, {"GITHUB_ACTIONS": "false"}, clear=False), \
+                        patch.object(engine.Providers, "usable", lambda _provider, _component, _artifact: None), \
+                        patch.object(engine.Providers, "valid_image", lambda _provider, _component, _image: None), \
+                        patch.object(engine.Providers, "prepare_pipeline_config",
+                                     lambda _provider: {"fixture": "pipeline-config"}), \
+                        patch.object(engine.Providers, "prepare",
+                                     side_effect=AssertionError("selected receipt must avoid product build")):
+                    resumed.prepare(reuse=str(fixture["ready_dir"]))
+                    resumed.result()
+                self.assertEqual((resumed_dir / "plan.json").read_bytes(), plan_bytes)
+                self.assertEqual(resumed.state["status"], "ready")
+                self.assertEqual(resumed.state["components"], {})
+                self.assertFalse((resumed_dir / "receipts/bff.json").exists())
+
+                candidate = ({"deployment_id": artifact["deployment_id"]} if component == "frontend"
+                             else {"execution_id": "synthetic-pipeline-execution"})
+                state = {"plan": plan["id"], "status": "success", "sequence": 20,
+                         "checkpoint_schema": 1, "builds": {},
+                         "components": {component: {"status": "verified", "candidate": candidate}}}
+                identity_digest = hashlib.sha256(canonical(plan["identities"][component])).hexdigest()
+                result = {"release": plan["tag"], "attempt": plan["id"], "stage": "success",
+                          "status": "success", "component": component,
+                          "expected": {"source": plan["source"], "identity": identity_digest},
+                          "observed": {"component_status": "verified"}, "candidate": candidate,
+                          "last_verified_checkpoint": state["sequence"]}
+                (resumed_dir / "state.json").write_bytes(canonical(state))
+                (resumed_dir / "result.json").write_bytes(canonical(result))
+                observed_build = {"environment": "dev", "product_version": "1.0.0",
+                                  "commit": "d" * 40, "branch": "develop", "tag": "v1.0.0",
+                                  "image_tag": "bff-v1.0.0", "service": "bff-dev",
+                                  "revision": "bff-current"}
+                bff_image = "registry.example/bff@sha256:" + "b" * 64
+                service_object = {
+                    "metadata": {"name": "bff-dev", "uid": "fixture-bff-uid", "generation": 31},
+                    "status": {"traffic": [{"revisionName": "bff-current", "percent": 100}],
+                               "uri": "https://fixture-bff.invalid"},
+                }
+                revision_object = {
+                    "metadata": {"name": "bff-current"},
+                    "status": {"conditions": [{"type": "Ready", "status": "True"}],
+                               "imageDigest": bff_image},
+                    "spec": {"containers": [{"image": bff_image}]},
+                }
+                fake_bin = root / "fake-bin"
+                fake_bin.mkdir()
+                command_log = root / "fake-gcloud-commands.jsonl"
+                fake_gcloud = fake_bin / "gcloud"
+                fake_gcloud.write_text(
+                    "#!/usr/bin/env python3\n"
+                    "import json, os, sys\n"
+                    "with open(os.environ['GCP_COMMAND_LOG'], 'a', encoding='utf-8') as stream: "
+                    "stream.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+                    "if len(sys.argv) > 2 and sys.argv[2] == 'services': print(" + repr(json.dumps(service_object)) + ")\n"
+                    "elif len(sys.argv) > 2 and sys.argv[2] == 'revisions': print(" + repr(json.dumps(revision_object)) + ")\n"
+                    "else: sys.exit(1)\n"
+                )
+                fake_gcloud.chmod(0o755)
+
+                class VersionHandler(http.server.BaseHTTPRequestHandler):
+                    def do_GET(self):
+                        self.server.requests.append((self.path, self.headers.get("Cache-Control")))
+                        if self.path != "/api/v1/public/version":
+                            self.send_error(404)
+                            return
+                        encoded = canonical(observed_build)
+                        self.send_response(200)
+                        self.send_header("Cache-Control", "no-store")
+                        self.send_header("Content-Type", "application/json")
+                        self.send_header("Content-Length", str(len(encoded)))
+                        self.end_headers()
+                        self.wfile.write(encoded)
+
+                    def log_message(self, *_args):
+                        pass
+
+                server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), VersionHandler)
+                server.requests = []
+                server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+                server_thread.start()
+                real_urlopen = urllib.request.urlopen
+
+                def local_build_info_urlopen(request, *args, **kwargs):
+                    if not isinstance(request, urllib.request.Request) or not request.full_url.startswith(
+                            "https://fixture-bff.invalid/"):
+                        raise AssertionError("unexpected nonfixture BFF readback URL")
+                    local_request = urllib.request.Request(
+                        request.full_url.replace("https://fixture-bff.invalid",
+                                                 f"http://127.0.0.1:{server.server_port}"),
+                        headers=dict(request.header_items()), method=request.get_method())
+                    return real_urlopen(local_request, *args, **kwargs)
+
+                try:
+                    with patch.dict(os.environ, {
+                            "PATH": str(fake_bin) + os.pathsep + os.environ.get("PATH", ""),
+                            "GCP_COMMAND_LOG": str(command_log),
+                            "GOOGLE_APPLICATION_CREDENTIALS": "/dev/null",
+                            "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE": "/dev/null",
+                            "GCE_METADATA_HOST": "127.0.0.1:9",
+                            "HTTP_PROXY": "http://127.0.0.1:9", "HTTPS_PROXY": "http://127.0.0.1:9",
+                            "ALL_PROXY": "http://127.0.0.1:9", "NO_PROXY": "localhost,127.0.0.1",
+                            "http_proxy": "http://127.0.0.1:9", "https_proxy": "http://127.0.0.1:9",
+                            "all_proxy": "http://127.0.0.1:9", "no_proxy": "localhost,127.0.0.1",
+                    }, clear=False), \
+                            patch.object(release_notes_capture.urllib.request, "urlopen",
+                                         side_effect=local_build_info_urlopen):
+                        marker, _ = release_notes_capture.capture(resumed_dir, "release", "605", 1)
+                finally:
+                    server.shutdown()
+                    server.server_close()
+                    server_thread.join(timeout=2)
+                self.assertEqual(server.requests, [("/api/v1/public/version", "no-cache")])
+                gcloud_commands = [json.loads(line) for line in command_log.read_text().splitlines()]
+                self.assertEqual([command[1] for command in gcloud_commands], ["services", "revisions"])
+                self.assertFalse(any("deploy" in command for command in gcloud_commands))
+                self.assertEqual([entry["component"] for entry in marker["component_builds"]], [component])
+                self.assertNotIn("bff", [entry["component"] for entry in marker["component_builds"]])
+
+                store = MemoryNotesStore()
+                store.active_marker = marker
+                publication = release_notes.publish_package(
+                    store, {"en": body}, product_version="2026.11.4",
+                    published_at="2026-11-16T01:00:00Z", marker=marker,
+                    transition_plan_sha256=hashlib.sha256(plan_bytes).hexdigest())
+                published_index = release_notes.validate_index(store.index)
+                self.assertGreater(publication.index_generation, 0)
+                self.assertEqual(published_index["current_deployment"], marker)
+                self.assertEqual(published_index["versions"][0]["product_version"], "2026.11.4")
+                self.assertNotIn("bff", [entry["component"] for entry in marker["component_builds"]])
+
     def test_upload_verification_binds_action_digest_api_metadata_name_and_source_plan(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -1216,14 +1433,23 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
             self.assertNotIn("Private package payload sentinel", serialized)
             self.assertLessEqual(len(serialized.encode()), 65535)
             inputs = body["inputs"]
+            workflow = yaml.safe_load((ROOT / ".github/workflows/deploy-dev.yml").read_text())
+            trigger = workflow.get("on", workflow.get(True, {}))
+            declared_inputs = trigger["workflow_dispatch"]["inputs"]
+            self.assertEqual(len(declared_inputs), 25)
+            self.assertTrue(set(inputs) <= set(declared_inputs))
             self.assertEqual(inputs["release_notes_package_request_id"], "1" * 32)
-            self.assertEqual(inputs["release_notes_package_retention_days"], "90")
+            self.assertNotIn("release_notes_package_retention_days", inputs)
             self.assertTrue(inputs["prepare_release_notes_package"])
             self.assertEqual(inputs["operation"], "release")
             self.assertEqual(inputs["release_notes_action"], "stop")
             self.assertEqual(inputs["artifact_id"], "701")
             self.assertEqual(len(base64.b64decode(inputs["package_zip_base64"], validate=True)),
                              len(release_notes_workflow.package_directory_archive(package)))
+            with self.assertRaisesRegex(release_notes_workflow.PackageWorkflowError,
+                                        "dispatch-input-invalid"):
+                release_notes_workflow.build_dispatch_payload(
+                    package, ready_artifact_id="701", retention_days=30, request_id="2" * 32)
 
     def test_parent_dispatch_posts_private_input_via_gh_stdin_and_returns_exact_artifact_receipt(self):
         with TemporaryDirectory() as temporary:
@@ -1265,7 +1491,7 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
             self.assertEqual(body["inputs"]["artifact_id"], "701")
             self.assertTrue(body["inputs"]["package_zip_base64"])
             self.assertEqual(api.call_args_list[0].kwargs["method"], "POST")
-            self.assertEqual(body["inputs"]["release_notes_package_retention_days"], "90")
+            self.assertNotIn("release_notes_package_retention_days", body["inputs"])
             self.assertNotIn("Private package payload sentinel", json.dumps(receipt))
             self.assertNotIn(body["inputs"]["package_zip_base64"], json.dumps(receipt))
 
@@ -1500,17 +1726,17 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
                 expected_artifact_id=fixture["result_id"], operation="deploy")
             package = root / "package"
             self.make_historical_package(package, fixture["plan_bytes"])
-            archive_b64 = base64.b64encode(release_notes_workflow.package_directory_archive(package)).decode("ascii")
             request_id = "7" * 32
-            event = {
-                "inputs": {
-                    "prepare_release_notes_package": True, "operation": "release",
-                    "release_notes_action": "stop", "release_notes_package_request_id": request_id,
-                    "artifact_id": "", "release_notes_result_artifact_id": fixture["result_id"],
-                    "release_notes_operation": "deploy",
-                    "release_notes_package_retention_days": "90", "package_zip_base64": archive_b64,
-                },
-            }
+            event, version = release_notes_workflow.build_dispatch_payload(
+                package, history_result_artifact_id=fixture["result_id"], history_operation="deploy",
+                retention_days=90, request_id=request_id)
+            self.assertEqual(version, "2026.11.1")
+            self.assertEqual(event["inputs"]["release_notes_operation"], "deploy")
+            self.assertNotIn("release_notes_package_retention_days", event["inputs"])
+            workflow = yaml.safe_load((ROOT / ".github/workflows/deploy-dev.yml").read_text())
+            trigger = workflow.get("on", workflow.get(True, {}))
+            self.assertTrue(set(event["inputs"]) <= set(trigger["workflow_dispatch"]["inputs"]))
+            archive_b64 = event["inputs"]["package_zip_base64"]
             event_path = root / "event.json"
             event_path.write_bytes(canonical(event))
             output = root / "prepare-output"
@@ -1527,6 +1753,7 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
                 ("both source IDs", {"artifact_id": "9900"}),
                 ("wrong retained result", {"release_notes_result_artifact_id": "9900"}),
                 ("wrong native operation", {"release_notes_operation": "rollback"}),
+                ("legacy retention field", {"release_notes_package_retention_days": "90"}),
             ):
                 bad_event = {"inputs": {**event["inputs"], **changes}}
                 bad_path = root / f"bad-{label.replace(' ', '-')}.json"
@@ -1605,6 +1832,7 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
             self.assertEqual(body["inputs"]["artifact_id"], "")
             self.assertEqual(body["inputs"]["release_notes_result_artifact_id"], fixture["result_id"])
             self.assertEqual(body["inputs"]["release_notes_operation"], "deploy")
+            self.assertNotIn("release_notes_package_retention_days", body["inputs"])
             self.assertNotIn("Synthetic fixture only", json.dumps(body))
             with self.assertRaisesRegex(release_notes_workflow.PackageWorkflowError,
                                         "package-source-ambiguous"):
@@ -1639,6 +1867,8 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
             store.active_marker = current_marker
             release_notes.publish_marker_only(store, current_marker)
             marker_bytes_before = canonical(json.loads(store.index)["current_deployment"])
+            marker_token_before = release_notes.current_deployment_token_bytes(store.index)
+            served_body = [body]
 
             class Handler(http.server.BaseHTTPRequestHandler):
                 def do_GET(self):
@@ -1655,7 +1885,7 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
                                  "component_details_status": "unavailable", "current_components": [],
                                  "compatibility_aliases": []}
                     elif self.path.startswith("/api/v1/public/release-notes/2026.11.1?locale=en"):
-                        value = {**json.loads(body), "requested_product_version": "2026.11.1",
+                        value = {**json.loads(served_body[0]), "requested_product_version": "2026.11.1",
                                  "published_at": "2026-11-01T22:58:30+08:00",
                                  "requested_locale": "en", "locale_fallback": False, "is_current": False,
                                  "canonical_product_version": "2026.11.1", "legacy_alias": False,
@@ -1704,6 +1934,48 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
             self.assertEqual(canonical(index["current_deployment"]), marker_bytes_before)
             row = next(row for row in index["versions"] if row["product_version"] == "2026.11.1")
             self.assertEqual(row["published_at"], "2026-11-01T22:58:30+08:00")
+            self.assertEqual(release_notes.current_deployment_token_bytes(store.index), marker_token_before)
+
+            # Interleave a legitimate same-version correction after A's
+            # publish returns but before A's first index snapshot.  The
+            # executor must surface failed readback, never a verified receipt
+            # for B under A's package digest.
+            winner_body = note("2026.11.1", "en", "Synthetic concurrent editor B")
+            real_publish = release_notes.publish_package
+
+            def publish_a_then_b(target, *args, **kwargs):
+                result = real_publish(target, *args, **kwargs)
+                real_publish(target, {"en": winner_body}, product_version="2026.11.1",
+                             published_at="2026-11-01T22:58:30+08:00", marker=None, historical=True)
+                served_body[0] = winner_body
+                return result
+
+            server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                with patch.object(release_notes_publish, "GCSCLIStore", return_value=store), \
+                        patch.object(release_notes_capture, "active_service_url",
+                                     return_value=f"http://127.0.0.1:{server.server_port}"), \
+                        patch.object(release_notes, "publish_package", side_effect=publish_a_then_b):
+                    with self.assertRaisesRegex(release_notes.ReleaseNotesError,
+                                                "reader-content-readback-mismatch") as failed_readback:
+                        release_notes_publish.execute(args)
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+            self.assertEqual(failed_readback.exception.stage, "exact_readback")
+            final_index = release_notes.validate_index(store.index)
+            final_row = next(row for row in final_index["versions"]
+                             if row["product_version"] == "2026.11.1")
+            self.assertEqual(store.read_content(final_row["locales"]["en"]["object_path"]), winner_body)
+            self.assertEqual(final_row["published_at"], "2026-11-01T22:58:30+08:00")
+            self.assertEqual(release_notes.current_deployment_token_bytes(store.index), marker_token_before)
+            evidence = json.loads((run_dir / "release-notes-evidence.json").read_bytes())
+            self.assertEqual(evidence["stages"][-1]["status"], "failed")
+            self.assertEqual(evidence["stages"][-1]["stage"], "exact_readback")
+            self.assertEqual(evidence["stages"][-1]["safe_class"], "reader-content-readback-mismatch")
 
     def test_legacy_alias_resend_uses_canonical_reader_body_without_changing_marker_or_index(self):
         with TemporaryDirectory() as temporary:

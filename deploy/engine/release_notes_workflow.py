@@ -43,6 +43,7 @@ ID_RE = re.compile(r"^[1-9][0-9]*$")
 REQUEST_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 ALLOWED_RETENTION_DAYS = {30, 90}
+DISPATCH_PACKAGE_RETENTION_DAYS = 90
 COMPONENT_ORDER = ("documentimport", "exportjob", "auth", "bff", "worker", "frontend")
 
 
@@ -133,7 +134,7 @@ def _read_package_input_from_event(event_path: Path, expected_request_id: str,
             inputs.get("release_notes_action") != "stop" or
             inputs.get("release_notes_package_request_id") != expected_request_id or
             inputs.get("artifact_id", "") != (expected_ready_artifact_id or "") or
-            inputs.get("release_notes_package_retention_days") != expected_retention_days):
+            "release_notes_package_retention_days" in inputs):
         _fail("workflow-event-invalid")
     history_result_artifact_id = inputs.get("release_notes_result_artifact_id", "")
     if history_result_artifact_id != (expected_history_result_artifact_id or ""):
@@ -918,7 +919,7 @@ def build_dispatch_payload(package_dir: Path, *, ready_artifact_id: str = "",
                            retention_days: int,
                            request_id: str | None = None) -> tuple[dict, str]:
     source = _package_source(ready_artifact_id, history_result_artifact_id, history_operation)
-    if retention_days not in ALLOWED_RETENTION_DAYS:
+    if type(retention_days) is not int or retention_days != DISPATCH_PACKAGE_RETENTION_DAYS:
         _fail("dispatch-input-invalid")
     version = _manifest_identity(package_dir)
     archive = package_directory_archive(package_dir)
@@ -932,7 +933,6 @@ def build_dispatch_payload(package_dir: Path, *, ready_artifact_id: str = "",
         "operation": "release",
         "release_notes_action": "stop",
         "package_zip_base64": archive_b64,
-        "release_notes_package_retention_days": str(retention_days),
         "release_notes_package_request_id": request_id,
         "release_notes_result_artifact_id": history_result_artifact_id,
     }
@@ -1142,7 +1142,8 @@ def _argument_parser():
     dispatch.add_argument("--history-result-artifact-id", default="")
     dispatch.add_argument("--history-operation", default="")
     dispatch.add_argument("--package-dir", required=True)
-    dispatch.add_argument("--retention-days", choices=("30", "90"), default="90")
+    dispatch.add_argument("--retention-days", choices=(str(DISPATCH_PACKAGE_RETENTION_DAYS),),
+                          default=str(DISPATCH_PACKAGE_RETENTION_DAYS))
     dispatch.add_argument("--timeout-seconds", type=int, default=900)
     return parser
 

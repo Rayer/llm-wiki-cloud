@@ -750,25 +750,31 @@ class ReleaseNotesContractTests(unittest.TestCase):
                     "requested_product_version": requested, "canonical_product_version": canonical_version,
                     "legacy_alias": alias, "legacy_fallback": fallback}
 
-        def run(path_version, content, api_index, *, current_store=store):
+        def run(path_version, content, api_index, *, current_store=store, expected_content_files=None):
             with TemporaryDirectory() as temporary, \
                     patch.object(release_notes_capture, "active_service_url", return_value="https://notes.invalid"), \
                     patch.object(release_notes_publish, "urlopen", side_effect=[
                         Response(canonical(api_index)), Response(canonical(content))]):
                 return release_notes_publish.verify_reader_api(
-                    Path(temporary), "dev", None, path_version, {"en": legacy_body}, historical=True,
+                    Path(temporary), "dev", None, path_version,
+                    expected_content_files or {"en": legacy_body}, historical=True,
                     store=current_store, alias_receipt=published.legacy_alias_receipt,
                     minimum_index_generation=published.index_generation)
 
         canonical_response = dto(expected_body, release_notes.PUBLIC_RELEASE_VERSION,
                                  release_notes.PUBLIC_RELEASE_VERSION, published_at=canonical_time,
                                  alias=False, fallback=False, current=True)
-        verified = run(release_notes.PUBLIC_RELEASE_VERSION, canonical_response, public_index())
+        verified = run(release_notes.PUBLIC_RELEASE_VERSION, canonical_response, public_index(),
+                       expected_content_files={"en": expected_body})
         self.assertEqual(verified["reader_requested_product_version"], release_notes.PUBLIC_RELEASE_VERSION)
         self.assertEqual(verified["reader_canonical_product_version"], release_notes.PUBLIC_RELEASE_VERSION)
         self.assertTrue(verified["reader_current_flags"]["en"])
         self.assertEqual(verified["reader_content_sha256"]["en"],
                          release_notes.digest_bytes(canonical(json.loads(expected_body))))
+        with self.assertRaisesRegex(release_notes.ReleaseNotesError,
+                                    "reader-content-readback-mismatch"):
+            run(release_notes.PUBLIC_RELEASE_VERSION, canonical_response, public_index(),
+                expected_content_files={"en": legacy_body})
 
         # The retained 1.0.0 URL resolves to the canonical public 2026.11.4 body.
         alias_response = dto(expected_body, release_notes.LEGACY_RELEASE_VERSION,
@@ -817,6 +823,28 @@ class ReleaseNotesContractTests(unittest.TestCase):
                                                  "legacy_row_version": "1.0.0"}]
         with self.assertRaisesRegex(release_notes.ReleaseNotesError, "reader-index-readback-invalid"):
             run(release_notes.LEGACY_RELEASE_VERSION, alias_response, bad_mapping)
+
+        # A same-version correction can win after this publisher wrote A but
+        # before its first readback snapshot.  Stable index/API bytes for B
+        # must not be reported as verification of A's package.
+        raced_store = copy.deepcopy(store)
+        winner_body = note(version=release_notes.PUBLIC_RELEASE_VERSION, changed="Concurrent correction B")
+        release_notes.publish_package(
+            raced_store, {"en": winner_body}, product_version=release_notes.PUBLIC_RELEASE_VERSION,
+            published_at=canonical_time, marker=marker, transition_plan_sha256=plan_sha)
+        with self.assertRaisesRegex(release_notes.ReleaseNotesError, "reader-content-readback-mismatch"):
+            run(release_notes.PUBLIC_RELEASE_VERSION,
+                dto(winner_body, release_notes.PUBLIC_RELEASE_VERSION,
+                    release_notes.PUBLIC_RELEASE_VERSION, published_at=canonical_time,
+                    alias=False, fallback=False, current=True),
+                public_index(), current_store=raced_store,
+                expected_content_files={"en": expected_body})
+        raced_index = release_notes.validate_index(raced_store.index)
+        raced_row = next(row for row in raced_index["versions"]
+                         if row["product_version"] == release_notes.PUBLIC_RELEASE_VERSION)
+        self.assertEqual(raced_store.read_content(raced_row["locales"]["en"]["object_path"]), winner_body)
+        self.assertEqual(raced_row["published_at"], canonical_time)
+        self.assertEqual(raced_index["current_deployment"], marker)
 
     def test_first_create_race_with_different_digest_conflicts_and_preserves_winner(self):
         marker = self.normalize(operation="deploy", service_generation=44,

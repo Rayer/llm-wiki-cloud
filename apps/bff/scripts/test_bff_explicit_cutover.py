@@ -313,12 +313,12 @@ class SharedCDContractTest(unittest.TestCase):
             self.assertFalse(trigger["workflow_dispatch"]["inputs"]["release_tag"]["required"])
             if path == "deploy-dev.yml":
                 package_inputs = trigger["workflow_dispatch"]["inputs"]
+                self.assertEqual(len(package_inputs), 25)
                 self.assertEqual(package_inputs["prepare_release_notes_package"]["type"], "boolean")
                 self.assertFalse(package_inputs["prepare_release_notes_package"]["default"])
                 self.assertEqual(package_inputs["package_zip_base64"]["type"], "string")
                 self.assertEqual(package_inputs["package_zip_base64"]["default"], "")
-                self.assertEqual(package_inputs["release_notes_package_retention_days"]["type"], "choice")
-                self.assertEqual(package_inputs["release_notes_package_retention_days"]["options"], ["30", "90"])
+                self.assertNotIn("release_notes_package_retention_days", package_inputs)
                 self.assertEqual(package_inputs["release_notes_package_request_id"]["type"], "string")
                 package_job = workflow["jobs"]["prepare-release-notes-package"]
                 self.assertEqual(package_job["if"], "inputs.prepare_release_notes_package == true")
@@ -328,9 +328,18 @@ class SharedCDContractTest(unittest.TestCase):
                     "ready_artifact_id": "${{ inputs.artifact_id }}",
                     "history_result_artifact_id": "${{ inputs.release_notes_result_artifact_id }}",
                     "history_operation": "${{ inputs.release_notes_result_artifact_id != '' && inputs.release_notes_operation || '' }}",
-                    "retention_days": "${{ inputs.release_notes_package_retention_days }}",
+                    "retention_days": "90",
                     "request_id": "${{ inputs.release_notes_package_request_id }}",
                 })
+                reusable = yaml.safe_load((workflows / "prepare-release-notes-package.yml").read_text())
+                reusable_trigger = reusable.get("on", reusable.get(True, {}))
+                self.assertEqual(reusable_trigger["workflow_call"]["inputs"]["retention_days"], {
+                    "description": "Private artifact retention period",
+                    "required": True, "type": "string",
+                })
+                upload = next(step for step in reusable["jobs"]["package"]["steps"]
+                              if step.get("uses", "").startswith("actions/upload-artifact@"))
+                self.assertEqual(upload["with"]["retention-days"], "${{ inputs.retention_days }}")
                 self.assertNotIn("package_zip_base64", str(package_job["with"]))
                 self.assertNotIn("secrets", package_job)
                 self.assertNotIn("id-token", str(package_job))
