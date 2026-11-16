@@ -113,8 +113,16 @@ def release_identity(plan):
     return identity
 
 
+def release_identity_v4(plan):
+    identity = release_identity(plan)
+    identity['release_version'] = plan['release_version']
+    return identity
+
+
 def compatible_release_identity(plan):
     identity = release_identity(plan)
+    if plan.get('schema') == 4:
+        identity['release_version'] = plan.get('release_version')
     if 'release_source_mode' not in identity and release_source_mode(plan) == 'legacy_monorepo':
         identity['release_source_mode'] = 'legacy_monorepo'
     return identity
@@ -125,7 +133,23 @@ def plan_id(plan):
         return digest({key: value for key, value in plan.items() if key != 'id'})
     if plan.get('schema') == 3:
         return digest(release_identity(plan))
+    if plan.get('schema') == 4:
+        if not valid_release_version(plan.get('release_version')):
+            raise Breakpoint('invalid-release-version', 'failed', False, 'inspect-retained-artifact')
+        return digest(release_identity_v4(plan))
     raise Breakpoint('unsupported-plan-schema', 'failed', False, 'inspect-retained-artifact')
+
+
+def valid_release_version(value):
+    if not isinstance(value, str):
+        return False
+    match = re.fullmatch(
+        r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?',
+        value)
+    if match is None:
+        return False
+    return all(not (part.isdigit() and len(part) > 1 and part.startswith('0'))
+               for part in (match.group(4) or '').split('.'))
 
 
 def _phase_cause(phase, exc, stage):
@@ -294,6 +318,8 @@ def admit(args):
     require(run(['git', 'rev-parse', 'HEAD']) == executor_sha, 'executor-checkout-mismatch')
     require(run(['git', 'rev-parse', args.source+'^{commit}']) == args.source, 'invalid-source')
     require(args.tag and not args.tag.startswith('-'), 'invalid-release-tag')
+    release_version = getattr(args, 'release_version', None)
+    require(valid_release_version(release_version), 'invalid-release-version')
     run(['git', 'check-ref-format', 'refs/tags/'+args.tag])
     branch = 'develop' if args.environment == 'development' else 'main'
     cfg = 'deploy/environments/'+args.environment+'.yaml'
@@ -396,13 +422,13 @@ def admit(args):
             args.reuse, normalized.get('auth', {}).get('runtime_inputs'), auth_source,
             source_identity('auth', args.source, auth_source)),
             'auth-schema3-staging-requires-runtime3-pair')
-    body = {'schema': 3, 'source': args.source, 'branch': branch, 'tag': args.tag,
+    body = {'schema': 4, 'source': args.source, 'branch': branch, 'tag': args.tag,
             'executor_sha': executor_sha, 'normalized': normalized, 'identities': identities,
-            'dev_reference': args.dev_reference, 'selected': selected,
+            'dev_reference': args.dev_reference, 'selected': selected, 'release_version': release_version,
             'release_source_mode': release_source_mode}
     if auth_source is not None:
         body['auth_source'] = auth_source
-    body['id'] = digest(release_identity(body))
+    body['id'] = plan_id(body)
     return body
 
 
@@ -431,9 +457,13 @@ class Engine:
             require(re.fullmatch(r'[0-9a-f]{64}', self.plan.get('engine_content', '')) is not None and
                     re.fullmatch(r'[0-9a-f]{40}', self.plan.get('engine', '')) is not None,
                     'plan-content-mismatch')
-        else:
+        elif self.plan['schema'] in (3, 4):
             require(re.fullmatch(r'[0-9a-f]{40}', self.plan.get('executor_sha', '')) is not None,
                     'plan-content-mismatch')
+            if self.plan['schema'] == 4:
+                require(valid_release_version(self.plan.get('release_version')), 'plan-content-mismatch')
+        else:
+            require(False, 'unsupported-plan-schema')
         require(self.plan['selected'] == selection(','.join(self.plan['selected'])), 'invalid-plan-selection')
         self.provider = Providers(self.plan, self.directory)
         self.state_path = self.directory / 'state.json'
@@ -774,13 +804,13 @@ class Engine:
         try:
             selected = retained_plan['selected']
             plan_shape_valid = (
-                retained_plan.get('schema') in (2, 3) and
+                retained_plan.get('schema') in (2, 3, 4) and
                 selected == selection(','.join(selected) if isinstance(selected, list) else '') and
                 re.fullmatch(r'[0-9a-f]{40}', retained_plan.get('source', '')) is not None and
                 ((retained_plan.get('schema') == 2 and
                   re.fullmatch(r'[0-9a-f]{64}', retained_plan.get('engine_content', '')) is not None and
                   re.fullmatch(r'[0-9a-f]{40}', retained_plan.get('engine', '')) is not None) or
-                 (retained_plan.get('schema') == 3 and
+                 (retained_plan.get('schema') in (3, 4) and
                   re.fullmatch(r'[0-9a-f]{40}', retained_plan.get('executor_sha', '')) is not None)) and
                 retained_plan.get('normalized', {}).get('environment') in ('development', 'production') and
                 isinstance(retained_plan.get('identities'), dict) and
@@ -1533,6 +1563,7 @@ def main():
     parser.add_argument('--environment', choices=('development', 'production'))
     parser.add_argument('--source')
     parser.add_argument('--tag')
+    parser.add_argument('--release-version')
     parser.add_argument('--components')
     parser.add_argument('--reuse')
     parser.add_argument('--dev')
@@ -1581,6 +1612,9 @@ def main():
                 require(not args.components or selection(args.components) == engine.plan['selected'], 'selection-change-requires-new-plan')
                 require(not args.source or args.source == engine.plan['source'], 'source-change-requires-new-plan')
                 require(not args.tag or args.tag == engine.plan['tag'], 'tag-change-requires-new-plan')
+                require(not args.release_version or
+                        (engine.plan.get('schema') == 4 and args.release_version == engine.plan.get('release_version')),
+                        'release-version-change-requires-new-plan')
                 require(not args.environment or args.environment == engine.plan['normalized']['environment'], 'target-change-requires-new-plan')
                 if args.operation == 'auth-preflight':
                     needs_package = engine.auth_package_preflight(args.reuse, args.dev)

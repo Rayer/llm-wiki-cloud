@@ -57,6 +57,11 @@ on:
       release_tag:
         required: true
         type: string
+      release_version:
+        required: false
+        type: string
+        default: ''
+        description: Explicit public product release version included in new schema-4 plans; never inferred from BFF build or tag
       operation:
         type: string
         default: release
@@ -127,6 +132,7 @@ jobs:
       GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
       COMPONENTS: ${{ inputs.components }}
       RELEASE_TAG: ${{ inputs.release_tag }}
+      RELEASE_VERSION: ${{ inputs.release_version }}
       REUSE_ID: ${{ inputs.artifact_id }}
       DEV_ID: ${{ inputs.dev_artifact_id }}
       ARTIFACT_ID: ${{ inputs.artifact_id }}
@@ -158,6 +164,19 @@ jobs:
             echo "An explicit DEV Stage 1 source requires its retained artifact_id." >&2
             exit 1
           }
+      - name: Validate explicit public release version
+        if: inputs.operation == 'release'
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
+        run: |
+          python3 - <<'PY'
+          import os, re
+          value=os.environ['RELEASE_VERSION']
+          pattern=r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?'
+          match=re.fullmatch(pattern, value)
+          if not match or any(part.isdigit() and len(part)>1 and part.startswith('0') for part in (match.group(4) or '').split('.')):
+              raise SystemExit('An explicit valid release_version is required for release operations.')
+          PY
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
         with:
           go-version-file: apps/bff/go.mod

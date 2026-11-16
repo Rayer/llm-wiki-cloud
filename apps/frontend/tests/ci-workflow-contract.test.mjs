@@ -29,7 +29,7 @@ test('r2 registered release and recovery workflows use explicit artifact inputs'
   for (const [file, environment, branch] of [['deploy-dev.yml', 'development', 'develop'], ['promote-production.yml', 'production', 'main']]) {
     const parsed = parseYaml(await workflow(file));
     assert.deepEqual(Object.keys(parsed.on), ['workflow_dispatch']);
-    const expectedInputs = ['components', 'release_tag', 'artifact_id', 'release_notes_artifact_id',
+    const expectedInputs = ['components', 'release_tag', 'release_version', 'artifact_id', 'release_notes_artifact_id',
       'release_notes_action', 'release_notes_result_artifact_id', 'release_notes_operation',
       'dev_artifact_id', 'frontend_config_artifact_id'];
     if (file === 'deploy-dev.yml') expectedInputs.push('source_sha', 'force', 'operation');
@@ -52,6 +52,13 @@ test('r2 registered release and recovery workflows use explicit artifact inputs'
       type: 'string',
       default: '',
     });
+    assert.deepEqual(noteInputs.release_version, {
+      description: 'Explicit public product release version; included in the immutable release plan and never inferred from the tag or BFF build',
+      required: false,
+      type: 'string',
+      default: '',
+    });
+    assert.equal(parsed.jobs.release.with.release_version, '${{ inputs.release_version }}');
     assert.deepEqual(noteInputs.release_notes_action, {
       description: 'Explicit Notes subphase choice; retry/skip are bound to this release plan, stop ends before product mutation',
       required: true,
@@ -137,7 +144,7 @@ test('r2 registered release and recovery workflows use explicit artifact inputs'
   }
   const deployDev = parseYaml(await workflow('deploy-dev.yml'));
   const deployInputs = deployDev.on.workflow_dispatch.inputs;
-  assert.equal(Object.keys(deployInputs).length, 25);
+  assert.equal(Object.keys(deployInputs).length, 26);
   assert.equal(deployDev['run-name'], "${{ inputs.prepare_release_notes_package && format('Prepare Release Notes package {0}', inputs.release_notes_package_request_id) || github.ref_name }}");
   assert.deepEqual(deployInputs.prepare_release_notes_package, {
     description: 'Prepare a TPM-authored private Notes package from an exact retained Ready or successful historical DEV result; skips every deployment operation',

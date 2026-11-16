@@ -406,7 +406,7 @@ test('DEV workflow invokes the shared engine and isolates the fixed diagnostic r
   const workflow = (await import('js-yaml')).load(await readFile(join(monorepoRoot, '.github/workflows/deploy-dev.yml'), 'utf8'));
   const job = workflow.jobs.release;
   assert.equal(workflow.on.push, undefined);
-  assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), ['components', 'release_tag', 'artifact_id', 'release_notes_artifact_id', 'release_notes_action', 'release_notes_result_artifact_id', 'release_notes_operation', 'dev_artifact_id', 'frontend_config_artifact_id', 'source_sha', 'force', 'operation', 'pipeline_run_timeout_seconds', 'release_source_mode', 'auth_schema_version', 'auth_repository_id', 'auth_revision', 'auth_tree_sha256', 'auth_artifact_id', 'auth_run_id', 'auth_run_attempt', 'prepare_release_notes_package', 'package_zip_base64', 'release_notes_package_retention_days', 'release_notes_package_request_id']);
+  assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), ['components', 'release_tag', 'release_version', 'artifact_id', 'release_notes_artifact_id', 'release_notes_action', 'release_notes_result_artifact_id', 'release_notes_operation', 'dev_artifact_id', 'frontend_config_artifact_id', 'source_sha', 'force', 'operation', 'pipeline_run_timeout_seconds', 'release_source_mode', 'auth_schema_version', 'auth_repository_id', 'auth_revision', 'auth_tree_sha256', 'auth_artifact_id', 'auth_run_id', 'auth_run_attempt', 'prepare_release_notes_package', 'package_zip_base64', 'release_notes_package_retention_days', 'release_notes_package_request_id']);
   assert.equal(workflow.on.workflow_dispatch.inputs.operation.type, 'choice');
   assert.deepEqual(workflow.on.workflow_dispatch.inputs.operation.options, ['release', 'config-only', 'frontend-config-only', 'frontend-config-generate', 'deploy', 'rollback', 'reactivate', 'tag', 'readback', 'notes-resend', 'diagnose-auth-image']);
   assert.equal(workflow.on.workflow_dispatch.inputs.operation.default, 'release');
@@ -433,6 +433,7 @@ test('DEV workflow invokes the shared engine and isolates the fixed diagnostic r
     environment: 'development', source_sha: "${{ inputs.operation == 'release' && (inputs.source_sha || github.sha) || inputs.source_sha }}",
     executor_sha: '${{ github.sha }}',
     components: '${{ inputs.components }}', release_tag: '${{ inputs.release_tag }}',
+    release_version: '${{ inputs.release_version }}',
     artifact_id: '${{ inputs.artifact_id }}', dev_artifact_id: '${{ inputs.dev_artifact_id }}',
     release_notes_artifact_id: '${{ inputs.release_notes_artifact_id }}',
     release_notes_result_artifact_id: '${{ inputs.release_notes_result_artifact_id }}',

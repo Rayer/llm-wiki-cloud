@@ -20,7 +20,7 @@ import { RequestIDPanel } from './RequestIDPanel';
 import { NudgePanel } from './NudgePanel';
 import { LocaleControl } from './LocaleControl';
 import { dailyBriefSignedOutLandingURL } from '@/lib/mcp-oauth';
-import { getBuildInfo, type BuildInfo } from '@/lib/api';
+import { getBuildInfo, getReleaseNotesIndex, type BuildInfo, type ReleaseNotesIndex } from '@/lib/api';
 import { ReleaseNotesReader } from './ReleaseNotesReader';
 
 export function Shell({ children }: { children: React.ReactNode }) {
@@ -66,6 +66,8 @@ function ShellContent({ children }: { children: React.ReactNode }) {
   const [jitAccountId, setJitAccountId] = useState<string | null>(null);
   const [buildInfo, setBuildInfo] = useState<BuildInfo | null>(null);
   const [buildInfoError, setBuildInfoError] = useState('');
+  const [releaseNotesIndex, setReleaseNotesIndex] = useState<ReleaseNotesIndex | null>(null);
+  const [releaseVersionError, setReleaseVersionError] = useState(false);
   const [versionDialogOpen, setVersionDialogOpen] = useState(false);
   const [versionCopied, setVersionCopied] = useState(false);
   const [versionCopyFailed, setVersionCopyFailed] = useState(false);
@@ -84,6 +86,16 @@ function ShellContent({ children }: { children: React.ReactNode }) {
     }
   };
 
+  const reloadPublicReleaseVersion = async () => {
+    try {
+      setReleaseNotesIndex(await getReleaseNotesIndex());
+      setReleaseVersionError(false);
+    } catch {
+      setReleaseNotesIndex(null);
+      setReleaseVersionError(true);
+    }
+  };
+
   useEffect(() => {
     let active = true;
     getBuildInfo()
@@ -95,6 +107,9 @@ function ShellContent({ children }: { children: React.ReactNode }) {
       .catch((error: unknown) => {
         if (active) setBuildInfoError(error instanceof Error ? error.message : String(error));
       });
+    getReleaseNotesIndex()
+      .then((index) => { if (active) { setReleaseNotesIndex(index); setReleaseVersionError(false); } })
+      .catch(() => { if (active) { setReleaseNotesIndex(null); setReleaseVersionError(true); } });
     return () => { active = false; };
   }, []);
 
@@ -125,10 +140,14 @@ function ShellContent({ children }: { children: React.ReactNode }) {
   const versionSnapshot = buildInfo ? [
     'LLM Wiki Cloud',
     `Environment: ${buildInfo.environment}`,
-    `API product version: ${buildInfo.product_version}`,
+    `Public release version: ${releaseNotesIndex?.current_product_version ?? 'unavailable'}`,
+    `BFF build version: ${buildInfo.product_version}`,
     `BFF commit: ${buildInfo.commit}`,
     `BFF revision: ${buildInfo.revision}`,
   ].join('\n') : '';
+  const releaseVersionUnavailable = releaseVersionError || releaseNotesIndex?.current_status === 'unavailable';
+  const publicReleaseVersionLabel = releaseVersionUnavailable || !releaseNotesIndex?.current_product_version
+    ? t('Shell.versionUnavailable') : releaseNotesIndex.current_product_version;
 
   const copyVersionSnapshot = async () => {
     if (!versionSnapshot) return;
@@ -401,7 +420,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
                 <LogOut className="size-4" aria-hidden="true" />{t('Shell.logout')}
               </button>
               <button ref={versionButtonRef} type="button" onClick={() => { setVersionDialogOpen(true); setVersionCopied(false); setVersionCopyFailed(false); }} className="flex min-h-11 items-center justify-between gap-3 rounded-md px-3 text-left text-xs text-zinc-500 transition hover:bg-white/5 hover:text-zinc-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400">
-                <span>{buildInfo ? `${t('Shell.versionInfo')}: ${buildInfo.product_version}` : buildInfoError ? t('Shell.versionUnavailable') : t('Shell.loadingVersion')}</span>
+                <span>{releaseVersionUnavailable ? t('Shell.versionUnavailable') : releaseNotesIndex ? `${t('Shell.versionInfo')}: ${publicReleaseVersionLabel}` : t('Shell.loadingVersion')}</span>
                 {environmentStamp ? <span className={environmentStamp === 'DEV' ? 'rotate-[-8deg] font-bold tracking-wider text-red-300' : 'font-semibold tracking-wider text-zinc-300'}>{environmentStamp}</span> : null}
               </button>
             </div>
@@ -514,13 +533,20 @@ function ShellContent({ children }: { children: React.ReactNode }) {
               buildInfoError ? (
                 <div role="alert" className="rounded border border-amber-300/30 bg-amber-400/8 p-4 text-sm text-amber-100">
                   <p>{t('Shell.versionUnavailable')}</p>
-                  <button type="button" onClick={() => void reloadBuildInfo()} className="mt-3 min-h-11 rounded border border-amber-200/40 px-3">{t('Shell.retryVersionInfo')}</button>
+                  <button type="button" onClick={() => { void reloadBuildInfo(); void reloadPublicReleaseVersion(); }} className="mt-3 min-h-11 rounded border border-amber-200/40 px-3">{t('Shell.retryVersionInfo')}</button>
                 </div>
               ) : buildInfo ? (
                 <>
                   <dl className="grid gap-4 text-sm sm:grid-cols-2">
                     <div><dt className="text-xs text-zinc-500">{t('Shell.environment')}</dt><dd className="mt-1 text-zinc-100">{buildInfo.environment === 'unknown' ? t('Shell.environmentNotProvided') : buildInfo.environment}</dd></div>
-                    <div><dt className="text-xs text-zinc-500">{t('Shell.productVersion')}</dt><dd className="mt-1 text-zinc-100">{buildInfo.product_version}</dd></div>
+                    <div>
+                      <dt className="text-xs text-zinc-500">{t('Shell.productVersion')}</dt>
+                      <dd className="mt-1 text-zinc-100">{releaseVersionUnavailable ? t('Shell.versionUnavailable') : releaseNotesIndex ? publicReleaseVersionLabel : t('Shell.loadingVersion')}</dd>
+                      {releaseVersionUnavailable ? (
+                        <button type="button" onClick={() => void reloadPublicReleaseVersion()} className="mt-2 min-h-11 rounded border border-amber-200/40 px-3 text-amber-100">{t('Shell.retryVersionInfo')}</button>
+                      ) : null}
+                    </div>
+                    <div><dt className="text-xs text-zinc-500">{t('Shell.bffBuildVersion')}</dt><dd className="mt-1 text-zinc-100">{buildInfo.product_version}</dd></div>
                     <div className="sm:col-span-2"><dt className="text-xs text-zinc-500">{t('Shell.commit')}</dt><dd className="mt-1 break-all font-mono text-xs text-zinc-200">{buildInfo.commit}</dd></div>
                     <div className="sm:col-span-2"><dt className="text-xs text-zinc-500">{t('Shell.revision')}</dt><dd className="mt-1 break-all font-mono text-xs text-zinc-200">{buildInfo.revision}</dd></div>
                   </dl>

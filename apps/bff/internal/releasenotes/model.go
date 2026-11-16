@@ -11,11 +11,16 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
 const (
-	SchemaVersion   = 1
+	SchemaVersion   = 1 // content and public API envelope schema
+	IndexSchemaV2   = 2
+	MarkerSchemaV2  = 2
+	LegacyVersion   = "1.0.0"
+	PublicVersion   = "2026.11.4"
 	MaxIndexBytes   = 1 << 20
 	MaxContentBytes = 64 << 10
 	MaxVersions     = 1000
@@ -44,6 +49,21 @@ type Index struct {
 	SchemaVersion     int                `json:"schema_version"`
 	Versions          []VersionRow       `json:"versions"`
 	CurrentDeployment *CurrentDeployment `json:"current_deployment,omitempty"`
+	LegacyAliases     []LegacyAlias      `json:"legacy_aliases,omitempty"`
+}
+
+type LegacyAlias struct {
+	Environment           string `json:"environment"`
+	RequestedVersion      string `json:"requested_version"`
+	CanonicalVersion      string `json:"canonical_version"`
+	LegacyRowVersion      string `json:"legacy_row_version"`
+	SourceMarkerSHA256    string `json:"source_marker_sha256"`
+	SourceIndexGeneration int64  `json:"source_index_generation"`
+	TransitionPlanSHA256  string `json:"transition_plan_sha256"`
+	TransitionRunID       string `json:"transition_run_id"`
+	TransitionRunAttempt  int    `json:"transition_run_attempt"`
+	CreationMarkerSHA256  string `json:"creation_marker_sha256"`
+	AliasRecordSHA256     string `json:"alias_record_sha256"`
 }
 
 type VersionRow struct {
@@ -60,20 +80,55 @@ type LocaleFile struct {
 // CurrentDeployment is the complete, closed publisher marker. It is
 // intentionally separate from the TPM-authored package and public content.
 type CurrentDeployment struct {
-	SchemaVersion            int    `json:"schema_version"`
-	Environment              string `json:"environment"`
-	ProductVersion           string `json:"product_version"`
-	Commit                   string `json:"commit"`
-	Branch                   string `json:"branch"`
-	Tag                      string `json:"tag"`
-	ImageTag                 string `json:"image_tag"`
-	ImageDigest              string `json:"image_digest"`
-	Service                  string `json:"service"`
-	ServiceUID               string `json:"service_uid"`
-	ServiceGeneration        int64  `json:"service_generation"`
-	Revision                 string `json:"revision"`
-	Operation                string `json:"operation"`
-	DeploymentEvidenceDigest string `json:"deployment_evidence_digest"`
+	SchemaVersion            int              `json:"schema_version"`
+	Environment              string           `json:"environment"`
+	ProductVersion           string           `json:"product_version"`
+	Commit                   string           `json:"commit"`
+	Branch                   string           `json:"branch"`
+	Tag                      string           `json:"tag"`
+	ImageTag                 string           `json:"image_tag"`
+	ImageDigest              string           `json:"image_digest"`
+	Service                  string           `json:"service"`
+	ServiceUID               string           `json:"service_uid"`
+	ServiceGeneration        int64            `json:"service_generation"`
+	Revision                 string           `json:"revision"`
+	Operation                string           `json:"operation"`
+	DeploymentEvidenceDigest string           `json:"deployment_evidence_digest"`
+	ReleaseVersion           string           `json:"release_version,omitempty"`
+	OperationRunID           string           `json:"operation_run_id,omitempty"`
+	OperationRunAttempt      int              `json:"operation_run_attempt,omitempty"`
+	ComponentBuilds          []ComponentBuild `json:"component_builds,omitempty"`
+	PreviousRelease          *PreviousRelease `json:"previous_release,omitempty"`
+}
+
+type ComponentBuild struct {
+	Component         string `json:"component"`
+	DeploymentID      string `json:"deployment_id,omitempty"`
+	JobName           string `json:"job_name,omitempty"`
+	ImageDigest       string `json:"image_digest,omitempty"`
+	ReceiptSHA256     string `json:"receipt_sha256"`
+	SourceSHA         string `json:"source_sha,omitempty"`
+	BuildConfigSHA256 string `json:"build_config_sha256,omitempty"`
+}
+
+type PreviousRelease struct {
+	ReleaseVersion  string           `json:"release_version"`
+	BFF             PreviousBFF      `json:"bff"`
+	ComponentBuilds []ComponentBuild `json:"component_builds"`
+	MarkerSHA256    string           `json:"marker_sha256"`
+}
+
+type PreviousBFF struct {
+	ProductVersion    string `json:"product_version"`
+	Commit            string `json:"commit"`
+	Branch            string `json:"branch"`
+	Tag               string `json:"tag"`
+	ImageTag          string `json:"image_tag"`
+	ImageDigest       string `json:"image_digest"`
+	Service           string `json:"service"`
+	ServiceUID        string `json:"service_uid"`
+	ServiceGeneration int64  `json:"service_generation"`
+	Revision          string `json:"revision"`
 }
 
 type Content struct {
@@ -99,25 +154,50 @@ type VersionSummary struct {
 }
 
 type IndexResponse struct {
-	SchemaVersion         int              `json:"schema_version"`
-	Environment           string           `json:"environment"`
-	RuntimeProductVersion string           `json:"runtime_product_version"`
-	CurrentStatus         string           `json:"current_status"`
-	CurrentProductVersion string           `json:"current_product_version,omitempty"`
-	Current               *VersionSummary  `json:"current,omitempty"`
-	History               []VersionSummary `json:"history"`
+	SchemaVersion          int               `json:"schema_version"`
+	Environment            string            `json:"environment"`
+	RuntimeProductVersion  string            `json:"runtime_product_version"`
+	CurrentStatus          string            `json:"current_status"`
+	CurrentProductVersion  string            `json:"current_product_version,omitempty"`
+	Current                *VersionSummary   `json:"current,omitempty"`
+	History                []VersionSummary  `json:"history"`
+	ComponentDetailsStatus string            `json:"component_details_status"`
+	CurrentComponents      []PublicComponent `json:"current_components"`
+	CompatibilityAliases   []PublicAlias     `json:"compatibility_aliases"`
+}
+
+type PublicAlias struct {
+	RequestedVersion string `json:"requested_version"`
+	CanonicalVersion string `json:"canonical_version"`
+	LegacyRowVersion string `json:"legacy_row_version"`
+}
+
+type PublicComponent struct {
+	Component      string `json:"component"`
+	ProductVersion string `json:"product_version,omitempty"`
+	Commit         string `json:"commit,omitempty"`
+	ImageTag       string `json:"image_tag,omitempty"`
+	ImageDigest    string `json:"image_digest,omitempty"`
+	Revision       string `json:"revision,omitempty"`
+	DeploymentID   string `json:"deployment_id,omitempty"`
+	JobName        string `json:"job_name,omitempty"`
+	SourceSHA      string `json:"source_sha,omitempty"`
 }
 
 type ContentResponse struct {
-	SchemaVersion   int     `json:"schema_version"`
-	Product         string  `json:"product"`
-	ProductVersion  string  `json:"product_version"`
-	PublishedAt     string  `json:"published_at"`
-	Locale          string  `json:"locale"`
-	RequestedLocale string  `json:"requested_locale"`
-	LocaleFallback  bool    `json:"locale_fallback"`
-	IsCurrent       bool    `json:"is_current"`
-	Entries         []Entry `json:"entries"`
+	SchemaVersion           int     `json:"schema_version"`
+	Product                 string  `json:"product"`
+	ProductVersion          string  `json:"product_version"`
+	PublishedAt             string  `json:"published_at"`
+	Locale                  string  `json:"locale"`
+	RequestedLocale         string  `json:"requested_locale"`
+	LocaleFallback          bool    `json:"locale_fallback"`
+	IsCurrent               bool    `json:"is_current"`
+	Entries                 []Entry `json:"entries"`
+	RequestedProductVersion string  `json:"requested_product_version"`
+	CanonicalProductVersion string  `json:"canonical_product_version"`
+	LegacyAlias             bool    `json:"legacy_alias"`
+	LegacyFallback          bool    `json:"legacy_fallback"`
 }
 
 func decodeStrict(data []byte, limit int, target any) error {
@@ -199,6 +279,15 @@ func readJSONValue(decoder *json.Decoder) error {
 }
 
 func DecodeIndex(data []byte) (Index, error) {
+	fields, err := decodeRawObject(data, MaxIndexBytes)
+	if err != nil || validateIndexFieldSet(fields) != nil {
+		return Index{}, ErrInvalid
+	}
+	if marker := fields["current_deployment"]; len(marker) > 0 && string(marker) != "null" {
+		if err := validateMarkerFieldSet(marker); err != nil {
+			return Index{}, err
+		}
+	}
 	var index Index
 	if err := decodeStrict(data, MaxIndexBytes, &index); err != nil {
 		return Index{}, err
@@ -213,10 +302,15 @@ func DecodeIndex(data []byte) (Index, error) {
 // publisher's optional current marker is absent or malformed. Mutation paths
 // and the Nudge adapter must continue to use strict DecodeIndex.
 func DecodeIndexForReader(data []byte) (Index, error) {
+	fields, err := decodeRawObject(data, MaxIndexBytes)
+	if err != nil || validateIndexFieldSet(fields) != nil {
+		return Index{}, ErrInvalid
+	}
 	var envelope struct {
 		SchemaVersion     int             `json:"schema_version"`
 		Versions          []VersionRow    `json:"versions"`
 		CurrentDeployment json.RawMessage `json:"current_deployment,omitempty"`
+		LegacyAliases     []LegacyAlias   `json:"legacy_aliases,omitempty"`
 	}
 	if err := decodeStrict(data, MaxIndexBytes, &envelope); err != nil {
 		return Index{}, err
@@ -224,11 +318,15 @@ func DecodeIndexForReader(data []byte) (Index, error) {
 	if envelope.Versions == nil {
 		return Index{}, ErrInvalid
 	}
-	index := Index{SchemaVersion: envelope.SchemaVersion, Versions: envelope.Versions}
+	index := Index{SchemaVersion: envelope.SchemaVersion, Versions: envelope.Versions,
+		LegacyAliases: envelope.LegacyAliases}
 	if err := ValidateIndex(index); err != nil {
 		return Index{}, err
 	}
 	if len(envelope.CurrentDeployment) == 0 || string(envelope.CurrentDeployment) == "null" {
+		return index, nil
+	}
+	if err := validateMarkerFieldSet(envelope.CurrentDeployment); err != nil {
 		return index, nil
 	}
 	var marker CurrentDeployment
@@ -239,8 +337,154 @@ func DecodeIndexForReader(data []byte) (Index, error) {
 	return index, nil
 }
 
+func decodeRawObject(data []byte, limit int) (map[string]json.RawMessage, error) {
+	var value map[string]json.RawMessage
+	if err := decodeStrict(data, limit, &value); err != nil || value == nil {
+		return nil, ErrInvalid
+	}
+	return value, nil
+}
+
+func validateIndexFieldSet(fields map[string]json.RawMessage) error {
+	var schema int
+	if raw, ok := fields["schema_version"]; !ok || json.Unmarshal(raw, &schema) != nil {
+		return ErrInvalid
+	}
+	if schema == SchemaVersion {
+		if !hasExactFields(fields, []string{"schema_version", "versions"}, []string{"current_deployment"}) {
+			return ErrInvalid
+		}
+		return nil
+	}
+	if schema == IndexSchemaV2 && hasExactFields(fields,
+		[]string{"schema_version", "versions", "current_deployment", "legacy_aliases"}, nil) {
+		return nil
+	}
+	return ErrInvalid
+}
+
+func validateMarkerFieldSet(data []byte) error {
+	fields, err := decodeRawObject(data, MaxIndexBytes)
+	if err != nil {
+		return ErrInvalid
+	}
+	var schema int
+	if raw, ok := fields["schema_version"]; !ok || json.Unmarshal(raw, &schema) != nil {
+		return ErrInvalid
+	}
+	legacy := []string{"schema_version", "environment", "product_version", "commit", "branch", "tag", "image_tag",
+		"image_digest", "service", "service_uid", "service_generation", "revision", "operation", "deployment_evidence_digest"}
+	if schema == SchemaVersion && hasExactFields(fields, legacy, nil) {
+		return nil
+	}
+	if schema != MarkerSchemaV2 || !hasExactFields(fields, append(legacy, "release_version", "operation_run_id",
+		"operation_run_attempt", "component_builds", "previous_release"), nil) {
+		return ErrInvalid
+	}
+	if err := validateComponentBuildsField(fields["component_builds"]); err != nil {
+		return err
+	}
+	if string(fields["previous_release"]) != "null" {
+		if err := validatePreviousReleaseField(fields["previous_release"]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateComponentBuildsField(data []byte) error {
+	var builds []json.RawMessage
+	if err := decodeStrict(data, MaxIndexBytes, &builds); err != nil || builds == nil || len(builds) > 2 {
+		return ErrInvalid
+	}
+	for _, raw := range builds {
+		fields, err := decodeRawObject(raw, MaxIndexBytes)
+		if err != nil {
+			return ErrInvalid
+		}
+		var component string
+		if rawComponent, ok := fields["component"]; !ok || json.Unmarshal(rawComponent, &component) != nil {
+			return ErrInvalid
+		}
+		switch component {
+		case "frontend":
+			if !hasExactFields(fields, []string{"component", "deployment_id", "receipt_sha256"},
+				[]string{"source_sha", "build_config_sha256"}) {
+				return ErrInvalid
+			}
+			if !validOptionalRawHex(fields, "source_sha", 40) || !validOptionalRawHex(fields, "build_config_sha256", 64) {
+				return ErrInvalid
+			}
+		case "worker":
+			if !hasExactFields(fields, []string{"component", "job_name", "image_digest", "receipt_sha256"},
+				[]string{"source_sha"}) {
+				return ErrInvalid
+			}
+			if !validOptionalRawHex(fields, "source_sha", 40) {
+				return ErrInvalid
+			}
+		default:
+			return ErrInvalid
+		}
+	}
+	return nil
+}
+
+func validOptionalRawHex(fields map[string]json.RawMessage, key string, length int) bool {
+	raw, ok := fields[key]
+	if !ok {
+		return true
+	}
+	var value string
+	if json.Unmarshal(raw, &value) != nil || len(value) != length || value != strings.ToLower(value) {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
+}
+
+func validatePreviousReleaseField(data []byte) error {
+	fields, err := decodeRawObject(data, MaxIndexBytes)
+	if err != nil || !hasExactFields(fields,
+		[]string{"release_version", "bff", "component_builds", "marker_sha256"}, nil) {
+		return ErrInvalid
+	}
+	var bff map[string]json.RawMessage
+	if err := decodeStrict(fields["bff"], MaxIndexBytes, &bff); err != nil || bff == nil ||
+		!hasExactFields(bff, []string{"product_version", "commit", "branch", "tag", "image_tag", "image_digest",
+			"service", "service_uid", "service_generation", "revision"}, nil) {
+		return ErrInvalid
+	}
+	return validateComponentBuildsField(fields["component_builds"])
+}
+
+func hasExactFields(fields map[string]json.RawMessage, required, optional []string) bool {
+	allowed := make(map[string]struct{}, len(required)+len(optional))
+	for _, key := range required {
+		if _, ok := fields[key]; !ok {
+			return false
+		}
+		allowed[key] = struct{}{}
+	}
+	for _, key := range optional {
+		allowed[key] = struct{}{}
+	}
+	if len(fields) < len(required) || len(fields) > len(allowed) {
+		return false
+	}
+	for key := range fields {
+		if _, ok := allowed[key]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
 func ValidateIndex(index Index) error {
-	if index.SchemaVersion != SchemaVersion || len(index.Versions) > MaxVersions {
+	if (index.SchemaVersion != SchemaVersion && index.SchemaVersion != IndexSchemaV2) || len(index.Versions) > MaxVersions ||
+		(index.SchemaVersion == SchemaVersion && index.LegacyAliases != nil) ||
+		(index.SchemaVersion == IndexSchemaV2 && index.LegacyAliases == nil) ||
+		(index.SchemaVersion == IndexSchemaV2 && len(index.LegacyAliases) > 1) {
 		return ErrInvalid
 	}
 	seen := make(map[string]struct{}, len(index.Versions))
@@ -265,17 +509,121 @@ func ValidateIndex(index Index) error {
 		if err := ValidateMarker(*index.CurrentDeployment); err != nil {
 			return err
 		}
+		if index.SchemaVersion == IndexSchemaV2 && index.CurrentDeployment.SchemaVersion != MarkerSchemaV2 ||
+			index.SchemaVersion == SchemaVersion && index.CurrentDeployment.SchemaVersion != SchemaVersion {
+			return ErrInvalid
+		}
+	}
+	for _, alias := range index.LegacyAliases {
+		if err := ValidateLegacyAlias(alias); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
 func ValidateMarker(marker CurrentDeployment) error {
-	if marker.SchemaVersion != SchemaVersion || (marker.Environment != "local" && marker.Environment != "dev" && marker.Environment != "prod") ||
-		!ValidProductVersion(marker.ProductVersion) || marker.Commit == "" || marker.Branch == "" || marker.ImageTag == "" ||
+	if (marker.SchemaVersion != SchemaVersion && marker.SchemaVersion != MarkerSchemaV2) ||
+		(marker.Environment != "local" && marker.Environment != "dev" && marker.Environment != "prod") ||
+		!ValidProductVersion(marker.ProductVersion) || !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(marker.Commit) ||
+		!validBoundedString(marker.Branch, 128, false) || !validBoundedString(marker.Tag, 128, true) ||
+		!validBoundedString(marker.ImageTag, 256, false) ||
 		!strings.HasPrefix(marker.ImageDigest, "sha256:") || !validSHA(strings.TrimPrefix(marker.ImageDigest, "sha256:")) ||
-		marker.Service == "" || marker.ServiceUID == "" || marker.ServiceGeneration < 1 || marker.Revision == "" ||
+		!validBoundedString(marker.Service, 256, false) || !validBoundedString(marker.ServiceUID, 256, false) ||
+		marker.ServiceGeneration < 1 || !validBoundedString(marker.Revision, 256, false) ||
 		!validTransitionOperation(marker.Operation) || !strings.HasPrefix(marker.DeploymentEvidenceDigest, "sha256:") ||
 		!validSHA(strings.TrimPrefix(marker.DeploymentEvidenceDigest, "sha256:")) {
+		return ErrInvalid
+	}
+	if marker.SchemaVersion == SchemaVersion {
+		if marker.ReleaseVersion != "" || marker.OperationRunID != "" || marker.OperationRunAttempt != 0 ||
+			marker.ComponentBuilds != nil || marker.PreviousRelease != nil {
+			return ErrInvalid
+		}
+		return nil
+	}
+	if !ValidProductVersion(marker.ReleaseVersion) || !runIDPattern.MatchString(marker.OperationRunID) ||
+		marker.OperationRunAttempt < 1 || marker.OperationRunAttempt > 10000 || len(marker.ComponentBuilds) > 2 ||
+		(marker.PreviousRelease != nil && ValidatePreviousRelease(*marker.PreviousRelease) != nil) {
+		return ErrInvalid
+	}
+	last := ""
+	for _, build := range marker.ComponentBuilds {
+		if build.Component <= last || ValidateComponentBuild(build) != nil {
+			return ErrInvalid
+		}
+		last = build.Component
+	}
+	return nil
+}
+
+var runIDPattern = regexp.MustCompile(`^[1-9][0-9]{0,19}$`)
+
+func ValidateComponentBuild(build ComponentBuild) error {
+	if !validSHA(build.ReceiptSHA256) {
+		return ErrInvalid
+	}
+	if build.SourceSHA != "" && !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(build.SourceSHA) {
+		return ErrInvalid
+	}
+	switch build.Component {
+	case "frontend":
+		if !validBoundedString(build.DeploymentID, 256, false) || build.JobName != "" || build.ImageDigest != "" ||
+			(build.BuildConfigSHA256 != "" && !validSHA(build.BuildConfigSHA256)) {
+			return ErrInvalid
+		}
+	case "worker":
+		if !validBoundedString(build.JobName, 128, false) || build.DeploymentID != "" ||
+			!strings.HasPrefix(build.ImageDigest, "sha256:") || !validSHA(strings.TrimPrefix(build.ImageDigest, "sha256:")) ||
+			build.BuildConfigSHA256 != "" {
+			return ErrInvalid
+		}
+	default:
+		return ErrInvalid
+	}
+	return nil
+}
+
+func ValidatePreviousRelease(previous PreviousRelease) error {
+	if !ValidProductVersion(previous.ReleaseVersion) || !ValidProductVersion(previous.BFF.ProductVersion) ||
+		!regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(previous.BFF.Commit) ||
+		!validBoundedString(previous.BFF.Branch, 128, false) || !validBoundedString(previous.BFF.Tag, 128, true) ||
+		!validBoundedString(previous.BFF.ImageTag, 256, false) || !validBoundedString(previous.BFF.Service, 256, false) ||
+		!validBoundedString(previous.BFF.ServiceUID, 256, false) || previous.BFF.ServiceGeneration < 1 ||
+		!validBoundedString(previous.BFF.Revision, 256, false) ||
+		!validSHA(previous.MarkerSHA256) || len(previous.ComponentBuilds) > 2 {
+		return ErrInvalid
+	}
+	if !strings.HasPrefix(previous.BFF.ImageDigest, "sha256:") || !validSHA(strings.TrimPrefix(previous.BFF.ImageDigest, "sha256:")) {
+		return ErrInvalid
+	}
+	last := ""
+	for _, build := range previous.ComponentBuilds {
+		if build.Component <= last || ValidateComponentBuild(build) != nil {
+			return ErrInvalid
+		}
+		last = build.Component
+	}
+	return nil
+}
+
+func ValidateLegacyAlias(alias LegacyAlias) error {
+	if alias.Environment != "dev" || alias.RequestedVersion != LegacyVersion ||
+		alias.CanonicalVersion != PublicVersion || alias.LegacyRowVersion != LegacyVersion ||
+		!validSHA(alias.SourceMarkerSHA256) || alias.SourceIndexGeneration < 1 ||
+		!validSHA(alias.TransitionPlanSHA256) || !runIDPattern.MatchString(alias.TransitionRunID) ||
+		alias.TransitionRunAttempt < 1 || alias.TransitionRunAttempt > 10000 ||
+		!validSHA(alias.CreationMarkerSHA256) || !validSHA(alias.AliasRecordSHA256) {
+		return ErrInvalid
+	}
+	canonical, err := json.Marshal(map[string]any{
+		"environment": alias.Environment, "requested_version": alias.RequestedVersion,
+		"canonical_version": alias.CanonicalVersion, "legacy_row_version": alias.LegacyRowVersion,
+		"source_marker_sha256": alias.SourceMarkerSHA256, "source_index_generation": alias.SourceIndexGeneration,
+		"transition_plan_sha256": alias.TransitionPlanSHA256, "transition_run_id": alias.TransitionRunID,
+		"transition_run_attempt": alias.TransitionRunAttempt, "creation_marker_sha256": alias.CreationMarkerSHA256,
+	})
+	if err != nil || sha256Hex(canonical) != alias.AliasRecordSHA256 {
 		return ErrInvalid
 	}
 	return nil
@@ -313,7 +661,19 @@ func ValidateContent(content Content, version, locale string) error {
 }
 
 func validText(value string, max int) bool {
-	return utf8.ValidString(value) && strings.TrimSpace(value) != "" && utf8.RuneCountInString(value) <= max
+	return validBoundedString(value, max, false)
+}
+
+func validBoundedString(value string, max int, emptyAllowed bool) bool {
+	if !utf8.ValidString(value) || utf8.RuneCountInString(value) > max || (!emptyAllowed && strings.TrimSpace(value) == "") {
+		return false
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
 }
 
 func ValidProductVersion(value string) bool {

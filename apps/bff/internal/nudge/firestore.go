@@ -92,6 +92,103 @@ func (r *Repository) ApplyObservation(ctx context.Context, userID string, input 
 	return r.apply(ctx, userID, input.Category, input.SourceKey, input.ExpectedSourceRevision, input.ProducerWitness, &input, nil, false)
 }
 
+// ApplyReleaseAliasTransfer preserves an existing Release attention only for
+// the validated one-time 1.0.0 -> 2026.11.4 alias. The witness is captured
+// before Notes I/O and compared again inside the transaction.
+func (r *Repository) ApplyReleaseAliasTransfer(ctx context.Context, userID string, input ObservationInput,
+	proof ReleaseAliasTransferProof, captured Slot) (bool, error) {
+	if err := ValidateObservationInput(input); err != nil || input.Category != CategoryReleaseNotes ||
+		proof.RequestedVersion != "1.0.0" || proof.CanonicalVersion != "2026.11.4" ||
+		input.ProducerWitness.ProductVersion != proof.CanonicalVersion ||
+		input.AttentionMaterialRevision != "version:"+proof.CanonicalVersion ||
+		len(proof.AliasRecordSHA256) != 64 || !isHex(proof.AliasRecordSHA256) ||
+		captured.SourceKey != input.SourceKey || captured.SchemaVersion != SchemaVersion ||
+		!captured.Active || captured.SourceRevision != input.ExpectedSourceRevision ||
+		captured.ProducerWitness.Kind != "release-notes" || captured.ProducerWitness.Environment != input.ProducerWitness.Environment ||
+		captured.ProducerWitness.ProductVersion != proof.RequestedVersion ||
+		captured.AttentionMaterialRevision != "version:"+proof.RequestedVersion {
+		return false, ErrInvalidInput
+	}
+	slotRef, err := r.slotRef(userID, input.Category, input.SourceKey)
+	if err != nil {
+		return false, err
+	}
+	categoryRef, err := r.categoryRef(userID, input.Category)
+	if err != nil {
+		return false, err
+	}
+	accepted := false
+	err = r.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+		accepted = false
+		slotSnapshot, err := tx.Get(slotRef)
+		if status.Code(err) == codes.NotFound {
+			return ErrSourceRevisionConflict
+		}
+		if err != nil {
+			return err
+		}
+		slot, err := decodeSlot(slotSnapshot.Data())
+		if err != nil {
+			return err
+		}
+		if slot.Active && slot.ProducerWitness == input.ProducerWitness &&
+			slot.PayloadDigest == input.PayloadDigest && slot.AttentionMaterialRevision == input.AttentionMaterialRevision {
+			accepted = true
+			return nil
+		}
+		if slot.SchemaVersion != captured.SchemaVersion || slot.SourceKey != captured.SourceKey ||
+			slot.SourceRevision != captured.SourceRevision || slot.ProducerWitness != captured.ProducerWitness ||
+			slot.PayloadDigest != captured.PayloadDigest || slot.AttentionMaterialRevision != captured.AttentionMaterialRevision ||
+			!slot.Active {
+			return ErrSourceRevisionConflict
+		}
+		categorySnapshot, err := tx.Get(categoryRef)
+		if err != nil {
+			return err
+		}
+		category, err := decodeCategory(categorySnapshot.Data())
+		if err != nil || category.SchemaVersion != SchemaVersion || category.Category != input.Category {
+			return ErrInvalidInput
+		}
+		docID := sourceDocumentID(input.SourceKey)
+		if category.MaterialBySource[docID] != captured.AttentionMaterialRevision {
+			return ErrSourceRevisionConflict
+		}
+		if category.AttentionState == "" || category.AttentionID == "" {
+			return ErrSourceRevisionConflict
+		}
+		now := r.now().UTC().Truncate(time.Microsecond)
+		slot.SourceRevision++
+		slot.ProducerWitness = input.ProducerWitness
+		slot.ObservedAt = now
+		slot.PayloadDigest = input.PayloadDigest
+		slot.AttentionMaterialRevision = input.AttentionMaterialRevision
+		observation := input.Observation
+		observation.ObservedAt = &now
+		slot.Observation = &observation
+		category.MaterialBySource[docID] = input.AttentionMaterialRevision
+		category.SeverityBySource[docID] = observation.Severity
+		category.ActiveCount = len(category.MaterialBySource)
+		category.UrgentCount = 0
+		for _, severity := range category.SeverityBySource {
+			if severity == SeverityUrgent {
+				category.UrgentCount++
+			}
+		}
+		category.MaterialDigest = categoryMaterialDigest(category.MaterialBySource, category.SeverityBySource)
+		category.UpdatedAt = now
+		if err := tx.Set(slotRef, slot); err != nil {
+			return err
+		}
+		if err := tx.Set(categoryRef, category); err != nil {
+			return err
+		}
+		accepted = true
+		return nil
+	})
+	return accepted, err
+}
+
 // ApplyPipelineLegacyBootstrap commits the first exact legacy failure and its
 // quota sequence floor inside the same Firestore transaction as the common
 // source slot and attention material. The fence must complete all of its reads

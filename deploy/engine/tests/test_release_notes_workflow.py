@@ -1048,7 +1048,7 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
             self.assertEqual(accepted["plan_sha256"], hashlib.sha256(fixture["plan_bytes"]).hexdigest())
             self.assertEqual(accepted["resume_inputs"], {
                 "operation": "release", "source_sha": fixture["plan"]["source"],
-                "release_tag": fixture["plan"]["tag"], "components": "bff,frontend",
+                "release_tag": fixture["plan"]["tag"], "release_version": "", "components": "bff,frontend",
                 "artifact_id": fixture["ready_id"], "release_source_mode": "legacy_monorepo",
                 "auth_schema_version": "4", "dev_artifact_id": "",
             })
@@ -1577,7 +1577,9 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
                         value = {"schema_version": 1, "environment": "dev",
                                  "history": index["versions"]}
                     elif self.path.startswith("/api/v1/public/release-notes/2026.11.1?locale=en"):
-                        value = json.loads(body)
+                        value = {**json.loads(body), "requested_product_version": "2026.11.1",
+                                 "canonical_product_version": "2026.11.1", "legacy_alias": False,
+                                 "legacy_fallback": False}
                     else:
                         self.send_error(404)
                         return

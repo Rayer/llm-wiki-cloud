@@ -142,6 +142,32 @@ def normalized_marker(**kwargs):
         service="svc", receipt_bytes=fixture[4])[0]
 
 
+def initial_schema2_migration_fixture():
+    old_marker = normalized_marker(operation="deploy", service_generation=43,
+                                   revision="rev-v", product_version="1.0.0")
+    old_marker_token = json.dumps(old_marker, ensure_ascii=False, indent=2).encode("utf-8")
+    index_bytes = b'{ "schema_version": 1, "versions": [], "current_deployment": ' + old_marker_token + b' }'
+    fixture = list(operation_fixture(operation="release", service_generation=44,
+                                     revision="rev-w", product_version="1.0.0"))
+    plan = json.loads(fixture[0])
+    plan["schema"] = 4
+    plan["release_version"] = release_notes.PUBLIC_RELEASE_VERSION
+    plan_bytes = canonical(plan)
+    sidecar = json.loads(fixture[3])
+    sidecar["plan_sha256"] = release_notes.digest_bytes(plan_bytes)
+    fixture[0] = plan_bytes
+    fixture[3] = canonical(sidecar)
+    marker, _ = release_notes.normalize_operation(
+        *fixture[:4], environment="dev", workflow_operation="release", run_id="701",
+        run_attempt=1, service="svc", receipt_bytes=fixture[4])
+    release_notes.bind_previous_release(marker, old_marker, old_marker_token)
+    store = MemoryNotesStore()
+    store.index = index_bytes
+    store.generation = 5
+    store.active_marker = marker
+    return store, marker, release_notes.digest_bytes(plan_bytes), old_marker_token
+
+
 def multi_component_fixture(operation):
     fixture = list(operation_fixture(operation=operation, service_generation=44 if operation != "rollback" else 43,
                                      revision="rev-w" if operation != "rollback" else "rev-v",
@@ -357,6 +383,88 @@ class ReleaseNotesContractTests(unittest.TestCase):
         self.assertEqual(corrected["versions"][0]["published_at"], original_index["versions"][0]["published_at"])
         self.assertEqual(corrected["current_deployment"], original_index["current_deployment"])
         self.assertGreater(correction.index_generation, first.index_generation)
+
+    def test_schema4_migration_binds_public_version_alias_and_exact_prior_marker_bytes(self):
+        store, marker, plan_sha256, old_marker_token = initial_schema2_migration_fixture()
+        marker_before = copy.deepcopy(marker)
+        result = release_notes.publish_package(
+            store, {"en": note(version=release_notes.PUBLIC_RELEASE_VERSION)},
+            product_version=release_notes.PUBLIC_RELEASE_VERSION,
+            published_at="2026-11-15T01:14:01Z", marker=marker,
+            transition_plan_sha256=plan_sha256)
+        self.assertEqual(marker, marker_before)
+        index = release_notes.validate_index(store.index)
+        created = index["legacy_aliases"][0]
+        self.assertEqual(index["schema_version"], release_notes.INDEX_SCHEMA_VERSION)
+        self.assertEqual(index["current_deployment"]["product_version"], "1.0.0")
+        self.assertEqual(index["current_deployment"]["release_version"], release_notes.PUBLIC_RELEASE_VERSION)
+        self.assertEqual(created["source_marker_sha256"], release_notes.digest_bytes(old_marker_token))
+        self.assertEqual(created["source_index_generation"], 5)
+        self.assertEqual(created["transition_plan_sha256"], plan_sha256)
+        self.assertEqual(created["transition_run_id"], "701")
+        self.assertEqual(created["creation_marker_sha256"], release_notes.digest_bytes(canonical(marker)))
+        self.assertEqual(result.legacy_alias_receipt["action"], "created")
+        self.assertEqual(result.legacy_alias_receipt["index_generation_before"], 5)
+        self.assertEqual(result.legacy_alias_receipt["index_generation_after"], 6)
+
+        carried_alias = copy.deepcopy(created)
+        prior_bytes = release_notes.current_deployment_token_bytes(store.index)
+        next_marker = copy.deepcopy(marker)
+        next_marker.update(operation="deploy", operation_run_id="702", service_generation=45,
+                           revision="rev-next", deployment_evidence_digest="sha256:" + "f" * 64)
+        release_notes.bind_previous_release(next_marker, index["current_deployment"], prior_bytes)
+        store.active_marker = next_marker
+        carry_result = release_notes.publish_marker_only(
+            store, next_marker, transition_plan_sha256="a" * 64)
+        carried_index = release_notes.validate_index(store.index)
+        self.assertEqual(carried_index["legacy_aliases"], [carried_alias])
+        self.assertEqual(carry_result.legacy_alias_receipt["action"], "carried")
+        self.assertEqual(carry_result.legacy_alias_receipt["alias_record_sha256"], carried_alias["alias_record_sha256"])
+
+    def test_initial_alias_creation_requires_publish_or_explicit_skip_and_resend_cannot_create_it(self):
+        store, marker, plan_sha256, _ = initial_schema2_migration_fixture()
+        with self.assertRaisesRegex(release_notes.ReleaseNotesError, "legacy-alias-creation-not-authorized"):
+            release_notes.publish_marker_only(store, marker, transition_plan_sha256=plan_sha256)
+        self.assertEqual((store.generation, store.writes), (5, 0))
+        denied = copy.deepcopy(store)
+        with self.assertRaisesRegex(release_notes.ReleaseNotesError, "legacy-alias-creation-not-authorized"):
+            release_notes.publish_package(
+                denied, {"en": note(version=release_notes.PUBLIC_RELEASE_VERSION)},
+                product_version=release_notes.PUBLIC_RELEASE_VERSION,
+                published_at="2026-11-15T01:14:01Z", marker=marker,
+                transition_plan_sha256=plan_sha256, allow_alias_creation=False)
+        self.assertEqual((denied.generation, denied.writes), (5, 0))
+
+        skipped_store, skipped_marker, skipped_plan_sha256, _ = initial_schema2_migration_fixture()
+        skip_result = release_notes.publish_marker_only(
+            skipped_store, skipped_marker, transition_plan_sha256=skipped_plan_sha256,
+            allow_alias_creation=True)
+        skipped_index = release_notes.validate_index(skipped_store.index)
+        self.assertEqual(skipped_index["current_deployment"]["release_version"], release_notes.PUBLIC_RELEASE_VERSION)
+        self.assertEqual(skipped_index["legacy_aliases"][0]["creation_marker_sha256"],
+                         release_notes.digest_bytes(canonical(skipped_index["current_deployment"])))
+        self.assertEqual(skip_result.legacy_alias_receipt["action"], "created")
+
+        history_store, _, _, _ = initial_schema2_migration_fixture()
+        original_current = json.loads(history_store.index)["current_deployment"]
+        history = release_notes.publish_package(
+            history_store, {"en": note(version="2026.11.1")}, product_version="2026.11.1",
+            published_at="2026-11-01T22:58:30+08:00", marker=None, historical=True,
+            allow_alias_creation=False)
+        history_index = release_notes.validate_index(history_store.index)
+        self.assertEqual(history_index["current_deployment"], original_current)
+        self.assertNotIn("legacy_aliases", history_index)
+        self.assertIsNone(history.legacy_alias_receipt)
+
+    def test_current_marker_token_digest_uses_original_json_bytes(self):
+        marker = normalized_marker(operation="deploy", product_version="1.0.0")
+        token = json.dumps(marker, ensure_ascii=False, indent=2).encode("utf-8")
+        index_bytes = b'{"schema_version":1,"versions":[],"current_deployment": ' + token + b'}'
+        extracted = release_notes.current_deployment_token_bytes(index_bytes)
+        self.assertEqual(extracted, token)
+        previous = release_notes.previous_release_from_marker(marker, extracted)
+        self.assertEqual(previous["marker_sha256"], release_notes.digest_bytes(token))
+        self.assertNotEqual(previous["marker_sha256"], release_notes.digest_bytes(canonical(marker)))
 
     def test_first_create_race_with_different_digest_conflicts_and_preserves_winner(self):
         marker = self.normalize(operation="deploy", service_generation=44,

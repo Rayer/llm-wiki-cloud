@@ -21,11 +21,12 @@ import (
 )
 
 type releaseNotesRouteStore struct {
-	mu         sync.Mutex
-	snapshot   releasenotes.IndexSnapshot
-	content    map[string][]byte
-	indexErr   error
-	indexReads int
+	mu           sync.Mutex
+	snapshot     releasenotes.IndexSnapshot
+	content      map[string][]byte
+	indexErr     error
+	indexReads   int
+	contentReads int
 }
 
 func (s *releaseNotesRouteStore) ReadIndex(context.Context) (releasenotes.IndexSnapshot, error) {
@@ -41,6 +42,7 @@ func (s *releaseNotesRouteStore) ReadIndex(context.Context) (releasenotes.IndexS
 func (s *releaseNotesRouteStore) ReadContent(_ context.Context, objectPath string) ([]byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.contentReads++
 	body, ok := s.content[objectPath]
 	if !ok {
 		return nil, errors.New("test content missing")
@@ -66,6 +68,12 @@ func (s *releaseNotesRouteStore) readCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.indexReads
+}
+
+func (s *releaseNotesRouteStore) contentReadCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.contentReads
 }
 
 func releaseNotesRuntime(version, revision string) releasenotes.BuildInfo {
@@ -107,6 +115,92 @@ func releaseNotesIndexFixture(t *testing.T, runtime releasenotes.BuildInfo, gene
 	}
 	snapshot := releasenotes.IndexSnapshot{Bytes: indexBytes, Generation: generation}
 	return &releaseNotesRouteStore{snapshot: snapshot, content: content}, snapshot
+}
+
+func releaseNotesSchema2IndexFixture(t *testing.T, runtime releasenotes.BuildInfo, generation int64) (*releaseNotesRouteStore, releasenotes.IndexSnapshot) {
+	t.Helper()
+	version := releasenotes.PublicVersion
+	body, err := json.Marshal(releasenotes.Content{SchemaVersion: 1, Product: releasenotes.ProductName,
+		ProductVersion: version, Locale: "en", Entries: []releasenotes.Entry{{Title: "Release notes",
+			WhatChanged: "A tested release change.", UserBenefit: "People can understand the change.",
+			WhereToUse: "Open the Release Notes page.", Limitations: []string{}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(body)
+	digestHex := hex.EncodeToString(digest[:])
+	path := fmt.Sprintf("release-notes/v1/versions/%s/en/%s.json", version, digestHex)
+	marker := map[string]any{
+		"schema_version": 2, "environment": runtime.Environment, "product_version": runtime.ProductVersion,
+		"commit": runtime.Commit, "branch": runtime.Branch, "tag": runtime.Tag, "image_tag": runtime.ImageTag,
+		"image_digest": "sha256:" + strings.Repeat("c", 64), "service": runtime.Service,
+		"service_uid": "service-uid-1", "service_generation": 42, "revision": runtime.Revision,
+		"operation": "release", "deployment_evidence_digest": "sha256:" + strings.Repeat("d", 64),
+		"release_version": version, "operation_run_id": "1234567890", "operation_run_attempt": 1,
+		"component_builds": []any{}, "previous_release": nil,
+	}
+	index := map[string]any{
+		"schema_version": 2,
+		"versions": []any{map[string]any{
+			"product_version": version, "published_at": "2026-11-15T01:14:01Z",
+			"locales": map[string]any{"en": map[string]any{"sha256": digestHex, "object_path": path}},
+		}},
+		"current_deployment": marker, "legacy_aliases": []any{},
+	}
+	indexBytes, err := json.Marshal(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := releasenotes.IndexSnapshot{Bytes: indexBytes, Generation: generation}
+	return &releaseNotesRouteStore{snapshot: snapshot, content: map[string][]byte{path: body}}, snapshot
+}
+
+func TestReleaseNotesVisibilityProjectionUsesPublicVersionAndExactIndexFence(t *testing.T) {
+	runtime := releaseNotesRuntime("1.0.0", "llm-wiki-bff-dev-00041-xyz")
+	store, _ := releaseNotesSchema2IndexFixture(t, runtime, 123)
+	visibility, err := releasenotes.ReadVisibilitySnapshot(context.Background(), store, runtime)
+	if err != nil {
+		t.Fatalf("read schema-2 visibility snapshot: %v", err)
+	}
+	if store.readCount() != 1 || store.contentReadCount() != 0 {
+		t.Fatalf("projection snapshot must make one metadata read and zero body reads: index=%d content=%d", store.readCount(), store.contentReadCount())
+	}
+	key := "release-notes:llm-wiki-cloud:dev"
+	digest := sha256.Sum256(store.snapshot.Bytes)
+	slot := nudge.Slot{SchemaVersion: nudge.SchemaVersion, SourceKey: key, SourceRevision: 8, Active: true,
+		ProducerWitness: nudge.ProducerWitness{Kind: "release-notes", Environment: "dev", ProductVersion: releasenotes.PublicVersion,
+			IndexRevision: 123, IndexDigest: hex.EncodeToString(digest[:])},
+		AttentionMaterialRevision: "version:" + releasenotes.PublicVersion}
+	view := nudge.View{SchemaVersion: nudge.SchemaVersion, Failures: []nudge.SourceFailure{}, Notices: []nudge.SourceNotice{},
+		Items: []nudge.Item{{Category: nudge.CategoryReleaseNotes, AttentionID: "attention-1", AttentionState: nudge.AttentionRead,
+			Observations: []nudge.Slot{slot}}}}
+	handler := &Handler{releaseNotesRuntime: runtime}
+	projected := handler.projectReleaseNotesNudgeVisibility(view, visibility)
+	if projected.Partial || len(projected.Items) != 1 || projected.Items[0].Observations[0].ProducerWitness.ProductVersion != releasenotes.PublicVersion {
+		t.Fatalf("current public Release item was not accepted for the matching 1.0.0 BFF process: %+v", projected)
+	}
+
+	staleVisibility := *visibility
+	staleVisibility.IndexDigest = strings.Repeat("e", 64)
+	stale := handler.projectReleaseNotesNudgeVisibility(view, &staleVisibility)
+	if !stale.Partial || len(stale.Items) != 0 {
+		t.Fatalf("mismatched index witness remained visible as current: %+v", stale)
+	}
+	staleNotice := false
+	for _, notice := range stale.Notices {
+		if notice.SourceKey == key && notice.State == "stale" {
+			staleNotice = true
+		}
+	}
+	if !staleNotice {
+		t.Fatalf("mismatched witness did not produce source-stale notice: %+v", stale)
+	}
+	oldRuntime := runtime
+	oldRuntime.Revision = "llm-wiki-bff-dev-00040-old"
+	old := (&Handler{releaseNotesRuntime: oldRuntime}).projectReleaseNotesNudgeVisibility(view, visibility)
+	if !old.Partial || len(old.Items) != 0 {
+		t.Fatalf("stale BFF process exposed a newer Release observation: %+v", old)
+	}
 }
 
 func releaseNotesRouteCall(t *testing.T, router http.Handler, method, path, body string) (int, string) {
@@ -180,9 +274,10 @@ func TestReleaseNotesNudgeAuthenticatedRoutePersistsProjectsAndPreservesTransiti
 	}
 
 	readsBeforeGet := store.readCount()
+	contentReadsBeforeGet := store.contentReadCount()
 	status, response = releaseNotesRouteCall(t, router, http.MethodGet, "/api/v1/nudges", "")
-	if status != http.StatusOK || store.readCount() != readsBeforeGet {
-		t.Fatalf("persisted GET unexpectedly called source or failed: status=%d reads=%d before=%d body=%s", status, store.readCount(), readsBeforeGet, response)
+	if status != http.StatusOK || store.readCount() != readsBeforeGet+1 || store.contentReadCount() != contentReadsBeforeGet {
+		t.Fatalf("persisted GET must read one bounded index and no content bodies: status=%d index_reads=%d before=%d content_reads=%d body=%s", status, store.readCount(), readsBeforeGet, store.contentReadCount(), response)
 	}
 	status, response = releaseNotesRouteCall(t, router, http.MethodPatch, "/api/v1/nudges/release-notes/attention",
 		fmt.Sprintf(`{"attention_id":%q,"action":"read"}`, item.AttentionID))
@@ -318,13 +413,31 @@ func TestReleaseNotesNudgeOutageReturnsTransientStaleNoticeForActiveItem(t *test
 	}
 
 	readsBeforeGet := store.readCount()
+	contentReadsBeforeGet := store.contentReadCount()
 	status, response = releaseNotesRouteCall(t, router, http.MethodGet, "/api/v1/nudges", "")
 	var persistedGet nudge.View
-	if status != http.StatusOK || store.readCount() != readsBeforeGet || json.Unmarshal([]byte(response), &persistedGet) != nil ||
-		persistedGet.Partial || len(persistedGet.Items) != 1 || persistedGet.Items[0].AttentionID != item.AttentionID ||
-		persistedGet.Items[0].AttentionState != nudge.AttentionRead {
-		t.Fatalf("persisted GET did not remain source-read-only with the retained item: status=%d reads=%d before=%d body=%s",
-			status, store.readCount(), readsBeforeGet, response)
+	if status != http.StatusOK || store.readCount() != readsBeforeGet+1 || store.contentReadCount() != contentReadsBeforeGet ||
+		json.Unmarshal([]byte(response), &persistedGet) != nil || !persistedGet.Partial || len(persistedGet.Items) != 0 {
+		t.Fatalf("persisted GET must suppress the stale item after one bounded index outage: status=%d index_reads=%d before=%d content_reads=%d body=%s",
+			status, store.readCount(), readsBeforeGet, store.contentReadCount(), response)
+	}
+	staleProjectionNotice := false
+	for _, notice := range persistedGet.Notices {
+		if notice.SourceKey == "release-notes:llm-wiki-cloud:dev" && notice.State == "stale" {
+			staleProjectionNotice = true
+		}
+	}
+	if !staleProjectionNotice {
+		t.Fatalf("persisted GET omitted stale projection notice: %+v", persistedGet)
+	}
+	unchangedAfterGet, err := repository.ReadSourceSlot(ctx, ownerID, nudge.CategoryReleaseNotes, key)
+	categoryAfterGet, categoryGetErr := categoryRef.Get(ctx)
+	if err != nil || categoryGetErr != nil || unchangedAfterGet.SourceRevision != before.SourceRevision ||
+		unchangedAfterGet.Active != before.Active || unchangedAfterGet.PayloadDigest != before.PayloadDigest ||
+		unchangedAfterGet.AttentionMaterialRevision != before.AttentionMaterialRevision ||
+		unchangedAfterGet.ProducerWitness != before.ProducerWitness ||
+		categoryAfterGet.Data()["attention_id"] != item.AttentionID || categoryAfterGet.Data()["attention_state"] != string(nudge.AttentionRead) {
+		t.Fatalf("stale GET projection mutated persisted source/attention: slot=%+v category=%v errors=%v/%v", unchangedAfterGet, categoryAfterGet.Data(), err, categoryGetErr)
 	}
 
 	store.setIndex(snapshot, store.content)

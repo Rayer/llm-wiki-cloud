@@ -270,6 +270,7 @@ class AsyncBuildSubmission(unittest.TestCase):
         source = source or subprocess.check_output(['git','rev-parse','HEAD'], cwd=ROOT, text=True).strip()
         args = SimpleNamespace(environment='development', source=source,
                                components=','.join(selected), tag=tag or 'test-lwc358-'+name,
+                               release_version='2026.11.4',
                                dev_reference=None, release_source_mode='legacy_monorepo')
         def admit_command(command, **kwargs):
             argv = [str(value) for value in command]
@@ -328,6 +329,7 @@ class AsyncBuildSubmission(unittest.TestCase):
         self.assertNotEqual(source, executor)
         args = SimpleNamespace(environment='development', source=source, executor_sha=executor,
                                components='bff', tag='test-lwc373-source-config-identity',
+                               release_version='2026.11.4',
                                dev_reference=None, release_source_mode='legacy_monorepo')
         captured = {}
         real_run = support.run
@@ -427,7 +429,8 @@ class AsyncBuildSubmission(unittest.TestCase):
         env={**self.environment,**(extra or {}),'RUNNER_TEMP':str(runner_temp),
              'EXECUTOR_SHA':executor_sha or source,
              'INPUT_OPERATION':operation,'TARGET':target,'SOURCE':source,
-             'COMPONENTS':components,'RELEASE_TAG':tag,'REUSE_ID':reuse_id,'DEV_ID':'',
+             'COMPONENTS':components,'RELEASE_TAG':tag,'RELEASE_VERSION':'2026.11.4',
+             'REUSE_ID':reuse_id,'DEV_ID':'',
              'LWC_TEST_ARTIFACT_ID':reuse_id,'LWC_TEST_ARTIFACT_SOURCE':str(artifact_source)}
         env.setdefault('INPUT_AUTH-SCHEMA-VERSION','')
         env['LWC_TEST_PYTHON_ARGS_LOG']=str(runner_temp/'python-argv.jsonl')

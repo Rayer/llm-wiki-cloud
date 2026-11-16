@@ -11,6 +11,11 @@ on:
         description: Explicit immutable release tag; not used by config-only
         required: false
         type: string
+      release_version:
+        description: Explicit public product release version; included in the immutable release plan and never inferred from the tag or BFF build
+        required: false
+        type: string
+        default: ''
       artifact_id:
         description: Optional retained artifact ID for reuse
         type: string
@@ -145,6 +150,7 @@ jobs:
       executor_sha: ${{ github.sha }}
       components: ${{ inputs.components }}
       release_tag: ${{ inputs.release_tag }}
+      release_version: ${{ inputs.release_version }}
       release_source_mode: ${{ inputs.release_source_mode }}
       auth_schema_version: ${{ inputs.auth_schema_version }}
       auth_repository_id: ${{ fromJSON(inputs.auth_repository_id) }}

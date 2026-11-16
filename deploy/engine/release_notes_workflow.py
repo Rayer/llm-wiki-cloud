@@ -310,6 +310,7 @@ def _validate_development_plan(plan_bytes: bytes) -> dict:
             not isinstance(plan.get("id"), str) or not plan.get("id") or
             not isinstance(plan.get("tag"), str) or not plan.get("tag") or
             not isinstance(plan.get("identities"), dict) or not isinstance(plan["identities"].get("bff"), dict) or
+            (plan.get("schema") == 4 and not release_notes.valid_version(plan.get("release_version"))) or
             not bff_selected_from_plan(plan_bytes)):
         _fail("release-plan-not-bff-dev")
     return plan
@@ -411,7 +412,7 @@ def validate_history_result_handoff(metadata: dict, run: dict, result_directory:
             not isinstance(plan.get("id"), str) or re.fullmatch(r"[0-9a-f]{64}", plan["id"]) is None or
             plan.get("id") != _plan_id(plan)):
         _fail("history-plan-invalid")
-    if plan.get("schema") == 3:
+    if plan.get("schema") in (3, 4):
         producer_sha = plan.get("executor_sha")
     elif plan.get("schema") == 2:
         producer_sha = plan.get("source")
@@ -535,6 +536,16 @@ def _plan_id(plan: dict) -> str:
             identity["release_source_mode"] = plan["release_source_mode"]
         if "auth_source" in plan:
             identity["auth_source"] = plan["auth_source"]
+    elif schema == 4:
+        fields = ("source", "branch", "tag", "normalized", "identities", "dev_reference", "selected", "release_version")
+        if (any(field not in plan for field in fields) or
+                not release_notes.valid_version(plan.get("release_version"))):
+            _fail("ready-plan-invalid")
+        identity = {key: plan[key] for key in fields}
+        if "release_source_mode" in plan:
+            identity["release_source_mode"] = plan["release_source_mode"]
+        if "auth_source" in plan:
+            identity["auth_source"] = plan["auth_source"]
     else:
         _fail("ready-plan-invalid")
     return hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
@@ -565,6 +576,7 @@ def _resume_inputs(plan: dict, ready_artifact_id: str, notes_artifact_id: str) -
         "operation": "release",
         "source_sha": plan["source"],
         "release_tag": plan["tag"],
+        "release_version": plan.get("release_version", ""),
         "components": ",".join(plan["selected"]),
         "artifact_id": ready_artifact_id,
         "release_source_mode": source_mode,
@@ -633,7 +645,7 @@ def validate_ready_handoff(metadata: dict, run: dict, artifact_list: dict,
             plan.get("id") != _plan_id(plan)):
         _fail("ready-plan-invalid")
     run_sha = run.get("head_sha")
-    if plan.get("schema") == 3 and plan.get("executor_sha") != run_sha:
+    if plan.get("schema") in (3, 4) and plan.get("executor_sha") != run_sha:
         _fail("ready-plan-producer-mismatch")
 
     state = _json_object(state_bytes)
@@ -703,6 +715,9 @@ def _validate_package_from_plan(package_dir: Path, plan_path: Path, *, verify_ar
         expected_artifact_digest=artifact_digest if verify_artifact_digest else None,
         artifact_metadata_digest=metadata_digest if verify_artifact_digest else None,
         plan_bytes=plan_bytes)
+    plan = _json_object(plan_bytes)
+    if plan.get("schema") == 4 and product_version != plan.get("release_version"):
+        _fail("package-release-version-mismatch")
     return product_version, manifest, plan_bytes
 
 
@@ -789,9 +804,9 @@ def _validate_history_binding(binding: dict, *, result_artifact_id: str,
             binding["plan_sha256"] != hashlib.sha256(plan_bytes).hexdigest() or
             binding["plan_id"] != plan.get("id") or binding["source_sha"] != plan.get("source") or
             plan.get("branch") != "develop" or
-            (plan.get("schema") == 3 and plan.get("executor_sha") != binding["head_sha"]) or
+            (plan.get("schema") in (3, 4) and plan.get("executor_sha") != binding["head_sha"]) or
             (plan.get("schema") == 2 and plan.get("source") != binding["head_sha"]) or
-            plan.get("schema") not in (2, 3)):
+            plan.get("schema") not in (2, 3, 4)):
         _fail("history-result-binding-mismatch")
     return binding
 

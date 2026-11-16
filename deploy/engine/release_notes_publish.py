@@ -209,6 +209,11 @@ def operation_marker(directory: Path, args) -> tuple[dict, bytes]:
     state_bytes = release_notes_capture.read_bytes(directory / "state.json")
     result_bytes = release_notes_capture.read_bytes(directory / "result.json")
     receipt_bytes = release_notes_capture.read_bytes(directory / "receipts" / "bff.json")
+    plan = release_notes._json_object(plan_bytes, "index_update", release_notes.MAX_OPERATION_ARTIFACT_BYTES)
+    component_receipts = {
+        component: release_notes_capture.read_bytes(directory / "receipts" / f"{component}.json")
+        for component in ("frontend", "worker") if component in plan.get("selected", [])
+    }
     sidecar = release_notes._json_object(sidecar_bytes.removesuffix(b"\n"), "index_update",
                                          release_notes.MAX_INDEX_BYTES, release_notes.SIDECAR_FIELDS)
     canonical_sidecar = json.dumps(sidecar, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
@@ -217,7 +222,8 @@ def operation_marker(directory: Path, args) -> tuple[dict, bytes]:
     marker, _ = release_notes.normalize_operation(plan_bytes, state_bytes, result_bytes,
         canonical_sidecar[:-1],
         environment=args.environment, workflow_operation=args.operation, run_id=args.run_id,
-        run_attempt=args.run_attempt, service=sidecar.get("service", ""), receipt_bytes=receipt_bytes)
+        run_attempt=args.run_attempt, service=sidecar.get("service", ""), receipt_bytes=receipt_bytes,
+        component_receipts=component_receipts)
     return marker, sidecar_bytes
 
 
@@ -383,8 +389,9 @@ def verify_reader_api(directory: Path, expected_environment: str, marker: dict, 
             index.get("environment") != expected_environment or not isinstance(index.get("history"), list):
         raise release_notes.ReleaseNotesError("exact_readback", "reader-index-readback-invalid")
     if marker is not None and not historical:
+        public_version = marker.get("release_version", marker["product_version"])
         if index.get("runtime_product_version") != marker["product_version"] or \
-                index.get("current_product_version") != marker["product_version"] or \
+                index.get("current_product_version") != public_version or \
                 index.get("current_status") not in ("available", "missing"):
             raise release_notes.ReleaseNotesError("exact_readback", "reader-current-readback-mismatch")
     for locale in locales:
@@ -401,7 +408,10 @@ def verify_reader_api(directory: Path, expected_environment: str, marker: dict, 
         except Exception:
             raise release_notes.ReleaseNotesError("exact_readback", "reader-content-readback-unavailable") from None
         if not isinstance(content, dict) or content.get("schema_version") != release_notes.SCHEMA_VERSION or \
-                content.get("product_version") != product_version or not isinstance(content.get("entries"), list):
+                content.get("product_version") != product_version or not isinstance(content.get("entries"), list) or \
+                content.get("requested_product_version", product_version) != product_version or \
+                content.get("canonical_product_version", product_version) != product_version or \
+                content.get("legacy_alias") is not False or content.get("legacy_fallback") is not False:
             raise release_notes.ReleaseNotesError("exact_readback", "reader-content-readback-mismatch")
     return {"reader_environment": index.get("environment"), "reader_current_status": index.get("current_status"),
             "reader_current_product_version": index.get("current_product_version"),
@@ -442,6 +452,9 @@ def execute(args) -> dict:
                 args.package_dir, expected_environment=args.environment,
                 expected_artifact_digest=args.artifact_digest,
                 artifact_metadata_digest=args.artifact_metadata_digest, plan_bytes=plan_bytes)
+            plan_identity = release_notes._json_object(plan_bytes, "validate", release_notes.MAX_OPERATION_ARTIFACT_BYTES)
+            if plan_identity.get("schema") == 4 and product_version != plan_identity.get("release_version"):
+                raise release_notes.ReleaseNotesError("validate", "package-release-version-mismatch")
             historical_fields = release_notes.HISTORICAL_MANIFEST_FIELDS
             historical_package = historical_fields <= set(manifest)
             if historical_package:
@@ -494,13 +507,17 @@ def execute(args) -> dict:
             publisher = PublisherStore(store, directory, args.operation, args.run_id, args.run_attempt)
             if args.action in ("skip", "marker"):
                 stage = "index_update"
-                result = release_notes.publish_marker_only(publisher, marker)
+                result = release_notes.publish_marker_only(
+                    publisher, marker, transition_plan_sha256=release_notes.digest_bytes(plan_bytes),
+                    allow_alias_creation=args.action == "skip")
             else:
                 stage = "index_update"
                 result = release_notes.publish_package(
                     publisher, content_files, product_version=product_version,
                     published_at=published_at, marker=marker,
-                    historical=args.action == "resend" and marker is None)
+                    historical=args.action == "resend" and marker is None,
+                    transition_plan_sha256=release_notes.digest_bytes(plan_bytes),
+                    allow_alias_creation=args.action == "publish")
             stage = "exact_readback"
             api_readback = verify_reader_api(directory, args.environment, marker,
                 product_version or (marker or {}).get("product_version", ""), sorted(content_files),
@@ -519,6 +536,7 @@ def execute(args) -> dict:
                 "operation_sidecar_sha256": release_notes.digest_bytes(sidecar_bytes) if sidecar_bytes else None,
                 "publication_evidence_sha256": release_notes.digest_bytes(publication_bytes) if publication_bytes else None,
                 "reader_api_readback": api_readback,
+                "legacy_alias_receipt": result.legacy_alias_receipt,
                 "operation": args.operation, "run_id": args.run_id, "run_attempt": args.run_attempt,
                 "decision_actor": args.decision_actor or None, "decision_time": args.decision_time or None,
                 "published_at": published_at,

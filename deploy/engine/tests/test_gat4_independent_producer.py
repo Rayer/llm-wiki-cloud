@@ -307,6 +307,7 @@ class IndependentProducerTests(unittest.TestCase):
             ).strip(),
             "components": ",".join(components),
             "tag": "gat4-local-synthetic-" + name,
+            "release_version": "2026.11.4",
             "dev_reference": None,
             "reuse": str(reuse) if reuse else None,
             "dev": None,
@@ -703,7 +704,8 @@ else:
         source = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
         base = {
             "environment": "development", "source": source, "executor_sha": source,
-            "tag": "gat4-local-source-negative", "components": "auth", "dev_reference": None,
+            "tag": "gat4-local-source-negative", "release_version": "2026.11.4",
+            "components": "auth", "dev_reference": None,
             "reuse": None, "dev": None, "release_source_mode": "independent",
         }
         with tempfile.TemporaryDirectory(prefix="gat4-independent-admission-negative-") as raw:

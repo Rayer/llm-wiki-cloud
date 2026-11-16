@@ -192,6 +192,21 @@ class Acceptance(unittest.TestCase):
                 self.assertEqual(restored.provider._build_source_environment('auth')[:2],
                                  (restored.plan['source'], restored.plan['branch']))
 
+    def test_schema_four_plan_identity_binds_explicit_public_release_version(self):
+        plan = {
+            'schema': 4, 'source': 'a' * 40, 'branch': 'develop', 'tag': 'release-2026.11.4',
+            'normalized': {'environment': 'development'}, 'identities': {'bff': {'inputs': 'x'}},
+            'dev_reference': None, 'selected': ['bff'], 'executor_sha': 'b' * 40,
+            'release_source_mode': 'legacy_monorepo', 'release_version': '2026.11.4',
+        }
+        first = engine.plan_id(plan)
+        changed = {**plan, 'release_version': '2026.11.5'}
+        self.assertNotEqual(first, engine.plan_id(changed))
+        self.assertEqual(first, engine.digest(engine.release_identity_v4(plan)))
+        for invalid in ('', None, '2026.011.4', 'v2026.11.4'):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(Breakpoint, 'invalid-release-version'):
+                engine.plan_id({**plan, 'release_version': invalid})
+
     def _admit_schema_three_bff_only(self, reuse):
         source = 'a' * 40
         executor = 'b' * 40
@@ -230,6 +245,7 @@ class Acceptance(unittest.TestCase):
 
         args = SimpleNamespace(environment='development', source=source, executor_sha=executor,
                                components='bff', tag='schema-three-staging',
+                               release_version='2026.11.4',
                                release_source_mode='independent', auth_schema_version=3,
                                reuse=str(reuse), auth_repository_id=None, auth_revision=None,
                                auth_tree_sha256=None, auth_artifact_id=None, auth_run_id=None,
@@ -246,7 +262,7 @@ class Acceptance(unittest.TestCase):
             reuse.mkdir()
             _write_runtime_pair(reuse, envelope=4, runtime=3)
             base = dict(environment='development', source='a' * 40, components='auth,bff',
-                        tag='schema-three-staging', release_source_mode='independent',
+                        tag='schema-three-staging', release_version='2026.11.4', release_source_mode='independent',
                         auth_schema_version=3, reuse=str(reuse))
             with self.assertRaisesRegex(Breakpoint, 'auth-schema3-selection-not-supported'):
                 engine.admit(SimpleNamespace(**base))
@@ -479,6 +495,7 @@ class Acceptance(unittest.TestCase):
         args = SimpleNamespace(
             environment=environment, source=source, executor_sha=executor,
             components='auth', tag='schema-three-auth-only',
+            release_version='2026.11.4',
             release_source_mode='independent', auth_schema_version=3,
             auth_repository_id='999999', auth_revision='c' * 40,
             auth_tree_sha256='sha256:' + 'd' * 64, auth_artifact_id='456',
@@ -537,6 +554,7 @@ class Acceptance(unittest.TestCase):
                     engine.admit(SimpleNamespace(
                         release_source_mode=mode, auth_schema_version=3,
                         environment=environment, components=components, reuse=None,
+                        release_version='2026.11.4',
                     ))
 
     def test_prepare_cli_uses_persisted_auth_schema_when_flag_is_omitted(self):
@@ -582,6 +600,30 @@ class Acceptance(unittest.TestCase):
                              'an explicit schema change must fail before prepare can mutate the release')
             self.assertEqual(existing.result_calls[-1].reason,
                              'auth-schema-version-change-requires-new-plan')
+
+            class ExistingSchemaFourPlan(ExistingSchemaThreePlan):
+                def __init__(self):
+                    super().__init__()
+                    self.plan = {'schema': 4, 'selected': ['bff'], 'source': 'a' * 40, 'tag': 'schema-four-cli',
+                                 'release_version': '2026.11.4',
+                                 'normalized': {'environment': 'development'}}
+                    self.plan['id'] = engine.plan_id({**self.plan, 'branch': 'develop', 'identities': {},
+                        'dev_reference': None, 'release_source_mode': 'legacy_monorepo', 'executor_sha': 'b' * 40})
+                    # main only reads these fields for a persisted plan; keep a valid immutable v4 identity.
+                    self.plan.update(branch='develop', identities={}, dev_reference=None,
+                                     release_source_mode='legacy_monorepo', executor_sha='b' * 40)
+
+            existing_v4 = ExistingSchemaFourPlan()
+            stdout = io.StringIO()
+            with patch.object(engine, 'Engine', return_value=existing_v4), \
+                 patch('sys.argv', ['engine.py', 'prepare', '--directory', str(directory),
+                                    '--release-version', '2026.11.5']), \
+                 patch('sys.stdout', stdout):
+                exit_code = engine.main()
+            self.assertEqual(exit_code, 1)
+            self.assertEqual(existing_v4.prepare_calls, 0)
+            self.assertEqual(existing_v4.result_calls[-1].reason,
+                             'release-version-change-requires-new-plan')
 
     def setUp(self):
         self.real_node = shutil.which('node')

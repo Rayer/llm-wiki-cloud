@@ -128,11 +128,20 @@ type ClearInput struct {
 }
 
 type SourceResult struct {
-	Status              string             `json:"status"`
-	Upserts             []ObservationInput `json:"upserts"`
-	AuthoritativeClears []ClearInput       `json:"authoritative_clears"`
-	Failures            []SourceFailure    `json:"failures"`
-	Notices             []SourceNotice     `json:"notices"`
+	Status               string                     `json:"status"`
+	Upserts              []ObservationInput         `json:"upserts"`
+	AuthoritativeClears  []ClearInput               `json:"authoritative_clears"`
+	Failures             []SourceFailure            `json:"failures"`
+	Notices              []SourceNotice             `json:"notices"`
+	ReleaseAliasTransfer *ReleaseAliasTransferProof `json:"-"`
+}
+
+// ReleaseAliasTransferProof is private adapter evidence for the single fixed
+// legacy Notes URL migration. It never appears in persisted or HTTP DTOs.
+type ReleaseAliasTransferProof struct {
+	RequestedVersion  string
+	CanonicalVersion  string
+	AliasRecordSHA256 string
 }
 
 type SourceFailure struct {
