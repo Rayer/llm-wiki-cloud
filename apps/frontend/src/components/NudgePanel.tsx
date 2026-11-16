@@ -5,10 +5,11 @@ import { Sparkles, X } from 'lucide-react';
 import { useT } from '@/lib/i18n';
 import { useAuth } from '@/lib/auth';
 import { getNudges, reconcileNudges, resolveNudgeTarget, setNudgeAttention, type NudgeAction, type NudgeItem, type NudgeView } from '@/lib/nudges';
-import { NavigationLink } from './NavigationBlocker';
+import { NavigationLink, useNavigationBlocker } from './NavigationBlocker';
 
 export function NudgePanel({ open, onOpen, onClose }: { open: boolean; onOpen: () => void; onClose: () => void }) {
   const { t } = useT();
+  const { confirmNavigation } = useNavigationBlocker();
   const { user, sessionIdentityEpoch, sessionEpoch, isDemoSession } = useAuth();
   const requestIdentity = JSON.stringify([user?.id ?? null, sessionIdentityEpoch, sessionEpoch, isDemoSession]);
   const requestIdentityRef = useRef(requestIdentity);
@@ -207,15 +208,23 @@ export function NudgePanel({ open, onOpen, onClose }: { open: boolean; onOpen: (
 
   if (!user || isDemoSession) return null;
   const hasUnread = view?.items.some((item) => item.severity !== 'urgent' && item.attention_state === 'unread') ?? false;
+  const closedFeedback = error
+    ? { role: 'alert' as const, message: error }
+    : !view
+      ? { role: 'status' as const, message: t('Nudge.statusUnknown') }
+      : sourceStatus?.partial ?? view.partial
+        ? { role: 'status' as const, message: t('Nudge.partial') }
+        : null;
 
   return (
     <>
-      <div className="order-2 ml-auto flex items-center">
+      <div className="order-2 ml-auto flex items-center gap-2">
       <button type="button" onClick={onOpen} aria-label={hasUnread ? `${t('Nudge.open')}, ${t('Nudge.unreadCue')}` : t('Nudge.open')} aria-expanded={open} className="relative inline-flex min-h-11 min-w-11 items-center justify-center rounded border border-white/10 bg-white/5 px-3 text-sm text-zinc-200 transition hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400">
         <Sparkles className="size-4" aria-hidden="true" />
         <span className="sr-only">{t('Nudge.open')}</span>
         {hasUnread ? <span aria-hidden="true" className="absolute right-1.5 top-1.5 size-2 rounded-full bg-amber-300 ring-2 ring-zinc-950" /> : null}
       </button>
+      {!open && closedFeedback ? <p role={closedFeedback.role} className="max-w-56 text-xs text-amber-100">{closedFeedback.message}</p> : null}
       </div>
       {open ? <div className="fixed inset-0 z-[90] flex justify-end bg-black/60" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <section role="dialog" aria-modal="true" aria-labelledby="nudge-title" className="h-full w-full max-w-xl overflow-y-auto border-l border-white/10 bg-[#191B1C] p-5 shadow-2xl sm:p-7">
@@ -262,10 +271,12 @@ export function NudgePanel({ open, onOpen, onClose }: { open: boolean; onOpen: (
                           return <NavigationLink key={action.id} href={href} onNavigate={() => acceptTargetNavigation(item, requestIdentity)} className={className}>{label}</NavigationLink>;
                         }
                         if (action.kind === 'copy-then-link' && href) {
-                          return <NavigationLink key={action.id} href={href} onNavigate={(event) => {
-                            event.preventDefault();
+                          return <button key={action.id} type="button" disabled={busy} onAuxClick={(event) => {
+                            if (event.button === 1) event.preventDefault();
+                          }} onClick={() => {
+                            if (!confirmNavigation()) return;
                             void copyThenOpenTarget(item, slot.source_key, action, href);
-                          }} className={className}>{label}</NavigationLink>;
+                          }} className={className}>{label}</button>;
                         }
                         return <button key={action.id} type="button" disabled={busy} onClick={() => void runAction(item, slot.source_key, action)} className={className}>
                           {label}

@@ -4,7 +4,7 @@
   "migration_source_revision": "b8f167ef9fe3d7e3f6b53c860356eb1c2d87b9bf",
   "migration_catalog_revision": "3a0e6da83c9113423b9582f6fe3b7df6d15ab414fefc197641b1ef1c6bc25e9b",
   "candidate_catalog_revision": "049a79128b92240ecce6118e76c0c41622ec00bb9c53edb59fde0d7cb9288de6",
-  "seed_map_sha256": "bc9340191b750f8c001858993eb256ebddcbe05da480e3b642a324fe86c9ca5c",
+  "seed_map_sha256": "0ed0c22b50e75b840d265da224e1ee2ad96bd782e38c373ba6dc267141c2d6a6",
   "entries": {
     "AccountSettings.accountTab": "9d4435cd4778e9d6f90f5797c2e556e1baaffe742ef1b78150f3b61931a4a8b2",
     "AccountSettings.bindingActive": "155e79378bcb9e2d77d0d0c40999baccc08c8b72d2bbfbf835a45ea757ef1177",
@@ -814,6 +814,7 @@
     "Nudge.sampled": "06f47c86673a55ef8874cb28cb1cb7a781559f8f4f2bb50e00f12e132a716258",
     "Nudge.selectCopy": "1beefe78bf9d8b75ec74c5960c6ce27fad53528b532f8d9e7d12ee9002a5b6c2",
     "Nudge.stale": "cb58b3a24e0db478f7bfc1adfdf81699e5231e16407f479f8afe4a202f9bda9a",
+    "Nudge.statusUnknown": "774be56483392dffb8e02253df435392b265481bacb4b04d1e787c326f9f0732",
     "Nudge.targetUnavailable": "c62848a164d66bb7c0dcb4c5c5cd5eeae1bbdf207e2bc948023924c2040a852a",
     "Nudge.title": "45788cab3b753ffebc1e912be070a41f10d1dba5fe9692860db93f26d489cc74",
     "Nudge.truncated": "3d2dacba82fb067d1c7ed3dd5b0eb1c06192ee53ffa1c25e48a4a0886a342611",

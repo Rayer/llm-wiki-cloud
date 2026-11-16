@@ -895,6 +895,7 @@
     "description": "Current account topics, grouped by source.",
     "loading": "Loading…",
     "loadFailed": "Unable to load saved Nudge state.",
+    "statusUnknown": "Nudge status is not confirmed yet.",
     "partial": "Some sources are unavailable; saved observations remain unchanged.",
     "empty": "No current topics.",
     "urgent": "Urgent · source recovery required",

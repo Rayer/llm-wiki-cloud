@@ -407,20 +407,20 @@ describe('LWC-481 source status and attention transport', () => {
     expect(within(sourceSection(alphaBody)).getByRole('button', { name: 'Copy run ID' })).toBeTruthy();
     expect(within(sourceSection(betaBody)).getByRole('button', { name: 'Nudge.copied' })).toBeTruthy();
 
-    fireEvent.click(within(sourceSection(alphaBody)).getByRole('link', { name: 'Copy run ID and open run' }));
+    fireEvent.click(within(sourceSection(alphaBody)).getByRole('button', { name: 'Copy run ID and open run' }));
 
     await waitFor(() => expect(alphaPopup.location.replace).toHaveBeenCalledWith('/status?project_id=qa-alpha&execution_id=legacy-qa-alpha'));
     await waitFor(() => expect(mocks.apiFetch).toHaveBeenCalledTimes(3));
     expect(writeText).toHaveBeenNthCalledWith(3, 'legacy-qa-alpha');
-    expect(within(sourceSection(alphaBody)).getByRole('link', { name: 'Nudge.copied' })).toBeTruthy();
-    expect(within(sourceSection(betaBody)).getByRole('link', { name: 'Copy run ID and open run' })).toBeTruthy();
+    expect(within(sourceSection(alphaBody)).getByRole('button', { name: 'Nudge.copied' })).toBeTruthy();
+    expect(within(sourceSection(betaBody)).getByRole('button', { name: 'Copy run ID and open run' })).toBeTruthy();
 
-    fireEvent.click(within(sourceSection(betaBody)).getByRole('link', { name: 'Copy run ID and open run' }));
+    fireEvent.click(within(sourceSection(betaBody)).getByRole('button', { name: 'Copy run ID and open run' }));
 
     await waitFor(() => expect(betaPopup.location.replace).toHaveBeenCalledWith('/status?project_id=qa-beta&execution_id=legacy-qa-beta'));
     await waitFor(() => expect(mocks.apiFetch).toHaveBeenCalledTimes(5));
     expect(writeText).toHaveBeenNthCalledWith(4, 'legacy-qa-beta');
-    expect(within(sourceSection(alphaBody)).getByRole('link', { name: 'Copy run ID and open run' })).toBeTruthy();
-    expect(within(sourceSection(betaBody)).getByRole('link', { name: 'Nudge.copied' })).toBeTruthy();
+    expect(within(sourceSection(alphaBody)).getByRole('button', { name: 'Copy run ID and open run' })).toBeTruthy();
+    expect(within(sourceSection(betaBody)).getByRole('button', { name: 'Nudge.copied' })).toBeTruthy();
   });
 });

@@ -184,11 +184,54 @@ describe('LWC-481 Nudge action navigation', () => {
     vi.mocked(window.open).mockReturnValue(opened);
     render(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} />);
 
-    fireEvent.click(await screen.findByRole('link', { name: 'Copy and open description' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Copy and open description' }));
 
     expect(writeText).not.toHaveBeenCalled();
     expect(window.open).not.toHaveBeenCalled();
     expect(opened.location.replace).not.toHaveBeenCalled();
+    expect(mocks.setNudgeAttention).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { gesture: 'plain click', modifiers: {} },
+    { gesture: 'Cmd-click', modifiers: { metaKey: true } },
+    { gesture: 'Ctrl-click', modifiers: { ctrlKey: true } },
+  ])('keeps copy-then-link copy-first for $gesture', async ({ modifiers }) => {
+    const opened = popup();
+    vi.mocked(window.open).mockReturnValue(opened);
+    let finishCopy!: () => void;
+    writeText.mockReturnValueOnce(new Promise<void>((resolve) => { finishCopy = resolve; }));
+    render(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} />);
+
+    const action = await screen.findByRole('button', { name: 'Copy and open description' });
+    expect(action.getAttribute('href')).toBeNull();
+    expect(screen.queryByRole('link', { name: 'Copy and open description' })).toBeNull();
+    fireEvent.click(action, modifiers);
+
+    expect(mocks.confirmNavigation).toHaveBeenCalledOnce();
+    expect(window.open).toHaveBeenCalledWith('about:blank', '_blank');
+    expect(writeText).toHaveBeenCalledWith('Published overview text to preserve');
+    expect(opened.location.replace).not.toHaveBeenCalled();
+    expect(mocks.setNudgeAttention).not.toHaveBeenCalled();
+
+    await act(async () => {
+      finishCopy();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(opened.location.replace).toHaveBeenCalledWith('/profile?project_id=project-a#project-description'));
+    await waitFor(() => expect(mocks.setNudgeAttention).toHaveBeenCalledWith('content-purpose-gap', 'attention-a', 'read'));
+  });
+
+  it('does not navigate, copy, or mark seen on a middle-button action', async () => {
+    render(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} />);
+
+    const action = await screen.findByRole('button', { name: 'Copy and open description' });
+    expect(action.getAttribute('href')).toBeNull();
+    fireEvent(action, new MouseEvent('auxclick', { bubbles: true, cancelable: true, button: 1 }));
+
+    expect(mocks.confirmNavigation).not.toHaveBeenCalled();
+    expect(writeText).not.toHaveBeenCalled();
+    expect(window.open).not.toHaveBeenCalled();
     expect(mocks.setNudgeAttention).not.toHaveBeenCalled();
   });
 
@@ -243,7 +286,7 @@ describe('LWC-481 Nudge action navigation', () => {
     vi.mocked(window.open).mockReturnValue(opened);
     render(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} />);
 
-    fireEvent.click(await screen.findByRole('link', { name: 'Copy and open description' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Copy and open description' }));
 
     await waitFor(() => expect(opened.location.replace).toHaveBeenCalledWith('/profile?project_id=project-a#project-description'));
     expect(writeText).toHaveBeenCalledWith('Published overview text to preserve');
@@ -259,7 +302,7 @@ describe('LWC-481 Nudge action navigation', () => {
     writeText.mockReturnValueOnce(new Promise<void>((resolve) => { finishCopy = resolve; }));
     render(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} />);
 
-    fireEvent.click(await screen.findByRole('link', { name: 'Copy and open description' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Copy and open description' }));
     expect(window.open).toHaveBeenCalledWith('about:blank', '_blank');
     expect(opened.location.replace).not.toHaveBeenCalled();
     expect(mocks.setNudgeAttention).not.toHaveBeenCalled();
@@ -278,7 +321,7 @@ describe('LWC-481 Nudge action navigation', () => {
     vi.mocked(window.open).mockReturnValue(opened);
     render(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} />);
 
-    fireEvent.click(await screen.findByRole('link', { name: 'Copy and open description' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Copy and open description' }));
 
     expect((await screen.findByRole('alert')).textContent).toContain('Nudge.copyFailed');
     expect((screen.getByLabelText('Nudge.selectCopy') as HTMLTextAreaElement).value).toBe('Published overview text to preserve');
@@ -291,7 +334,7 @@ describe('LWC-481 Nudge action navigation', () => {
     vi.mocked(window.open).mockReturnValue(null);
     render(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} />);
 
-    fireEvent.click(await screen.findByRole('link', { name: 'Copy and open description' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Copy and open description' }));
 
     expect((await screen.findByRole('alert')).textContent).toContain('Nudge.popupBlocked');
     expect(writeText).toHaveBeenCalledWith('Published overview text to preserve');
