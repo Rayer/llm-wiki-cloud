@@ -27,7 +27,7 @@ import release_notes_publish
 import release_notes_capture
 import engine
 from test_release_notes import (MemoryNotesStore, canonical, note, operation_fixture, plan_fixture,
-                                run_capture_cli_with_service_url_failure)
+                                initial_schema2_migration_fixture, run_capture_cli_with_service_url_failure)
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -525,7 +525,8 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
             "tag": "2026.11.4",
             "source": "a" * 40,
             "normalized": {"environment": "development"},
-            "identities": {"bff": {"profile": "bff", "digest": "inputs"}},
+            "identities": {"bff": {"profile": "bff", "digest": "inputs"},
+                           "frontend": {"profile": "frontend", "digest": "frontend-inputs"}},
             "selected": ["bff", "frontend"],
         }
         self.plan_bytes = canonical(self.plan)
@@ -554,21 +555,23 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
         path.write_bytes(plan_bytes if plan_bytes is not None else self.plan_bytes)
         return path
 
-    def make_ready_handoff(self, root):
+    def make_ready_handoff(self, root, selected=("bff", "frontend"), schema=3):
         producer_sha = "b" * 40
         plan = {
-            "schema": 3,
+            "schema": schema,
             "tag": "v2026.11.5",
             "source": "a" * 40,
             "branch": "develop",
             "executor_sha": producer_sha,
             "normalized": {"environment": "development", "auth": {"runtime_inputs": {"schema_version": 4}}},
-            "identities": {"bff": {"profile": "bff", "digest": "bff-inputs"},
-                           "frontend": {"profile": "frontend", "digest": "frontend-inputs"}},
+            "identities": {component: {"profile": component, "digest": f"{component}-inputs"}
+                           for component in selected},
             "dev_reference": None,
-            "selected": ["bff", "frontend"],
+            "selected": list(selected),
             "release_source_mode": "legacy_monorepo",
         }
+        if schema == 4:
+            plan["release_version"] = "2026.11.4"
         plan["id"] = release_notes_workflow._plan_id(plan)
         plan_bytes = canonical(plan)
         state = {"plan": plan["id"], "status": "ready", "components": {}, "sequence": 5,
@@ -576,7 +579,7 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
         state_bytes = canonical(state)
         result = {
             "release": plan["tag"], "attempt": plan["id"], "stage": "ready", "status": "ready",
-            "component": "frontend", "reason": "completed", "mutation_may_have_happened": False,
+            "component": selected[-1], "reason": "completed", "mutation_may_have_happened": False,
             "prior": None, "candidate": None,
             "expected": {"source": plan["source"], "identity": "c" * 64},
             "observed": {"component_status": "unstarted"}, "last_verified_checkpoint": 5,
@@ -1099,6 +1102,67 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
                 release_notes_workflow.find_ready_result_artifact(
                     invalid["metadata"], invalid["run"], invalid["artifact_list"], invalid["ready_id"])
 
+    def test_ready_package_producer_accepts_frontend_and_worker_only_schema4_plans(self):
+        for selected in (("frontend",), ("worker",)):
+            with self.subTest(selected=selected), TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                fixture = self.make_ready_handoff(root, selected=selected, schema=4)
+                output = root / "github-output"
+                resume = release_notes_workflow.validate_ready_handoff(
+                    fixture["metadata"], fixture["run"], fixture["artifact_list"], fixture["result_metadata"],
+                    expected_artifact_id=fixture["ready_id"],
+                    expected_result_artifact_id=fixture["result_id"],
+                    ready_directory=fixture["ready_dir"], result_directory=fixture["result_dir"],
+                    output_path=str(output))
+                self.assertTrue(output.is_file())
+                self.assertEqual(resume["components"], selected[0])
+                self.assertEqual(resume["resume_inputs"]["components"], selected[0])
+                self.assertEqual(resume["resume_inputs"]["release_version"], "2026.11.4")
+                self.assertEqual(resume["resume_inputs"]["artifact_id"], fixture["ready_id"])
+
+                package = root / "package"
+                package.mkdir()
+                body = note("2026.11.4", "en", f"Synthetic {selected[0]} Ready package")
+                manifest = {
+                    "schema_version": 1, "product": "llm-wiki-cloud", "product_version": "2026.11.4",
+                    "environment": "dev",
+                    "release_plan_sha256": hashlib.sha256(fixture["plan_bytes"]).hexdigest(),
+                    "release_note_snapshot_ref": "LWC-A-62:test-only",
+                    "release_note_snapshot_sha256": "sha256:" + "f" * 64,
+                    "delivered_scope_evidence_sha256": "sha256:" + "e" * 64,
+                    "files": {"en": {"path": "en.json", "sha256": hashlib.sha256(body).hexdigest()}},
+                }
+                (package / "release-notes-manifest.json").write_bytes(canonical(manifest))
+                (package / "en.json").write_bytes(body)
+                action_digest = "a" * 64
+                metadata = {
+                    "id": 803, "name": "lwc-release-notes-2026.11.4-development-604-1",
+                    "digest": "sha256:" + action_digest, "expired": False,
+                    "expires_at": "2027-02-12T00:00:00Z", "workflow_run": {"id": 604},
+                }
+                receipt_output = root / f"package-output-{selected[0]}"
+                receipt = release_notes_workflow.verify_uploaded_package(
+                    package, fixture["ready_dir"] / "plan.json", metadata,
+                    expected_artifact_id="803", expected_name=metadata["name"],
+                    action_digest=action_digest, run_id="604", run_attempt="1",
+                    ready_artifact_id=fixture["ready_id"], output_path=str(receipt_output))
+                self.assertEqual(receipt["ready_artifact_id"], fixture["ready_id"])
+                self.assertTrue(receipt_output.is_file())
+
+                # Only the canonical selected identities may cross the Ready boundary.
+                widened = dict(fixture["plan"])
+                widened["identities"] = {**fixture["plan"]["identities"],
+                                          "bff": {"profile": "unselected-bff", "digest": "not-selected"}}
+                with self.assertRaisesRegex(release_notes_workflow.PackageWorkflowError,
+                                            "release-plan-not-bff-dev"):
+                    release_notes_workflow._validate_development_plan(canonical(widened))
+                self.assertEqual(receipt["resume_inputs"]["components"], selected[0])
+                self.assertEqual(receipt["resume_inputs"]["release_notes_artifact_id"], "803")
+
+                invalid_plan = dict(fixture["plan"], identities={})
+                with self.assertRaises(release_notes_workflow.PackageWorkflowError):
+                    release_notes_workflow._validate_development_plan(canonical(invalid_plan))
+
     def test_upload_verification_binds_action_digest_api_metadata_name_and_source_plan(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -1357,15 +1421,21 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
 
                 class Handler(http.server.BaseHTTPRequestHandler):
                     def do_GET(self):
-                        index = json.loads(store.index)
+                        index = release_notes.validate_index(store.index)
                         if self.path == "/api/v1/public/release-notes":
+                            current_row = next(row for row in index["versions"]
+                                               if row["product_version"] == current_marker["product_version"])
                             value = {
                                 "schema_version": release_notes.SCHEMA_VERSION,
                                 "environment": "dev",
-                                "history": index["versions"],
+                                "history": [],
                                 "runtime_product_version": current_marker["product_version"],
                                 "current_product_version": current_marker["product_version"],
                                 "current_status": "available",
+                                "current": {"product_version": current_row["product_version"],
+                                            "published_at": current_row["published_at"], "locales": ["en"]},
+                                "component_details_status": "unavailable", "current_components": [],
+                                "compatibility_aliases": [],
                             }
                         else:
                             self.send_error(404)
@@ -1573,9 +1643,17 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
             class Handler(http.server.BaseHTTPRequestHandler):
                 def do_GET(self):
                     if self.path == "/api/v1/public/release-notes":
-                        index = json.loads(store.index)
+                        index = release_notes.validate_index(store.index)
                         value = {"schema_version": 1, "environment": "dev",
-                                 "history": index["versions"]}
+                                 "runtime_product_version": "1.0.0", "current_status": "missing",
+                                 "current_product_version": "1.0.0",
+                                 "history": [{"product_version": row["product_version"],
+                                              "published_at": row["published_at"],
+                                              "locales": sorted(row["locales"])}
+                                             for row in index["versions"]
+                                             if row["product_version"] != "1.0.0"],
+                                 "component_details_status": "unavailable", "current_components": [],
+                                 "compatibility_aliases": []}
                     elif self.path.startswith("/api/v1/public/release-notes/2026.11.1?locale=en"):
                         value = {**json.loads(body), "requested_product_version": "2026.11.1",
                                  "published_at": "2026-11-01T22:58:30+08:00",
@@ -1619,13 +1697,153 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
                 thread.join(timeout=2)
 
             self.assertEqual(evidence["status"], "verified")
-            self.assertEqual(evidence["currentness"], "history-only")
+            self.assertEqual(evidence["currentness"], "missing")
             self.assertEqual(evidence["product_version"], "2026.11.1")
             self.assertEqual(evidence["published_at"], "2026-11-01T22:58:30+08:00")
             index = json.loads(store.index)
             self.assertEqual(canonical(index["current_deployment"]), marker_bytes_before)
             row = next(row for row in index["versions"] if row["product_version"] == "2026.11.1")
             self.assertEqual(row["published_at"], "2026-11-01T22:58:30+08:00")
+
+    def test_legacy_alias_resend_uses_canonical_reader_body_without_changing_marker_or_index(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            store, marker, plan_sha, _ = initial_schema2_migration_fixture()
+            store.active_marker = marker
+            canonical_body = note(release_notes.PUBLIC_RELEASE_VERSION, "en", "Canonical public note")
+            release_notes.publish_package(
+                store, {"en": canonical_body}, product_version=release_notes.PUBLIC_RELEASE_VERSION,
+                published_at="2026-11-15T01:14:01Z", marker=marker, transition_plan_sha256=plan_sha)
+            private_index = release_notes.validate_index(store.index)
+            old_body = note(release_notes.LEGACY_RELEASE_VERSION, "en", "Original legacy note")
+            old_digest = release_notes.digest_bytes(old_body)
+            old_path = release_notes.exact_object_path(release_notes.LEGACY_RELEASE_VERSION, "en", old_digest)
+            store.objects[old_path] = (old_body, store.next_generation)
+            store.next_generation += 1
+            private_index["versions"].append({
+                "product_version": release_notes.LEGACY_RELEASE_VERSION,
+                "published_at": "2026-11-01T22:58:30+08:00",
+                "locales": {"en": {"sha256": old_digest, "object_path": old_path}},
+            })
+            store.index = canonical(private_index)
+            store.generation += 1
+
+            fixture = operation_fixture(operation="release", service_generation=44,
+                                        revision="rev-legacy", product_version="1.0.0")
+            run_dir = root / "retained-legacy-release"
+            (run_dir / "receipts").mkdir(parents=True)
+            for name, data in (("plan.json", fixture[0]), ("state.json", fixture[1]),
+                               ("result.json", fixture[2])):
+                (run_dir / name).write_bytes(data)
+            (run_dir / "receipts" / "bff.json").write_bytes(fixture[4])
+            (run_dir / "release-notes-operation.json").write_bytes(fixture[3] + b"\n")
+            publication = {
+                "schema_version": 1, "environment": "dev", "operation": "release",
+                "run_id": "701", "run_attempt": 1,
+                "plan_sha256": release_notes.digest_bytes(fixture[0]),
+                "state_sha256": release_notes.digest_bytes(fixture[1]),
+                "result_sha256": release_notes.digest_bytes(fixture[2]),
+                "receipt_sha256": release_notes_publish.selected_receipt_digest(
+                    json.loads(fixture[0]), fixture[4], {}),
+                "published_at": "2026-11-01T22:58:30+08:00",
+            }
+            (run_dir / "release-notes-publication.json").write_bytes(canonical(publication) + b"\n")
+            package_dir = root / "legacy-package"
+            package_dir.mkdir()
+            manifest = {
+                "schema_version": 1, "product": "llm-wiki-cloud", "product_version": "1.0.0",
+                "environment": "dev", "release_plan_sha256": release_notes.digest_bytes(fixture[0]),
+                "release_note_snapshot_ref": "LWC-A-test:legacy", "release_note_snapshot_sha256": "sha256:" + "a" * 64,
+                "delivered_scope_evidence_sha256": "sha256:" + "b" * 64,
+                "files": {"en": {"path": "en.json", "sha256": old_digest}},
+            }
+            (package_dir / "release-notes-manifest.json").write_bytes(canonical(manifest))
+            (package_dir / "en.json").write_bytes(old_body)
+            original_index = store.index
+            original_generation = store.generation
+            original_marker = json.loads(original_index)["current_deployment"]
+            original_writes = store.writes
+
+            class Response:
+                status = 200
+                headers = {"Cache-Control": "no-store"}
+                def __init__(self, value): self.data = canonical(value)
+                def read(self, _size=-1): return self.data
+                def __enter__(self): return self
+                def __exit__(self, *_args): return False
+
+            class Handler(http.server.BaseHTTPRequestHandler):
+                def do_GET(self):
+                    current = release_notes.validate_index(store.index)
+                    if self.path == "/api/v1/public/release-notes":
+                        current_row = next(row for row in current["versions"]
+                                           if row["product_version"] == release_notes.PUBLIC_RELEASE_VERSION)
+                        value = {
+                            "schema_version": 1, "environment": "dev", "runtime_product_version": "1.0.0",
+                            "current_status": "available", "current_product_version": release_notes.PUBLIC_RELEASE_VERSION,
+                            "current": {"product_version": current_row["product_version"],
+                                        "published_at": current_row["published_at"], "locales": ["en"]},
+                            "history": [], "component_details_status": "complete",
+                            "current_components": [{
+                                "component": "bff", "product_version": marker["product_version"],
+                                "commit": marker["commit"], "image_tag": marker["image_tag"],
+                                "image_digest": marker["image_digest"], "revision": marker["revision"],
+                            }],
+                            "compatibility_aliases": [{"requested_version": "1.0.0",
+                                                       "canonical_version": "2026.11.4",
+                                                       "legacy_row_version": "1.0.0"}],
+                        }
+                    elif self.path == "/api/v1/public/release-notes/1.0.0?locale=en":
+                        value = {**json.loads(canonical_body), "published_at": "2026-11-15T01:14:01Z",
+                                 "requested_locale": "en", "locale_fallback": False,
+                                 "is_current": True, "requested_product_version": "1.0.0",
+                                 "canonical_product_version": "2026.11.4", "legacy_alias": True,
+                                 "legacy_fallback": False}
+                    else:
+                        self.send_error(404)
+                        return
+                    encoded = canonical(value)
+                    self.send_response(200)
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(encoded)
+
+                def log_message(self, _format, *_args): pass
+
+            server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                args = release_notes_publish.parser().parse_args([
+                    "--action", "resend", "--directory", str(run_dir), "--package-dir", str(package_dir),
+                    "--environment", "dev", "--bucket", "synthetic-no-cloud", "--artifact-id", "9920",
+                    "--result-artifact-id", "9921", "--artifact-digest", "sha256:" + "f" * 64,
+                    "--artifact-metadata-digest", "sha256:" + "f" * 64,
+                    "--artifact-name", "lwc-release-notes-1.0.0-development-701-1",
+                    "--plan", str(run_dir / "plan.json"), "--operation", "release",
+                    "--run-id", "701", "--run-attempt", "1", "--product-status", "released",
+                ])
+                with patch.object(release_notes_publish, "GCSCLIStore", return_value=store), \
+                        patch.object(release_notes_capture, "active_service_url",
+                                     return_value=f"http://127.0.0.1:{server.server_port}"), \
+                        patch.object(release_notes_capture, "active_marker_matches", return_value=False):
+                    evidence = release_notes_publish.execute(args)
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
+            self.assertEqual(evidence["status"], "verified")
+            self.assertEqual(evidence["currentness"], "verified")
+            self.assertEqual(evidence["reader_api_readback"]["reader_requested_product_version"], "1.0.0")
+            self.assertEqual(evidence["reader_api_readback"]["reader_canonical_product_version"], "2026.11.4")
+            self.assertTrue(evidence["reader_api_readback"]["reader_legacy_alias"])
+            self.assertEqual(evidence["legacy_alias_receipt"]["action"], "carried")
+            self.assertEqual(store.index, original_index)
+            self.assertEqual(store.generation, original_generation)
+            self.assertEqual(store.writes, original_writes)
+            self.assertEqual(json.loads(store.index)["current_deployment"], original_marker)
 
 
 if __name__ == "__main__":

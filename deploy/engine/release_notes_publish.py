@@ -411,8 +411,98 @@ def record_capture_failure(directory: Path, *, environment: str, operation: str,
     return evidence
 
 
+def _index_row(index: dict, version: str) -> dict | None:
+    return next((row for row in index["versions"] if row.get("product_version") == version), None)
+
+
+def _content_row_for_request(index: dict, product_version: str) -> tuple[dict, str, str, bool, bool]:
+    """Resolve the exact stored row and canonical/fallback flags for one public URL."""
+    aliases = index.get("legacy_aliases", []) if index.get("schema_version") == release_notes.INDEX_SCHEMA_VERSION else []
+    alias = next((item for item in aliases if item.get("requested_version") == product_version), None)
+    canonical_version = alias["canonical_version"] if alias else product_version
+    legacy_alias = alias is not None
+    row = _index_row(index, canonical_version)
+    legacy_fallback = False
+    if row is None and alias is not None:
+        row = _index_row(index, alias["legacy_row_version"])
+        legacy_fallback = row is not None
+    if row is None:
+        raise release_notes.ReleaseNotesError("exact_readback", "reader-index-version-readback-mismatch")
+    return row, canonical_version, row["product_version"], legacy_alias, legacy_fallback
+
+
+def _public_components(marker: dict) -> tuple[str, list[dict]]:
+    if marker.get("schema_version") != release_notes.MARKER_SCHEMA_VERSION:
+        return "unavailable", []
+    components = [{"component": "bff", "product_version": marker["product_version"],
+                   "commit": marker["commit"], "image_tag": marker["image_tag"],
+                   "image_digest": marker["image_digest"], "revision": marker["revision"]}]
+    details_status = "complete"
+    for build in marker.get("component_builds", []):
+        if build["component"] == "frontend":
+            item = {"component": "frontend", "deployment_id": build["deployment_id"]}
+            if "source_sha" in build:
+                item["source_sha"] = build["source_sha"]
+            if "source_sha" not in build or "build_config_sha256" not in build:
+                details_status = "partial"
+        else:
+            item = {"component": "worker", "job_name": build["job_name"],
+                    "image_digest": build["image_digest"]}
+            if "source_sha" in build:
+                item["source_sha"] = build["source_sha"]
+            if "source_sha" not in build:
+                details_status = "partial"
+        components.append(item)
+    return details_status, components
+
+
 def verify_reader_api(directory: Path, expected_environment: str, marker: dict, product_version: str,
-                      expected_content_files: dict[str, bytes], *, historical: bool) -> dict:
+                      expected_content_files: dict[str, bytes], *, historical: bool,
+                      store: release_notes.NotesStore, alias_receipt: dict | None = None,
+                      minimum_index_generation: int | None = None) -> dict:
+    try:
+        stored_index_bytes, stored_index_generation = store.read_index()
+        if stored_index_bytes is None or (minimum_index_generation is not None and
+                                           stored_index_generation < minimum_index_generation):
+            raise release_notes.ReleaseNotesError("exact_readback", "reader-index-readback-unavailable")
+        stored_index = release_notes.validate_index(stored_index_bytes)
+    except release_notes.ReleaseNotesError:
+        raise
+    except Exception:
+        raise release_notes.ReleaseNotesError("exact_readback", "reader-index-readback-unavailable") from None
+    if stored_index.get("schema_version") not in (release_notes.SCHEMA_VERSION, release_notes.INDEX_SCHEMA_VERSION):
+        raise release_notes.ReleaseNotesError("exact_readback", "reader-index-readback-invalid")
+    aliases = stored_index.get("legacy_aliases", []) if stored_index.get("schema_version") == release_notes.INDEX_SCHEMA_VERSION else []
+    public_aliases = [{key: alias[key] for key in ("requested_version", "canonical_version", "legacy_row_version")}
+                      for alias in aliases]
+    if alias_receipt is not None:
+        alias = aliases[0] if len(aliases) == 1 else None
+        receipt_fields = {"action", "environment", "requested_version", "canonical_version", "legacy_row_version",
+                          "alias_record_sha256", "creation_marker_sha256", "alias_source_index_generation",
+                          "index_generation_before", "index_generation_after"}
+        if (not isinstance(alias_receipt, dict) or set(alias_receipt) != receipt_fields or alias is None or
+                alias_receipt.get("action") not in ("created", "carried") or
+                alias_receipt.get("environment") != expected_environment or
+                alias_receipt.get("requested_version") != alias["requested_version"] or
+                alias_receipt.get("canonical_version") != alias["canonical_version"] or
+                alias_receipt.get("legacy_row_version") != alias["legacy_row_version"] or
+                alias_receipt.get("alias_record_sha256") != alias["alias_record_sha256"] or
+                alias_receipt.get("creation_marker_sha256") != alias["creation_marker_sha256"] or
+                alias_receipt.get("alias_source_index_generation") != alias["source_index_generation"] or
+                type(alias_receipt.get("index_generation_before")) is not int or
+                type(alias_receipt.get("index_generation_after")) is not int or
+                alias_receipt["index_generation_before"] < 1 or
+                alias_receipt["index_generation_after"] < alias_receipt["index_generation_before"] or
+                alias_receipt.get("index_generation_after", 0) > stored_index_generation):
+            raise release_notes.ReleaseNotesError("exact_readback", "legacy-alias-receipt-invalid")
+        if alias_receipt["action"] == "created" and (
+                alias_receipt["alias_source_index_generation"] != alias_receipt["index_generation_before"] or
+                alias_receipt["index_generation_after"] <= alias_receipt["index_generation_before"]):
+            raise release_notes.ReleaseNotesError("exact_readback", "legacy-alias-receipt-invalid")
+    elif aliases:
+        # A carried alias must be represented by the publication result and revalidated on every write.
+        raise release_notes.ReleaseNotesError("exact_readback", "legacy-alias-receipt-invalid")
+
     base = release_notes_capture.active_service_url(directory).rstrip("/")
     request = Request(base + "/api/v1/public/release-notes", headers={"Cache-Control": "no-cache"})
     try:
@@ -424,25 +514,97 @@ def verify_reader_api(directory: Path, expected_environment: str, marker: dict, 
         raise
     except Exception:
         raise release_notes.ReleaseNotesError("exact_readback", "reader-index-readback-unavailable") from None
-    if not isinstance(index, dict) or index.get("schema_version") != release_notes.SCHEMA_VERSION or \
-            index.get("environment") != expected_environment or not isinstance(index.get("history"), list):
+    index_fields = {"schema_version", "environment", "runtime_product_version", "current_status", "history",
+                    "component_details_status", "current_components", "compatibility_aliases"}
+    if not isinstance(index, dict) or not index_fields <= set(index) or \
+            not set(index) <= index_fields | {"current_product_version", "current"} or \
+            type(index.get("schema_version")) is not int or index.get("schema_version") != release_notes.SCHEMA_VERSION or \
+            index.get("environment") != expected_environment or not isinstance(index.get("history"), list) or \
+            not release_notes.valid_version(index.get("runtime_product_version")) or \
+            index.get("current_status") not in ("available", "missing", "unavailable") or \
+            not isinstance(index.get("component_details_status"), str) or \
+            index.get("component_details_status") not in ("complete", "partial", "unavailable") or \
+            not isinstance(index.get("current_components"), list) or \
+            index.get("compatibility_aliases") != public_aliases:
+        raise release_notes.ReleaseNotesError("exact_readback", "reader-index-readback-invalid")
+    current_product_version = index.get("current_product_version")
+    current_summary = index.get("current")
+    summaries = index["history"] + ([current_summary] if isinstance(current_summary, dict) else [])
+    summary_versions = set()
+    for summary in summaries:
+        if (not isinstance(summary, dict) or set(summary) != {"product_version", "published_at", "locales"} or
+                not release_notes.valid_version(summary.get("product_version")) or
+                not release_notes._valid_timestamp(summary.get("published_at")) or
+                not isinstance(summary.get("locales"), list) or not 1 <= len(summary["locales"]) <= 2 or
+                any(locale not in ("en", "zh-TW") for locale in summary["locales"]) or
+                len(set(summary["locales"])) != len(summary["locales"]) or
+                summary["product_version"] in summary_versions):
+            raise release_notes.ReleaseNotesError("exact_readback", "reader-index-readback-invalid")
+        summary_versions.add(summary["product_version"])
+    if (index["current_status"] == "available" and
+            (not isinstance(current_product_version, str) or not isinstance(current_summary, dict) or
+             current_summary.get("product_version") != current_product_version)) or \
+            (index["current_status"] == "missing" and
+             (not isinstance(current_product_version, str) or current_summary is not None)) or \
+            (index["current_status"] == "unavailable" and
+             (current_product_version is not None or current_summary is not None)):
+        raise release_notes.ReleaseNotesError("exact_readback", "reader-index-readback-invalid")
+    stored_marker = stored_index.get("current_deployment")
+    if stored_marker is None:
+        if index["current_status"] != "unavailable":
+            raise release_notes.ReleaseNotesError("exact_readback", "reader-current-readback-mismatch")
+    else:
+        stored_current_version = stored_marker.get("release_version", stored_marker["product_version"])
+        current_row = _index_row(stored_index, stored_current_version)
+        expected_details, expected_components = _public_components(stored_marker)
+        if index["current_status"] == "unavailable":
+            pass
+        elif (index.get("runtime_product_version") != stored_marker["product_version"] or
+              current_product_version != stored_current_version):
+            raise release_notes.ReleaseNotesError("exact_readback", "reader-current-readback-mismatch")
+        elif index["current_status"] == "missing":
+            if current_row is not None:
+                raise release_notes.ReleaseNotesError("exact_readback", "reader-current-readback-mismatch")
+        elif (current_row is None or not isinstance(current_summary, dict) or
+              current_summary.get("published_at") != current_row["published_at"] or
+              current_summary.get("locales") != sorted(current_row["locales"]) or
+              index["component_details_status"] != expected_details or
+              index["current_components"] != expected_components):
+            raise release_notes.ReleaseNotesError("exact_readback", "reader-current-readback-mismatch")
+    if (index["current_status"] != "available" or index["component_details_status"] == "unavailable") and \
+            index["current_components"]:
+        raise release_notes.ReleaseNotesError("exact_readback", "reader-index-readback-invalid")
+    if index["current_status"] != "available" and index["component_details_status"] != "unavailable":
         raise release_notes.ReleaseNotesError("exact_readback", "reader-index-readback-invalid")
     if marker is not None and not historical:
         public_version = marker.get("release_version", marker["product_version"])
-        if index.get("runtime_product_version") != marker["product_version"] or \
+        if stored_index.get("current_deployment") != marker or \
+                index.get("runtime_product_version") != marker["product_version"] or \
                 index.get("current_product_version") != public_version or \
                 index.get("current_status") not in ("available", "missing"):
             raise release_notes.ReleaseNotesError("exact_readback", "reader-current-readback-mismatch")
-    summaries = list(index["history"])
-    current_summary = index.get("current")
-    if isinstance(current_summary, dict):
-        summaries.append(current_summary)
-    version_summary = next((item for item in summaries
-                            if isinstance(item, dict) and item.get("product_version") == product_version), None)
-    if expected_content_files and (version_summary is None or
-                                   not release_notes._valid_timestamp(version_summary.get("published_at"))):
-        raise release_notes.ReleaseNotesError("exact_readback", "reader-index-version-readback-mismatch")
+    if (not isinstance(index.get("compatibility_aliases"), list) or len(index["compatibility_aliases"]) > 1 or
+            any(not isinstance(item, dict) or set(item) !=
+                {"requested_version", "canonical_version", "legacy_row_version"} for item in index["compatibility_aliases"])):
+        raise release_notes.ReleaseNotesError("exact_readback", "reader-index-readback-invalid")
+    row, canonical_version, body_version, legacy_alias, legacy_fallback = _content_row_for_request(
+        stored_index, product_version) if expected_content_files else (None, product_version, product_version, False, False)
+    if expected_content_files:
+        if (legacy_alias and (expected_environment != "dev" or alias_receipt is None)) or \
+                (legacy_fallback and body_version != release_notes.LEGACY_RELEASE_VERSION):
+            raise release_notes.ReleaseNotesError("exact_readback", "legacy-alias-receipt-invalid")
+        version_summary = next((item for item in summaries
+                                if isinstance(item, dict) and item.get("product_version") == body_version), None)
+        if not legacy_fallback and (version_summary is None or
+                                    not release_notes._valid_timestamp(version_summary.get("published_at")) or
+                                    version_summary.get("published_at") != row["published_at"]):
+            raise release_notes.ReleaseNotesError("exact_readback", "reader-index-version-readback-mismatch")
+        expected_published_at = row["published_at"]
+    else:
+        expected_published_at = None
     reader_content_sha256 = {}
+    reader_current_flags = {}
+    reader_legacy_fallback = {}
     for locale, expected_bytes in sorted(expected_content_files.items()):
         request = Request(base + "/api/v1/public/release-notes/" + quote(product_version, safe="") +
                           "?locale=" + quote(locale, safe=""),
@@ -464,29 +626,61 @@ def verify_reader_api(directory: Path, expected_environment: str, marker: dict, 
             "requested_locale", "locale_fallback", "is_current", "entries",
             "requested_product_version", "canonical_product_version", "legacy_alias", "legacy_fallback",
         }
-        expected_content = json.loads(expected_bytes.decode("utf-8"))
+        if locale in row["locales"]:
+            actual_locale = locale
+        elif locale == "zh-TW" and "en" in row["locales"]:
+            actual_locale = "en"
+        else:
+            raise release_notes.ReleaseNotesError("exact_readback", "reader-index-version-readback-mismatch")
+        entry = row["locales"][actual_locale]
+        try:
+            expected_stored_bytes = store.read_content(entry["object_path"])
+        except Exception:
+            raise release_notes.ReleaseNotesError("exact_readback", "reader-content-readback-unavailable") from None
+        if release_notes.digest_bytes(expected_stored_bytes) != entry["sha256"]:
+            raise release_notes.ReleaseNotesError("exact_readback", "reader-content-readback-mismatch")
+        try:
+            expected_content = release_notes.validate_content(expected_stored_bytes, body_version, actual_locale)
+        except release_notes.ReleaseNotesError:
+            raise release_notes.ReleaseNotesError("exact_readback", "reader-content-readback-mismatch") from None
         stored_fields = ("schema_version", "product", "product_version", "locale", "entries")
         projected = {key: content.get(key) for key in stored_fields} if isinstance(content, dict) else None
         expected_projected = {key: expected_content.get(key) for key in stored_fields}
-        if not isinstance(content, dict) or not required_fields <= set(content) or \
+        expected_current = (index["current_status"] == "available" and
+                            index.get("current_product_version") == canonical_version and not legacy_fallback)
+        if not isinstance(content, dict) or set(content) != required_fields or \
                 type(content.get("schema_version")) is not int or content.get("schema_version") != release_notes.SCHEMA_VERSION or \
-                content.get("product") != "llm-wiki-cloud" or content.get("product_version") != product_version or \
+                content.get("product") != "llm-wiki-cloud" or content.get("product_version") != body_version or \
                 content.get("requested_product_version") != product_version or \
-                content.get("canonical_product_version") != product_version or \
-                content.get("locale") != locale or content.get("requested_locale") != locale or \
-                type(content.get("locale_fallback")) is not bool or content.get("locale_fallback") is not False or \
-                type(content.get("is_current")) is not bool or content.get("legacy_alias") is not False or \
-                content.get("legacy_fallback") is not False or not isinstance(content.get("entries"), list) or \
+                content.get("canonical_product_version") != canonical_version or \
+                content.get("locale") != actual_locale or content.get("requested_locale") != locale or \
+                type(content.get("locale_fallback")) is not bool or content.get("locale_fallback") != (actual_locale != locale) or \
+                type(content.get("is_current")) is not bool or content.get("is_current") != expected_current or \
+                content.get("legacy_alias") is not legacy_alias or \
+                type(content.get("legacy_fallback")) is not bool or content.get("legacy_fallback") is not legacy_fallback or \
+                not isinstance(content.get("entries"), list) or \
                 not release_notes._valid_timestamp(content.get("published_at")) or \
-                content.get("published_at") != version_summary.get("published_at") or projected != expected_projected:
+                content.get("published_at") != expected_published_at or projected != expected_projected:
             raise release_notes.ReleaseNotesError("exact_readback", "reader-content-readback-mismatch")
         canonical = json.dumps(projected, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
         reader_content_sha256[locale] = release_notes.digest_bytes(canonical)
+        reader_current_flags[locale] = expected_current
+        reader_legacy_fallback[locale] = legacy_fallback
+    try:
+        after_bytes, after_generation = store.read_index()
+    except Exception:
+        raise release_notes.ReleaseNotesError("exact_readback", "reader-index-readback-unavailable") from None
+    if after_bytes != stored_index_bytes or after_generation != stored_index_generation:
+        raise release_notes.ReleaseNotesError("exact_readback", "reader-index-readback-mismatch")
     return {"reader_environment": index.get("environment"), "reader_current_status": index.get("current_status"),
             "reader_current_product_version": index.get("current_product_version"),
+            "reader_index_generation": stored_index_generation,
             "reader_verified_versions": [product_version] if expected_content_files else [],
             "reader_requested_product_version": product_version if expected_content_files else None,
-            "reader_canonical_product_version": product_version if expected_content_files else None,
+            "reader_canonical_product_version": canonical_version if expected_content_files else None,
+            "reader_current_flags": reader_current_flags,
+            "reader_legacy_alias": legacy_alias,
+            "reader_legacy_fallback": reader_legacy_fallback,
             "reader_content_sha256": reader_content_sha256}
 
 
@@ -602,7 +796,8 @@ def execute(args) -> dict:
             stage = "exact_readback"
             api_readback = verify_reader_api(directory, args.environment, marker,
                 product_version or (marker or {}).get("product_version", ""), content_files,
-                historical=args.action == "resend" and marker is None)
+                historical=args.action == "resend" and marker is None, store=publisher,
+                alias_receipt=result.legacy_alias_receipt, minimum_index_generation=result.index_generation)
             evidence = {
                 "schema_version": 1, "action": args.action, "environment": args.environment,
                 "stage": "exact_readback", "status": "verified", "product_status": args.product_status,
@@ -623,7 +818,12 @@ def execute(args) -> dict:
                 "decision_actor": args.decision_actor or None, "decision_time": args.decision_time or None,
                 "published_at": published_at,
                 "published_at_source": publication_time_source,
-                "currentness": "verified" if marker is not None else "history-only",
+                "currentness": ("unavailable" if api_readback["reader_current_status"] == "unavailable" else
+                                "missing" if api_readback["reader_current_status"] == "missing" else
+                                "verified" if ((marker is not None and api_readback["reader_current_product_version"] ==
+                                                marker.get("release_version", marker.get("product_version"))) or
+                                               any(api_readback["reader_current_flags"].values())) else
+                                "history-only"),
                 "imported_at": manifest.get("imported_at") if publication_time_source == "historical-manifest" else None,
                 "historical_source_record_ref": manifest.get("historical_source_record_ref") if publication_time_source == "historical-manifest" else None,
                 "historical_package_artifact_name": args.artifact_name if historical_package else None,

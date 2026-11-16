@@ -176,7 +176,7 @@ def _write_private_json(path: Path, value: dict) -> None:
         _fail("history-binding-output-unavailable")
 
 
-def bff_selected_from_plan(plan_bytes: bytes) -> bool:
+def selected_components_from_plan(plan_bytes: bytes) -> list[str]:
     plan = _json_object(plan_bytes)
     selected = plan.get("selected")
     if (not isinstance(selected, list) or not selected or
@@ -184,7 +184,11 @@ def bff_selected_from_plan(plan_bytes: bytes) -> bool:
             len(selected) != len(set(selected)) or
             selected != [component for component in COMPONENT_ORDER if component in selected]):
         _fail("plan-selection-invalid")
-    return "bff" in selected
+    return selected
+
+
+def bff_selected_from_plan(plan_bytes: bytes) -> bool:
+    return "bff" in selected_components_from_plan(plan_bytes)
 
 
 def _workflow_path_matches(actual: object, expected: str) -> bool:
@@ -305,13 +309,16 @@ def _validate_development_plan(plan_bytes: bytes) -> dict:
     plan = _json_object(plan_bytes)
     normalized = plan.get("normalized")
     source = plan.get("source")
+    selected = selected_components_from_plan(plan_bytes)
+    identities = plan.get("identities")
     if (not isinstance(normalized, dict) or normalized.get("environment") != "development" or
             not isinstance(source, str) or re.fullmatch(r"[0-9a-f]{40}", source) is None or
             not isinstance(plan.get("id"), str) or not plan.get("id") or
             not isinstance(plan.get("tag"), str) or not plan.get("tag") or
-            not isinstance(plan.get("identities"), dict) or not isinstance(plan["identities"].get("bff"), dict) or
-            (plan.get("schema") == 4 and not release_notes.valid_version(plan.get("release_version"))) or
-            not bff_selected_from_plan(plan_bytes)):
+            not isinstance(identities, dict) or
+            set(identities) != set(selected) or
+            any(not isinstance(identities.get(component), dict) for component in selected) or
+            (plan.get("schema") == 4 and not release_notes.valid_version(plan.get("release_version")))):
         _fail("release-plan-not-bff-dev")
     return plan
 

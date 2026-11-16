@@ -139,8 +139,9 @@ def resumable_release_identity_matches(retained_plan, requested_plan):
 
 
 def retained_legacy_resume_plan(args):
-    """Return the exact schema-2/3 plan bytes for a versionless retained resume."""
-    if args.operation != 'prepare' or getattr(args, 'release_version', None) or not args.reuse:
+    """Return exact schema-2/3 plan bytes for a versionless prepare or Auth preflight."""
+    if args.operation not in ('prepare', 'auth-preflight') or \
+            getattr(args, 'release_version', None) or not args.reuse:
         return None
     path = Path(args.reuse).resolve() / 'plan.json'
     try:
@@ -1634,7 +1635,7 @@ def main():
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             if args.operation in ('prepare', 'auth-preflight') and not (directory / 'plan.json').exists():
                 require(all((args.environment, args.source, args.tag, args.components)), 'missing-admission-input')
-                legacy_resume_plan = retained_legacy_resume_plan(args) if args.operation == 'prepare' else None
+                legacy_resume_plan = retained_legacy_resume_plan(args)
                 if legacy_resume_plan is None:
                     write(directory / 'plan.json', admit(args))
                 else:
@@ -1653,7 +1654,7 @@ def main():
                 engine.quota_rejection_artifact_id = args.rejection_artifact_id
             if args.operation in ('prepare', 'auth-preflight'):
                 if engine.plan.get('schema') in (2, 3) and not args.release_version:
-                    require(args.operation == 'prepare' and args.reuse and
+                    require(args.operation in ('prepare', 'auth-preflight') and args.reuse and
                             (Path(args.reuse).resolve() / 'plan.json').is_file() and
                             (Path(args.reuse).resolve() / 'plan.json').read_bytes() ==
                             (directory / 'plan.json').read_bytes() and

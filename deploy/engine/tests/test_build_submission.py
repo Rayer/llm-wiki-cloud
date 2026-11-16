@@ -236,15 +236,16 @@ class AsyncBuildSubmission(unittest.TestCase):
             'auth': {'service_name': 'auth-test'},
             'bff': {'service_name': 'bff-test'},
         }
-        plan = {'schema': 3, 'source': 'a' * 40, 'branch': 'develop',
+        plan = {'schema': 4, 'source': 'a' * 40, 'branch': 'develop',
                 'tag': 'test-lwc358-' + name,
                 'executor_sha': 'e' * 40,
+                'release_version': '2026.11.4',
                 'normalized': normalized,
                 'identities': {c: {'profile': 'test', 'inputs': 'test', 'files': []}
                                for c in selected},
                 'dev_reference': None, 'selected': list(selected),
                 'release_source_mode': 'legacy_monorepo'}
-        plan['id'] = digest(engine.release_identity(plan))
+        plan['id'] = engine.plan_id(plan)
         write(directory / 'plan.json', plan)
         return directory
 
@@ -420,7 +421,8 @@ class AsyncBuildSubmission(unittest.TestCase):
         return directory, plan, self.result_from(directory)
 
     def run_action_prepare(self, *, source, tag, components, artifact_source, executor_sha=None,
-                           target='development', extra=None, operation='prepare', reuse_id='9001'):
+                           target='development', extra=None, operation='prepare', reuse_id='9001',
+                           release_version='2026.11.4'):
         node = shutil.which('node')
         self.assertIsNotNone(node, 'Node is required to execute the real JavaScript Action')
         self.action_runs += 1
@@ -429,7 +431,7 @@ class AsyncBuildSubmission(unittest.TestCase):
         env={**self.environment,**(extra or {}),'RUNNER_TEMP':str(runner_temp),
              'EXECUTOR_SHA':executor_sha or source,
              'INPUT_OPERATION':operation,'TARGET':target,'SOURCE':source,
-             'COMPONENTS':components,'RELEASE_TAG':tag,'RELEASE_VERSION':'2026.11.4',
+             'COMPONENTS':components,'RELEASE_TAG':tag,'RELEASE_VERSION':release_version,
              'REUSE_ID':reuse_id,'DEV_ID':'',
              'LWC_TEST_ARTIFACT_ID':reuse_id,'LWC_TEST_ARTIFACT_SOURCE':str(artifact_source)}
         env.setdefault('INPUT_AUTH-SCHEMA-VERSION','')
@@ -615,6 +617,90 @@ class AsyncBuildSubmission(unittest.TestCase):
         self.assertEqual(kept_state['executor_sha'],plan['executor_sha'])
         self.assertEqual(read(directory/'receipts/auth.json')['build']['build_id'],BUILD_IDS[0])
         self.assertEqual(self.fake_data()['submit_count'],1)
+
+    def test_real_action_legacy_schema2_and3_prepare_and_auth_preflight_keep_exact_plan(self):
+        for schema in (2, 3):
+            with self.subTest(schema=schema):
+                self.reset_fake()
+                retained, current_plan, _ = self.make_action_checkpoint(
+                    f'legacy-action-schema{schema}', statuses=['WORKING'])
+                if schema == 2:
+                    legacy = {
+                        'schema': 2, 'source': current_plan['source'], 'branch': current_plan['branch'],
+                        'tag': current_plan['tag'], 'engine': '1' * 40, 'engine_content': '2' * 64,
+                        'normalized': current_plan['normalized'], 'identities': current_plan['identities'],
+                        'dev_reference': current_plan['dev_reference'], 'selected': current_plan['selected'],
+                    }
+                    legacy['id'] = digest(legacy)
+                else:
+                    legacy = {key: value for key, value in current_plan.items()
+                              if key not in ('id', 'release_version')}
+                    legacy['schema'] = 3
+                    legacy['id'] = engine.plan_id(legacy)
+                write(retained / 'plan.json', legacy)
+                legacy_bytes = (retained / 'plan.json').read_bytes()
+                retained_state = read(retained / 'state.json')
+                retained_state['plan'] = legacy['id']
+                if schema == 2:
+                    retained_state.pop('checkpoint_schema', None)
+                    retained_state.pop('executor_sha', None)
+                write(retained / 'state.json', retained_state)
+                self.reset_fake()
+
+                preflight = self.run_action_prepare(
+                    source=legacy['source'], tag=legacy['tag'], components='auth',
+                    artifact_source=retained, release_version='', operation='auth-preflight',
+                    extra={'INPUT_AUTH-SCHEMA-VERSION': ''})
+                self.assertEqual(preflight.returncode, 0, preflight.stdout + preflight.stderr)
+                self.assertEqual(json.loads(preflight.stdout.strip().splitlines()[-1]),
+                                 {'needs_auth_ci_package': False})
+                preflight_dir = self.root / f'runner-temp-{self.action_runs}' / 'gat4-auth-preflight'
+                self.assertEqual((preflight_dir / 'plan.json').read_bytes(), legacy_bytes)
+                self.assertEqual(self.fake_data()['submit_count'], 0)
+
+                self.reset_fake()
+                resumed = self.run_action_prepare(
+                    source=legacy['source'], tag=legacy['tag'], components='auth',
+                    artifact_source=retained, release_version='', operation='prepare',
+                    extra={'FAKE_STATUSES': json.dumps(['SUCCESS']), 'INPUT_AUTH-SCHEMA-VERSION': ''})
+                self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
+                release_dir = self.root / f'runner-temp-{self.action_runs}' / 'release'
+                self.assertEqual((release_dir / 'plan.json').read_bytes(), legacy_bytes)
+                result = json.loads(resumed.stdout.strip().splitlines()[-1])
+                self.assertEqual((result['stage'], result['status']), ('ready', 'ready'))
+                self.assertEqual(result['attempt'], legacy['id'])
+                self.assertEqual(self.fake_data()['submit_count'], 0)
+
+                mismatch = self.run_action_prepare(
+                    source='f' * 40, tag=legacy['tag'], components='auth',
+                    artifact_source=retained, release_version='', operation='auth-preflight',
+                    extra={'INPUT_AUTH-SCHEMA-VERSION': ''})
+                self.assertNotEqual(mismatch.returncode, 0)
+                self.assertIn('legacy-resume-plan-mismatch', mismatch.stdout)
+                mismatch_dir = self.root / f'runner-temp-{self.action_runs}' / 'gat4-auth-preflight'
+                self.assertFalse((mismatch_dir / 'plan.json').exists())
+
+                mismatches = (
+                    ('tag', {'source': legacy['source'], 'tag': 'different-tag', 'components': 'auth',
+                             'target': 'development', 'extra': {'INPUT_AUTH-SCHEMA-VERSION': ''}}),
+                    ('selection', {'source': legacy['source'], 'tag': legacy['tag'], 'components': 'auth,bff',
+                                   'target': 'development', 'extra': {'INPUT_AUTH-SCHEMA-VERSION': ''}}),
+                    ('environment', {'source': legacy['source'], 'tag': legacy['tag'], 'components': 'auth',
+                                      'target': 'production', 'extra': {'INPUT_AUTH-SCHEMA-VERSION': ''}}),
+                    ('source mode', {'source': legacy['source'], 'tag': legacy['tag'], 'components': 'auth',
+                                     'target': 'development',
+                                     'extra': {'INPUT_AUTH-SCHEMA-VERSION': '',
+                                               'GAT4_RELEASE_SOURCE_MODE': 'independent'}}),
+                )
+                for label, values in mismatches:
+                    with self.subTest(schema=schema, mismatch=label):
+                        rejected = self.run_action_prepare(
+                            **values, artifact_source=retained, release_version='',
+                            operation='auth-preflight')
+                        self.assertNotEqual(rejected.returncode, 0)
+                        self.assertIn('legacy-resume-plan-mismatch', rejected.stdout)
+                        failed_dir = self.root / f'runner-temp-{self.action_runs}' / 'gat4-auth-preflight'
+                        self.assertFalse((failed_dir / 'plan.json').exists())
 
     def test_cd_runtime_recovery_prepares_cold_auth_identity_validator_modules(self):
         workflow=(ROOT/'.github/workflows/cd.yml').read_text()

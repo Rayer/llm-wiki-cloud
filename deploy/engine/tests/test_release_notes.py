@@ -694,12 +694,47 @@ class ReleaseNotesContractTests(unittest.TestCase):
     def test_http_reader_readback_requires_identity_and_exact_stored_content(self):
         from io import BytesIO
 
-        expected_body = note(version="2026.11.4")
-        expected = json.loads(expected_body)
-        index = {"schema_version": 1, "environment": "dev", "runtime_product_version": "1.0.0",
-                 "current_status": "available", "current_product_version": "2026.11.4",
-                 "current": None, "history": [{"product_version": "2026.11.4",
-                                                   "published_at": "2026-11-15T01:14:01Z", "locales": ["en"]}]}
+        expected_body = note(version=release_notes.PUBLIC_RELEASE_VERSION, changed="Canonical content")
+        legacy_body = note(version=release_notes.LEGACY_RELEASE_VERSION, changed="Immutable legacy content")
+        store, marker, plan_sha, _ = initial_schema2_migration_fixture()
+        canonical_time = "2026-11-15T01:14:01Z"
+        old_time = "2026-11-01T22:58:30+08:00"
+        published = release_notes.publish_package(
+            store, {"en": expected_body}, product_version=release_notes.PUBLIC_RELEASE_VERSION,
+            published_at=canonical_time, marker=marker, transition_plan_sha256=plan_sha)
+        index = release_notes.validate_index(store.index)
+        old_digest = release_notes.digest_bytes(legacy_body)
+        old_path = release_notes.exact_object_path(release_notes.LEGACY_RELEASE_VERSION, "en", old_digest)
+        store.objects[old_path] = (legacy_body, store.next_generation)
+        store.next_generation += 1
+        index["versions"].append({
+            "product_version": release_notes.LEGACY_RELEASE_VERSION, "published_at": old_time,
+            "locales": {"en": {"sha256": old_digest, "object_path": old_path}},
+        })
+        store.index = canonical(index)
+        store.generation += 1
+
+        def public_index(*, fallback=False):
+            row = None if fallback else next(row for row in index["versions"]
+                                            if row["product_version"] == release_notes.PUBLIC_RELEASE_VERSION)
+            return {
+                "schema_version": 1, "environment": "dev", "runtime_product_version": marker["product_version"],
+                "current_status": "missing" if fallback else "available",
+                "current_product_version": release_notes.PUBLIC_RELEASE_VERSION,
+                **({} if fallback else {"current": {"product_version": row["product_version"],
+                                                     "published_at": row["published_at"],
+                                                     "locales": ["en"]}}),
+                "history": [],
+                "component_details_status": "unavailable" if fallback else "complete",
+                "current_components": [] if fallback else [{
+                    "component": "bff", "product_version": marker["product_version"],
+                    "commit": marker["commit"], "image_tag": marker["image_tag"],
+                    "image_digest": marker["image_digest"], "revision": marker["revision"],
+                }],
+                "compatibility_aliases": [{"requested_version": release_notes.LEGACY_RELEASE_VERSION,
+                                           "canonical_version": release_notes.PUBLIC_RELEASE_VERSION,
+                                           "legacy_row_version": release_notes.LEGACY_RELEASE_VERSION}],
+            }
 
         class Response:
             status = 200
@@ -709,32 +744,79 @@ class ReleaseNotesContractTests(unittest.TestCase):
             def __enter__(self): return self
             def __exit__(self, *_args): return False
 
-        def dto():
-            return {**expected, "published_at": "2026-11-15T01:14:01Z", "requested_locale": "en",
-                    "locale_fallback": False, "is_current": False,
-                    "requested_product_version": "2026.11.4", "canonical_product_version": "2026.11.4",
-                    "legacy_alias": False, "legacy_fallback": False}
+        def dto(body, requested, canonical_version, *, published_at, alias, fallback, current):
+            return {**json.loads(body), "published_at": published_at, "requested_locale": "en",
+                    "locale_fallback": False, "is_current": current,
+                    "requested_product_version": requested, "canonical_product_version": canonical_version,
+                    "legacy_alias": alias, "legacy_fallback": fallback}
 
-        def run(content):
+        def run(path_version, content, api_index, *, current_store=store):
             with TemporaryDirectory() as temporary, \
                     patch.object(release_notes_capture, "active_service_url", return_value="https://notes.invalid"), \
                     patch.object(release_notes_publish, "urlopen", side_effect=[
-                        Response(canonical(index)), Response(canonical(content))]):
+                        Response(canonical(api_index)), Response(canonical(content))]):
                 return release_notes_publish.verify_reader_api(
-                    Path(temporary), "dev", None, "2026.11.4", {"en": expected_body}, historical=True)
+                    Path(temporary), "dev", None, path_version, {"en": legacy_body}, historical=True,
+                    store=current_store, alias_receipt=published.legacy_alias_receipt,
+                    minimum_index_generation=published.index_generation)
 
-        verified = run(dto())
-        self.assertEqual(verified["reader_requested_product_version"], "2026.11.4")
-        self.assertEqual(verified["reader_canonical_product_version"], "2026.11.4")
+        canonical_response = dto(expected_body, release_notes.PUBLIC_RELEASE_VERSION,
+                                 release_notes.PUBLIC_RELEASE_VERSION, published_at=canonical_time,
+                                 alias=False, fallback=False, current=True)
+        verified = run(release_notes.PUBLIC_RELEASE_VERSION, canonical_response, public_index())
+        self.assertEqual(verified["reader_requested_product_version"], release_notes.PUBLIC_RELEASE_VERSION)
+        self.assertEqual(verified["reader_canonical_product_version"], release_notes.PUBLIC_RELEASE_VERSION)
+        self.assertTrue(verified["reader_current_flags"]["en"])
         self.assertEqual(verified["reader_content_sha256"]["en"],
-                         release_notes.digest_bytes(canonical(expected)))
+                         release_notes.digest_bytes(canonical(json.loads(expected_body))))
+
+        # The retained 1.0.0 URL resolves to the canonical public 2026.11.4 body.
+        alias_response = dto(expected_body, release_notes.LEGACY_RELEASE_VERSION,
+                             release_notes.PUBLIC_RELEASE_VERSION, published_at=canonical_time,
+                             alias=True, fallback=False, current=True)
+        alias_readback = run(release_notes.LEGACY_RELEASE_VERSION, alias_response, public_index())
+        self.assertEqual(alias_readback["reader_requested_product_version"], release_notes.LEGACY_RELEASE_VERSION)
+        self.assertEqual(alias_readback["reader_canonical_product_version"], release_notes.PUBLIC_RELEASE_VERSION)
+        self.assertTrue(alias_readback["reader_legacy_alias"])
+        self.assertFalse(alias_readback["reader_legacy_fallback"]["en"])
+        self.assertTrue(alias_readback["reader_current_flags"]["en"])
+
+        # If canonical content is absent, only the exact immutable legacy row is a valid false-current fallback.
+        fallback_index = copy.deepcopy(index)
+        fallback_index["versions"] = [row for row in fallback_index["versions"]
+                                      if row["product_version"] == release_notes.LEGACY_RELEASE_VERSION]
+        fallback_store = MemoryNotesStore()
+        fallback_store.index = canonical(fallback_index)
+        fallback_store.generation = store.generation + 1
+        fallback_store.objects = copy.deepcopy(store.objects)
+        fallback_response = dto(legacy_body, release_notes.LEGACY_RELEASE_VERSION,
+                                release_notes.PUBLIC_RELEASE_VERSION, published_at=old_time,
+                                alias=True, fallback=True, current=False)
+        fallback_api_index = public_index(fallback=True)
+        # It is the actual store snapshot used by the readback, so generation stability is still enforced.
+        fallback_api_index["history"] = []
+        fallback_readback = run(release_notes.LEGACY_RELEASE_VERSION, fallback_response,
+                                 fallback_api_index, current_store=fallback_store)
+        self.assertTrue(fallback_readback["reader_legacy_fallback"]["en"])
+        self.assertFalse(fallback_readback["reader_current_flags"]["en"])
+
         for corrupt in (
-                {key: value for key, value in dto().items() if key != "requested_product_version"},
-                {**dto(), "entries": [{"title": "wrong"}]},
-                {**dto(), "canonical_product_version": "2026.11.3"}):
+                {key: value for key, value in alias_response.items() if key != "requested_product_version"},
+                {**alias_response, "entries": [{"title": "wrong"}]},
+                {**alias_response, "canonical_product_version": "2026.11.3"},
+                {**alias_response, "is_current": False},
+                {**alias_response, "legacy_fallback": True},
+        ):
             with self.subTest(corrupt=corrupt), self.assertRaisesRegex(
                     release_notes.ReleaseNotesError, "reader-content-readback-mismatch"):
-                run(corrupt)
+                run(release_notes.LEGACY_RELEASE_VERSION, corrupt, public_index())
+
+        bad_mapping = public_index()
+        bad_mapping["compatibility_aliases"] = [{"requested_version": "1.0.0",
+                                                 "canonical_version": "2026.11.5",
+                                                 "legacy_row_version": "1.0.0"}]
+        with self.assertRaisesRegex(release_notes.ReleaseNotesError, "reader-index-readback-invalid"):
+            run(release_notes.LEGACY_RELEASE_VERSION, alias_response, bad_mapping)
 
     def test_first_create_race_with_different_digest_conflicts_and_preserves_winner(self):
         marker = self.normalize(operation="deploy", service_generation=44,
@@ -1161,7 +1243,9 @@ class ReleaseNotesContractTests(unittest.TestCase):
             expected_reader_content = json.loads(body)
             with patch.object(release_notes_publish, "GCSCLIStore", return_value=store), \
                     patch.object(release_notes_publish, "verify_reader_api", return_value={
-                        "current_status": "unavailable",
+                        "reader_current_status": "unavailable",
+                        "reader_current_product_version": None,
+                        "reader_current_flags": {},
                         "reader_content_sha256": {"en": release_notes.digest_bytes(canonical(expected_reader_content))},
                     }), \
                     patch.object(release_notes_capture, "capture", side_effect=AssertionError("must not synthesize a readback")):
@@ -1173,7 +1257,7 @@ class ReleaseNotesContractTests(unittest.TestCase):
             self.assertEqual(index["versions"][0]["product_version"], "1.2.3")
             self.assertEqual(index["versions"][0]["published_at"], "2026-11-14T10:00:00Z")
             self.assertEqual(evidence["published_at_source"], "retained-release-operation")
-            self.assertEqual(evidence["currentness"], "history-only")
+            self.assertEqual(evidence["currentness"], "unavailable")
             self.assertEqual(evidence["publication_evidence_sha256"], release_notes.digest_bytes(publication_bytes))
             self.assertIsNone(evidence["operation_sidecar_sha256"])
             self.assertFalse((directory / "release-notes-operation.json").exists())
