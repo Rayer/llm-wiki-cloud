@@ -257,14 +257,16 @@ class SharedCDContractTest(unittest.TestCase):
             workflow = yaml.safe_load((workflows / path).read_text())
             trigger = workflow.get("on", workflow.get(True, {}))
             self.assertIn("workflow_dispatch", trigger)
-            expected_jobs = ["auth-image-diagnostic", "frontend-config-generate", "main-fast-forward-eligible", "prepare-release-notes-package", "release"] if path == "deploy-dev.yml" else ["frontend-config-generate", "release"]
+            expected_jobs = (["auth-image-diagnostic", "frontend-config-generate", "main-fast-forward-eligible",
+                              "prepare-release-notes-package", "release"] if path == "deploy-dev.yml" else
+                             ["frontend-config-generate", "prepare-release-notes-package", "release"])
             self.assertEqual(sorted(workflow["jobs"]), expected_jobs)
             job = workflow["jobs"]["release"]
             expected_release_guard = f"github.ref == 'refs/heads/{branch}'"
             if path == "deploy-dev.yml":
                 expected_release_guard += " && inputs.prepare_release_notes_package != true && inputs.operation != 'diagnose-auth-image' && inputs.operation != 'frontend-config-generate'"
             else:
-                expected_release_guard += " && inputs.operation != 'frontend-config-generate'"
+                expected_release_guard += " && inputs.prepare_release_notes_package != true && inputs.operation != 'frontend-config-generate'"
             self.assertEqual(job["if"], expected_release_guard)
             self.assertEqual(job["uses"], "./.github/workflows/cd.yml")
             self.assertEqual(job["with"]["environment"], environment)
@@ -300,9 +302,7 @@ class SharedCDContractTest(unittest.TestCase):
                 self.assertEqual(job["with"][name], "${{ inputs." + name + " }}")
             generate_job = workflow["jobs"]["frontend-config-generate"]
             generation_environment = "dev" if path == "deploy-dev.yml" else "prod"
-            expected_generation_guard = "github.ref == 'refs/heads/develop' && inputs.operation == 'frontend-config-generate'"
-            if path == "deploy-dev.yml":
-                expected_generation_guard = "github.ref == 'refs/heads/develop' && inputs.prepare_release_notes_package != true && inputs.operation == 'frontend-config-generate'"
+            expected_generation_guard = "github.ref == 'refs/heads/develop' && inputs.prepare_release_notes_package != true && inputs.operation == 'frontend-config-generate'"
             self.assertEqual(generate_job["if"], expected_generation_guard)
             self.assertEqual(generate_job["permissions"], {"contents": "read"})
             self.assertEqual(generate_job["uses"], "./.github/workflows/generate-frontend-config.yml")

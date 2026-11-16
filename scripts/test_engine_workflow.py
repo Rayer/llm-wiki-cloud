@@ -322,6 +322,28 @@ class EngineWorkflowContract(unittest.TestCase):
         self.assertEqual(dev_inputs['prepare_release_notes_package']['default'], False)
         self.assertNotIn('release_notes_package_retention_days', dev_inputs)
 
+        production = yaml.safe_load((ROOT / '.github/workflows/promote-production.yml').read_text())
+        production_inputs = production.get('on', production.get(True, {}))['workflow_dispatch']['inputs']
+        self.assertEqual(production['jobs']['prepare-release-notes-package']['if'],
+                         "github.ref == 'refs/heads/main' && inputs.prepare_release_notes_package == true")
+        self.assertEqual(production['jobs']['prepare-release-notes-package']['with'], {
+            'ready_artifact_id': '${{ inputs.artifact_id }}', 'history_result_artifact_id': '',
+            'history_operation': '', 'retention_days': '90',
+            'request_id': '${{ inputs.release_notes_package_request_id }}',
+        })
+        self.assertIn('inputs.prepare_release_notes_package != true', production['jobs']['release']['if'])
+        self.assertEqual(production['jobs']['release']['secrets'], 'inherit')
+        self.assertIn('inputs.prepare_release_notes_package != true',
+                      production['jobs']['frontend-config-generate']['if'])
+        for name in ('prepare_release_notes_package', 'package_zip_base64',
+                     'release_notes_package_request_id'):
+            self.assertIn(name, production_inputs)
+        self.assertNotIn('source_sha', production_inputs)
+        self.assertNotIn('force', production_inputs)
+        for name in ('auth_repository_id', 'auth_revision', 'auth_tree_sha256',
+                     'auth_artifact_id', 'auth_run_id', 'auth_run_attempt'):
+            self.assertNotIn(name, production_inputs)
+
         manual_path = ROOT / '.github/workflows/prepare-release-notes-package.yml'
         manual = yaml.safe_load(manual_path.read_text())
         trigger = manual.get('on', manual.get(True, {}))
@@ -352,7 +374,7 @@ class EngineWorkflowContract(unittest.TestCase):
         self.assertEqual(downloads[1]['with']['artifact-ids'], '${{ steps.ready.outputs.result_artifact_id }}')
         self.assertEqual(downloads[1]['with']['run-id'], '${{ steps.ready.outputs.run_id }}')
         self.assertEqual(downloads[1]['if'], "inputs.ready_artifact_id != ''")
-        self.assertEqual(downloads[2]['if'], "inputs.history_result_artifact_id != ''")
+        self.assertEqual(downloads[2]['if'], "inputs.history_result_artifact_id != '' && steps.caller.outputs.environment == 'development'")
         self.assertEqual(downloads[2]['with']['artifact-ids'], '${{ inputs.history_result_artifact_id }}')
         self.assertEqual(downloads[2]['with']['run-id'], '${{ steps.history-identity.outputs.run_id }}')
         self.assertEqual(downloads[2]['with']['merge-multiple'], True)
@@ -363,16 +385,24 @@ class EngineWorkflowContract(unittest.TestCase):
             "format('lwc-release-notes-{0}-development-history-{1}-{2}-{3}-{4}', "
             "steps.prepare.outputs.product_version, inputs.history_operation, "
             "inputs.history_result_artifact_id, github.run_id, github.run_attempt) || "
-            "format('lwc-release-notes-{0}-development-{1}-{2}', "
-            "steps.prepare.outputs.product_version, github.run_id, github.run_attempt) }}",
+            "format('lwc-release-notes-{0}-{1}-{2}-{3}', "
+            "steps.prepare.outputs.product_version, steps.caller.outputs.environment, "
+            "github.run_id, github.run_attempt) }}",
         )
         self.assertEqual(upload['with']['retention-days'], '${{ inputs.retention_days }}')
-        source_gate = next(step for step in manual_steps if step.get('name') == 'Validate workflow source branch')
+        source_gate = next(step for step in manual_steps
+                           if step.get('name') == 'Validate package-only inputs and original event payload')
         self.assertIn('validate-package-event', source_gate['run'])
+        self.assertEqual(source_gate['env']['PACKAGE_ENVIRONMENT'],
+                         '${{ steps.caller.outputs.package_environment }}')
+        caller = next(step for step in manual_steps
+                      if step.get('name') == 'Resolve the registered wrapper from authenticated workflow context')
+        self.assertIn('resolve-caller', caller['run'])
         prepare = next(step for step in manual_steps if step.get('id') == 'prepare')
         self.assertEqual(prepare['env']['REQUEST_ID'], '${{ inputs.request_id }}')
         self.assertEqual(prepare['env']['READY_ARTIFACT_ID'], '${{ inputs.ready_artifact_id }}')
         self.assertEqual(prepare['env']['RETENTION_DAYS'], '${{ inputs.retention_days }}')
+        self.assertEqual(prepare['env']['PACKAGE_ENVIRONMENT'], '${{ steps.caller.outputs.package_environment }}')
         self.assertNotIn('LWC_RELEASE_NOTES_PACKAGE_B64', prepare.get('env', {}))
         self.assertNotIn('${{ inputs.package_zip_base64 }}', str(manual))
         self.assertIn('--event-path "$GITHUB_EVENT_PATH"', prepare['run'])
@@ -381,10 +411,19 @@ class EngineWorkflowContract(unittest.TestCase):
         self.assertIn('--request-id "$REQUEST_ID"', prepare['run'])
         self.assertIn('--ready-artifact-id "$READY_ARTIFACT_ID"', prepare['run'])
         self.assertIn('--retention-days "$RETENTION_DAYS"', prepare['run'])
+        self.assertEqual(prepare['env']['PACKAGE_ENVIRONMENT'],
+                         '${{ steps.caller.outputs.package_environment }}')
+        self.assertIn('--environment "$PACKAGE_ENVIRONMENT"', prepare['run'])
         locate = next(step for step in manual_steps if step.get('id') == 'ready')
         self.assertIn('find-ready-result', locate['run'])
+        self.assertEqual(locate['env']['READY_ENVIRONMENT'],
+                         '${{ steps.caller.outputs.environment }}')
+        self.assertIn('--environment "$READY_ENVIRONMENT"', locate['run'])
         ready_plan = next(step for step in manual_steps if step.get('id') == 'ready-plan')
         self.assertEqual(ready_plan['env']['GH_TOKEN'], '${{ github.token }}')
+        self.assertEqual(ready_plan['env']['READY_ENVIRONMENT'],
+                         '${{ steps.caller.outputs.environment }}')
+        self.assertIn('--environment "$READY_ENVIRONMENT"', ready_plan['run'])
         self.assertIn('validate-ready', ready_plan['run'])
         self.assertIn('"release-notes-evidence.json"',
                       (ROOT / 'deploy/engine/release_notes_workflow.py').read_text())
@@ -392,13 +431,20 @@ class EngineWorkflowContract(unittest.TestCase):
         self.assertIn('verify-upload', verify['run'])
         self.assertIn('artifact-digest', verify['env']['ACTION_DIGEST_RAW'])
         self.assertIn('"$ACTION_DIGEST_RAW" =~ ^[0-9a-f]{64}$', verify['run'])
+        self.assertIn('--run "$RUNNER_TEMP/release-notes-package-run.json"', verify['run'])
+        self.assertIn('--environment "$DESTINATION_ENVIRONMENT"', verify['run'])
         helper = (ROOT / 'deploy/engine/release_notes_workflow.py').read_text()
         self.assertIn('normalize_action_digest(action_digest)', helper)
         self.assertIn('"artifact_id": ready_artifact_id', helper)
         self.assertIn('inputs["release_notes_artifact_id"] = notes_artifact_id', helper)
         self.assertIn('"resume_inputs": resume_inputs', helper)
+        self.assertIn('def validate_current_package_artifact', helper)
+        self.assertIn('validate-current-package-artifact',
+                      (ROOT / '.github/workflows/cd.yml').read_text())
         self.assertNotIn('VERCEL', str(manual))
         self.assertNotIn('WIF_', str(manual))
+        self.assertNotIn('secrets: inherit', str(manual))
+        self.assertNotIn('id-token', str(manual))
 
         shared_job = release
         self.assertEqual(shared_job['env']['REUSE_ID'], '${{ inputs.artifact_id }}')
@@ -416,9 +462,11 @@ class EngineWorkflowContract(unittest.TestCase):
     def test_manual_notes_package_operator_command_is_documented_without_content_logging(self):
         doc = (ROOT / 'docs/lwc-478/operator-package-preparation.md').read_text()
         self.assertIn('release_notes_workflow.py dispatch', doc)
-        self.assertIn('already registered `.github/workflows/deploy-dev.yml`', doc)
+        self.assertIn('registered `.github/workflows/deploy-dev.yml` manual entrypoint', doc)
         self.assertIn('--ready-artifact-id "$READY_ARTIFACT_ID"', doc)
         self.assertIn('--package-dir "$PRIVATE_TPM_PACKAGE_DIR"', doc)
+        self.assertIn('`.github/workflows/promote-production.yml` on `main`', doc)
+        self.assertIn('no `source_sha`', doc)
         self.assertIn('does not print package contents', doc.lower())
         self.assertIn('no real artifact upload was run', doc.lower())
 
@@ -503,7 +551,7 @@ class EngineWorkflowContract(unittest.TestCase):
                          ['release','config-only','frontend-config-only','frontend-config-generate','notes-resend'])
         self.assertIn("inputs.operation != 'frontend-config-generate'",production['jobs']['release']['if'])
         prod_generator=production['jobs']['frontend-config-generate']
-        self.assertEqual(prod_generator['if'],"github.ref == 'refs/heads/develop' && inputs.operation == 'frontend-config-generate'")
+        self.assertEqual(prod_generator['if'],"github.ref == 'refs/heads/develop' && inputs.prepare_release_notes_package != true && inputs.operation == 'frontend-config-generate'")
         self.assertEqual(prod_generator['permissions'],{'contents':'read'})
         self.assertEqual(prod_generator['uses'],'./.github/workflows/generate-frontend-config.yml')
         self.assertEqual(prod_generator['with'],{'environment':'prod'})
@@ -604,7 +652,7 @@ class EngineWorkflowContract(unittest.TestCase):
         self.assertIn('--failure-class artifact-id-required',missing)
         self.assertTrue(missing.rstrip().endswith('exit 1'))
         metadata_failure=release_steps['Inspect exact TPM Release Notes artifact']['run']
-        self.assertEqual(metadata_failure.count('exit 1'),2)
+        self.assertEqual(metadata_failure.count('exit 1'),3)
         self.assertTrue(release_steps['Record exact TPM artifact download failure']['run'].rstrip().endswith('exit 1'))
         self.assertLess(next(i for i,s in enumerate(release['steps']) if s.get('name') == 'Validate and store immutable Release Notes content before product release'),
                         next(i for i,s in enumerate(release['steps']) if s.get('name') == 'Execute bounded runtime or explicit recovery'))

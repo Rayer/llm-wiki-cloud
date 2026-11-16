@@ -83,7 +83,7 @@ test('production workflow invokes the shared engine with fixed authority and DEV
   const workflow = parseYaml(await readFile(workflowPath, 'utf8'));
   const job = workflow.jobs.release;
   assert.equal(workflow.on.push, undefined);
-  assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), ['components', 'release_tag', 'release_version', 'artifact_id', 'release_notes_artifact_id', 'release_notes_action', 'release_notes_result_artifact_id', 'release_notes_operation', 'dev_artifact_id', 'frontend_config_artifact_id', 'operation', 'pipeline_run_timeout_seconds', 'release_source_mode', 'auth_schema_version']);
+  assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), ['components', 'release_tag', 'release_version', 'artifact_id', 'release_notes_artifact_id', 'release_notes_action', 'release_notes_result_artifact_id', 'release_notes_operation', 'dev_artifact_id', 'frontend_config_artifact_id', 'operation', 'pipeline_run_timeout_seconds', 'release_source_mode', 'auth_schema_version', 'prepare_release_notes_package', 'package_zip_base64', 'release_notes_package_request_id']);
   assert.deepEqual(workflow.on.workflow_dispatch.inputs.operation.options, ['release', 'config-only', 'frontend-config-only', 'frontend-config-generate', 'notes-resend']);
   const noteInputs = workflow.on.workflow_dispatch.inputs;
   assert.deepEqual(noteInputs.release_notes_artifact_id, {
@@ -106,7 +106,7 @@ test('production workflow invokes the shared engine with fixed authority and DEV
     type: 'string',
     default: '4',
   });
-  assert.equal(job.if, "github.ref == 'refs/heads/main' && inputs.operation != 'frontend-config-generate'");
+  assert.equal(job.if, "github.ref == 'refs/heads/main' && inputs.prepare_release_notes_package != true && inputs.operation != 'frontend-config-generate'");
   assert.equal(job.uses, './.github/workflows/cd.yml');
   assert.equal(job.secrets, 'inherit');
   assert.deepEqual(job.with, {

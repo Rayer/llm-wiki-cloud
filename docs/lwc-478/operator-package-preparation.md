@@ -1,8 +1,8 @@
 # Manual TPM Release Notes package preparation
 
-This is a private transport for a package the TPM editor has already authored. It does not generate or edit content. The accepted ZIP contains the existing `release-notes-manifest.json` and the locale JSON files named by that manifest; `release_notes.validate_package` checks the existing schema, exact Ready or retained-result plan hash, DEV environment, version, locale set, file hashes, and historical provenance.
+This is a private transport for a package the TPM editor has already authored. It does not generate or edit content. The accepted ZIP contains the existing `release-notes-manifest.json` and the locale JSON files named by that manifest; `release_notes.validate_package` checks the existing schema, exact Ready or retained-result plan hash, destination environment, version, locale set, file hashes, and historical provenance.
 
-Use the already registered `.github/workflows/deploy-dev.yml` manual entrypoint on `develop`. Its explicit `prepare_release_notes_package=true` mode skips the release, frontend-config, diagnostic, and fast-forward-eligibility jobs, then calls `.github/workflows/prepare-release-notes-package.yml` as a same-commit reusable workflow. The helper dispatches to the registered Deploy Development workflow; do not dispatch the reusable workflow file directly. The caller event contains `operation=release`, `release_notes_action=stop`, the exact `artifact_id`, and the package payload. The reusable workflow receives only the Ready artifact ID, request ID, and retention setting through `with`; it reads the original dispatch event payload from `GITHUB_EVENT_PATH`, so the package bytes are not copied into reusable-workflow inputs, step environment, shell script, argv, or logs. [GitHub documents that a `workflow_call` event receives the caller's event payload, ref, and SHA](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_call).
+Use the registered `.github/workflows/deploy-dev.yml` manual entrypoint on `develop` for a DEV Ready artifact, or `.github/workflows/promote-production.yml` on `main` for a current Production Ready artifact. Their explicit `prepare_release_notes_package=true` mode skips release and configuration jobs; the DEV wrapper also skips diagnostic and fast-forward-eligibility jobs. Both wrappers call `.github/workflows/prepare-release-notes-package.yml` as the same-commit reusable workflow. The helper verifies the Ready run metadata and chooses the registered wrapper and ref from that authenticated environment; do not dispatch the reusable workflow file directly. The caller event contains `operation=release`, `release_notes_action=stop`, the exact `artifact_id`, and the package payload. The reusable workflow receives only Ready or history IDs, the request ID, and retention through `with`; it reads the original dispatch event payload from `GITHUB_EVENT_PATH`, so the package bytes are not copied into reusable-workflow inputs, step environment, shell script, argv, or logs. [GitHub documents that a `workflow_call` event receives the caller's event payload, ref, and SHA](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_call).
 
 ## Start from the exact pre-runtime Notes gate
 
@@ -56,6 +56,40 @@ gh workflow run deploy-dev.yml --ref develop \
 Pass the returned `dev_artifact_id` and Auth source fields when they are present in `resume_inputs`. Do not substitute a new source, tag, component selection, Auth tuple, or different Ready artifact. The existing wrapper passes `artifact_id` to the deployment engine as retained Stage 1 input. The engine admits the new invocation, checks the complete compatible release identity against that Ready artifact, requires an untouched `ready` checkpoint with empty runtime components, and restores the original plan bytes and build handles before execution. A mismatch or a checkpoint that has progressed into runtime is rejected by the native engine; it cannot silently create a new Notes-bound plan.
 
 The initial missing-package run does not create the release `published_at` record. On the resumed release, existing native fences run first; the original publication time is captured only after the runtime operation succeeds, and then the Notes package and marker are published. If Notes publication fails after runtime, the existing explicit Owner retry, skip, or stop disposition applies; resend remains an independent no-redeploy action.
+
+## Prepare a current Production package
+
+Start the normal Promote Production release on `main` with the intended selected components and `release_notes_action=run`, leaving `release_notes_artifact_id` empty. After the exact Production Ready artifact and final result are retained, author the manifest with `environment=prod` and the SHA-256 of that Production Ready plan. The package helper reads the Ready artifact and run metadata before choosing `promote-production.yml` and `main`; it does not accept a caller-supplied destination label.
+
+Use the same helper command with the Production Ready artifact ID. It chooses the wrapper and ref from the verified Ready metadata:
+
+```sh
+: "${LWC_478_PRODUCTION_READY_ARTIFACT_ID:?Set this to the verified exact Production Ready artifact ID}"
+PRIVATE_TPM_PACKAGE_DIR=/private/path/to/tpm-authored-production-package
+python3 deploy/engine/release_notes_workflow.py dispatch \
+  --repository Rayer/llm-wiki-cloud \
+  --ready-artifact-id "$LWC_478_PRODUCTION_READY_ARTIFACT_ID" \
+  --package-dir "$PRIVATE_TPM_PACKAGE_DIR" \
+  --retention-days 90
+```
+
+After package preparation succeeds, use the exact all-string `resume_inputs` object printed by the package verification step to resume the same plan through Promote Production on `main`:
+
+```sh
+gh workflow run promote-production.yml --ref main \
+  -f operation=release \
+  -f release_tag="$LWC_478_RELEASE_TAG" \
+  -f release_version="$LWC_478_RELEASE_VERSION" \
+  -f components="$LWC_478_COMPONENTS" \
+  -f artifact_id="$LWC_478_READY_ARTIFACT_ID" \
+  -f release_notes_artifact_id="$LWC_478_PACKAGE_ARTIFACT_ID" \
+  -f release_notes_action=run \
+  -f dev_artifact_id="$LWC_478_DEV_ARTIFACT_ID" \
+  -f release_source_mode="$LWC_478_RELEASE_SOURCE_MODE" \
+  -f auth_schema_version="$LWC_478_AUTH_SCHEMA_VERSION"
+```
+
+The Production map has no `source_sha`, `force`, or Auth-source tuple because the Production wrapper takes source and executor from `main` and does not declare those DEV inputs. Keep the returned tag, version, selected components, Ready ID, DEV artifact provenance, and supported selectors unchanged. The native release path checks the uploaded package's exact plan hash before product execution. The package-only run does not call the normal release workflow, configuration generator, cloud provider, or environment secrets; the normal resumed Production run keeps its protected environment and original retry, skip, and stop handling.
 
 ## Import a genuine historical DEV version without reusing Ready
 

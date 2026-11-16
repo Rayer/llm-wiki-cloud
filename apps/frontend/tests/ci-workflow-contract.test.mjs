@@ -40,11 +40,11 @@ test('r2 registered release and recovery workflows use explicit artifact inputs'
       expectedInputs.push('auth_schema_version');
       expectedInputs.push('auth_repository_id', 'auth_revision', 'auth_tree_sha256',
         'auth_artifact_id', 'auth_run_id', 'auth_run_attempt');
-      expectedInputs.push('prepare_release_notes_package', 'package_zip_base64',
-        'release_notes_package_request_id');
     } else {
       expectedInputs.push('auth_schema_version');
     }
+    expectedInputs.push('prepare_release_notes_package', 'package_zip_base64',
+      'release_notes_package_request_id');
     assert.deepEqual(Object.keys(parsed.on.workflow_dispatch.inputs), expectedInputs);
     const noteInputs = parsed.on.workflow_dispatch.inputs;
     assert.deepEqual(noteInputs.release_notes_artifact_id, {
@@ -93,7 +93,7 @@ test('r2 registered release and recovery workflows use explicit artifact inputs'
     assert.equal(parsed.jobs.release.with.environment, environment);
     assert.equal(parsed.jobs.release.if, file === 'deploy-dev.yml'
       ? `github.ref == 'refs/heads/${branch}' && inputs.prepare_release_notes_package != true && inputs.operation != 'diagnose-auth-image' && inputs.operation != 'frontend-config-generate'`
-      : `github.ref == 'refs/heads/${branch}' && inputs.operation != 'frontend-config-generate'`);
+      : `github.ref == 'refs/heads/${branch}' && inputs.prepare_release_notes_package != true && inputs.operation != 'frontend-config-generate'`);
     assert.equal(parsed.jobs.release.with.source_sha, file === 'deploy-dev.yml'
       ? "${{ inputs.operation == 'release' && (inputs.source_sha || github.sha) || inputs.source_sha }}"
       : '${{ github.sha }}');
@@ -135,12 +135,42 @@ test('r2 registered release and recovery workflows use explicit artifact inputs'
     const generation = parsed.jobs['frontend-config-generate'];
     assert.equal(generation.if, file === 'deploy-dev.yml'
       ? "github.ref == 'refs/heads/develop' && inputs.prepare_release_notes_package != true && inputs.operation == 'frontend-config-generate'"
-      : "github.ref == 'refs/heads/develop' && inputs.operation == 'frontend-config-generate'");
+      : "github.ref == 'refs/heads/develop' && inputs.prepare_release_notes_package != true && inputs.operation == 'frontend-config-generate'");
     assert.equal(generation.permissions.contents, 'read');
     assert.equal(generation.uses, './.github/workflows/generate-frontend-config.yml');
     assert.deepEqual(generation.with, { environment: file === 'deploy-dev.yml' ? 'dev' : 'prod' });
     assert.equal(generation.secrets, undefined);
     assert.doesNotMatch(JSON.stringify(generation), /id-token|secrets/);
+    assert.deepEqual(noteInputs.prepare_release_notes_package, {
+      description: file === 'deploy-dev.yml'
+        ? 'Prepare a TPM-authored private Notes package from an exact retained Ready or successful historical DEV result; skips every deployment operation'
+        : 'Prepare a TPM-authored private Notes package from an exact current Production Ready artifact; skips every deployment operation',
+      required: false, type: 'boolean', default: false,
+    });
+    assert.deepEqual(noteInputs.package_zip_base64, {
+      description: 'Private bounded base64 ZIP of the existing TPM-authored Notes package; consumed from this dispatch event file only',
+      required: false, type: 'string', default: '',
+    });
+    assert.deepEqual(noteInputs.release_notes_package_request_id, {
+      description: 'Unique lowercase 32-hex correlation value for private package preparation',
+      required: false, type: 'string', default: '',
+    });
+    const packageEntry = parsed.jobs['prepare-release-notes-package'];
+    assert.equal(packageEntry.if, file === 'deploy-dev.yml'
+      ? 'inputs.prepare_release_notes_package == true'
+      : "github.ref == 'refs/heads/main' && inputs.prepare_release_notes_package == true");
+    assert.equal(packageEntry.uses, './.github/workflows/prepare-release-notes-package.yml');
+    assert.deepEqual(packageEntry.permissions, { contents: 'read', actions: 'write' });
+    assert.equal(packageEntry.with.ready_artifact_id, '${{ inputs.artifact_id }}');
+    assert.equal(packageEntry.with.retention_days, '90');
+    assert.equal(packageEntry.with.request_id, '${{ inputs.release_notes_package_request_id }}');
+    assert.deepEqual(packageEntry.with.history_result_artifact_id, file === 'deploy-dev.yml'
+      ? '${{ inputs.release_notes_result_artifact_id }}' : '');
+    assert.deepEqual(packageEntry.with.history_operation, file === 'deploy-dev.yml'
+      ? "${{ inputs.release_notes_result_artifact_id != '' && inputs.release_notes_operation || '' }}" : '');
+    assert.doesNotMatch(JSON.stringify(packageEntry.with), /package_zip_base64/);
+    assert.equal(packageEntry.secrets, undefined);
+    assert.doesNotMatch(JSON.stringify(packageEntry), /id-token|secrets: inherit/);
   }
   const deployDev = parseYaml(await workflow('deploy-dev.yml'));
   const deployInputs = deployDev.on.workflow_dispatch.inputs;
@@ -158,18 +188,6 @@ test('r2 registered release and recovery workflows use explicit artifact inputs'
     description: 'Unique lowercase 32-hex correlation value for private package preparation',
     required: false, type: 'string', default: '',
   });
-  const packageEntry = deployDev.jobs['prepare-release-notes-package'];
-  assert.equal(packageEntry.if, 'inputs.prepare_release_notes_package == true');
-  assert.equal(packageEntry.uses, './.github/workflows/prepare-release-notes-package.yml');
-  assert.deepEqual(packageEntry.permissions, { contents: 'read', actions: 'write' });
-  assert.deepEqual(packageEntry.with, {
-    ready_artifact_id: '${{ inputs.artifact_id }}',
-    history_result_artifact_id: '${{ inputs.release_notes_result_artifact_id }}',
-    history_operation: "${{ inputs.release_notes_result_artifact_id != '' && inputs.release_notes_operation || '' }}",
-    retention_days: '90',
-    request_id: '${{ inputs.release_notes_package_request_id }}',
-  });
-  assert.doesNotMatch(JSON.stringify(packageEntry.with), /package_zip_base64/);
   const packageWorkflow = parseYaml(await workflow('prepare-release-notes-package.yml'));
   assert.deepEqual(Object.keys(packageWorkflow.on), ['workflow_call']);
   assert.deepEqual(Object.keys(packageWorkflow.on.workflow_call.inputs), [
@@ -177,8 +195,11 @@ test('r2 registered release and recovery workflows use explicit artifact inputs'
   ]);
   assert.equal(packageWorkflow.jobs.package.permissions.contents, 'read');
   assert.equal(packageWorkflow.jobs.package.permissions.actions, 'write');
-  assert.ok(packageWorkflow.jobs.package.steps.find((step) => step.name === 'Validate workflow source branch')
+  assert.ok(packageWorkflow.jobs.package.steps.find((step) => step.name === 'Validate package-only inputs and original event payload')
     .run.includes('validate-package-event'));
+  assert.ok(packageWorkflow.jobs.package.steps.find((step) => step.name === 'Resolve the registered wrapper from authenticated workflow context')
+    .run.includes('resolve-caller'));
+  assert.doesNotMatch(JSON.stringify(packageWorkflow.jobs.package), /secrets: inherit|id-token|VERCEL_|WIF_|gcloud/i);
   const operation = deployDev.on.workflow_dispatch.inputs.operation;
   assert.equal(operation.type, 'choice');
   assert.equal(operation.default, 'release');

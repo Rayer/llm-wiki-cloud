@@ -23,7 +23,19 @@ import release_notes
 
 
 WORKFLOW_PATH = ".github/workflows/deploy-dev.yml"
-READY_WORKFLOW_PATH = ".github/workflows/deploy-dev.yml"
+READY_WORKFLOW_PATH = WORKFLOW_PATH
+DESTINATIONS = {
+    "development": {
+        "branch": "develop",
+        "workflow_path": ".github/workflows/deploy-dev.yml",
+        "package_environment": "dev",
+    },
+    "production": {
+        "branch": "main",
+        "workflow_path": ".github/workflows/promote-production.yml",
+        "package_environment": "prod",
+    },
+}
 MAX_DISPATCH_ZIP_BYTES = 40 * 1024
 MAX_DISPATCH_BASE64_CHARS = 4 * ((MAX_DISPATCH_ZIP_BYTES + 2) // 3)
 MAX_MANIFEST_BYTES = 32 * 1024
@@ -33,8 +45,13 @@ MAX_EVENT_BYTES = 72 * 1024
 MAX_READY_FILE_BYTES = 16 * 1024 * 1024
 MAX_NOTES_EVIDENCE_BYTES = 256 * 1024
 PACKAGE_FILES = {"release-notes-manifest.json", "en.json", "zh-TW.json"}
-READY_NAME_RE = re.compile(r"^lwc-ready-development-([1-9][0-9]*)-([1-9][0-9]*)$")
+READY_NAME_RE = re.compile(r"^lwc-ready-(development|production)-([1-9][0-9]*)-([1-9][0-9]*)$")
+CURRENT_RESULT_NAME_RE = re.compile(r"^lwc-result-(development|production)-([1-9][0-9]*)-([1-9][0-9]*)$")
 RESULT_NAME_RE = re.compile(r"^lwc-result-development-([1-9][0-9]*)-([1-9][0-9]*)$")
+CURRENT_PACKAGE_NAME_RE = re.compile(
+    r"^lwc-release-notes-(?P<version>(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+    r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?)-"
+    r"(?P<environment>development|production)-(?P<run_id>[1-9][0-9]*)-(?P<attempt>[1-9][0-9]*)$")
 PACKAGE_NAME_RE = re.compile(
     r"^lwc-release-notes-(?P<version>(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?)-development-(?:(?P<history>history)-(?P<operation>release|deploy|rollback|reactivate|promote)-(?P<result_id>[1-9][0-9]*)-)?(?P<run_id>[1-9][0-9]*)-(?P<attempt>[1-9][0-9]*)$")
 ARTIFACT_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -114,9 +131,12 @@ def _read_package_input_from_event(event_path: Path, expected_request_id: str,
                                   expected_ready_artifact_id: str,
                                   expected_retention_days: str,
                                   expected_history_result_artifact_id: str = "",
-                                  expected_history_operation: str = "") -> str:
+                                  expected_history_operation: str = "",
+                                  environment: str = "development") -> str:
     source = _package_source(expected_ready_artifact_id, expected_history_result_artifact_id,
                              expected_history_operation)
+    if environment not in DESTINATIONS or (environment == "production" and source["kind"] != "ready"):
+        _fail("workflow-event-invalid")
     if (not REQUEST_ID_RE.fullmatch(expected_request_id) or
             expected_retention_days not in {str(value) for value in ALLOWED_RETENTION_DAYS}):
         _fail("workflow-event-invalid")
@@ -192,8 +212,8 @@ def bff_selected_from_plan(plan_bytes: bytes) -> bool:
     return "bff" in selected_components_from_plan(plan_bytes)
 
 
-def _workflow_path_matches(actual: object, expected: str) -> bool:
-    return actual in (expected, f"{expected}@refs/heads/develop")
+def _workflow_path_matches(actual: object, expected: str, branch: str = "develop") -> bool:
+    return actual in (expected, f"{expected}@refs/heads/{branch}")
 
 
 def write_bff_selection(plan_path: Path, output_path: str | None) -> bool:
@@ -306,13 +326,17 @@ def _extract_package_archive(payload: bytes, destination: Path) -> None:
         _fail("package-output-unavailable")
 
 
-def _validate_development_plan(plan_bytes: bytes) -> dict:
+def _validate_plan_for_environment(plan_bytes: bytes, environment: str) -> dict:
     plan = _json_object(plan_bytes)
+    destination = DESTINATIONS.get(environment)
+    if destination is None:
+        _fail("release-plan-environment-invalid")
     normalized = plan.get("normalized")
     source = plan.get("source")
     selected = selected_components_from_plan(plan_bytes)
     identities = plan.get("identities")
-    if (not isinstance(normalized, dict) or normalized.get("environment") != "development" or
+    if (not isinstance(normalized, dict) or normalized.get("environment") != environment or
+            (environment == "production" and plan.get("branch") != destination["branch"]) or
             not isinstance(source, str) or re.fullmatch(r"[0-9a-f]{40}", source) is None or
             not isinstance(plan.get("id"), str) or not plan.get("id") or
             not isinstance(plan.get("tag"), str) or not plan.get("tag") or
@@ -324,23 +348,36 @@ def _validate_development_plan(plan_bytes: bytes) -> dict:
     return plan
 
 
-def _validate_ready_run(metadata: dict, run: dict, expected_artifact_id: str) -> tuple[str, str, str]:
+def _validate_development_plan(plan_bytes: bytes) -> dict:
+    return _validate_plan_for_environment(plan_bytes, "development")
+
+
+def _validate_ready_run(metadata: dict, run: dict, expected_artifact_id: str,
+                        environment: str = "development") -> tuple[str, str, str]:
     if not ID_RE.fullmatch(expected_artifact_id):
         _fail("ready-artifact-id-invalid")
+    destination = DESTINATIONS.get(environment)
+    if destination is None:
+        _fail("ready-artifact-not-qualified")
     name = metadata.get("name")
     match = READY_NAME_RE.fullmatch(name) if isinstance(name, str) else None
     workflow_run = metadata.get("workflow_run")
     run_id = str(workflow_run.get("id")) if isinstance(workflow_run, dict) else ""
-    run_attempt = match.group(2) if match else ""
+    run_attempt = match.group(3) if match else ""
+    head_sha = run.get("head_sha")
     if (not isinstance(workflow_run, dict) or
             type(metadata.get("id")) is not int or metadata.get("id") != int(expected_artifact_id) or
-            metadata.get("expired") is not False or not match or run_id != match.group(1) or
+            metadata.get("expired") is not False or not match or match.group(1) != environment or
+            run_id != match.group(2) or
             type(run.get("id")) is not int or run.get("id") != int(run_id) or
-            type(run.get("run_attempt")) is not int or run.get("run_attempt") != int(match.group(2)) or
-            run.get("event") != "workflow_dispatch" or not _workflow_path_matches(run.get("path"), READY_WORKFLOW_PATH) or
+            type(run.get("run_attempt")) is not int or run.get("run_attempt") != int(run_attempt) or
+            run.get("event") != "workflow_dispatch" or
+            not _workflow_path_matches(run.get("path"), destination["workflow_path"], destination["branch"]) or
             run.get("status") != "completed" or run.get("conclusion") != "failure" or
-            run.get("head_branch") != "develop" or
-            not isinstance(run.get("head_sha"), str) or re.fullmatch(r"[0-9a-f]{40}", run["head_sha"]) is None or
+            run.get("head_branch") != destination["branch"] or
+            not isinstance(head_sha, str) or re.fullmatch(r"[0-9a-f]{40}", head_sha) is None or
+            workflow_run.get("head_branch") != destination["branch"] or
+            workflow_run.get("head_sha") != head_sha or
             not isinstance(metadata.get("digest"), str) or ARTIFACT_DIGEST_RE.fullmatch(metadata["digest"]) is None or
             not _valid_timestamp(metadata.get("expires_at"))):
         _fail("ready-artifact-not-qualified")
@@ -508,10 +545,16 @@ def validate_resend_package_artifact(metadata: dict, run: dict, *, expected_arti
 
 
 def find_ready_result_artifact(metadata: dict, run: dict, artifact_list: dict,
-                               expected_artifact_id: str) -> dict:
-    run_id, run_attempt, ready_name = _validate_ready_run(metadata, run, expected_artifact_id)
+                               expected_artifact_id: str,
+                               environment: str = "development") -> dict:
+    run_id, run_attempt, ready_name = _validate_ready_run(
+        metadata, run, expected_artifact_id, environment)
     artifacts = artifact_list.get("artifacts") if isinstance(artifact_list, dict) else None
-    result_name = f"lwc-result-development-{run_id}-{run_attempt}"
+    result_name = f"lwc-result-{environment}-{run_id}-{run_attempt}"
+    result_match = CURRENT_RESULT_NAME_RE.fullmatch(result_name)
+    if (not result_match or result_match.group(1) != environment or
+            result_match.group(2) != run_id or result_match.group(3) != run_attempt):
+        _fail("ready-result-artifact-invalid")
     matches = [item for item in artifacts if isinstance(item, dict) and item.get("name") == result_name] \
         if isinstance(artifacts, list) else []
     if len(matches) != 1:
@@ -523,10 +566,12 @@ def find_ready_result_artifact(metadata: dict, run: dict, artifact_list: dict,
             not isinstance(result_artifact.get("digest"), str) or
             ARTIFACT_DIGEST_RE.fullmatch(result_artifact["digest"]) is None or
             not _valid_timestamp(result_artifact.get("expires_at")) or
-            not isinstance(result_run, dict) or str(result_run.get("id")) != run_id):
+            not isinstance(result_run, dict) or str(result_run.get("id")) != run_id or
+            result_run.get("head_branch") != run.get("head_branch") or
+            result_run.get("head_sha") != run.get("head_sha")):
         _fail("ready-result-artifact-invalid")
     return {"ready_artifact_id": expected_artifact_id, "ready_artifact_name": ready_name,
-            "run_id": run_id, "run_attempt": run_attempt,
+            "environment": environment, "run_id": run_id, "run_attempt": run_attempt,
             "result_artifact_id": str(result_artifact["id"]), "result_artifact_name": result_name,
             "result_artifact_digest": result_artifact["digest"]}
 
@@ -571,7 +616,11 @@ def _read_artifact_file(directory: Path, name: str, limit: int) -> bytes:
         _fail("ready-artifact-files-invalid")
 
 
-def _resume_inputs(plan: dict, ready_artifact_id: str, notes_artifact_id: str) -> dict:
+def _resume_inputs(plan: dict, ready_artifact_id: str, notes_artifact_id: str,
+                   environment: str = "development") -> dict:
+    destination = DESTINATIONS.get(environment)
+    if destination is None:
+        _fail("ready-plan-invalid")
     normalized = plan.get("normalized")
     auth = normalized.get("auth") if isinstance(normalized, dict) else None
     runtime_inputs = auth.get("runtime_inputs") if isinstance(auth, dict) else None
@@ -582,9 +631,8 @@ def _resume_inputs(plan: dict, ready_artifact_id: str, notes_artifact_id: str) -
         _fail("ready-plan-invalid")
     inputs = {
         "operation": "release",
-        "source_sha": plan["source"],
         "release_tag": plan["tag"],
-        "release_version": plan.get("release_version", ""),
+        "release_version": str(plan.get("release_version") or ""),
         "components": ",".join(plan["selected"]),
         "artifact_id": ready_artifact_id,
         "release_source_mode": source_mode,
@@ -594,7 +642,9 @@ def _resume_inputs(plan: dict, ready_artifact_id: str, notes_artifact_id: str) -
     if notes_artifact_id:
         inputs["release_notes_artifact_id"] = notes_artifact_id
         inputs["release_notes_action"] = "run"
-    auth_source = plan.get("auth_source")
+    if environment == "development":
+        inputs["source_sha"] = plan["source"]
+    auth_source = plan.get("auth_source") if environment == "development" else None
     if auth_source is not None:
         repository_id = auth_source.get("repository_id") if isinstance(auth_source, dict) else None
         if not isinstance(repository_id, str) or not repository_id.startswith("github:") or \
@@ -619,8 +669,13 @@ def _resume_inputs(plan: dict, ready_artifact_id: str, notes_artifact_id: str) -
 def validate_ready_handoff(metadata: dict, run: dict, artifact_list: dict,
                            result_metadata: dict, *, expected_artifact_id: str,
                            expected_result_artifact_id: str, ready_directory: Path,
-                           result_directory: Path, output_path: str | None) -> dict:
-    discovered = find_ready_result_artifact(metadata, run, artifact_list, expected_artifact_id)
+                           result_directory: Path, output_path: str | None,
+                           environment: str = "development") -> dict:
+    destination = DESTINATIONS.get(environment)
+    if destination is None:
+        _fail("ready-artifact-not-qualified")
+    discovered = find_ready_result_artifact(
+        metadata, run, artifact_list, expected_artifact_id, environment)
     if discovered["result_artifact_id"] != expected_result_artifact_id:
         _fail("ready-result-artifact-id-mismatch")
     result_workflow_run = result_metadata.get("workflow_run")
@@ -631,7 +686,9 @@ def validate_ready_handoff(metadata: dict, run: dict, artifact_list: dict,
             result_metadata.get("expired") is not False or
             not _valid_timestamp(result_metadata.get("expires_at")) or
             not isinstance(result_workflow_run, dict) or
-            str(result_workflow_run.get("id")) != discovered["run_id"]):
+            str(result_workflow_run.get("id")) != discovered["run_id"] or
+            result_workflow_run.get("head_branch") != destination["branch"] or
+            result_workflow_run.get("head_sha") != run.get("head_sha")):
         _fail("ready-result-artifact-invalid")
 
     plan_bytes = _read_artifact_file(ready_directory, "plan.json", MAX_READY_FILE_BYTES)
@@ -647,13 +704,16 @@ def validate_ready_handoff(metadata: dict, run: dict, artifact_list: dict,
         _fail("ready-result-artifact-diverged")
 
     plan = _json_object(plan_bytes)
-    _validate_development_plan(plan_bytes)
-    if (plan.get("branch") != "develop" or
-            not isinstance(plan.get("id"), str) or re.fullmatch(r"[0-9a-f]{64}", plan["id"]) is None or
+    _validate_plan_for_environment(plan_bytes, environment)
+    if (not isinstance(plan.get("id"), str) or re.fullmatch(r"[0-9a-f]{64}", plan["id"]) is None or
             plan.get("id") != _plan_id(plan)):
         _fail("ready-plan-invalid")
     run_sha = run.get("head_sha")
     if plan.get("schema") in (3, 4) and plan.get("executor_sha") != run_sha:
+        _fail("ready-plan-producer-mismatch")
+    if environment == "production" and (
+            plan.get("source") != run_sha or
+            (plan.get("schema") == 2 and plan.get("source") != run_sha)):
         _fail("ready-plan-producer-mismatch")
 
     state = _json_object(state_bytes)
@@ -683,7 +743,8 @@ def validate_ready_handoff(metadata: dict, run: dict, artifact_list: dict,
     missing_package = stages[0] if isinstance(stages, list) and len(stages) == 1 and isinstance(stages[0], dict) else None
     plan_sha256 = hashlib.sha256(plan_bytes).hexdigest()
     if (notes_evidence.get("schema_version") != 1 or missing_package is None or
-            missing_package.get("action") != "prepare" or missing_package.get("environment") != "dev" or
+            missing_package.get("action") != "prepare" or
+            missing_package.get("environment") != destination["package_environment"] or
             missing_package.get("stage") != "validate" or missing_package.get("status") != "failed" or
             missing_package.get("safe_class") != "artifact-id-required" or
             missing_package.get("product_status") != "not_started" or
@@ -696,10 +757,12 @@ def validate_ready_handoff(metadata: dict, run: dict, artifact_list: dict,
             not _valid_timestamp(missing_package.get("recorded_at"))):
         _fail("ready-notes-gate-not-resumable")
 
-    resume_inputs = _resume_inputs(plan, expected_artifact_id, "")
+    resume_inputs = _resume_inputs(plan, expected_artifact_id, "", environment)
     result = {**discovered, "plan_id": plan["id"], "plan_sha256": plan_sha256,
-              "source_sha": plan["source"], "release_tag": plan["tag"],
+              "release_tag": plan["tag"],
               "components": ",".join(plan["selected"]), "resume_inputs": resume_inputs}
+    if environment == "development":
+        result["source_sha"] = plan["source"]
     output = {key: str(value) for key, value in result.items()
               if key != "resume_inputs"}
     for key, value in resume_inputs.items():
@@ -708,7 +771,9 @@ def validate_ready_handoff(metadata: dict, run: dict, artifact_list: dict,
     return result
 
 
-def _validate_package_from_plan(package_dir: Path, plan_path: Path, *, verify_artifact_digest: bool = False,
+def _validate_package_from_plan(package_dir: Path, plan_path: Path, *,
+                                environment: str = "development",
+                                verify_artifact_digest: bool = False,
                                 artifact_digest: str | None = None,
                                 metadata_digest: str | None = None) -> tuple[str, dict, bytes]:
     try:
@@ -717,9 +782,10 @@ def _validate_package_from_plan(package_dir: Path, plan_path: Path, *, verify_ar
         plan_bytes = plan_path.read_bytes()
     except OSError:
         _fail("plan-unavailable")
-    _validate_development_plan(plan_bytes)
+    _validate_plan_for_environment(plan_bytes, environment)
+    destination = DESTINATIONS[environment]
     product_version, files, manifest = release_notes.validate_package(
-        package_dir, expected_environment="dev",
+        package_dir, expected_environment=destination["package_environment"],
         expected_artifact_digest=artifact_digest if verify_artifact_digest else None,
         artifact_metadata_digest=metadata_digest if verify_artifact_digest else None,
         plan_bytes=plan_bytes)
@@ -730,7 +796,8 @@ def _validate_package_from_plan(package_dir: Path, plan_path: Path, *, verify_ar
 
 
 def prepare_package(archive_b64: str, plan_path: Path, destination: Path, output_path: str | None,
-                    request_id: str, source: dict | None = None) -> dict:
+                    request_id: str, source: dict | None = None,
+                    environment: str = "development") -> dict:
     if not REQUEST_ID_RE.fullmatch(request_id):
         _fail("dispatch-request-id-invalid")
     if not isinstance(archive_b64, str) or not archive_b64 or len(archive_b64) > MAX_DISPATCH_BASE64_CHARS:
@@ -742,7 +809,8 @@ def prepare_package(archive_b64: str, plan_path: Path, destination: Path, output
     if len(archive_bytes) > MAX_DISPATCH_ZIP_BYTES:
         _fail("dispatch-package-size-invalid")
     _extract_package_archive(archive_bytes, destination)
-    product_version, manifest, plan_bytes = _validate_package_from_plan(destination, plan_path)
+    product_version, manifest, plan_bytes = _validate_package_from_plan(
+        destination, plan_path, environment=environment)
     if source is not None:
         has_historical_fields = release_notes.HISTORICAL_MANIFEST_FIELDS <= set(manifest)
         if source.get("kind") == "historical-result" and not has_historical_fields:
@@ -765,19 +833,124 @@ def prepare_package_from_event(event_path: Path, plan_path: Path, destination: P
                                output_path: str | None, request_id: str,
                                ready_artifact_id: str, retention_days: str,
                                history_result_artifact_id: str = "",
-                               history_operation: str = "") -> dict:
+                               history_operation: str = "",
+                               environment: str = "development") -> dict:
     archive_b64 = _read_package_input_from_event(
         event_path, request_id, ready_artifact_id, retention_days,
-        history_result_artifact_id, history_operation)
+        history_result_artifact_id, history_operation, environment)
     source = _package_source(ready_artifact_id, history_result_artifact_id, history_operation)
     return prepare_package(archive_b64, plan_path, destination, output_path, request_id,
-                           source=source)
+                           source=source, environment=environment)
 
 
 def normalize_action_digest(action_digest: str) -> str:
     if not isinstance(action_digest, str) or ACTION_DIGEST_RE.fullmatch(action_digest) is None:
         _fail("uploaded-artifact-action-digest-invalid")
     return "sha256:" + action_digest
+
+
+def _validate_package_run(metadata: dict, run: dict, *, expected_artifact_id: str,
+                          environment: str, expected_name: str | None = None,
+                          expected_digest: str | None = None,
+                          run_id: str | None = None, run_attempt: str | None = None,
+                          completed: bool) -> dict:
+    destination = DESTINATIONS.get(environment)
+    if destination is None or not isinstance(metadata, dict) or not isinstance(run, dict):
+        _fail("package-artifact-not-qualified")
+    name = metadata.get("name")
+    current_match = CURRENT_PACKAGE_NAME_RE.fullmatch(name) if isinstance(name, str) else None
+    if current_match:
+        if current_match.group("environment") != environment:
+            _fail("package-artifact-not-qualified")
+        artifact_run_id = current_match.group("run_id")
+        artifact_attempt = current_match.group("attempt")
+        version = current_match.group("version")
+        historical = False
+    else:
+        history_match = PACKAGE_NAME_RE.fullmatch(name) if isinstance(name, str) else None
+        if environment != "development" or not history_match:
+            _fail("package-artifact-not-qualified")
+        artifact_run_id = history_match.group("run_id")
+        artifact_attempt = history_match.group("attempt")
+        version = history_match.group("version")
+        historical = history_match.group("history") == "history"
+    workflow_run = metadata.get("workflow_run")
+    resolved_run_id = str(workflow_run.get("id")) if isinstance(workflow_run, dict) else ""
+    digest = metadata.get("digest")
+    run_status_ok = (run.get("status") == "completed" and run.get("conclusion") == "success") \
+        if completed else run.get("status") == "in_progress"
+    if (not ID_RE.fullmatch(expected_artifact_id) or
+            type(metadata.get("id")) is not int or metadata.get("id") != int(expected_artifact_id) or
+            metadata.get("expired") is not False or
+            not isinstance(digest, str) or ARTIFACT_DIGEST_RE.fullmatch(digest) is None or
+            not _valid_timestamp(metadata.get("expires_at")) or
+            (expected_digest is not None and digest != expected_digest) or
+            (expected_name is not None and name != expected_name) or
+            not ID_RE.fullmatch(resolved_run_id) or resolved_run_id != artifact_run_id or
+            type(run.get("id")) is not int or run.get("id") != int(resolved_run_id) or
+            type(run.get("run_attempt")) is not int or run.get("run_attempt") != int(artifact_attempt) or
+            (run_id is not None and resolved_run_id != run_id) or
+            (run_attempt is not None and artifact_attempt != run_attempt) or
+            run.get("event") != "workflow_dispatch" or
+            not _workflow_path_matches(run.get("path"), destination["workflow_path"], destination["branch"]) or
+            run.get("head_branch") != destination["branch"] or
+            not isinstance(run.get("head_sha"), str) or re.fullmatch(r"[0-9a-f]{40}", run["head_sha"]) is None or
+            not run_status_ok or
+            not isinstance(workflow_run, dict) or
+            workflow_run.get("head_branch") != destination["branch"] or
+            workflow_run.get("head_sha") != run.get("head_sha") or
+            (type(workflow_run.get("run_attempt")) is int and
+             workflow_run.get("run_attempt") != int(artifact_attempt))):
+        _fail("package-artifact-not-qualified")
+    return {
+        "artifact_id": expected_artifact_id,
+        "artifact_name": name,
+        "artifact_digest": digest,
+        "expires_at": metadata["expires_at"],
+        "package_run_id": resolved_run_id,
+        "package_run_attempt": artifact_attempt,
+        "head_sha": run["head_sha"],
+        "environment": destination["package_environment"],
+        "historical": historical,
+        "product_version": version,
+    }
+
+
+def validate_current_package_artifact(metadata: dict, run: dict, *,
+                                      expected_artifact_id: str, environment: str,
+                                      output_path: str | None = None) -> dict:
+    """Require a successful private package from its matching registered wrapper and ref."""
+    receipt = _validate_package_run(metadata, run, expected_artifact_id=expected_artifact_id,
+                                    environment=environment, completed=True)
+    if receipt["historical"]:
+        _fail("package-artifact-not-qualified")
+    outputs = {key: str(value) for key, value in receipt.items()
+               if value is not None and key not in ("historical", "product_version", "environment")}
+    outputs.update({"run_id": receipt["package_run_id"],
+                    "run_attempt": receipt["package_run_attempt"],
+                    "digest": receipt["artifact_digest"]})
+    if output_path:
+        _write_github_output(output_path, outputs)
+    return receipt
+
+
+def resolve_caller_destination(repository: str, workflow_ref: str, ref: str,
+                               output_path: str | None = None) -> dict:
+    """Resolve only the authenticated registered DEV/develop or Production/main caller."""
+    if not REPOSITORY_RE.fullmatch(repository) or not isinstance(workflow_ref, str):
+        _fail("package-caller-invalid")
+    for environment, destination in DESTINATIONS.items():
+        expected_workflow_ref = (
+            f"{repository}/{destination['workflow_path']}@refs/heads/{destination['branch']}"
+        )
+        expected_ref = f"refs/heads/{destination['branch']}"
+        if workflow_ref.casefold() == expected_workflow_ref.casefold() and ref == expected_ref:
+            result = {"environment": environment, "package_environment": destination["package_environment"],
+                      "branch": destination["branch"], "workflow_path": destination["workflow_path"]}
+            if output_path:
+                _write_github_output(output_path, result)
+            return result
+    _fail("package-caller-invalid")
 
 
 def _validate_history_binding(binding: dict, *, result_artifact_id: str,
@@ -821,26 +994,25 @@ def _validate_history_binding(binding: dict, *, result_artifact_id: str,
 
 def verify_uploaded_package(package_dir: Path, plan_path: Path, metadata: dict, *,
                             expected_artifact_id: str, expected_name: str, action_digest: str,
-                            run_id: str, run_attempt: str, ready_artifact_id: str,
+                            run: dict, run_id: str, run_attempt: str, ready_artifact_id: str,
+                            environment: str = "development",
                             history_result_artifact_id: str = "", history_operation: str = "",
                             history_binding: dict | None = None,
                             output_path: str | None = None) -> dict:
-    workflow_run = metadata.get("workflow_run")
     normalized_action_digest = normalize_action_digest(action_digest)
     source = _package_source(ready_artifact_id, history_result_artifact_id, history_operation)
-    if (not ID_RE.fullmatch(expected_artifact_id) or
-            not ID_RE.fullmatch(run_id) or not ID_RE.fullmatch(run_attempt) or
-            type(metadata.get("id")) is not int or metadata.get("id") != int(expected_artifact_id) or
-            metadata.get("name") != expected_name or
-            metadata.get("digest") != normalized_action_digest or metadata.get("expired") is not False or
-            not _valid_timestamp(metadata.get("expires_at")) or
-            not isinstance(workflow_run, dict) or str(workflow_run.get("id")) != run_id):
+    if source["kind"] == "historical-result" and environment != "development":
         _fail("uploaded-artifact-metadata-mismatch")
+    producer = _validate_package_run(
+        metadata, run, expected_artifact_id=expected_artifact_id, environment=environment,
+        expected_name=expected_name, expected_digest=normalized_action_digest,
+        run_id=run_id, run_attempt=run_attempt, completed=False)
     product_version, manifest, plan_bytes = _validate_package_from_plan(
-        package_dir, plan_path, verify_artifact_digest=True,
+        package_dir, plan_path, environment=environment, verify_artifact_digest=True,
         artifact_digest=normalized_action_digest, metadata_digest=metadata.get("digest"))
     if source["kind"] == "ready":
-        expected_name_for_run = f"lwc-release-notes-{product_version}-development-{run_id}-{run_attempt}"
+        expected_name_for_run = (
+            f"lwc-release-notes-{product_version}-{environment}-{run_id}-{run_attempt}")
         if history_binding is not None or release_notes.HISTORICAL_MANIFEST_FIELDS <= set(manifest):
             _fail("history-binding-unexpected")
     else:
@@ -854,7 +1026,7 @@ def verify_uploaded_package(package_dir: Path, plan_path: Path, metadata: dict, 
     if expected_name != expected_name_for_run:
         _fail("uploaded-artifact-name-mismatch")
     plan = _json_object(plan_bytes)
-    resume_inputs = _resume_inputs(plan, ready_artifact_id, expected_artifact_id) \
+    resume_inputs = _resume_inputs(plan, ready_artifact_id, expected_artifact_id, environment) \
         if source["kind"] == "ready" else None
     result = {
         "artifact_id": expected_artifact_id,
@@ -862,7 +1034,7 @@ def verify_uploaded_package(package_dir: Path, plan_path: Path, metadata: dict, 
         "artifact_digest": normalized_action_digest,
         "action_digest_raw": action_digest,
         "product_version": product_version,
-        "environment": "dev",
+        "environment": producer["environment"],
         "ready_artifact_id": ready_artifact_id or None,
         "source_kind": source["kind"],
         "release_plan_sha256": hashlib.sha256(plan_bytes).hexdigest(),
@@ -900,11 +1072,15 @@ def verify_uploaded_package(package_dir: Path, plan_path: Path, metadata: dict, 
     return result
 
 
-def _manifest_identity(package_dir: Path) -> str:
+def _manifest_identity(package_dir: Path, environment: str = "development") -> str:
+    destination = DESTINATIONS.get(environment)
+    if destination is None:
+        _fail("package-manifest-invalid")
     files = _package_directory_files(package_dir)
     manifest = _json_object(files["release-notes-manifest.json"])
     version = manifest.get("product_version")
-    if (manifest.get("environment") != "dev" or not release_notes.valid_version(version) or
+    if (manifest.get("environment") != destination["package_environment"] or
+            not release_notes.valid_version(version) or
             not isinstance(manifest.get("files"), dict) or
             not 1 <= len(manifest["files"]) <= 2 or set(manifest["files"]) - {"en", "zh-TW"}):
         _fail("package-manifest-invalid")
@@ -917,11 +1093,15 @@ def _manifest_identity(package_dir: Path) -> str:
 def build_dispatch_payload(package_dir: Path, *, ready_artifact_id: str = "",
                            history_result_artifact_id: str = "", history_operation: str = "",
                            retention_days: int,
+                           environment: str = "development",
                            request_id: str | None = None) -> tuple[dict, str]:
     source = _package_source(ready_artifact_id, history_result_artifact_id, history_operation)
+    destination = DESTINATIONS.get(environment)
+    if destination is None or (environment == "production" and source["kind"] != "ready"):
+        _fail("dispatch-input-invalid")
     if type(retention_days) is not int or retention_days != DISPATCH_PACKAGE_RETENTION_DAYS:
         _fail("dispatch-input-invalid")
-    version = _manifest_identity(package_dir)
+    version = _manifest_identity(package_dir, environment)
     archive = package_directory_archive(package_dir)
     archive_b64 = base64.b64encode(archive).decode("ascii")
     request_id = request_id or uuid.uuid4().hex
@@ -929,7 +1109,7 @@ def build_dispatch_payload(package_dir: Path, *, ready_artifact_id: str = "",
         _fail("dispatch-request-id-invalid")
     inputs = {
         "artifact_id": ready_artifact_id,
-        "prepare_release_notes_package": True,
+        "prepare_release_notes_package": "true",
         "operation": "release",
         "release_notes_action": "stop",
         "package_zip_base64": archive_b64,
@@ -944,7 +1124,7 @@ def build_dispatch_payload(package_dir: Path, *, ready_artifact_id: str = "",
         if not release_notes.HISTORICAL_MANIFEST_FIELDS <= set(manifest):
             _fail("historical-provenance-required")
         inputs["release_notes_operation"] = history_operation
-    body = {"ref": "develop", "inputs": inputs}
+    body = {"ref": destination["branch"], "inputs": inputs}
     encoded_body = json.dumps(body, separators=(",", ":")).encode("utf-8")
     if len(encoded_body) > 65535:
         _fail("dispatch-payload-too-large")
@@ -975,16 +1155,34 @@ def dispatch_package(repository: str, package_dir: Path, *, ready_artifact_id: s
     if not REPOSITORY_RE.fullmatch(repository) or not 30 <= timeout_seconds <= 1800:
         _fail("dispatch-input-invalid")
     source = _package_source(ready_artifact_id, history_result_artifact_id, history_operation)
+    if source["kind"] == "ready":
+        ready_metadata = _gh_api(repository, f"actions/artifacts/{ready_artifact_id}")
+        ready_name = ready_metadata.get("name") if isinstance(ready_metadata, dict) else None
+        ready_match = READY_NAME_RE.fullmatch(ready_name) if isinstance(ready_name, str) else None
+        if not ready_match:
+            _fail("ready-artifact-not-qualified")
+        environment = ready_match.group(1)
+        ready_run_id = ready_match.group(2)
+        ready_run = _gh_api(repository, f"actions/runs/{ready_run_id}")
+        ready_artifacts = _gh_api(repository, f"actions/runs/{ready_run_id}/artifacts?per_page=100")
+        find_ready_result_artifact(ready_metadata, ready_run, ready_artifacts,
+                                   ready_artifact_id, environment)
+    else:
+        environment = "development"
+    destination = DESTINATIONS[environment]
     request_id = uuid.uuid4().hex
     body, version = build_dispatch_payload(package_dir, ready_artifact_id=ready_artifact_id,
                                            history_result_artifact_id=history_result_artifact_id,
                                            history_operation=history_operation,
-                                           retention_days=retention_days, request_id=request_id)
+                                           retention_days=retention_days, environment=environment,
+                                           request_id=request_id)
     body_bytes = json.dumps(body, separators=(",", ":")).encode("utf-8")
-    _gh_api(repository, f"actions/workflows/deploy-dev.yml/dispatches",
+    _gh_api(repository, f"actions/workflows/{Path(destination['workflow_path']).name}/dispatches",
             method="POST", body=body_bytes)
     title = f"Prepare Release Notes package {request_id}"
-    endpoint = "actions/workflows/deploy-dev.yml/runs?branch=develop&event=workflow_dispatch&per_page=100"
+    workflow_name = Path(destination["workflow_path"]).name
+    endpoint = (f"actions/workflows/{workflow_name}/runs?branch={destination['branch']}"
+                "&event=workflow_dispatch&per_page=100")
     deadline = time.monotonic() + timeout_seconds
     run = None
     while time.monotonic() < deadline:
@@ -993,8 +1191,9 @@ def dispatch_package(repository: str, package_dir: Path, *, ready_artifact_id: s
         if not isinstance(runs, list):
             _fail("workflow-run-list-invalid")
         matches = [item for item in runs if isinstance(item, dict) and item.get("display_title") == title and
-                   _workflow_path_matches(item.get("path"), WORKFLOW_PATH) and item.get("event") == "workflow_dispatch" and
-                   item.get("head_branch") == "develop"]
+                   _workflow_path_matches(item.get("path"), destination["workflow_path"], destination["branch"]) and
+                   item.get("event") == "workflow_dispatch" and
+                   item.get("head_branch") == destination["branch"]]
         if len(matches) > 1:
             _fail("workflow-run-ambiguous")
         if matches:
@@ -1009,8 +1208,9 @@ def dispatch_package(repository: str, package_dir: Path, *, ready_artifact_id: s
     run_id = str(run.get("id", ""))
     run_attempt = str(run.get("run_attempt", ""))
     if (not ID_RE.fullmatch(run_id) or not ID_RE.fullmatch(run_attempt) or
-            not _workflow_path_matches(run.get("path"), WORKFLOW_PATH) or run.get("event") != "workflow_dispatch" or
-            run.get("head_branch") != "develop" or not isinstance(run.get("head_sha"), str) or
+            not _workflow_path_matches(run.get("path"), destination["workflow_path"], destination["branch"]) or
+            run.get("event") != "workflow_dispatch" or run.get("head_branch") != destination["branch"] or
+            not isinstance(run.get("head_sha"), str) or
             re.fullmatch(r"[0-9a-f]{40}", run["head_sha"]) is None):
         _fail("workflow-run-identity-invalid")
     run_url = run.get("html_url") if isinstance(run.get("html_url"), str) else ""
@@ -1020,7 +1220,7 @@ def dispatch_package(repository: str, package_dir: Path, *, ready_artifact_id: s
     expected_name = (release_notes.historical_package_artifact_name(
         version, history_operation, history_result_artifact_id, run_id, run_attempt)
         if source["kind"] == "historical-result"
-        else f"lwc-release-notes-{version}-development-{run_id}-{run_attempt}")
+        else f"lwc-release-notes-{version}-{environment}-{run_id}-{run_attempt}")
     artifact_list = _gh_api(repository, f"actions/runs/{run_id}/artifacts?per_page=100")
     artifacts = artifact_list.get("artifacts") if isinstance(artifact_list, dict) else None
     if not isinstance(artifacts, list):
@@ -1030,18 +1230,18 @@ def dispatch_package(repository: str, package_dir: Path, *, ready_artifact_id: s
         _fail("workflow-artifact-not-unique")
     artifact_id = str(matches[0].get("id", ""))
     metadata = _gh_api(repository, f"actions/artifacts/{artifact_id}")
-    digest = metadata.get("digest") if isinstance(metadata, dict) else None
-    workflow_run = metadata.get("workflow_run") if isinstance(metadata, dict) else None
-    if (not ID_RE.fullmatch(artifact_id) or type(metadata.get("id")) is not int or
-            metadata.get("id") != int(artifact_id) or metadata.get("name") != expected_name or
-            metadata.get("expired") is not False or not _valid_timestamp(metadata.get("expires_at")) or
-            not isinstance(digest, str) or
-            ARTIFACT_DIGEST_RE.fullmatch(digest) is None or not isinstance(workflow_run, dict) or
-            str(workflow_run.get("id")) != run_id):
+    package_receipt = _validate_package_run(
+        metadata, run, expected_artifact_id=artifact_id, environment=environment,
+        expected_name=expected_name, completed=True)
+    if package_receipt["historical"] != (source["kind"] == "historical-result"):
         _fail("workflow-artifact-receipt-invalid")
     receipt = {
         "status": "ready",
-        "environment": "dev",
+        "environment": destination["package_environment"],
+        "destination": environment,
+        "workflow_path": destination["workflow_path"],
+        "ref": destination["branch"],
+        "request_id": request_id,
         "product_version": version,
         "source_kind": source["kind"],
         "ready_artifact_id": ready_artifact_id or None,
@@ -1051,8 +1251,8 @@ def dispatch_package(repository: str, package_dir: Path, *, ready_artifact_id: s
         "workflow_run_url": run_url,
         "artifact_id": artifact_id,
         "artifact_name": expected_name,
-        "artifact_digest": digest,
-        "expires_at": metadata.get("expires_at"),
+        "artifact_digest": package_receipt["artifact_digest"],
+        "expires_at": package_receipt["expires_at"],
     }
     if source["kind"] == "historical-result":
         receipt["history_result_artifact_id"] = history_result_artifact_id
@@ -1069,6 +1269,7 @@ def _argument_parser():
     ready_id = subparsers.add_parser("ready-run-id")
     ready_id.add_argument("--metadata", required=True)
     ready_id.add_argument("--artifact-id", required=True)
+    ready_id.add_argument("--environment", choices=tuple(DESTINATIONS), required=True)
     history_id = subparsers.add_parser("history-result-run-id")
     history_id.add_argument("--metadata", required=True)
     history_id.add_argument("--artifact-id", required=True)
@@ -1090,17 +1291,19 @@ def _argument_parser():
     ready.add_argument("--result-directory", required=True)
     ready.add_argument("--artifact-id", required=True)
     ready.add_argument("--result-artifact-id", required=True)
+    ready.add_argument("--environment", choices=tuple(DESTINATIONS), required=True)
     ready.add_argument("--output", default="")
     ready_result = subparsers.add_parser("find-ready-result")
     ready_result.add_argument("--metadata", required=True)
     ready_result.add_argument("--run", required=True)
     ready_result.add_argument("--artifacts", required=True)
     ready_result.add_argument("--artifact-id", required=True)
+    ready_result.add_argument("--environment", choices=tuple(DESTINATIONS), required=True)
     ready_result.add_argument("--output", default="")
     prepare = subparsers.add_parser("prepare-package")
     prepare.add_argument("--plan", required=True)
     prepare.add_argument("--package-dir", required=True)
-    prepare.add_argument("--environment", choices=("dev",), required=True)
+    prepare.add_argument("--environment", choices=("dev", "prod"), required=True)
     prepare.add_argument("--request-id", required=True)
     prepare.add_argument("--ready-artifact-id", default="")
     prepare.add_argument("--history-result-artifact-id", default="")
@@ -1115,6 +1318,7 @@ def _argument_parser():
     validate_event.add_argument("--history-result-artifact-id", default="")
     validate_event.add_argument("--history-operation", default="")
     validate_event.add_argument("--retention-days", choices=tuple(str(x) for x in sorted(ALLOWED_RETENTION_DAYS)), required=True)
+    validate_event.add_argument("--environment", choices=("dev", "prod"), required=True)
     verify = subparsers.add_parser("verify-upload")
     verify.add_argument("--package-dir", required=True)
     verify.add_argument("--plan", required=True)
@@ -1124,6 +1328,8 @@ def _argument_parser():
     verify.add_argument("--action-digest", required=True)
     verify.add_argument("--run-id", required=True)
     verify.add_argument("--run-attempt", required=True)
+    verify.add_argument("--run", required=True)
+    verify.add_argument("--environment", choices=tuple(DESTINATIONS), required=True)
     verify.add_argument("--ready-artifact-id", default="")
     verify.add_argument("--history-result-artifact-id", default="")
     verify.add_argument("--history-operation", default="")
@@ -1136,6 +1342,17 @@ def _argument_parser():
     package_artifact.add_argument("--result-artifact-id", required=True)
     package_artifact.add_argument("--operation", choices=sorted(release_notes.TRANSITION_OPS), required=True)
     package_artifact.add_argument("--output", default="")
+    current_package_artifact = subparsers.add_parser("validate-current-package-artifact")
+    current_package_artifact.add_argument("--metadata", required=True)
+    current_package_artifact.add_argument("--run", required=True)
+    current_package_artifact.add_argument("--artifact-id", required=True)
+    current_package_artifact.add_argument("--environment", choices=tuple(DESTINATIONS), required=True)
+    current_package_artifact.add_argument("--output", default="")
+    caller = subparsers.add_parser("resolve-caller")
+    caller.add_argument("--repository", required=True)
+    caller.add_argument("--workflow-ref", required=True)
+    caller.add_argument("--ref", required=True)
+    caller.add_argument("--output", default="")
     dispatch = subparsers.add_parser("dispatch")
     dispatch.add_argument("--repository", required=True)
     dispatch.add_argument("--ready-artifact-id", default="")
@@ -1162,7 +1379,7 @@ def main(argv=None):
             match = READY_NAME_RE.fullmatch(metadata.get("name", ""))
             workflow_run = metadata.get("workflow_run")
             run_id = str(workflow_run.get("id")) if isinstance(workflow_run, dict) else ""
-            if not match or run_id != match.group(1):
+            if not match or match.group(1) != args.environment or run_id != match.group(2):
                 _fail("ready-artifact-name-invalid")
             result = {"run_id": run_id}
             print(run_id)
@@ -1184,33 +1401,38 @@ def main(argv=None):
                 expected_artifact_id=args.artifact_id,
                 expected_result_artifact_id=args.result_artifact_id,
                 ready_directory=Path(args.ready_directory), result_directory=Path(args.result_directory),
-                output_path=args.output)
+                output_path=args.output, environment=args.environment)
         elif args.command == "find-ready-result":
             result = find_ready_result_artifact(
                 _read_json(Path(args.metadata)), _read_json(Path(args.run)),
-                _read_json(Path(args.artifacts)), args.artifact_id)
+                _read_json(Path(args.artifacts)), args.artifact_id, args.environment)
             _write_github_output(args.output, {key: str(value) for key, value in result.items()})
         elif args.command == "prepare-package":
             event_value = args.event_path or os.environ.get("GITHUB_EVENT_PATH", "")
             if not event_value:
                 _fail("workflow-event-unavailable")
+            environment = "development" if args.environment == "dev" else "production"
             result = prepare_package_from_event(Path(event_value), Path(args.plan), Path(args.package_dir),
                                                 args.output, args.request_id, args.ready_artifact_id,
                                                 args.retention_days, args.history_result_artifact_id,
-                                                args.history_operation)
+                                                args.history_operation, environment)
         elif args.command == "validate-package-event":
+            environment = "development" if args.environment == "dev" else "production"
             _read_package_input_from_event(Path(args.event_path), args.request_id,
                                            args.ready_artifact_id, args.retention_days,
-                                           args.history_result_artifact_id, args.history_operation)
+                                           args.history_result_artifact_id, args.history_operation,
+                                           environment)
             result = {"status": "valid"}
         elif args.command == "verify-upload":
             metadata = _read_json(Path(args.metadata))
+            run = _read_json(Path(args.run))
             history_binding = _read_json(Path(args.history_binding)) if args.history_binding else None
             result = verify_uploaded_package(
                 Path(args.package_dir), Path(args.plan), metadata,
                 expected_artifact_id=args.artifact_id, expected_name=args.artifact_name,
-                action_digest=args.action_digest, run_id=args.run_id,
+                action_digest=args.action_digest, run=run, run_id=args.run_id,
                 run_attempt=args.run_attempt, ready_artifact_id=args.ready_artifact_id,
+                environment=args.environment,
                 history_result_artifact_id=args.history_result_artifact_id,
                 history_operation=args.history_operation, history_binding=history_binding,
                 output_path=args.output)
@@ -1220,6 +1442,14 @@ def main(argv=None):
                 expected_artifact_id=args.artifact_id,
                 result_artifact_id=args.result_artifact_id, operation=args.operation,
                 output_path=args.output)
+        elif args.command == "validate-current-package-artifact":
+            result = validate_current_package_artifact(
+                _read_json(Path(args.metadata)), _read_json(Path(args.run)),
+                expected_artifact_id=args.artifact_id, environment=args.environment,
+                output_path=args.output)
+        elif args.command == "resolve-caller":
+            result = resolve_caller_destination(
+                args.repository, args.workflow_ref, args.ref, args.output)
         elif args.command == "dispatch":
             result = dispatch_package(
                 args.repository, Path(args.package_dir), ready_artifact_id=args.ready_artifact_id,
