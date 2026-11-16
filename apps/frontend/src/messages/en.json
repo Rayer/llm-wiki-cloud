@@ -906,6 +906,8 @@
     "sampled": "The comparison used a sample.",
     "truncated": "Some concept text was truncated.",
     "markRead": "Mark read",
+    "markUnread": "Mark unread",
+    "unreadCue": "Unread items",
     "dismiss": "Dismiss",
     "stale": "This observation may be out of date.",
     "targetUnavailable": "This destination is unavailable.",

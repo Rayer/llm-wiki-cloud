@@ -47,6 +47,47 @@ func TestNudgeAttentionAPIRejectsDirectUrgentReadAndDismiss(t *testing.T) {
 			t.Fatalf("direct urgent %s: status=%d body=%s", action, response.Code, response.Body.String())
 		}
 	}
+	request := httptest.NewRequest(http.MethodPatch, "/api/v1/nudges/pipeline-failure/attention", strings.NewReader(`{"attention_id":"urgent-revision","action":"unread"}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"error":"attention_not_changeable"`) {
+		t.Fatalf("direct urgent unread: status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestNudgeAttentionAPIAllowsOrdinaryUnread(t *testing.T) {
+	fsClient := newContentContextEmulator(t)
+	defer fsClient.Close()
+	ownerID := "nudge-api-ordinary-owner"
+	categoryRef := scopedfirestore.Collection(fsClient.Raw(), "user_nudges").Doc(ownerID).Collection("categories").Doc(nudge.CategoryPurposeGap)
+	category := nudge.Category{SchemaVersion: nudge.SchemaVersion, Category: nudge.CategoryPurposeGap,
+		AttentionID: "ordinary-revision", AttentionState: nudge.AttentionRead,
+		MaterialBySource: map[string]string{"source": "purpose"}, SeverityBySource: map[string]nudge.Severity{"source": nudge.SeverityAttention},
+		ActiveCount: 1, UpdatedAt: time.Now().UTC()}
+	if _, err := categoryRef.Set(context.Background(), category); err != nil {
+		t.Fatal(err)
+	}
+	handler := &Handler{firestore: fsClient}
+	router := gin.New()
+	router.PATCH("/api/v1/nudges/:category/attention", func(c *gin.Context) {
+		c.Set("userID", ownerID)
+		handler.PatchNudgeAttention(c)
+	})
+	request := httptest.NewRequest(http.MethodPatch, "/api/v1/nudges/content-purpose-gap/attention", strings.NewReader(`{"attention_id":"ordinary-revision","action":"unread"}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("ordinary unread: status=%d body=%s", response.Code, response.Body.String())
+	}
+	snapshot, err := categoryRef.Get(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state := snapshot.Data()["attention_state"]; state != string(nudge.AttentionUnread) {
+		t.Fatalf("ordinary unread state=%v", state)
+	}
 }
 
 func TestGetNudgesPreservesNestedSDKObservationForActionResolver(t *testing.T) {

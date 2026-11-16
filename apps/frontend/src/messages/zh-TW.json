@@ -906,6 +906,8 @@
     "sampled": "比較使用了抽樣內容。",
     "truncated": "部分概念文字經過截斷。",
     "markRead": "標示為已讀",
+    "markUnread": "標示為未讀",
+    "unreadCue": "有未讀項目",
     "dismiss": "略過",
     "stale": "這項觀察可能已過時。",
     "targetUnavailable": "此目的地目前無法使用。",

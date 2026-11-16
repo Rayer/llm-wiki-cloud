@@ -84,7 +84,7 @@ export async function reconcileNudges(): Promise<NudgeView> {
   return value as NudgeView;
 }
 
-export async function setNudgeAttention(category: string, attentionId: string, action: 'read' | 'dismiss'): Promise<void> {
+export async function setNudgeAttention(category: string, attentionId: string, action: 'read' | 'unread' | 'dismiss'): Promise<void> {
   const response = await apiFetch(`/api/v1/nudges/${encodeURIComponent(category)}/attention`, {
     method: 'PATCH', requireProject: false,
     headers: { 'Content-Type': 'application/json' },

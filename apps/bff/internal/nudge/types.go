@@ -22,6 +22,7 @@ const (
 var ErrSourceRevisionConflict = errors.New("nudge source revision conflict")
 var ErrAttentionConflict = errors.New("nudge attention revision conflict")
 var ErrAttentionNotDismissible = errors.New("urgent attention is not dismissible")
+var ErrAttentionNotChangeable = errors.New("attention state cannot be changed")
 var ErrInvalidInput = errors.New("invalid nudge input")
 
 type Severity string
