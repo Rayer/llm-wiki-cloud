@@ -721,7 +721,8 @@ class Acceptance(unittest.TestCase):
         fake=HERE/'tests/fake_provider.py';fake.chmod(0o755)
         for name in ('gcloud','docker','go','curl','vercel','npm','git','gh'):(bin/name).symlink_to(fake)
         # Keep tool discovery/cache paths, never inherited CI authority or credentials.
-        offline_env={k:os.environ[k] for k in ('HOME','TMPDIR','LANG','LC_ALL','SYSTEMROOT') if k in os.environ}
+        offline_env={k:os.environ[k] for k in ('HOME','TMPDIR','LANG','LC_ALL','SYSTEMROOT',
+                                               'GOPATH','GOMODCACHE','GOCACHE') if k in os.environ}
         self.env=patch.dict(os.environ,{**offline_env,'PATH':str(bin)+os.pathsep+os.environ['PATH'],'LWC_TEST_STATE':str(self.root/'provider.json'),
             'VERCEL_PROJECT_ID':'prj_test','VERCEL_TEAM_ID':'team_test','VERCEL_TOKEN':'test-only','GITHUB_REPOSITORY':'test/repo'},clear=True)
         self.env.start();self.addCleanup(self.env.stop)
