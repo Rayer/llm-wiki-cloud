@@ -613,6 +613,39 @@ jobs:
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/release-notes-package
           merge-multiple: true
+      - name: Validate original runtime completion for missing release evidence
+        id: runtime-completion
+        if: (inputs.release_notes_action == 'run' || inputs.release_notes_action == 'retry') && inputs.release_notes_operation == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ORIGINAL_RUN_ID: ${{ steps.notes-result.outputs.run_id }}
+          ORIGINAL_RUN_ATTEMPT: ${{ steps.notes-result.outputs.attempt }}
+          RESULT_ARTIFACT_ID: ${{ inputs.release_notes_result_artifact_id }}
+          PACKAGE_ARTIFACT_ID: ${{ inputs.release_notes_artifact_id }}
+        run: |
+          set -Eeuo pipefail
+          publication="$RUNNER_TEMP/release/release-notes-publication.json"
+          operation="$RUNNER_TEMP/release/release-notes-operation.json"
+          if [[ ! -f "$publication" || ! -f "$operation" ]]; then
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$ORIGINAL_RUN_ID/attempts/$ORIGINAL_RUN_ATTEMPT/jobs?per_page=100" \
+              > "$RUNNER_TEMP/notes-result-jobs.json"
+            python3 deploy/engine/release_notes_workflow.py validate-original-runtime-completion \
+              --result-metadata "$RUNNER_TEMP/notes-result-metadata.json" \
+              --run "$RUNNER_TEMP/notes-result-run.json" \
+              --jobs "$RUNNER_TEMP/notes-result-jobs.json" \
+              --package-metadata "$RUNNER_TEMP/notes-package-metadata.json" \
+              --package-run "$RUNNER_TEMP/notes-package-run.json" \
+              --result-directory "$RUNNER_TEMP/release" \
+              --package-directory "$RUNNER_TEMP/release-notes-package" \
+              --result-artifact-id "$RESULT_ARTIFACT_ID" \
+              --package-artifact-id "$PACKAGE_ARTIFACT_ID" \
+              --environment "$RESULT_ENVIRONMENT" --operation "$RELEASE_NOTES_OPERATION" \
+              --repository "$GITHUB_REPOSITORY" \
+              --output "$RUNNER_TEMP/release/runtime-completion.json"
+            printf 'path=%s\n' "$RUNNER_TEMP/release/runtime-completion.json" >> "$GITHUB_OUTPUT"
+          else
+            printf 'path=\n' >> "$GITHUB_OUTPUT"
+          fi
       - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
         if: inputs.release_notes_action == 'run' || inputs.release_notes_action == 'retry'
         with:
@@ -628,8 +661,13 @@ jobs:
           NOTES_ARTIFACT_NAME: ${{ steps.notes-package.outputs.artifact_name }}
           NOTES_PACKAGE_RUN_ID: ${{ steps.notes-package.outputs.package_run_id }}
           NOTES_PACKAGE_RUN_ATTEMPT: ${{ steps.notes-package.outputs.package_run_attempt }}
+          RUNTIME_COMPLETION_EVIDENCE: ${{ steps.runtime-completion.outputs.path }}
         run: |
           set -Eeuo pipefail
+          runtime_evidence_args=()
+          if [[ -n "$RUNTIME_COMPLETION_EVIDENCE" ]]; then
+            runtime_evidence_args+=(--runtime-completion-evidence "$RUNTIME_COMPLETION_EVIDENCE")
+          fi
           python3 deploy/engine/release_notes_publish.py --action resend \
             --directory "$RUNNER_TEMP/release" --package-dir "$RUNNER_TEMP/release-notes-package" \
             --environment "$TARGET_ENVIRONMENT" --bucket "$NOTES_BUCKET" \
@@ -639,7 +677,8 @@ jobs:
             --package-run-attempt "$NOTES_PACKAGE_RUN_ATTEMPT" \
             --result-artifact-id "$RELEASE_NOTES_RESULT_ARTIFACT_ID" \
             --operation "$RELEASE_NOTES_OPERATION" --run-id "${{ steps.notes-result.outputs.run_id }}" \
-            --run-attempt "${{ steps.notes-result.outputs.attempt }}" --product-status released
+            --run-attempt "${{ steps.notes-result.outputs.attempt }}" --product-status released \
+            "${runtime_evidence_args[@]}"
       - name: Record explicit Notes skip without product deployment
         if: inputs.release_notes_action == 'skip'
         run: |

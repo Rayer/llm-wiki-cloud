@@ -55,6 +55,8 @@ CURRENT_PACKAGE_NAME_RE = re.compile(
 PACKAGE_NAME_RE = re.compile(
     r"^lwc-release-notes-(?P<version>(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?)-development-(?:(?P<history>history)-(?P<operation>release|deploy|rollback|reactivate|promote)-(?P<result_id>[1-9][0-9]*)-)?(?P<run_id>[1-9][0-9]*)-(?P<attempt>[1-9][0-9]*)$")
 ARTIFACT_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+RUNTIME_STEP_NAME = "Execute bounded runtime or explicit recovery"
+RUNTIME_COMPLETED_AT_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?Z$")
 ACTION_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 ID_RE = re.compile(r"^[1-9][0-9]*$")
 REQUEST_ID_RE = re.compile(r"^[0-9a-f]{32}$")
@@ -542,6 +544,196 @@ def validate_resend_package_artifact(metadata: dict, run: dict, *, expected_arti
                         "digest": metadata["digest"]})
         _write_github_output(output_path, outputs)
     return result
+
+
+def validate_original_runtime_completion(result_metadata: dict, run: dict, jobs_response: dict,
+                                         package_metadata: dict, package_run: dict, *,
+                                         result_directory: Path, package_directory: Path,
+                                         expected_result_artifact_id: str, expected_package_artifact_id: str,
+                                         environment: str, operation: str, repository: str,
+                                         output_path: str | None = None) -> dict:
+    """Bind recovery time to the successful runtime step of the exact retained production release."""
+    if (environment != "production" or operation != "release" or
+            not ID_RE.fullmatch(expected_result_artifact_id) or
+            not ID_RE.fullmatch(expected_package_artifact_id) or
+            not REPOSITORY_RE.fullmatch(repository)):
+        _fail("runtime-completion-scope-invalid")
+    if not all(isinstance(value, dict) for value in
+               (result_metadata, run, jobs_response, package_metadata, package_run)):
+        _fail("runtime-completion-metadata-invalid")
+
+    result_name = result_metadata.get("name")
+    result_match = CURRENT_RESULT_NAME_RE.fullmatch(result_name) if isinstance(result_name, str) else None
+    result_workflow_run = result_metadata.get("workflow_run")
+    run_id = str(result_workflow_run.get("id")) if isinstance(result_workflow_run, dict) else ""
+    attempt = result_match.group(3) if result_match else ""
+    destination = DESTINATIONS[environment]
+    if (type(result_metadata.get("id")) is not int or
+            result_metadata["id"] != int(expected_result_artifact_id) or
+            result_metadata.get("expired") is not False or not result_match or
+            not isinstance(result_metadata.get("digest"), str) or
+            ARTIFACT_DIGEST_RE.fullmatch(result_metadata["digest"]) is None or
+            not _valid_timestamp(result_metadata.get("expires_at")) or
+            result_match.group(1) != environment or not ID_RE.fullmatch(run_id) or
+            run_id != result_match.group(2) or
+            not isinstance(result_workflow_run, dict) or
+            type(run.get("id")) is not int or run.get("id") != int(run_id) or
+            type(run.get("run_attempt")) is not int or run.get("run_attempt") < int(attempt) or
+            run.get("event") != "workflow_dispatch" or run.get("status") != "completed" or
+            run.get("conclusion") not in ("success", "failure") or
+            not _workflow_path_matches(run.get("path"), ".github/workflows/promote-production.yml",
+                                       destination["branch"]) or
+            run.get("head_branch") != destination["branch"] or
+            not isinstance(run.get("head_sha"), str) or re.fullmatch(r"[0-9a-f]{40}", run["head_sha"]) is None or
+            not isinstance(run.get("repository"), dict) or run["repository"].get("full_name") != repository or
+            result_workflow_run.get("id") != run.get("id") or
+            result_workflow_run.get("head_branch") != run.get("head_branch") or
+            result_workflow_run.get("head_sha") != run.get("head_sha")):
+        _fail("runtime-completion-result-identity-invalid")
+
+    jobs = jobs_response.get("jobs")
+    if (not isinstance(jobs, list) or type(jobs_response.get("total_count")) is not int or
+            jobs_response["total_count"] != len(jobs)):
+        _fail("runtime-completion-jobs-invalid")
+    release_jobs = [job for job in jobs if isinstance(job, dict) and job.get("name") == "release"]
+    if len(release_jobs) != 1:
+        _fail("runtime-completion-release-job-invalid")
+    release_job = release_jobs[0]
+    if (type(release_job.get("id")) is not int or release_job["id"] < 1 or
+            release_job.get("run_id") != int(run_id) or
+            release_job.get("run_attempt") != int(attempt) or
+            release_job.get("status") != "completed" or
+            release_job.get("conclusion") not in ("success", "failure")):
+        _fail("runtime-completion-release-job-invalid")
+    steps = release_job.get("steps")
+    matching_steps = [step for step in steps if isinstance(step, dict) and
+                      step.get("name") == RUNTIME_STEP_NAME] if isinstance(steps, list) else []
+    if len(matching_steps) != 1:
+        _fail("runtime-completion-step-invalid")
+    runtime_step = matching_steps[0]
+    completed_at = runtime_step.get("completed_at")
+    if (runtime_step.get("status") != "completed" or runtime_step.get("conclusion") != "success" or
+            not isinstance(completed_at, str) or not RUNTIME_COMPLETED_AT_RE.fullmatch(completed_at) or
+            not _valid_timestamp(completed_at)):
+        _fail("runtime-completion-step-invalid")
+
+    result_directory = Path(result_directory)
+    plan_bytes = _read_artifact_file(result_directory, "plan.json", MAX_READY_FILE_BYTES)
+    state_bytes = _read_artifact_file(result_directory, "state.json", MAX_READY_FILE_BYTES)
+    result_bytes = _read_artifact_file(result_directory, "result.json", MAX_READY_FILE_BYTES)
+    plan = _json_object(plan_bytes)
+    _validate_plan_for_environment(plan_bytes, environment)
+    if (plan.get("branch") != destination["branch"] or plan.get("executor_sha") != run.get("head_sha") or
+            type(plan.get("release_version")) is not str or
+            not isinstance(plan.get("selected"), list)):
+        _fail("runtime-completion-plan-identity-invalid")
+    state = _json_object(state_bytes)
+    if state.get("executor_sha") != plan.get("executor_sha") or state.get("plan") != plan.get("id"):
+        _fail("runtime-completion-state-identity-invalid")
+    selected = selected_components_from_plan(plan_bytes)
+    receipt_bytes = (_read_artifact_file(result_directory, "receipts/bff.json", MAX_READY_FILE_BYTES)
+                     if "bff" in selected else None)
+    component_receipts = {
+        component: _read_artifact_file(result_directory, f"receipts/{component}.json", MAX_READY_FILE_BYTES)
+        for component in ("frontend", "worker") if component in selected
+    }
+    try:
+        release_notes.validate_native_operation(
+            plan_bytes, state_bytes, result_bytes, receipt_bytes,
+            environment="prod", workflow_operation=operation, run_id=run_id,
+            run_attempt=int(attempt), component_receipts=component_receipts)
+    except release_notes.ReleaseNotesError:
+        _fail("runtime-completion-operation-invalid")
+
+    package_binding = validate_resend_package_artifact(
+        package_metadata, package_run, expected_artifact_id=expected_package_artifact_id,
+        result_artifact_id=expected_result_artifact_id, operation=operation)
+    package_name = package_binding["artifact_name"]
+    package_name_match = PACKAGE_NAME_RE.fullmatch(package_name)
+    if (package_binding["historical"] or not package_name_match or
+            package_name_match.group("version") != plan["release_version"]):
+        _fail("runtime-completion-package-identity-invalid")
+    try:
+        package_version, package_files, package_manifest = release_notes.validate_package(
+            package_directory, expected_environment="prod",
+            expected_artifact_digest=package_binding["artifact_digest"],
+            artifact_metadata_digest=package_binding["artifact_digest"], plan_bytes=plan_bytes)
+    except release_notes.ReleaseNotesError:
+        _fail("runtime-completion-package-invalid")
+    if package_version != plan["release_version"] or package_manifest.get("product_version") != package_version:
+        _fail("runtime-completion-package-identity-invalid")
+
+    for sidecar_name in ("release-notes-publication.json", "release-notes-operation.json"):
+        sidecar_path = result_directory / sidecar_name
+        if sidecar_path.is_symlink() or sidecar_path.exists():
+            _fail("runtime-completion-sidecar-state-invalid")
+    failure_bytes = _read_artifact_file(result_directory, "release-notes-evidence.json", MAX_NOTES_EVIDENCE_BYTES)
+    failure_evidence = _json_object(failure_bytes)
+    stages = failure_evidence.get("stages") if isinstance(failure_evidence, dict) else None
+    if (not isinstance(stages, list) or failure_evidence.get("schema_version") != 1 or
+            any(not isinstance(stage, dict) for stage in stages)):
+        _fail("runtime-completion-release-failure-invalid")
+    plan_sha256 = hashlib.sha256(plan_bytes).hexdigest()
+    package_files_sha256 = {locale: hashlib.sha256(data).hexdigest()
+                            for locale, data in sorted(package_files.items())}
+    prepares = [stage for stage in stages if
+                stage.get("action") == "prepare" and stage.get("environment") == "prod" and
+                stage.get("status") == "verified" and stage.get("stage") == "content_upload" and
+                stage.get("product_status") == "not_started" and stage.get("plan_sha256") == plan_sha256 and
+                stage.get("artifact_id") == expected_package_artifact_id and
+                stage.get("artifact_digest") == package_binding["artifact_digest"] and
+                stage.get("content_sha256") == package_files_sha256]
+    publication_failures = [stage for stage in stages if stage.get("action") == "record-publication"]
+    if (not prepares or not publication_failures or stages[-1] is not publication_failures[-1] or
+            publication_failures[-1].get("environment") != "prod" or
+            publication_failures[-1].get("status") != "failed" or
+            publication_failures[-1].get("stage") != "index_update" or
+            publication_failures[-1].get("safe_class") != "selected-component-receipt-invalid" or
+            publication_failures[-1].get("product_status") != "released" or
+            publication_failures[-1].get("plan_sha256") != plan_sha256 or
+            publication_failures[-1].get("artifact_id") is not None or
+            publication_failures[-1].get("artifact_digest") is not None or
+            publication_failures[-1].get("result_artifact_id") is not None or
+            publication_failures[-1].get("owner_choice_required") is not True or
+            publication_failures[-1].get("automatic_skip") is not False):
+        _fail("runtime-completion-release-failure-invalid")
+
+    selected_receipts = {}
+    if receipt_bytes is not None:
+        selected_receipts["bff"] = hashlib.sha256(receipt_bytes).hexdigest()
+    selected_receipts.update({component: hashlib.sha256(data).hexdigest()
+                              for component, data in component_receipts.items()})
+    canonical_digest = lambda value: hashlib.sha256(json.dumps(
+        value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    evidence = {
+        "schema_version": 1, "source": "github-actions-run-attempt-jobs", "repository": repository,
+        "workflow_path": ".github/workflows/promote-production.yml",
+        "workflow_ref": f"refs/heads/{destination['branch']}", "workflow_sha": run["head_sha"],
+        "environment": environment, "operation": operation, "run_id": run_id,
+        "run_attempt": int(attempt), "result_artifact_id": expected_result_artifact_id,
+        "result_artifact_name": result_name, "result_artifact_digest": result_metadata["digest"],
+        "package_artifact_id": expected_package_artifact_id,
+        "package_artifact_name": package_name, "package_artifact_digest": package_binding["artifact_digest"],
+        "package_run_id": package_binding["package_run_id"],
+        "package_run_attempt": package_binding["package_run_attempt"],
+        "package_manifest_sha256": hashlib.sha256(
+            (Path(package_directory) / "release-notes-manifest.json").read_bytes()).hexdigest(),
+        "package_files_sha256": {locale: hashlib.sha256(data).hexdigest()
+                                 for locale, data in sorted(package_files.items())},
+        "plan_sha256": hashlib.sha256(plan_bytes).hexdigest(),
+        "state_sha256": hashlib.sha256(state_bytes).hexdigest(),
+        "result_sha256": hashlib.sha256(result_bytes).hexdigest(), "receipts_sha256": selected_receipts,
+        "job_id": str(release_job["id"]), "job_name": release_job["name"],
+        "job_conclusion": release_job["conclusion"], "runtime_step_name": RUNTIME_STEP_NAME,
+        "runtime_step_conclusion": runtime_step["conclusion"], "runtime_step_completed_at": completed_at,
+        "run_metadata_sha256": canonical_digest(run), "jobs_metadata_sha256": canonical_digest(jobs_response),
+        "result_metadata_sha256": canonical_digest(result_metadata),
+        "package_metadata_sha256": canonical_digest(package_metadata),
+        "package_run_metadata_sha256": canonical_digest(package_run),
+    }
+    if output_path:
+        _write_private_json(Path(output_path), evidence)
+    return evidence
 
 
 def find_ready_result_artifact(metadata: dict, run: dict, artifact_list: dict,
@@ -1342,6 +1534,20 @@ def _argument_parser():
     package_artifact.add_argument("--result-artifact-id", required=True)
     package_artifact.add_argument("--operation", choices=sorted(release_notes.TRANSITION_OPS), required=True)
     package_artifact.add_argument("--output", default="")
+    runtime_completion = subparsers.add_parser("validate-original-runtime-completion")
+    runtime_completion.add_argument("--result-metadata", required=True)
+    runtime_completion.add_argument("--run", required=True)
+    runtime_completion.add_argument("--jobs", required=True)
+    runtime_completion.add_argument("--package-metadata", required=True)
+    runtime_completion.add_argument("--package-run", required=True)
+    runtime_completion.add_argument("--result-directory", required=True)
+    runtime_completion.add_argument("--package-directory", required=True)
+    runtime_completion.add_argument("--result-artifact-id", required=True)
+    runtime_completion.add_argument("--package-artifact-id", required=True)
+    runtime_completion.add_argument("--environment", choices=tuple(DESTINATIONS), required=True)
+    runtime_completion.add_argument("--operation", choices=sorted(release_notes.TRANSITION_OPS), required=True)
+    runtime_completion.add_argument("--repository", required=True)
+    runtime_completion.add_argument("--output", required=True)
     current_package_artifact = subparsers.add_parser("validate-current-package-artifact")
     current_package_artifact.add_argument("--metadata", required=True)
     current_package_artifact.add_argument("--run", required=True)
@@ -1441,6 +1647,16 @@ def main(argv=None):
                 _read_json(Path(args.metadata)), _read_json(Path(args.run)),
                 expected_artifact_id=args.artifact_id,
                 result_artifact_id=args.result_artifact_id, operation=args.operation,
+                output_path=args.output)
+        elif args.command == "validate-original-runtime-completion":
+            result = validate_original_runtime_completion(
+                _read_json(Path(args.result_metadata)), _read_json(Path(args.run)),
+                _read_json(Path(args.jobs)), _read_json(Path(args.package_metadata)),
+                _read_json(Path(args.package_run)),
+                result_directory=Path(args.result_directory), package_directory=Path(args.package_directory),
+                expected_result_artifact_id=args.result_artifact_id,
+                expected_package_artifact_id=args.package_artifact_id,
+                environment=args.environment, operation=args.operation, repository=args.repository,
                 output_path=args.output)
         elif args.command == "validate-current-package-artifact":
             result = validate_current_package_artifact(

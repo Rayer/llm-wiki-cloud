@@ -663,12 +663,21 @@ def _component_builds(plan: dict, state: dict, receipts: dict[str, bytes]) -> li
         result_entry = state.get("components", {}).get(component, {})
         if component == "frontend":
             candidate = result_entry.get("candidate") if isinstance(result_entry, dict) else None
-            deployment_id = candidate.get("deployment_id") if isinstance(candidate, dict) else None
-            if not isinstance(deployment_id, str) or not deployment_id:
-                artifact = receipt.get("artifact")
-                deployment_id = artifact.get("deployment_id") if isinstance(artifact, dict) else None
-            _require(isinstance(deployment_id, str) and 1 <= len(deployment_id) <= 256,
+            artifact = receipt.get("artifact")
+            _require((candidate is None or isinstance(candidate, dict)) and
+                     (artifact is None or isinstance(artifact, dict)),
                      "index_update", "selected-component-receipt-invalid")
+            deployment_ids = []
+            for source, field in ((candidate, "deployment"), (candidate, "deployment_id"),
+                                  (artifact, "deployment_id")):
+                if isinstance(source, dict) and field in source:
+                    deployment_id = source[field]
+                    _require(isinstance(deployment_id, str) and 1 <= len(deployment_id) <= 256,
+                             "index_update", "selected-component-receipt-invalid")
+                    deployment_ids.append(deployment_id)
+            _require(bool(deployment_ids) and len(set(deployment_ids)) == 1,
+                     "index_update", "selected-component-receipt-invalid")
+            deployment_id = deployment_ids[0]
             item = {"component": "frontend", "deployment_id": deployment_id,
                     "receipt_sha256": digest_bytes(receipt_bytes)}
             source_sha = receipt.get("build_sha")
