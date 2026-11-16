@@ -326,12 +326,8 @@ jobs:
             exit 1
           fi
           if ! run_id="$(jq -er '.workflow_run.id | select(type=="number" and .>0) | tostring' "$RUNNER_TEMP/release-notes-artifact.json")" || \
-             ! digest="$(jq -er '.digest | select(type=="string" and test("^sha256:[0-9a-f]{64}$"))' "$RUNNER_TEMP/release-notes-artifact.json")" || \
-             ! name="$(jq -er '.name | select(type=="string")' "$RUNNER_TEMP/release-notes-artifact.json")" || \
-             ! expired="$(jq -er '.expired | tostring' "$RUNNER_TEMP/release-notes-artifact.json")" || \
-             [[ "$name" != lwc-release-notes-* || "$expired" != false ]] || \
-             ! gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" > "$RUNNER_TEMP/release-notes-run.json" || \
-             ! jq -e '.event == "workflow_dispatch" and .conclusion == "success"' "$RUNNER_TEMP/release-notes-run.json" >/dev/null; then
+             ! [[ "$run_id" =~ ^[1-9][0-9]*$ ]] || \
+             ! gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" > "$RUNNER_TEMP/release-notes-run.json"; then
             python3 deploy/engine/release_notes_publish.py --action artifact-failure \
               --failure-class artifact-metadata-invalid --directory "$RUNNER_TEMP/release" \
               --environment "${{ inputs.environment == 'production' && 'prod' || 'dev' }}" \
@@ -340,7 +336,18 @@ jobs:
               --operation "$OPERATION" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT"
             exit 1
           fi
-          printf 'run_id=%s\ndigest=%s\n' "$run_id" "$digest" >> "$GITHUB_OUTPUT"
+          if ! python3 deploy/engine/release_notes_workflow.py validate-current-package-artifact \
+            --metadata "$RUNNER_TEMP/release-notes-artifact.json" \
+            --run "$RUNNER_TEMP/release-notes-run.json" \
+            --artifact-id "$ARTIFACT_ID" --environment "$TARGET" --output "$GITHUB_OUTPUT"; then
+            python3 deploy/engine/release_notes_publish.py --action artifact-failure \
+              --failure-class artifact-metadata-invalid --directory "$RUNNER_TEMP/release" \
+              --environment "${{ inputs.environment == 'production' && 'prod' || 'dev' }}" \
+              --bucket "${{ inputs.environment == 'production' && 'llm-wiki-data' || 'llm-wiki-data-dev' }}" \
+              --artifact-id "$ARTIFACT_ID" --plan "$RUNNER_TEMP/release/plan.json" \
+              --operation "$OPERATION" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT"
+            exit 1
+          fi
       - name: Download exact TPM Release Notes artifact
         id: release-notes-download
         if: inputs.operation == 'release' && (inputs.release_notes_action == 'run' || inputs.release_notes_action == 'retry') && inputs.release_notes_artifact_id != ''

@@ -1,4 +1,5 @@
 import base64
+import copy
 import http.server
 import hashlib
 import json
@@ -550,23 +551,46 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
         (root / "en.json").write_bytes(self.body)
         return root
 
+    def make_package_for_plan(self, root, plan_bytes, *, environment, version, text):
+        package_environment = "prod" if environment == "production" else "dev"
+        body = note(version, "en", text)
+        manifest = {
+            "schema_version": 1,
+            "product": "llm-wiki-cloud",
+            "product_version": version,
+            "environment": package_environment,
+            "release_plan_sha256": hashlib.sha256(plan_bytes).hexdigest(),
+            "release_note_snapshot_ref": "LWC-A-62:test-only",
+            "release_note_snapshot_sha256": "sha256:" + "f" * 64,
+            "delivered_scope_evidence_sha256": "sha256:" + "e" * 64,
+            "files": {"en": {"path": "en.json", "sha256": hashlib.sha256(body).hexdigest()}},
+        }
+        root.mkdir(parents=True)
+        (root / "release-notes-manifest.json").write_bytes(canonical(manifest))
+        (root / "en.json").write_bytes(body)
+        return root, manifest, body
+
     def make_plan_file(self, root, plan_bytes=None):
         path = root / "plan.json"
         path.write_bytes(plan_bytes if plan_bytes is not None else self.plan_bytes)
         return path
 
-    def make_ready_handoff(self, root, selected=("bff", "frontend"), schema=3):
+    def make_ready_handoff(self, root, selected=("bff", "frontend"), schema=3,
+                           environment="development"):
         producer_sha = "b" * 40
+        production = environment == "production"
+        branch = "main" if production else "develop"
+        package_environment = "prod" if production else "dev"
         plan = {
             "schema": schema,
             "tag": "v2026.11.5",
-            "source": "a" * 40,
-            "branch": "develop",
+            "source": producer_sha if production else "a" * 40,
+            "branch": branch,
             "executor_sha": producer_sha,
-            "normalized": {"environment": "development", "auth": {"runtime_inputs": {"schema_version": 4}}},
+            "normalized": {"environment": environment, "auth": {"runtime_inputs": {"schema_version": 4}}},
             "identities": {component: {"profile": component, "digest": f"{component}-inputs"}
                            for component in selected},
-            "dev_reference": None,
+            "dev_reference": "731" if production else None,
             "selected": list(selected),
             "release_source_mode": "legacy_monorepo",
         }
@@ -588,7 +612,7 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
         notes_evidence = {
             "schema_version": 1,
             "stages": [{
-                "schema_version": 1, "action": "prepare", "environment": "dev", "stage": "validate",
+                "schema_version": 1, "action": "prepare", "environment": package_environment, "stage": "validate",
                 "status": "failed", "safe_class": "artifact-id-required", "product_status": "not_started",
                 "plan_sha256": hashlib.sha256(plan_bytes).hexdigest(), "artifact_id": None,
                 "next_actions": ["retry", "skip", "stop"], "owner_choice_required": True,
@@ -607,18 +631,22 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
             (directory / "result.json").write_bytes(result_bytes)
         (result_dir / "release-notes-evidence.json").write_bytes(evidence_bytes)
         ready_id, result_id, run_id, attempt = 701, 702, 600, 1
-        ready_name = f"lwc-ready-development-{run_id}-{attempt}"
-        result_name = f"lwc-result-development-{run_id}-{attempt}"
+        ready_name = f"lwc-ready-{environment}-{run_id}-{attempt}"
+        result_name = f"lwc-result-{environment}-{run_id}-{attempt}"
         ready_digest = "sha256:" + "d" * 64
         result_digest = "sha256:" + "e" * 64
         metadata = {"id": ready_id, "name": ready_name, "expired": False, "digest": ready_digest,
-                    "expires_at": "2027-02-12T00:00:00Z", "workflow_run": {"id": run_id}}
+                    "expires_at": "2027-02-12T00:00:00Z",
+                    "workflow_run": {"id": run_id, "head_branch": branch, "head_sha": producer_sha}}
         run = {"id": run_id, "run_attempt": attempt, "event": "workflow_dispatch",
-               "path": ".github/workflows/deploy-dev.yml", "status": "completed", "conclusion": "failure",
-               "head_branch": "develop", "head_sha": producer_sha}
+               "path": (".github/workflows/promote-production.yml" if production
+                        else ".github/workflows/deploy-dev.yml"),
+               "status": "completed", "conclusion": "failure",
+               "head_branch": branch, "head_sha": producer_sha}
         artifact_list = {"artifacts": [{
             "id": result_id, "name": result_name, "expired": False, "digest": result_digest,
-            "expires_at": "2027-02-12T00:00:00Z", "workflow_run": {"id": run_id},
+            "expires_at": "2027-02-12T00:00:00Z",
+            "workflow_run": {"id": run_id, "head_branch": branch, "head_sha": producer_sha},
         }]}
         result_metadata = {**artifact_list["artifacts"][0]}
         return {"plan": plan, "plan_bytes": plan_bytes, "state_bytes": state_bytes,
@@ -626,6 +654,34 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
                 "artifact_list": artifact_list, "result_metadata": result_metadata,
                 "ready_id": str(ready_id), "result_id": str(result_id),
                 "ready_dir": ready_dir, "result_dir": result_dir}
+
+    def make_package_producer_run(self, run_id=604, attempt=1, environment="development",
+                                  head_sha="c" * 40):
+        destination = release_notes_workflow.DESTINATIONS[environment]
+        return {"id": run_id, "run_attempt": attempt, "event": "workflow_dispatch",
+                "path": destination["workflow_path"], "status": "in_progress",
+                "head_branch": destination["branch"], "head_sha": head_sha}
+
+    def rewrite_ready_plan(self, fixture, plan):
+        plan = copy.deepcopy(plan)
+        plan["id"] = release_notes_workflow._plan_id(plan)
+        plan_bytes = canonical(plan)
+        state = json.loads((fixture["ready_dir"] / "state.json").read_text())
+        state["plan"] = plan["id"]
+        state_bytes = canonical(state)
+        result = json.loads((fixture["ready_dir"] / "result.json").read_text())
+        result["attempt"] = plan["id"]
+        result["expected"]["source"] = plan["source"]
+        result_bytes = canonical(result)
+        evidence = json.loads((fixture["result_dir"] / "release-notes-evidence.json").read_text())
+        evidence["stages"][0]["plan_sha256"] = hashlib.sha256(plan_bytes).hexdigest()
+        for directory in (fixture["ready_dir"], fixture["result_dir"]):
+            (directory / "plan.json").write_bytes(plan_bytes)
+            (directory / "state.json").write_bytes(state_bytes)
+            (directory / "result.json").write_bytes(result_bytes)
+        (fixture["result_dir"] / "release-notes-evidence.json").write_bytes(canonical(evidence))
+        fixture["plan"] = plan
+        fixture["plan_bytes"] = plan_bytes
 
     def make_historical_result(self, root):
         source = "a" * 40
@@ -739,14 +795,14 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
         result_digest = "sha256:" + "e" * 64
         metadata = {"id": ready_id, "name": ready_name, "expired": False,
                     "digest": ready_digest, "expires_at": "2027-02-12T00:00:00Z",
-                    "workflow_run": {"id": run_id}}
+                    "workflow_run": {"id": run_id, "head_branch": "develop", "head_sha": producer_sha}}
         run = {"id": run_id, "run_attempt": attempt, "event": "workflow_dispatch",
                "path": ".github/workflows/deploy-dev.yml", "status": "completed",
                "conclusion": "failure", "head_branch": "develop", "head_sha": producer_sha}
         artifact_list = {"artifacts": [{
             "id": result_id, "name": result_name, "expired": False,
             "digest": result_digest, "expires_at": "2027-02-12T00:00:00Z",
-            "workflow_run": {"id": run_id},
+            "workflow_run": {"id": run_id, "head_branch": "develop", "head_sha": producer_sha},
         }]}
         return {"plan": plan, "plan_bytes": plan_bytes, "state_bytes": state_bytes,
                 "result_bytes": result_bytes, "metadata": metadata, "run": run,
@@ -827,6 +883,7 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
             expression_values = {
                 "${{ github.token }}": "synthetic-github-token",
                 "${{ inputs.ready_artifact_id }}": fixture["ready_id"],
+                "${{ steps.caller.outputs.environment }}": "development",
                 "${{ steps.ready.outputs.result_artifact_id }}": fixture["result_id"],
             }
             effective_env = {
@@ -868,12 +925,12 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
             upload_metadata = {
                 "id": 803, "name": "lwc-release-notes-1.2.3-development-604-1", "expired": False,
                 "digest": "sha256:" + raw_digest, "expires_at": "2027-02-12T00:00:00Z",
-                "workflow_run": {"id": 604},
+                "workflow_run": {"id": 604, "head_branch": "develop", "head_sha": "c" * 40},
             }
             package_receipt = release_notes_workflow.verify_uploaded_package(
                 package_dir, ready_plan_dir / "plan.json", upload_metadata,
                 expected_artifact_id="803", expected_name=upload_metadata["name"],
-                action_digest=raw_digest, run_id="604", run_attempt="1",
+                action_digest=raw_digest, run=self.make_package_producer_run(), run_id="604", run_attempt="1",
                 ready_artifact_id=fixture["ready_id"], output_path=str(runner / "package-receipt"))
             resume_inputs = package_receipt["resume_inputs"]
             self.assertEqual(resume_inputs["artifact_id"], fixture["ready_id"])
@@ -1097,6 +1154,170 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
                 release_notes_workflow.find_ready_result_artifact(
                     invalid["metadata"], invalid["run"], invalid["artifact_list"], invalid["ready_id"])
 
+    def test_production_current_package_uses_authenticated_main_wrapper_and_native_plan_contract(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fixture = self.make_ready_handoff(root, schema=4, environment="production")
+            ready_output = root / "production-ready-output"
+            ready = release_notes_workflow.validate_ready_handoff(
+                fixture["metadata"], fixture["run"], fixture["artifact_list"],
+                fixture["result_metadata"], expected_artifact_id=fixture["ready_id"],
+                expected_result_artifact_id=fixture["result_id"],
+                ready_directory=fixture["ready_dir"], result_directory=fixture["result_dir"],
+                output_path=str(ready_output), environment="production")
+            self.assertEqual(ready["environment"], "production")
+            self.assertEqual(ready["release_tag"], fixture["plan"]["tag"])
+            self.assertNotIn("source_sha", ready)
+            self.assertNotIn("source_sha", ready["resume_inputs"])
+
+            package, manifest, body = self.make_package_for_plan(
+                root / "production-package", fixture["plan_bytes"], environment="production",
+                version="2026.11.4", text="Production-only payload sentinel")
+            authored_manifest = (package / "release-notes-manifest.json").read_bytes()
+            request_id = "9" * 32
+            dispatch, version = release_notes_workflow.build_dispatch_payload(
+                package, ready_artifact_id=fixture["ready_id"], retention_days=90,
+                environment="production", request_id=request_id)
+            self.assertEqual(version, "2026.11.4")
+            self.assertEqual(dispatch["ref"], "main")
+            self.assertEqual(dispatch["inputs"]["prepare_release_notes_package"], "true")
+            self.assertEqual(dispatch["inputs"]["artifact_id"], fixture["ready_id"])
+            self.assertEqual(dispatch["inputs"]["release_notes_package_request_id"], request_id)
+            with zipfile.ZipFile(BytesIO(base64.b64decode(
+                    dispatch["inputs"]["package_zip_base64"], validate=True))) as archive:
+                self.assertIn("Production-only payload sentinel", archive.read("en.json").decode())
+
+            event_path = root / "original-production-event.json"
+            event_path.write_bytes(canonical(dispatch))
+            staged = root / "staged-production-package"
+            producer_output = root / "production-package-output"
+            staged_result = release_notes_workflow.prepare_package_from_event(
+                event_path, fixture["ready_dir"] / "plan.json", staged, str(producer_output),
+                request_id, fixture["ready_id"], "90", environment="production")
+            self.assertEqual(staged_result["product_version"], "2026.11.4")
+            self.assertEqual((staged / "release-notes-manifest.json").read_bytes(), authored_manifest)
+            self.assertEqual((staged / "en.json").read_bytes(), body)
+            self.assertNotIn("Production-only payload sentinel", producer_output.read_text())
+
+            raw_digest = "d" * 64
+            package_run = self.make_package_producer_run(604, 2, "production")
+            package_name = "lwc-release-notes-2026.11.4-production-604-2"
+            upload_metadata = {
+                "id": 803, "name": package_name, "digest": "sha256:" + raw_digest,
+                "expired": False, "expires_at": "2027-02-12T00:00:00Z",
+                "workflow_run": {"id": 604, "head_branch": "main", "head_sha": "c" * 40},
+            }
+            uploaded = release_notes_workflow.verify_uploaded_package(
+                staged, fixture["ready_dir"] / "plan.json", upload_metadata,
+                expected_artifact_id="803", expected_name=package_name, action_digest=raw_digest,
+                run=package_run, run_id="604", run_attempt="2", ready_artifact_id=fixture["ready_id"],
+                environment="production", output_path=str(root / "production-upload-output"))
+            resume_inputs = uploaded["resume_inputs"]
+            self.assertEqual(uploaded["environment"], "prod")
+            self.assertEqual(resume_inputs, {
+                "operation": "release", "release_tag": fixture["plan"]["tag"],
+                "release_version": "2026.11.4", "components": "bff,frontend",
+                "artifact_id": fixture["ready_id"], "release_source_mode": "legacy_monorepo",
+                "auth_schema_version": "4", "dev_artifact_id": "731",
+                "release_notes_artifact_id": "803", "release_notes_action": "run",
+            })
+            self.assertTrue(all(type(value) is str for value in resume_inputs.values()))
+            self.assertFalse(any(key in resume_inputs for key in (
+                "source_sha", "force", "auth_repository_id", "auth_revision", "auth_tree_sha256",
+                "auth_artifact_id", "auth_run_id", "auth_run_attempt")))
+            self.assertTrue(all(type(value) is str for value in dispatch["inputs"].values()))
+            self.assertNotIn("Production-only payload sentinel", json.dumps(uploaded))
+
+            successful_run = {**package_run, "status": "completed", "conclusion": "success"}
+            consumer_receipt = release_notes_workflow.validate_current_package_artifact(
+                upload_metadata, successful_run, expected_artifact_id="803", environment="production",
+                output_path=str(root / "production-consumer-output"))
+            self.assertEqual(consumer_receipt["package_run_id"], "604")
+            self.assertEqual(consumer_receipt["package_run_attempt"], "2")
+            self.assertEqual(consumer_receipt["head_sha"], "c" * 40)
+
+            product_version, files, native_manifest = release_notes.validate_package(
+                staged, expected_environment="prod", expected_artifact_digest="sha256:" + raw_digest,
+                artifact_metadata_digest="sha256:" + raw_digest, plan_bytes=fixture["plan_bytes"])
+            self.assertEqual(product_version, "2026.11.4")
+            self.assertEqual(files, {"en": body})
+            self.assertEqual(native_manifest, manifest)
+
+            for label, mutate in (
+                ("cross-environment artifact", lambda m, r: m.update(name="lwc-release-notes-2026.11.4-development-604-2")),
+                ("wrong workflow", lambda m, r: r.update(path=".github/workflows/deploy-dev.yml")),
+                ("wrong ref", lambda m, r: r.update(head_branch="develop")),
+                ("wrong head", lambda m, r: r.update(head_sha="e" * 40)),
+                ("wrong attempt", lambda m, r: r.update(run_attempt=3)),
+                ("failed producer", lambda m, r: r.update(conclusion="failure")),
+            ):
+                invalid_metadata = copy.deepcopy(upload_metadata)
+                invalid_run = copy.deepcopy(successful_run)
+                mutate(invalid_metadata, invalid_run)
+                with self.subTest(label=label), self.assertRaises(release_notes_workflow.PackageWorkflowError):
+                    release_notes_workflow.validate_current_package_artifact(
+                        invalid_metadata, invalid_run, expected_artifact_id="803", environment="production")
+
+            wrong_manifest = root / "wrong-production-package"
+            wrong_manifest.mkdir()
+            wrong_value = {**manifest, "release_plan_sha256": "f" * 64}
+            (wrong_manifest / "release-notes-manifest.json").write_bytes(canonical(wrong_value))
+            (wrong_manifest / "en.json").write_bytes(body)
+            with self.assertRaises(release_notes.ReleaseNotesError):
+                release_notes.validate_package(
+                    wrong_manifest, expected_environment="prod", expected_artifact_digest=None,
+                    artifact_metadata_digest=None, plan_bytes=fixture["plan_bytes"])
+
+            with self.assertRaises(release_notes_workflow.PackageWorkflowError):
+                release_notes_workflow.resolve_caller_destination(
+                    "Rayer/llm-wiki-cloud",
+                    "Rayer/llm-wiki-cloud/.github/workflows/promote-production.yml@refs/heads/main",
+                    "refs/heads/develop")
+
+    def test_production_history_and_wrong_ready_identity_are_rejected(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            def source_mismatch(value):
+                self.rewrite_ready_plan(value, {**value["plan"], "source": "f" * 40})
+
+            def runtime_mutation(value):
+                for directory in (value["ready_dir"], value["result_dir"]):
+                    state_path = directory / "state.json"
+                    state = json.loads(state_path.read_text())
+                    state.update(status="runtime_success", components={"bff": {"status": "verified"}})
+                    state_path.write_bytes(canonical(state))
+
+            for label, mutate in (
+                ("development Ready name", lambda value: value["metadata"].update(
+                    name="lwc-ready-development-600-1")),
+                ("development wrapper", lambda value: value["run"].update(
+                    path=".github/workflows/deploy-dev.yml", head_branch="develop")),
+                ("wrong attempt", lambda value: value["run"].update(run_attempt=2)),
+                ("wrong producer head", lambda value: value["metadata"]["workflow_run"].update(
+                    head_sha="e" * 40)),
+                ("Production plan source mismatch", source_mismatch),
+                ("runtime mutated checkpoint", runtime_mutation),
+            ):
+                case_root = root / label.replace(" ", "-")
+                case_root.mkdir()
+                fresh = self.make_ready_handoff(case_root, schema=4, environment="production")
+                mutate(fresh)
+                with self.subTest(label=label), self.assertRaises(release_notes_workflow.PackageWorkflowError):
+                    release_notes_workflow.validate_ready_handoff(
+                        fresh["metadata"], fresh["run"], fresh["artifact_list"], fresh["result_metadata"],
+                        expected_artifact_id=fresh["ready_id"], expected_result_artifact_id=fresh["result_id"],
+                        ready_directory=fresh["ready_dir"], result_directory=fresh["result_dir"],
+                        output_path=None, environment="production")
+
+            history_root = root / "history-source"
+            history_root.mkdir()
+            fixture = self.make_ready_handoff(history_root, schema=4, environment="production")
+            history_package = self.make_package(root / "history-package")
+            with self.assertRaises(release_notes_workflow.PackageWorkflowError):
+                release_notes_workflow.build_dispatch_payload(
+                    history_package, history_result_artifact_id="9901", history_operation="deploy",
+                    retention_days=90, environment="production")
+
     def test_ready_package_producer_accepts_frontend_and_worker_only_schema4_plans(self):
         for selected in (("frontend",), ("worker",)):
             with self.subTest(selected=selected), TemporaryDirectory() as temporary:
@@ -1133,13 +1354,13 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
                 metadata = {
                     "id": 803, "name": "lwc-release-notes-2026.11.4-development-604-1",
                     "digest": "sha256:" + action_digest, "expired": False,
-                    "expires_at": "2027-02-12T00:00:00Z", "workflow_run": {"id": 604},
+                    "expires_at": "2027-02-12T00:00:00Z", "workflow_run": {"id": 604, "head_branch": "develop", "head_sha": "c" * 40},
                 }
                 receipt_output = root / f"package-output-{selected[0]}"
                 receipt = release_notes_workflow.verify_uploaded_package(
                     package, fixture["ready_dir"] / "plan.json", metadata,
                     expected_artifact_id="803", expected_name=metadata["name"],
-                    action_digest=action_digest, run_id="604", run_attempt="1",
+                    action_digest=action_digest, run=self.make_package_producer_run(), run_id="604", run_attempt="1",
                     ready_artifact_id=fixture["ready_id"], output_path=str(receipt_output))
                 self.assertEqual(receipt["ready_artifact_id"], fixture["ready_id"])
                 self.assertTrue(receipt_output.is_file())
@@ -1231,12 +1452,12 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
                 upload_metadata = {
                     "id": 803, "name": "lwc-release-notes-2026.11.4-development-604-1",
                     "digest": "sha256:" + "a" * 64, "expired": False,
-                    "expires_at": "2027-02-12T00:00:00Z", "workflow_run": {"id": 604},
+                    "expires_at": "2027-02-12T00:00:00Z", "workflow_run": {"id": 604, "head_branch": "develop", "head_sha": "c" * 40},
                 }
                 package_receipt = release_notes_workflow.verify_uploaded_package(
                     package_dir, fixture["ready_dir"] / "plan.json", upload_metadata,
                     expected_artifact_id="803", expected_name=upload_metadata["name"],
-                    action_digest="a" * 64, run_id="604", run_attempt="1",
+                    action_digest="a" * 64, run=self.make_package_producer_run(), run_id="604", run_attempt="1",
                     ready_artifact_id=fixture["ready_id"], output_path=str(root / "package-output"))
                 resume_inputs = package_receipt["resume_inputs"]
                 self.assertEqual({key: resume_inputs[key] for key in ready_result["resume_inputs"]},
@@ -1402,12 +1623,12 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
                 "digest": artifact_digest,
                 "expired": False,
                 "expires_at": "2026-12-14T00:00:00Z",
-                "workflow_run": {"id": 802},
+                "workflow_run": {"id": 802, "head_branch": "develop", "head_sha": "c" * 40},
             }
             output = root / "github-output"
             verified = release_notes_workflow.verify_uploaded_package(
                 package, plan_path, metadata, expected_artifact_id="801", expected_name=metadata["name"],
-                action_digest=action_digest, run_id="802", run_attempt="1", ready_artifact_id="701",
+                action_digest=action_digest, run=self.make_package_producer_run(802), run_id="802", run_attempt="1", ready_artifact_id="701",
                 output_path=str(output))
             self.assertEqual(verified["artifact_id"], "801")
             self.assertEqual(verified["ready_artifact_id"], "701")
@@ -1421,13 +1642,13 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
             with self.assertRaises(release_notes_workflow.PackageWorkflowError):
                 release_notes_workflow.verify_uploaded_package(
                     package, plan_path, metadata, expected_artifact_id="801", expected_name=metadata["name"],
-                    action_digest="d" * 64, run_id="802", run_attempt="1",
+                    action_digest="d" * 64, run=self.make_package_producer_run(802), run_id="802", run_attempt="1",
                     ready_artifact_id="701", output_path=str(output))
             for invalid in ("sha256:" + action_digest, "", "C" * 64):
                 with self.subTest(invalid=invalid[:8]), self.assertRaises(release_notes_workflow.PackageWorkflowError):
                     release_notes_workflow.verify_uploaded_package(
                         package, plan_path, metadata, expected_artifact_id="801", expected_name=metadata["name"],
-                        action_digest=invalid, run_id="802", run_attempt="1",
+                        action_digest=invalid, run=self.make_package_producer_run(802), run_id="802", run_attempt="1",
                         ready_artifact_id="701", output_path=str(output))
 
     def test_dispatch_payload_contains_private_archive_without_exposing_content(self):
@@ -1449,7 +1670,8 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
             self.assertTrue(set(inputs) <= set(declared_inputs))
             self.assertEqual(inputs["release_notes_package_request_id"], "1" * 32)
             self.assertNotIn("release_notes_package_retention_days", inputs)
-            self.assertTrue(inputs["prepare_release_notes_package"])
+            self.assertEqual(inputs["prepare_release_notes_package"], "true")
+            self.assertTrue(all(type(value) is str for value in inputs.values()))
             self.assertEqual(inputs["operation"], "release")
             self.assertEqual(inputs["release_notes_action"], "stop")
             self.assertEqual(inputs["artifact_id"], "701")
@@ -1460,49 +1682,75 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
                 release_notes_workflow.build_dispatch_payload(
                     package, ready_artifact_id="701", retention_days=30, request_id="2" * 32)
 
-    def test_parent_dispatch_posts_private_input_via_gh_stdin_and_returns_exact_artifact_receipt(self):
+    def test_parent_dispatch_routes_authenticated_ready_to_its_registered_wrapper(self):
         with TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            package = self.make_package(root / "package")
-            artifact_digest = "sha256:" + "b" * 64
-            expected_name = "lwc-release-notes-1.2.3-development-802-1"
-            responses = [
-                None,
-                {"workflow_runs": [{
-                    "id": 802, "run_attempt": 1, "display_title": "Prepare Release Notes package " + "a" * 32,
-                    "path": ".github/workflows/deploy-dev.yml@refs/heads/develop", "event": "workflow_dispatch",
-                    "head_branch": "develop", "head_sha": "c" * 40, "status": "completed",
-                    "conclusion": "success", "html_url": "https://github.test/run/802",
-                }]},
-                {"artifacts": [{"id": 801, "name": expected_name}]},
-                {"id": 801, "name": expected_name, "digest": artifact_digest, "expired": False,
-                 "expires_at": "2026-12-14T00:00:00Z", "workflow_run": {"id": 802}},
-            ]
-            with patch.object(release_notes_workflow.uuid, "uuid4", return_value=type("RequestId", (), {"hex": "a" * 32})()), \
-                 patch.object(release_notes_workflow, "_gh_api", side_effect=responses) as api:
-                receipt = release_notes_workflow.dispatch_package(
-                    "Rayer/llm-wiki-cloud", package, ready_artifact_id="701", retention_days=90)
-            self.assertEqual(receipt["status"], "ready")
-            self.assertEqual(receipt["artifact_id"], "801")
-            self.assertEqual(receipt["artifact_name"], expected_name)
-            self.assertEqual(receipt["artifact_digest"], artifact_digest)
-            self.assertEqual(receipt["ready_artifact_id"], "701")
-            self.assertEqual(receipt["requested_retention_days"], 90)
-            self.assertNotIn("Private package payload sentinel", json.dumps(receipt))
-            endpoint, = api.call_args_list[0].args[1:2]
-            body = json.loads(api.call_args_list[0].kwargs["body"])
-            self.assertEqual(endpoint, "actions/workflows/deploy-dev.yml/dispatches")
-            self.assertEqual(body["ref"], "develop")
-            self.assertEqual(body["inputs"]["release_notes_package_request_id"], "a" * 32)
-            self.assertTrue(body["inputs"]["prepare_release_notes_package"])
-            self.assertEqual(body["inputs"]["operation"], "release")
-            self.assertEqual(body["inputs"]["release_notes_action"], "stop")
-            self.assertEqual(body["inputs"]["artifact_id"], "701")
-            self.assertTrue(body["inputs"]["package_zip_base64"])
-            self.assertEqual(api.call_args_list[0].kwargs["method"], "POST")
-            self.assertNotIn("release_notes_package_retention_days", body["inputs"])
-            self.assertNotIn("Private package payload sentinel", json.dumps(receipt))
-            self.assertNotIn(body["inputs"]["package_zip_base64"], json.dumps(receipt))
+            for environment in ("development", "production"):
+                with self.subTest(environment=environment):
+                    root = Path(temporary) / environment
+                    root.mkdir()
+                    ready_root = root / "ready"
+                    ready_root.mkdir()
+                    fixture = self.make_ready_handoff(root / "ready", schema=4,
+                                                      environment=environment)
+                    package, _, _ = self.make_package_for_plan(
+                        root / "package", self.plan_bytes, environment=environment,
+                        version="1.2.3", text="Local synthetic package receipt fixture")
+                    destination = release_notes_workflow.DESTINATIONS[environment]
+                    workflow_name = Path(destination["workflow_path"]).name
+                    branch = destination["branch"]
+                    artifact_digest = "sha256:" + "b" * 64
+                    package_run = {
+                        "id": 802, "run_attempt": 1,
+                        "display_title": "Prepare Release Notes package " + "a" * 32,
+                        "path": f"{destination['workflow_path']}@refs/heads/{branch}",
+                        "event": "workflow_dispatch", "head_branch": branch, "head_sha": "c" * 40,
+                        "status": "completed", "conclusion": "success",
+                        "html_url": "https://github.test/run/802",
+                    }
+                    expected_name = f"lwc-release-notes-1.2.3-{environment}-802-1"
+                    responses = [
+                        fixture["metadata"],
+                        fixture["run"],
+                        fixture["artifact_list"],
+                        None,
+                        {"workflow_runs": [package_run]},
+                        {"artifacts": [{"id": 801, "name": expected_name}]},
+                        {"id": 801, "name": expected_name, "digest": artifact_digest,
+                         "expired": False, "expires_at": "2026-12-14T00:00:00Z",
+                         "workflow_run": {"id": 802, "head_branch": branch, "head_sha": "c" * 40}},
+                    ]
+                    request_id = "a" * 32
+                    with patch.object(release_notes_workflow.uuid, "uuid4",
+                                      return_value=type("RequestId", (), {"hex": request_id})()), \
+                         patch.object(release_notes_workflow, "_gh_api", side_effect=responses) as api:
+                        receipt = release_notes_workflow.dispatch_package(
+                            "Rayer/llm-wiki-cloud", package, ready_artifact_id=fixture["ready_id"],
+                            retention_days=90)
+                    self.assertEqual(receipt["status"], "ready")
+                    self.assertEqual(receipt["destination"], environment)
+                    self.assertEqual(receipt["ref"], branch)
+                    self.assertEqual(receipt["workflow_path"], destination["workflow_path"])
+                    self.assertEqual(receipt["artifact_id"], "801")
+                    self.assertEqual(receipt["artifact_name"], expected_name)
+                    self.assertEqual(receipt["artifact_digest"], artifact_digest)
+                    self.assertEqual(receipt["ready_artifact_id"], fixture["ready_id"])
+                    self.assertEqual(receipt["requested_retention_days"], 90)
+                    self.assertNotIn("Local synthetic package receipt fixture", json.dumps(receipt))
+                    post_call = api.call_args_list[3]
+                    self.assertEqual(post_call.args[1], f"actions/workflows/{workflow_name}/dispatches")
+                    body = json.loads(post_call.kwargs["body"])
+                    self.assertEqual(body["ref"], branch)
+                    self.assertEqual(body["inputs"]["release_notes_package_request_id"], request_id)
+                    self.assertTrue(body["inputs"]["prepare_release_notes_package"])
+                    self.assertEqual(body["inputs"]["operation"], "release")
+                    self.assertEqual(body["inputs"]["release_notes_action"], "stop")
+                    self.assertEqual(body["inputs"]["artifact_id"], fixture["ready_id"])
+                    self.assertTrue(body["inputs"]["package_zip_base64"])
+                    self.assertEqual(post_call.kwargs["method"], "POST")
+                    self.assertEqual(api.call_args_list[4].args[1],
+                                     f"actions/workflows/{workflow_name}/runs?branch={branch}&event=workflow_dispatch&per_page=100")
+                    self.assertNotIn("release_notes_package_retention_days", body["inputs"])
+                    self.assertNotIn(body["inputs"]["package_zip_base64"], json.dumps(receipt))
 
     def test_gh_api_writer_uses_stdin_and_never_shells_package_json(self):
         package_request = b'{"ref":"develop","inputs":{"prepare_release_notes_package":true,"package_zip_base64":"private"}}'
@@ -1778,11 +2026,12 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
             action_digest = "e" * 64
             metadata = {"id": int(package_artifact_id), "name": expected_name,
                         "digest": "sha256:" + action_digest, "expired": False,
-                        "expires_at": "2027-02-12T00:00:00Z", "workflow_run": {"id": int(upload_run)}}
+                        "expires_at": "2027-02-12T00:00:00Z", "workflow_run": {"id": int(upload_run), "head_branch": "develop", "head_sha": "c" * 40}}
             receipt = release_notes_workflow.verify_uploaded_package(
                 staged, fixture["result_dir"] / "plan.json", metadata,
                 expected_artifact_id=package_artifact_id, expected_name=expected_name,
-                action_digest=action_digest, run_id=upload_run, run_attempt=upload_attempt,
+                action_digest=action_digest, run=self.make_package_producer_run(
+                    int(upload_run), int(upload_attempt)), run_id=upload_run, run_attempt=upload_attempt,
                 ready_artifact_id="", history_result_artifact_id=fixture["result_id"],
                 history_operation="deploy", history_binding=binding, output_path=str(root / "receipt-output"))
             self.assertEqual(receipt["source_kind"], "historical-result")
@@ -1804,7 +2053,8 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
                     release_notes_workflow.verify_uploaded_package(
                         staged, fixture["result_dir"] / "plan.json", metadata,
                         expected_artifact_id=package_artifact_id, expected_name=expected_name,
-                        action_digest=action_digest, run_id=upload_run, run_attempt=upload_attempt,
+                        action_digest=action_digest, run=self.make_package_producer_run(
+                    int(upload_run), int(upload_attempt)), run_id=upload_run, run_attempt=upload_attempt,
                         ready_artifact_id="", history_result_artifact_id=fixture["result_id"],
                         history_operation="deploy", history_binding=bad_binding)
 

@@ -1,4 +1,5 @@
 name: Promote Production
+run-name: ${{ inputs.prepare_release_notes_package && format('Prepare Release Notes package {0}', inputs.release_notes_package_request_id) || github.ref_name }}
 on:
   workflow_dispatch:
     inputs:
@@ -66,13 +67,40 @@ on:
         required: false
         type: string
         default: '4'
+      prepare_release_notes_package:
+        description: Prepare a TPM-authored private Notes package from an exact current Production Ready artifact; skips every deployment operation
+        required: false
+        type: boolean
+        default: false
+      package_zip_base64:
+        description: Private bounded base64 ZIP of the existing TPM-authored Notes package; consumed from this dispatch event file only
+        required: false
+        type: string
+        default: ''
+      release_notes_package_request_id:
+        description: Unique lowercase 32-hex correlation value for private package preparation
+        required: false
+        type: string
+        default: ''
 permissions:
   contents: write
   actions: read
   id-token: write
 jobs:
+  prepare-release-notes-package:
+    if: github.ref == 'refs/heads/main' && inputs.prepare_release_notes_package == true
+    permissions:
+      contents: read
+      actions: write
+    uses: ./.github/workflows/prepare-release-notes-package.yml
+    with:
+      ready_artifact_id: ${{ inputs.artifact_id }}
+      history_result_artifact_id: ''
+      history_operation: ''
+      retention_days: '90'
+      request_id: ${{ inputs.release_notes_package_request_id }}
   release:
-    if: github.ref == 'refs/heads/main' && inputs.operation != 'frontend-config-generate'
+    if: github.ref == 'refs/heads/main' && inputs.prepare_release_notes_package != true && inputs.operation != 'frontend-config-generate'
     uses: ./.github/workflows/cd.yml
     secrets: inherit
     with:
@@ -94,7 +122,7 @@ jobs:
       operation: ${{ inputs.operation }}
       pipeline_run_timeout_seconds: ${{ inputs.pipeline_run_timeout_seconds }}
   frontend-config-generate:
-    if: github.ref == 'refs/heads/develop' && inputs.operation == 'frontend-config-generate'
+    if: github.ref == 'refs/heads/develop' && inputs.prepare_release_notes_package != true && inputs.operation == 'frontend-config-generate'
     permissions:
       contents: read
     uses: ./.github/workflows/generate-frontend-config.yml

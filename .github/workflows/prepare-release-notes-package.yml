@@ -43,17 +43,27 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Validate workflow source branch
+      - name: Resolve the registered wrapper from authenticated workflow context
+        id: caller
+        env:
+          CALLER_WORKFLOW_REF: ${{ github.workflow_ref }}
+          CALLER_REF: ${{ github.ref }}
+        run: |
+          set -Eeuo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python3 deploy/engine/release_notes_workflow.py resolve-caller \
+            --repository "$GITHUB_REPOSITORY" --workflow-ref "$CALLER_WORKFLOW_REF" \
+            --ref "$CALLER_REF" --output "$GITHUB_OUTPUT"
+      - name: Validate package-only inputs and original event payload
         env:
           REQUEST_ID: ${{ inputs.request_id }}
           READY_ARTIFACT_ID: ${{ inputs.ready_artifact_id }}
           HISTORY_RESULT_ARTIFACT_ID: ${{ inputs.history_result_artifact_id }}
           HISTORY_OPERATION: ${{ inputs.history_operation }}
+          PACKAGE_ENVIRONMENT: ${{ steps.caller.outputs.package_environment }}
           RETENTION_DAYS: ${{ inputs.retention_days }}
         run: |
           set -Eeuo pipefail
-          test "$GITHUB_REF" = refs/heads/develop
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           [[ "$REQUEST_ID" =~ ^[0-9a-f]{32}$ ]]
           [[ -z "$READY_ARTIFACT_ID" || "$READY_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
           [[ -z "$HISTORY_RESULT_ARTIFACT_ID" || "$HISTORY_RESULT_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
@@ -63,7 +73,8 @@ jobs:
             --event-path "$GITHUB_EVENT_PATH" --request-id "$REQUEST_ID" \
             --ready-artifact-id "$READY_ARTIFACT_ID" \
             --history-result-artifact-id "$HISTORY_RESULT_ARTIFACT_ID" \
-            --history-operation "$HISTORY_OPERATION" --retention-days "$RETENTION_DAYS"
+            --history-operation "$HISTORY_OPERATION" --retention-days "$RETENTION_DAYS" \
+            --environment "$PACKAGE_ENVIRONMENT"
       - name: Locate the exact prepared Ready run and its final result artifact
         id: ready
         if: inputs.ready_artifact_id != ''
@@ -71,13 +82,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           READY_ARTIFACT_ID: ${{ inputs.ready_artifact_id }}
           REQUEST_ID: ${{ inputs.request_id }}
+          READY_ENVIRONMENT: ${{ steps.caller.outputs.environment }}
         run: |
           set -Eeuo pipefail
           [[ "$READY_ARTIFACT_ID" =~ ^[1-9][0-9]*$ && "$REQUEST_ID" =~ ^[0-9a-f]{32}$ ]]
           gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$READY_ARTIFACT_ID" > "$RUNNER_TEMP/ready-artifact-metadata.json"
           run_id="$(python3 deploy/engine/release_notes_workflow.py ready-run-id \
             --metadata "$RUNNER_TEMP/ready-artifact-metadata.json" \
-            --artifact-id "$READY_ARTIFACT_ID")"
+            --artifact-id "$READY_ARTIFACT_ID" \
+            --environment "$READY_ENVIRONMENT")"
           [[ "$run_id" =~ ^[1-9][0-9]*$ ]]
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" > "$RUNNER_TEMP/ready-workflow-run.json"
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/artifacts?per_page=100" > "$RUNNER_TEMP/ready-run-artifacts.json"
@@ -85,6 +98,7 @@ jobs:
             --metadata "$RUNNER_TEMP/ready-artifact-metadata.json" \
             --run "$RUNNER_TEMP/ready-workflow-run.json" \
             --artifacts "$RUNNER_TEMP/ready-run-artifacts.json" --artifact-id "$READY_ARTIFACT_ID" \
+            --environment "$READY_ENVIRONMENT" \
             --output "$GITHUB_OUTPUT"
       - name: Download the exact ready-plan artifact
         if: inputs.ready_artifact_id != ''
@@ -111,6 +125,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           READY_ARTIFACT_ID: ${{ inputs.ready_artifact_id }}
           RESULT_ARTIFACT_ID: ${{ steps.ready.outputs.result_artifact_id }}
+          READY_ENVIRONMENT: ${{ steps.caller.outputs.environment }}
         run: |
           set -Eeuo pipefail
           gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$RESULT_ARTIFACT_ID" > "$RUNNER_TEMP/ready-result-metadata.json"
@@ -122,10 +137,11 @@ jobs:
             --ready-directory "$RUNNER_TEMP/ready-plan" \
             --result-directory "$RUNNER_TEMP/ready-result" \
             --artifact-id "$READY_ARTIFACT_ID" --result-artifact-id "$RESULT_ARTIFACT_ID" \
+            --environment "$READY_ENVIRONMENT" \
             --output "$GITHUB_OUTPUT"
       - name: Locate the exact successful historical DEV result run
         id: history-identity
-        if: inputs.history_result_artifact_id != ''
+        if: inputs.history_result_artifact_id != '' && steps.caller.outputs.environment == 'development'
         env:
           GH_TOKEN: ${{ github.token }}
           HISTORY_RESULT_ARTIFACT_ID: ${{ inputs.history_result_artifact_id }}
@@ -141,7 +157,7 @@ jobs:
           [[ "$run_id" =~ ^[1-9][0-9]*$ ]]
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" > "$RUNNER_TEMP/history-result-run.json"
       - name: Download the exact historical DEV result artifact
-        if: inputs.history_result_artifact_id != ''
+        if: inputs.history_result_artifact_id != '' && steps.caller.outputs.environment == 'development'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.1.8
         with:
           artifact-ids: ${{ inputs.history_result_artifact_id }}
@@ -151,7 +167,7 @@ jobs:
           merge-multiple: true
       - name: Validate the successful historical DEV operation and exact archived plan
         id: history
-        if: inputs.history_result_artifact_id != ''
+        if: inputs.history_result_artifact_id != '' && steps.caller.outputs.environment == 'development'
         env:
           HISTORY_RESULT_ARTIFACT_ID: ${{ inputs.history_result_artifact_id }}
           HISTORY_OPERATION: ${{ inputs.history_operation }}
@@ -170,6 +186,7 @@ jobs:
           READY_ARTIFACT_ID: ${{ inputs.ready_artifact_id }}
           HISTORY_RESULT_ARTIFACT_ID: ${{ inputs.history_result_artifact_id }}
           HISTORY_OPERATION: ${{ inputs.history_operation }}
+          PACKAGE_ENVIRONMENT: ${{ steps.caller.outputs.package_environment }}
           RETENTION_DAYS: ${{ inputs.retention_days }}
         run: |
           set -Eeuo pipefail
@@ -181,7 +198,7 @@ jobs:
           python3 deploy/engine/release_notes_workflow.py prepare-package \
             --plan "$PLAN_PATH" \
             --package-dir "$RUNNER_TEMP/release-notes-input" \
-            --environment dev --request-id "$REQUEST_ID" \
+            --environment "$PACKAGE_ENVIRONMENT" --request-id "$REQUEST_ID" \
             --ready-artifact-id "$READY_ARTIFACT_ID" \
             --history-result-artifact-id "$HISTORY_RESULT_ARTIFACT_ID" \
             --history-operation "$HISTORY_OPERATION" \
@@ -191,7 +208,7 @@ jobs:
         id: upload
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: ${{ inputs.history_result_artifact_id != '' && format('lwc-release-notes-{0}-development-history-{1}-{2}-{3}-{4}', steps.prepare.outputs.product_version, inputs.history_operation, inputs.history_result_artifact_id, github.run_id, github.run_attempt) || format('lwc-release-notes-{0}-development-{1}-{2}', steps.prepare.outputs.product_version, github.run_id, github.run_attempt) }}
+          name: ${{ inputs.history_result_artifact_id != '' && format('lwc-release-notes-{0}-development-history-{1}-{2}-{3}-{4}', steps.prepare.outputs.product_version, inputs.history_operation, inputs.history_result_artifact_id, github.run_id, github.run_attempt) || format('lwc-release-notes-{0}-{1}-{2}-{3}', steps.prepare.outputs.product_version, steps.caller.outputs.environment, github.run_id, github.run_attempt) }}
           path: ${{ runner.temp }}/release-notes-input
           retention-days: ${{ inputs.retention_days }}
           if-no-files-found: error
@@ -204,8 +221,9 @@ jobs:
           HISTORY_BINDING_PATH: ${{ runner.temp }}/history-result-binding.json
           HISTORY_RESULT_ARTIFACT_ID: ${{ inputs.history_result_artifact_id }}
           HISTORY_OPERATION: ${{ inputs.history_operation }}
+          DESTINATION_ENVIRONMENT: ${{ steps.caller.outputs.environment }}
           ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
-          ARTIFACT_NAME: ${{ inputs.history_result_artifact_id != '' && format('lwc-release-notes-{0}-development-history-{1}-{2}-{3}-{4}', steps.prepare.outputs.product_version, inputs.history_operation, inputs.history_result_artifact_id, github.run_id, github.run_attempt) || format('lwc-release-notes-{0}-development-{1}-{2}', steps.prepare.outputs.product_version, github.run_id, github.run_attempt) }}
+          ARTIFACT_NAME: ${{ inputs.history_result_artifact_id != '' && format('lwc-release-notes-{0}-development-history-{1}-{2}-{3}-{4}', steps.prepare.outputs.product_version, inputs.history_operation, inputs.history_result_artifact_id, github.run_id, github.run_attempt) || format('lwc-release-notes-{0}-{1}-{2}-{3}', steps.prepare.outputs.product_version, steps.caller.outputs.environment, github.run_id, github.run_attempt) }}
           ACTION_DIGEST_RAW: ${{ steps.upload.outputs.artifact-digest }}
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
@@ -216,6 +234,7 @@ jobs:
              "$RUN_ATTEMPT" =~ ^[1-9][0-9]*$ &&
              "$ACTION_DIGEST_RAW" =~ ^[0-9a-f]{64}$ ]]
           gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID" > "$RUNNER_TEMP/release-notes-upload-metadata.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" > "$RUNNER_TEMP/release-notes-package-run.json"
           if [[ -n "$HISTORY_RESULT_ARTIFACT_ID" ]]; then
             PLAN_PATH="$HISTORY_PLAN_PATH"
             HISTORY_BINDING_ARGS=(--history-binding "$HISTORY_BINDING_PATH")
@@ -226,6 +245,8 @@ jobs:
           python3 deploy/engine/release_notes_workflow.py verify-upload \
             --package-dir "$PACKAGE_DIR" --plan "$PLAN_PATH" \
             --metadata "$RUNNER_TEMP/release-notes-upload-metadata.json" \
+            --run "$RUNNER_TEMP/release-notes-package-run.json" \
+            --environment "$DESTINATION_ENVIRONMENT" \
             --artifact-id "$ARTIFACT_ID" --artifact-name "$ARTIFACT_NAME" \
             --action-digest "$ACTION_DIGEST_RAW" --run-id "$RUN_ID" --run-attempt "$RUN_ATTEMPT" \
             --ready-artifact-id "$READY_ARTIFACT_ID" \
