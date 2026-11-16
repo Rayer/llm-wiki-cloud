@@ -208,12 +208,8 @@ def operation_marker(directory: Path, args) -> tuple[dict, bytes]:
     plan_bytes = release_notes_capture.read_bytes(Path(args.plan))
     state_bytes = release_notes_capture.read_bytes(directory / "state.json")
     result_bytes = release_notes_capture.read_bytes(directory / "result.json")
-    receipt_bytes = release_notes_capture.read_bytes(directory / "receipts" / "bff.json")
     plan = release_notes._json_object(plan_bytes, "index_update", release_notes.MAX_OPERATION_ARTIFACT_BYTES)
-    component_receipts = {
-        component: release_notes_capture.read_bytes(directory / "receipts" / f"{component}.json")
-        for component in ("frontend", "worker") if component in plan.get("selected", [])
-    }
+    receipt_bytes, component_receipts = operation_receipts(directory, plan)
     sidecar = release_notes._json_object(sidecar_bytes.removesuffix(b"\n"), "index_update",
                                          release_notes.MAX_INDEX_BYTES, release_notes.SIDECAR_FIELDS)
     canonical_sidecar = json.dumps(sidecar, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
@@ -227,16 +223,56 @@ def operation_marker(directory: Path, args) -> tuple[dict, bytes]:
     return marker, sidecar_bytes
 
 
+def operation_receipts(directory: Path, plan: dict) -> tuple[bytes | None, dict[str, bytes]]:
+    selected = plan.get("selected")
+    if not isinstance(selected, list) or not selected:
+        raise release_notes.ReleaseNotesError("product_release", "selected-receipt-set-invalid")
+    receipt = (release_notes_capture.read_bytes(directory / "receipts" / "bff.json")
+               if "bff" in selected else None)
+    component_receipts = {
+        component: release_notes_capture.read_bytes(directory / "receipts" / f"{component}.json")
+        for component in ("frontend", "worker") if component in selected
+    }
+    return receipt, component_receipts
+
+
+def selected_receipt_digest(plan: dict, receipt_bytes: bytes | None,
+                            component_receipts: dict[str, bytes]) -> str:
+    selected = plan.get("selected", [])
+    digests = {}
+    if "bff" in selected:
+        if not isinstance(receipt_bytes, bytes):
+            raise release_notes.ReleaseNotesError("product_release", "selected-receipt-unavailable")
+        digests["bff"] = release_notes.digest_bytes(receipt_bytes)
+    for component in ("frontend", "worker"):
+        if component in selected:
+            data = component_receipts.get(component)
+            if not isinstance(data, bytes):
+                raise release_notes.ReleaseNotesError("product_release", "selected-receipt-unavailable")
+            digests[component] = release_notes.digest_bytes(data)
+    if len(digests) == 1:
+        return next(iter(digests.values()))
+    canonical = json.dumps(digests, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return release_notes.digest_bytes(canonical)
+
+
 def validate_retained_operation(directory: Path, args) -> dict:
     """Validate immutable operation bytes without provider access or recovery writes."""
     try:
+        plan_bytes = Path(args.plan).read_bytes()
+        plan = release_notes._json_object(plan_bytes, "product_release", release_notes.MAX_OPERATION_ARTIFACT_BYTES)
+        receipt_bytes, component_receipts = operation_receipts(directory, plan)
         return release_notes.validate_native_operation(
-            Path(args.plan).read_bytes(), (directory / "state.json").read_bytes(),
-            (directory / "result.json").read_bytes(), (directory / "receipts" / "bff.json").read_bytes(),
+            plan_bytes, (directory / "state.json").read_bytes(),
+            (directory / "result.json").read_bytes(), receipt_bytes,
             environment=args.environment, workflow_operation=args.operation,
-            run_id=args.run_id, run_attempt=args.run_attempt)
+            run_id=args.run_id, run_attempt=args.run_attempt, component_receipts=component_receipts)
     except OSError:
         raise release_notes.ReleaseNotesError("product_release", "retained-operation-evidence-unavailable") from None
+    except release_notes.ReleaseNotesError as error:
+        if error.safe_class == "native-operation-artifact-unavailable":
+            raise release_notes.ReleaseNotesError("product_release", "retained-operation-evidence-unavailable") from None
+        raise
 
 
 def publication_record(directory: Path, args, plan_bytes: bytes) -> tuple[dict | None, bytes]:
@@ -252,7 +288,8 @@ def publication_record(directory: Path, args, plan_bytes: bytes) -> tuple[dict |
         data = path.read_bytes()
         state_bytes = (directory / "state.json").read_bytes()
         result_bytes = (directory / "result.json").read_bytes()
-        receipt_bytes = (directory / "receipts" / "bff.json").read_bytes()
+        plan = release_notes._json_object(plan_bytes, "product_release", release_notes.MAX_OPERATION_ARTIFACT_BYTES)
+        receipt_bytes, component_receipts = operation_receipts(directory, plan)
     except OSError:
         raise release_notes.ReleaseNotesError("product_release", "publication-time-evidence-invalid") from None
     record = release_notes._json_object(data.removesuffix(b"\n"), "product_release",
@@ -263,7 +300,7 @@ def publication_record(directory: Path, args, plan_bytes: bytes) -> tuple[dict |
         "plan_sha256": release_notes.digest_bytes(plan_bytes),
         "state_sha256": release_notes.digest_bytes(state_bytes),
         "result_sha256": release_notes.digest_bytes(result_bytes),
-        "receipt_sha256": release_notes.digest_bytes(receipt_bytes),
+        "receipt_sha256": selected_receipt_digest(plan, receipt_bytes, component_receipts),
     }
     if set(record) != PUBLICATION_FIELDS or any(record.get(key) != value for key, value in expected.items()) or \
             args.operation != "release" or not release_notes._valid_timestamp(record.get("published_at")):
@@ -271,7 +308,7 @@ def publication_record(directory: Path, args, plan_bytes: bytes) -> tuple[dict |
     release_notes.validate_native_operation(
         plan_bytes, state_bytes, result_bytes, receipt_bytes,
         environment=args.environment, workflow_operation=args.operation,
-        run_id=args.run_id, run_attempt=args.run_attempt)
+        run_id=args.run_id, run_attempt=args.run_attempt, component_receipts=component_receipts)
     canonical = json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
     if data != canonical:
         raise release_notes.ReleaseNotesError("product_release", "publication-time-evidence-invalid")
@@ -284,18 +321,19 @@ def write_publication_record(directory: Path, args, plan_bytes: bytes) -> tuple[
         raise release_notes.ReleaseNotesError("product_release", "publication-time-input-invalid")
     state_bytes = release_notes_capture.read_bytes(directory / "state.json")
     result_bytes = release_notes_capture.read_bytes(directory / "result.json")
-    receipt_bytes = release_notes_capture.read_bytes(directory / "receipts" / "bff.json")
+    plan = release_notes._json_object(plan_bytes, "product_release", release_notes.MAX_OPERATION_ARTIFACT_BYTES)
+    receipt_bytes, component_receipts = operation_receipts(directory, plan)
     release_notes.validate_native_operation(
         plan_bytes, state_bytes, result_bytes, receipt_bytes,
         environment=args.environment, workflow_operation=args.operation,
-        run_id=args.run_id, run_attempt=args.run_attempt)
+        run_id=args.run_id, run_attempt=args.run_attempt, component_receipts=component_receipts)
     record = {
         "schema_version": 1, "environment": args.environment, "operation": args.operation,
         "run_id": args.run_id, "run_attempt": args.run_attempt,
         "plan_sha256": release_notes.digest_bytes(plan_bytes),
         "state_sha256": release_notes.digest_bytes(state_bytes),
         "result_sha256": release_notes.digest_bytes(result_bytes),
-        "receipt_sha256": release_notes.digest_bytes(receipt_bytes),
+        "receipt_sha256": selected_receipt_digest(plan, receipt_bytes, component_receipts),
         "published_at": args.published_at,
     }
     data = json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
@@ -331,11 +369,12 @@ def record_capture_failure(directory: Path, *, environment: str, operation: str,
     plan_bytes = release_notes_capture.read_bytes(directory / "plan.json")
     state_bytes = release_notes_capture.read_bytes(directory / "state.json")
     result_bytes = release_notes_capture.read_bytes(directory / "result.json")
-    receipt_bytes = release_notes_capture.read_bytes(directory / "receipts" / "bff.json")
+    plan = release_notes._json_object(plan_bytes, "product_release", release_notes.MAX_OPERATION_ARTIFACT_BYTES)
+    receipt_bytes, component_receipts = operation_receipts(directory, plan)
     release_notes.validate_native_operation(
         plan_bytes, state_bytes, result_bytes, receipt_bytes,
         environment=environment, workflow_operation=operation,
-        run_id=run_id, run_attempt=run_attempt)
+        run_id=run_id, run_attempt=run_attempt, component_receipts=component_receipts)
     if product_status != "released" or release_notes_action not in ("run", "retry", "skip", "marker"):
         raise release_notes.ReleaseNotesError("product_release", "capture-context-invalid")
     if (release_notes_action in ("run", "retry", "skip") and operation != "release") or \
@@ -352,7 +391,7 @@ def record_capture_failure(directory: Path, *, environment: str, operation: str,
         "plan_sha256": release_notes.digest_bytes(plan_bytes),
         "state_sha256": release_notes.digest_bytes(state_bytes),
         "result_sha256": release_notes.digest_bytes(result_bytes),
-        "receipt_sha256": release_notes.digest_bytes(receipt_bytes),
+        "receipt_sha256": selected_receipt_digest(plan, receipt_bytes, component_receipts),
         "artifact_id": artifact_id or None, "artifact_digest": artifact_digest or None,
         "operation": operation, "run_id": run_id, "run_attempt": run_attempt,
         "next_actions": ["retry", "skip", "stop"],
@@ -373,7 +412,7 @@ def record_capture_failure(directory: Path, *, environment: str, operation: str,
 
 
 def verify_reader_api(directory: Path, expected_environment: str, marker: dict, product_version: str,
-                      locales: list[str], *, historical: bool) -> dict:
+                      expected_content_files: dict[str, bytes], *, historical: bool) -> dict:
     base = release_notes_capture.active_service_url(directory).rstrip("/")
     request = Request(base + "/api/v1/public/release-notes", headers={"Cache-Control": "no-cache"})
     try:
@@ -394,7 +433,17 @@ def verify_reader_api(directory: Path, expected_environment: str, marker: dict, 
                 index.get("current_product_version") != public_version or \
                 index.get("current_status") not in ("available", "missing"):
             raise release_notes.ReleaseNotesError("exact_readback", "reader-current-readback-mismatch")
-    for locale in locales:
+    summaries = list(index["history"])
+    current_summary = index.get("current")
+    if isinstance(current_summary, dict):
+        summaries.append(current_summary)
+    version_summary = next((item for item in summaries
+                            if isinstance(item, dict) and item.get("product_version") == product_version), None)
+    if expected_content_files and (version_summary is None or
+                                   not release_notes._valid_timestamp(version_summary.get("published_at"))):
+        raise release_notes.ReleaseNotesError("exact_readback", "reader-index-version-readback-mismatch")
+    reader_content_sha256 = {}
+    for locale, expected_bytes in sorted(expected_content_files.items()):
         request = Request(base + "/api/v1/public/release-notes/" + quote(product_version, safe="") +
                           "?locale=" + quote(locale, safe=""),
                           headers={"Cache-Control": "no-cache"})
@@ -402,20 +451,43 @@ def verify_reader_api(directory: Path, expected_environment: str, marker: dict, 
             with urlopen(request, timeout=20) as response:
                 if response.status != 200 or response.headers.get("Cache-Control", "").lower() != "no-store":
                     raise release_notes.ReleaseNotesError("exact_readback", "reader-content-readback-invalid")
-                content = json.loads(response.read(release_notes.MAX_CONTENT_BYTES * 2).decode("utf-8"))
+                body = response.read(release_notes.MAX_CONTENT_BYTES * 2 + 1)
+                if len(body) > release_notes.MAX_CONTENT_BYTES * 2:
+                    raise release_notes.ReleaseNotesError("exact_readback", "reader-content-readback-invalid")
+                content = json.loads(body.decode("utf-8"))
         except release_notes.ReleaseNotesError:
             raise
         except Exception:
             raise release_notes.ReleaseNotesError("exact_readback", "reader-content-readback-unavailable") from None
-        if not isinstance(content, dict) or content.get("schema_version") != release_notes.SCHEMA_VERSION or \
-                content.get("product_version") != product_version or not isinstance(content.get("entries"), list) or \
-                content.get("requested_product_version", product_version) != product_version or \
-                content.get("canonical_product_version", product_version) != product_version or \
-                content.get("legacy_alias") is not False or content.get("legacy_fallback") is not False:
+        required_fields = {
+            "schema_version", "product", "product_version", "published_at", "locale",
+            "requested_locale", "locale_fallback", "is_current", "entries",
+            "requested_product_version", "canonical_product_version", "legacy_alias", "legacy_fallback",
+        }
+        expected_content = json.loads(expected_bytes.decode("utf-8"))
+        stored_fields = ("schema_version", "product", "product_version", "locale", "entries")
+        projected = {key: content.get(key) for key in stored_fields} if isinstance(content, dict) else None
+        expected_projected = {key: expected_content.get(key) for key in stored_fields}
+        if not isinstance(content, dict) or not required_fields <= set(content) or \
+                type(content.get("schema_version")) is not int or content.get("schema_version") != release_notes.SCHEMA_VERSION or \
+                content.get("product") != "llm-wiki-cloud" or content.get("product_version") != product_version or \
+                content.get("requested_product_version") != product_version or \
+                content.get("canonical_product_version") != product_version or \
+                content.get("locale") != locale or content.get("requested_locale") != locale or \
+                type(content.get("locale_fallback")) is not bool or content.get("locale_fallback") is not False or \
+                type(content.get("is_current")) is not bool or content.get("legacy_alias") is not False or \
+                content.get("legacy_fallback") is not False or not isinstance(content.get("entries"), list) or \
+                not release_notes._valid_timestamp(content.get("published_at")) or \
+                content.get("published_at") != version_summary.get("published_at") or projected != expected_projected:
             raise release_notes.ReleaseNotesError("exact_readback", "reader-content-readback-mismatch")
+        canonical = json.dumps(projected, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        reader_content_sha256[locale] = release_notes.digest_bytes(canonical)
     return {"reader_environment": index.get("environment"), "reader_current_status": index.get("current_status"),
             "reader_current_product_version": index.get("current_product_version"),
-            "reader_verified_versions": [product_version] if locales else []}
+            "reader_verified_versions": [product_version] if expected_content_files else [],
+            "reader_requested_product_version": product_version if expected_content_files else None,
+            "reader_canonical_product_version": product_version if expected_content_files else None,
+            "reader_content_sha256": reader_content_sha256}
 
 
 def execute(args) -> dict:
@@ -486,6 +558,9 @@ def execute(args) -> dict:
         if args.action == "verify-operation":
             stage = "product_release"
             bundle = validate_retained_operation(directory, args)
+            selected_identities = {component: bundle["plan"]["identities"][component]
+                                   for component in bundle["plan"]["selected"]}
+            receipt_bytes, component_receipts = operation_receipts(directory, bundle["plan"])
             evidence = {
                 "schema_version": 1, "action": "verify-operation", "environment": args.environment,
                 "stage": "product_release", "status": "verified", "product_status": "released",
@@ -494,22 +569,27 @@ def execute(args) -> dict:
                 "operation": args.operation, "run_id": args.run_id, "run_attempt": args.run_attempt,
                 "result_sha256": release_notes.digest_bytes((directory / "result.json").read_bytes()),
                 "identity_sha256": release_notes.digest_bytes(
-                    json.dumps(bundle["plan"]["identities"]["bff"], sort_keys=True, separators=(",", ":")).encode()),
+                    json.dumps(selected_identities, sort_keys=True, separators=(",", ":")).encode()),
+                "receipt_sha256": selected_receipt_digest(bundle["plan"], receipt_bytes, component_receipts),
             }
         elif args.action in ("publish", "skip", "marker", "resend"):
             if store is None:
                 store = GCSCLIStore(args.bucket)
             stage = "service_readback"
             marker, sidecar_bytes = operation_marker(directory, args)
+            operation_plan = release_notes._json_object(plan_bytes, "product_release", release_notes.MAX_OPERATION_ARTIFACT_BYTES)
             if args.action == "resend" and marker is not None and not release_notes_capture.active_marker_matches(
                     directory, args.operation, args.run_id, args.run_attempt, marker):
                 marker = None
+            bff_reused = (marker is not None and args.operation == "release" and
+                          isinstance(operation_plan.get("selected"), list) and
+                          "bff" not in operation_plan["selected"])
             publisher = PublisherStore(store, directory, args.operation, args.run_id, args.run_attempt)
             if args.action in ("skip", "marker"):
                 stage = "index_update"
                 result = release_notes.publish_marker_only(
                     publisher, marker, transition_plan_sha256=release_notes.digest_bytes(plan_bytes),
-                    allow_alias_creation=args.action == "skip")
+                    bff_reused=bff_reused, allow_alias_creation=args.action == "skip")
             else:
                 stage = "index_update"
                 result = release_notes.publish_package(
@@ -517,10 +597,11 @@ def execute(args) -> dict:
                     published_at=published_at, marker=marker,
                     historical=args.action == "resend" and marker is None,
                     transition_plan_sha256=release_notes.digest_bytes(plan_bytes),
+                    bff_reused=bff_reused,
                     allow_alias_creation=args.action == "publish")
             stage = "exact_readback"
             api_readback = verify_reader_api(directory, args.environment, marker,
-                product_version or (marker or {}).get("product_version", ""), sorted(content_files),
+                product_version or (marker or {}).get("product_version", ""), content_files,
                 historical=args.action == "resend" and marker is None)
             evidence = {
                 "schema_version": 1, "action": args.action, "environment": args.environment,
@@ -532,6 +613,7 @@ def execute(args) -> dict:
                     json.dumps({key: value for key, value in manifest.items() if key not in ("files",)},
                                sort_keys=True, separators=(",", ":")).encode()),
                 "content_sha256": {locale: release_notes.digest_bytes(data) for locale, data in content_files.items()},
+                "reader_content_sha256": api_readback["reader_content_sha256"],
                 "content_generations": generations, "index_generation": result.index_generation,
                 "operation_sidecar_sha256": release_notes.digest_bytes(sidecar_bytes) if sidecar_bytes else None,
                 "publication_evidence_sha256": release_notes.digest_bytes(publication_bytes) if publication_bytes else None,
@@ -557,12 +639,14 @@ def execute(args) -> dict:
                 "owner_choice_required": False, "automatic_skip": False,
             }
         elif args.action == "skip-after-release":
+            plan = release_notes._json_object(plan_bytes, "product_release", release_notes.MAX_OPERATION_ARTIFACT_BYTES)
+            receipt_bytes, component_receipts = operation_receipts(directory, plan)
             release_notes.validate_native_operation(
                 plan_bytes, (directory / "state.json").read_bytes(),
                 (directory / "result.json").read_bytes(),
-                (directory / "receipts" / "bff.json").read_bytes(),
+                receipt_bytes,
                 environment=args.environment, workflow_operation=args.operation,
-                run_id=args.run_id, run_attempt=args.run_attempt)
+                run_id=args.run_id, run_attempt=args.run_attempt, component_receipts=component_receipts)
             evidence = {
                 "schema_version": 1, "action": args.action, "environment": args.environment,
                 "stage": "owner_disposition", "status": "skipped", "product_status": "released",
@@ -575,12 +659,14 @@ def execute(args) -> dict:
             }
         elif args.action == "stop":
             if args.product_status == "released":
+                plan = release_notes._json_object(plan_bytes, "product_release", release_notes.MAX_OPERATION_ARTIFACT_BYTES)
+                receipt_bytes, component_receipts = operation_receipts(directory, plan)
                 release_notes.validate_native_operation(
                     plan_bytes, (directory / "state.json").read_bytes(),
                     (directory / "result.json").read_bytes(),
-                    (directory / "receipts" / "bff.json").read_bytes(),
+                    receipt_bytes,
                     environment=args.environment, workflow_operation=args.operation,
-                    run_id=args.run_id, run_attempt=args.run_attempt)
+                    run_id=args.run_id, run_attempt=args.run_attempt, component_receipts=component_receipts)
             evidence = {
                 "schema_version": 1, "action": "stop", "environment": args.environment,
                 "stage": "stopped", "status": "stopped", "product_status": args.product_status,

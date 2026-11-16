@@ -282,6 +282,9 @@ def validate_index(data: bytes) -> dict:
                      "index_update", "invalid-locale-entry")
     if "current_deployment" in index and index["current_deployment"] is not None:
         _validate_marker(index["current_deployment"])
+        expected_marker_schema = SCHEMA_VERSION if schema == SCHEMA_VERSION else MARKER_SCHEMA_VERSION
+        _require(index["current_deployment"]["schema_version"] == expected_marker_schema,
+                 "index_update", "index-marker-schema-mismatch")
     if schema == INDEX_SCHEMA_VERSION:
         aliases = index.get("legacy_aliases")
         _require(isinstance(aliases, list) and len(aliases) <= 1, "index_update", "invalid-legacy-aliases")
@@ -508,7 +511,7 @@ def _initial_alias_transition(index: dict, marker: dict | None) -> bool:
 
 def normalize_operation(plan_bytes: bytes, state_bytes: bytes, result_bytes: bytes, sidecar_bytes: bytes,
                         *, environment: str, workflow_operation: str, run_id: str, run_attempt: int,
-                        service: str, receipt_bytes: bytes,
+                        service: str, receipt_bytes: bytes | None,
                         component_receipts: dict[str, bytes] | None = None) -> tuple[dict, dict]:
     plan = _json_object(plan_bytes, "index_update", MAX_OPERATION_ARTIFACT_BYTES)
     state = _json_object(state_bytes, "index_update", MAX_OPERATION_ARTIFACT_BYTES)
@@ -520,6 +523,11 @@ def normalize_operation(plan_bytes: bytes, state_bytes: bytes, result_bytes: byt
         raise ReleaseNotesError("index_update", "operation-evidence-mismatch")
     plan_environment = {"development": "dev", "production": "prod", "dev": "dev", "prod": "prod", "local": "local"}.get(
         normalized.get("environment"))
+    selected = plan.get("selected")
+    bff_selected = isinstance(selected, list) and "bff" in selected
+    bff_reused = (workflow_operation == "release" and plan.get("schema") == 4 and
+                  isinstance(selected, list) and bool(selected) and "bff" not in selected and
+                  set(selected) <= {"frontend", "worker"})
     identity = identities.get("bff")
     plan_id = plan.get("id")
     plan_tag = plan.get("tag")
@@ -527,10 +535,12 @@ def normalize_operation(plan_bytes: bytes, state_bytes: bytes, result_bytes: byt
     state_sequence = state.get("sequence")
     component = state.get("components", {}).get("bff") if isinstance(state.get("components"), dict) else None
     bff_target = normalized.get("bff")
-    if not isinstance(identity, dict) or not isinstance(plan_id, str) or not plan_id or \
+    if (bff_selected and not isinstance(identity, dict)) or not isinstance(plan_id, str) or not plan_id or \
             not isinstance(plan_tag, str) or not plan_tag or not isinstance(plan_source, str) or \
             re.fullmatch(r"[0-9a-f]{40}", plan_source) is None or type(state_sequence) is not int or state_sequence < 0 or \
-            not isinstance(component, dict) or not isinstance(bff_target, dict) or bff_target.get("service_name") != service:
+            not isinstance(bff_target, dict) or bff_target.get("service_name") != service or \
+            (bff_selected and (not isinstance(identity, dict) or not isinstance(component, dict))) or \
+            (not bff_selected and (not bff_reused or identity is not None or component is not None)):
         raise ReleaseNotesError("index_update", "operation-evidence-mismatch")
     if not re.fullmatch(r"[1-9][0-9]*", run_id) or type(run_attempt) is not int or run_attempt < 1:
         raise ReleaseNotesError("index_update", "operation-evidence-mismatch")
@@ -562,21 +572,29 @@ def normalize_operation(plan_bytes: bytes, state_bytes: bytes, result_bytes: byt
     result_entry = state.get("components", {}).get(result_component) if isinstance(result_component, str) and isinstance(state.get("components"), dict) else None
     result_identity = identities.get(result_component) if isinstance(result_component, str) else None
     _require(isinstance(expected, dict) and isinstance(observed_result, dict) and
-             workflow_operation in TRANSITION_OPS and isinstance(plan.get("selected"), list) and "bff" in plan["selected"] and
+             workflow_operation in TRANSITION_OPS and isinstance(selected, list) and
              result_component in plan["selected"] and isinstance(result_entry, dict) and isinstance(result_identity, dict) and
-             state.get("plan") == plan_id and component.get("status") in ("verified", "rolled_back") and
+             state.get("plan") == plan_id and
+             (component is None or component.get("status") in ("verified", "rolled_back")) and
              result.get("release") == plan_tag and result.get("attempt") == plan_id and
              expected.get("source") == plan_source and
              expected.get("identity") == digest_bytes(
                  json.dumps(result_identity, sort_keys=True, separators=(",", ":")).encode()),
              "index_update", "native-operation-unsuccessful")
-    receipt = _json_object(receipt_bytes, "index_update", MAX_OPERATION_ARTIFACT_BYTES)
-    artifact = receipt.get("artifact")
-    image = artifact.get("image") if isinstance(artifact, dict) else None
-    _require(receipt.get("component") == "bff" and receipt.get("identity") == identity and
-             isinstance(image, str) and re.fullmatch(r".+@sha256:[0-9a-f]{64}", image) is not None,
-             "index_update", "selected-target-evidence-invalid")
+    receipt = None
+    if bff_selected:
+        _require(isinstance(receipt_bytes, bytes), "index_update", "selected-target-evidence-unavailable")
+        receipt = _json_object(receipt_bytes, "index_update", MAX_OPERATION_ARTIFACT_BYTES)
+        artifact = receipt.get("artifact")
+        image = artifact.get("image") if isinstance(artifact, dict) else None
+        _require(receipt.get("component") == "bff" and receipt.get("identity") == identity and
+                 isinstance(image, str) and re.fullmatch(r".+@sha256:[0-9a-f]{64}", image) is not None,
+                 "index_update", "selected-target-evidence-invalid")
+    else:
+        _require(workflow_operation == "release" and bff_reused and plan.get("release_version") and
+                 valid_version(plan.get("release_version")), "index_update", "bff-reuse-not-supported")
     if workflow_operation == "rollback":
+        _require(bff_selected, "index_update", "rollback-bff-selection-required")
         entry = component
         prior = entry.get("prior")
         _require(result.get("stage") == "rolled_back" and result.get("status") == "rolled_back" and
@@ -596,15 +614,21 @@ def normalize_operation(plan_bytes: bytes, state_bytes: bytes, result_bytes: byt
     else:
         _require(result.get("stage") == "success" and result.get("status") == "success" and state.get("status") == "success" and
                  type(result.get("last_verified_checkpoint")) is int and result.get("last_verified_checkpoint") == state_sequence and
-                 component.get("status") == "verified" and result_entry.get("status") == "verified" and
+                 (component is None or component.get("status") == "verified") and result_entry.get("status") == "verified" and
                  observed_result.get("component_status") == "verified" and result.get("candidate") == result_entry.get("candidate"),
                  "index_update", "successful-operation-required")
         # BFF checkpoints retain config and revision in candidate; its image identity lives in the receipt.
-        candidate = component.get("candidate")
-        _require(isinstance(candidate, dict) and isinstance(candidate.get("revision"), str) and
-                 candidate.get("revision") == sidecar.get("revision") and
-                 receipt["artifact"]["image"].rsplit("@", 1)[-1] == sidecar.get("image_digest"),
-                 "index_update", "selected-target-readback-mismatch")
+        if bff_selected:
+            candidate = component.get("candidate")
+            _require(isinstance(candidate, dict) and isinstance(candidate.get("revision"), str) and
+                     candidate.get("revision") == sidecar.get("revision") and
+                     receipt["artifact"]["image"].rsplit("@", 1)[-1] == sidecar.get("image_digest"),
+                     "index_update", "selected-target-readback-mismatch")
+        elif bff_reused:
+            for selected_component in selected:
+                selected_state = state.get("components", {}).get(selected_component)
+                _require(isinstance(selected_state, dict) and selected_state.get("status") == "verified",
+                         "index_update", "selected-component-operation-unsuccessful")
     evidence_digest = digest_bytes(json.dumps(sidecar, sort_keys=True, separators=(",", ":")).encode("utf-8"))
     schema = MARKER_SCHEMA_VERSION if plan.get("schema") == 4 else SCHEMA_VERSION
     marker = {
@@ -671,9 +695,10 @@ def _component_builds(plan: dict, state: dict, receipts: dict[str, bytes]) -> li
     return output
 
 
-def validate_native_operation(plan_bytes: bytes, state_bytes: bytes, result_bytes: bytes, receipt_bytes: bytes,
+def validate_native_operation(plan_bytes: bytes, state_bytes: bytes, result_bytes: bytes, receipt_bytes: bytes | None,
                               *, environment: str, workflow_operation: str, run_id: str,
-                              run_attempt: int) -> dict:
+                              run_attempt: int,
+                              component_receipts: dict[str, bytes] | None = None) -> dict:
     """Verify the retained product operation without querying or changing a provider."""
     plan = _json_object(plan_bytes, "product_release", MAX_OPERATION_ARTIFACT_BYTES)
     state = _json_object(state_bytes, "product_release", MAX_OPERATION_ARTIFACT_BYTES)
@@ -683,6 +708,11 @@ def validate_native_operation(plan_bytes: bytes, state_bytes: bytes, result_byte
     plan_id, plan_tag, plan_source = plan.get("id"), plan.get("tag"), plan.get("source")
     target_environment = {"development": "dev", "production": "prod"}.get(
         normalized.get("environment") if isinstance(normalized, dict) else None)
+    selected = plan.get("selected")
+    bff_selected = isinstance(selected, list) and "bff" in selected
+    bff_reused = (workflow_operation == "release" and plan.get("schema") == 4 and
+                  isinstance(selected, list) and bool(selected) and "bff" not in selected and
+                  set(selected) <= {"frontend", "worker"})
     identity = identities.get("bff") if isinstance(identities, dict) else None
     sequence = state.get("sequence")
     components = state.get("components")
@@ -692,11 +722,12 @@ def validate_native_operation(plan_bytes: bytes, state_bytes: bytes, result_byte
             type(run_attempt) is not int or run_attempt < 1:
         raise ReleaseNotesError("product_release", "operation-evidence-mismatch")
     _require(target_environment == environment and isinstance(target, dict) and
-             isinstance(identity, dict) and isinstance(plan_id, str) and bool(plan_id) and
+             ((isinstance(identity, dict) and bff_selected) or (identity is None and bff_reused)) and
+             isinstance(plan_id, str) and bool(plan_id) and
              isinstance(plan_tag, str) and bool(plan_tag) and isinstance(plan_source, str) and
              re.fullmatch(r"[0-9a-f]{40}", plan_source) is not None and
-             isinstance(plan.get("selected"), list) and "bff" in plan["selected"] and
-             type(sequence) is int and sequence >= 0 and isinstance(component, dict) and
+             isinstance(selected, list) and
+             type(sequence) is int and sequence >= 0 and (isinstance(component, dict) if bff_selected else component is None) and
              state.get("plan") == plan_id and target.get("service_name"),
              "product_release", "operation-evidence-mismatch")
     expected = result.get("expected")
@@ -715,6 +746,7 @@ def validate_native_operation(plan_bytes: bytes, state_bytes: bytes, result_byte
              isinstance(observed, dict),
              "product_release", "native-operation-evidence-invalid")
     if workflow_operation == "rollback":
+        _require(bff_selected, "product_release", "rollback-bff-selection-required")
         prior = component.get("prior")
         _require(state.get("status") == "rolled_back" and result.get("stage") == "rolled_back" and
                  result.get("status") == "rolled_back" and component.get("status") == "rolled_back" and
@@ -729,25 +761,42 @@ def validate_native_operation(plan_bytes: bytes, state_bytes: bytes, result_byte
                  "product_release", "native-operation-unsuccessful")
     else:
         # The native BFF producer does not copy receipt.image into candidate; keep the receipt identity check above.
-        candidate = component.get("candidate")
+        candidate = component.get("candidate") if component is not None else None
         _require(state.get("status") == "success" and result.get("stage") == "success" and
-                 result.get("status") == "success" and component.get("status") == "verified" and
+                 result.get("status") == "success" and
+                 (component is None or component.get("status") == "verified") and
                  result_entry.get("status") == "verified" and observed.get("component_status") == "verified" and
                  result.get("candidate") == result_entry.get("candidate") and
-                 isinstance(candidate, dict) and isinstance(candidate.get("revision"), str) and
-                 bool(candidate.get("revision")),
+                 (not bff_selected or (isinstance(candidate, dict) and isinstance(candidate.get("revision"), str) and
+                                       bool(candidate.get("revision")))) and
+                 (bff_selected or bff_reused),
                  "product_release", "native-operation-unsuccessful")
-    receipt = _json_object(receipt_bytes, "product_release", MAX_OPERATION_ARTIFACT_BYTES)
-    artifact = receipt.get("artifact")
-    image = artifact.get("image") if isinstance(artifact, dict) else None
-    _require(receipt.get("component") == "bff" and receipt.get("identity") == identity and
-             isinstance(image, str) and re.fullmatch(r".+@sha256:[0-9a-f]{64}", image) is not None,
-             "product_release", "selected-target-evidence-invalid")
-    return {"plan": plan, "state": state, "result": result, "receipt": receipt}
+        if bff_reused:
+            for selected_component in selected:
+                selected_state = components.get(selected_component) if isinstance(components, dict) else None
+                _require(isinstance(selected_state, dict) and selected_state.get("status") == "verified",
+                         "product_release", "selected-component-operation-unsuccessful")
+    component_receipts = component_receipts or {}
+    builds = _component_builds(plan, state, component_receipts) if plan.get("schema") == 4 else []
+    if bff_selected:
+        receipt = _json_object(receipt_bytes, "product_release", MAX_OPERATION_ARTIFACT_BYTES)
+        artifact = receipt.get("artifact")
+        image = artifact.get("image") if isinstance(artifact, dict) else None
+        _require(receipt.get("component") == "bff" and receipt.get("identity") == identity and
+                 isinstance(image, str) and re.fullmatch(r".+@sha256:[0-9a-f]{64}", image) is not None,
+                 "product_release", "selected-target-evidence-invalid")
+    else:
+        _require(receipt_bytes is None and workflow_operation == "release" and
+                 valid_version(plan.get("release_version")),
+                 "product_release", "bff-reuse-not-supported")
+    return {"plan": plan, "state": state, "result": result,
+            "receipt": receipt if bff_selected else None, "component_builds": builds,
+            "bff_reused": bff_reused}
 
 
 def marker_transition_allowed(previous: dict | None, candidate: dict,
-                              previous_marker_bytes: bytes | None = None) -> bool:
+                              previous_marker_bytes: bytes | None = None, *,
+                              allow_same_bff_generation: bool = False) -> bool:
     if previous is None:
         return True
     _validate_marker(previous)
@@ -775,8 +824,23 @@ def marker_transition_allowed(previous: dict | None, candidate: dict,
         same_bff = all(previous.get(key) == candidate.get(key) for key in (
             "product_version", "commit", "branch", "tag", "image_tag", "image_digest", "service",
             "service_uid", "service_generation", "revision"))
-        return same_bff and previous.get("component_builds") != candidate.get("component_builds") and bool(candidate.get("component_builds"))
+        return (allow_same_bff_generation and same_bff and
+                previous.get("component_builds") != candidate.get("component_builds") and
+                bool(candidate.get("component_builds")))
     return True
+
+
+def _marker_bff_identity(marker: dict) -> tuple:
+    return tuple(marker.get(key) for key in (
+        "environment", "product_version", "commit", "branch", "tag", "image_tag",
+        "image_digest", "service", "service_uid", "service_generation", "revision"))
+
+
+def _validate_bff_reuse(previous: dict | None, candidate: dict) -> None:
+    _require(candidate.get("operation") == "release" and
+             (previous is None or (previous.get("schema_version") in (SCHEMA_VERSION, MARKER_SCHEMA_VERSION) and
+                                   _marker_bff_identity(previous) == _marker_bff_identity(candidate))),
+             "index_update", "release-bff-reuse-mismatch")
 
 
 class NotesStore(Protocol):
@@ -798,6 +862,7 @@ class PublishResult:
 def publish_package(store: NotesStore, files: dict[str, bytes], *, product_version: str,
                     published_at: str, marker: dict | None, historical: bool = False,
                     transition_plan_sha256: str | None = None,
+                    bff_reused: bool = False,
                     allow_alias_creation: bool = True,
                     max_cas_attempts: int = 3) -> PublishResult:
     """Create immutable locale bodies then merge a single row with GCS CAS."""
@@ -850,7 +915,11 @@ def publish_package(store: NotesStore, files: dict[str, bytes], *, product_versi
                 active_matches = store.active_marker_matches(marker)
             except Exception:
                 raise ReleaseNotesError("index_update", "release-transition-unavailable") from None
-            if not active_matches or not marker_transition_allowed(previous_marker, marker, previous_marker_bytes):
+            if bff_reused:
+                _validate_bff_reuse(previous_marker, marker)
+            if not active_matches or not marker_transition_allowed(
+                    previous_marker, marker, previous_marker_bytes,
+                    allow_same_bff_generation=bff_reused):
                 raise ReleaseNotesError("index_update", "release-transition-stale")
         old_aliases = list(index.get("legacy_aliases", []))
         initial_alias_transition = _initial_alias_transition(index, marker)
@@ -888,6 +957,10 @@ def publish_package(store: NotesStore, files: dict[str, bytes], *, product_versi
             updated_locales = dict(old_locales)
             updated_locales.update({locale: {"sha256": item["sha256"], "object_path": item["object_path"]}
                                     for locale, item in prepared.items()})
+            aliases = index.get("legacy_aliases", [])
+            if any(alias.get("legacy_row_version") == product_version for alias in aliases) and \
+                    updated_locales != old_locales:
+                raise ReleaseNotesError("index_update", "legacy-alias-row-immutable")
             if updated_locales == old_locales and (marker is None or previous_marker == marker):
                 alias_receipt = _legacy_alias_receipt(index, "carried" if index.get("legacy_aliases") else None,
                                                       generation, generation, marker=marker,
@@ -943,7 +1016,11 @@ def _prepare_marker_transition(marker: dict, previous: dict | None,
         target = previous["previous_release"]
         _require(all(marker.get(key) == target["bff"].get(key) for key in (
             "product_version", "commit", "branch", "tag", "image_tag", "image_digest", "service",
-            "service_uid", "service_generation", "revision")), "index_update", "rollback-target-mismatch")
+            "service_uid", "revision")) and
+                 type(marker.get("service_generation")) is int and
+                 type(previous.get("service_generation")) is int and
+                 marker["service_generation"] > previous["service_generation"],
+                 "index_update", "rollback-target-mismatch")
         marker["release_version"] = target["release_version"]
         _require(marker.get("component_builds") in ([], target["component_builds"]),
                  "index_update", "rollback-component-target-mismatch")
@@ -994,6 +1071,7 @@ def _legacy_alias_receipt(index: dict, action: str | None, before: int, after: i
 
 
 def publish_marker_only(store: NotesStore, marker: dict, *, transition_plan_sha256: str | None = None,
+                        bff_reused: bool = False,
                         allow_alias_creation: bool = False,
                         max_cas_attempts: int = 3) -> PublishResult:
     """Publish verified runtime state without touching content or publication time."""
@@ -1009,11 +1087,14 @@ def publish_marker_only(store: NotesStore, marker: dict, *, transition_plan_sha2
         previous = index.get("current_deployment")
         previous_marker_bytes = current_deployment_token_bytes(current_bytes) if current_bytes is not None else None
         _prepare_marker_transition(marker, previous, previous_marker_bytes)
+        if bff_reused:
+            _validate_bff_reuse(previous, marker)
         try:
             active_matches = store.active_marker_matches(marker)
         except Exception:
             raise ReleaseNotesError("index_update", "release-transition-unavailable") from None
-        if not active_matches or not marker_transition_allowed(previous, marker, previous_marker_bytes):
+        if not active_matches or not marker_transition_allowed(
+                previous, marker, previous_marker_bytes, allow_same_bff_generation=bff_reused):
             raise ReleaseNotesError("index_update", "release-transition-stale")
         if previous == marker:
             alias_receipt = _legacy_alias_receipt(index, "carried" if index.get("legacy_aliases") else None,

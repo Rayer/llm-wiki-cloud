@@ -305,6 +305,44 @@ func TestMalformedCurrentMarkerLeavesOnlyValidatedHistoryReadable(t *testing.T) 
 	}
 }
 
+func TestMixedIndexMarkerSchemasNeverExposeCurrentButKeepHistoryReadable(t *testing.T) {
+	runtime := testRuntime()
+	legacyStore := indexedStore(t, runtime, true)
+	version2Store := schema2AliasStore(t, runtime, true)
+	var version2Envelope map[string]any
+	if err := json.Unmarshal(version2Store.index, &version2Envelope); err != nil {
+		t.Fatal(err)
+	}
+	version2Marker := version2Envelope["current_deployment"]
+
+	legacyMixed := indexedStore(t, runtime, true)
+	var legacyEnvelope map[string]any
+	if err := json.Unmarshal(legacyStore.index, &legacyEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	legacyEnvelope["current_deployment"] = version2Marker
+	legacyMixed.index, _ = json.Marshal(legacyEnvelope)
+
+	version2Envelope["current_deployment"] = testMarker(runtime)
+	version2Store.index, _ = json.Marshal(version2Envelope)
+
+	for name, store := range map[string]*memoryReadStore{"v1-index-v2-marker": legacyMixed, "v2-index-v1-marker": version2Store} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := DecodeIndex(store.index); !errors.Is(err, ErrInvalid) {
+				t.Fatalf("strict decoder accepted mixed marker schema: %v", err)
+			}
+			response, err := (Reader{Store: store, Runtime: runtime}).Index(context.Background())
+			if err != nil || response.CurrentStatus != "unavailable" || response.Current != nil || len(response.History) != 1 {
+				t.Fatalf("mixed marker public index=%+v err=%v", response, err)
+			}
+			content, err := (Reader{Store: store, Runtime: runtime}).Content(context.Background(), runtime.ProductVersion, "en")
+			if err != nil || content.IsCurrent {
+				t.Fatalf("mixed marker content=%+v err=%v", content, err)
+			}
+		})
+	}
+}
+
 func TestContentHashLocaleFallbackAndExactVersion(t *testing.T) {
 	runtime := testRuntime()
 	store := indexedStore(t, runtime, true)

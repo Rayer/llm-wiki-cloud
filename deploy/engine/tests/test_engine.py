@@ -641,6 +641,77 @@ class Acceptance(unittest.TestCase):
             self.assertEqual(existing_v4.result_calls[-1].reason,
                              'release-version-change-requires-new-plan')
 
+    def test_versionless_workflow_imports_only_exact_retained_schema2_or3_plan_bytes(self):
+        for schema in (2, 3):
+            with self.subTest(schema=schema), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                reuse = root / 'retained'
+                reuse.mkdir()
+                plan = {
+                    'schema': schema, 'source': 'a' * 40, 'branch': 'develop', 'tag': 'legacy-stage1',
+                    'normalized': {'environment': 'development'}, 'identities': {'bff': {'digest': 'old'}},
+                    'dev_reference': None, 'selected': ['bff'], 'release_source_mode': 'legacy_monorepo',
+                }
+                if schema == 2:
+                    plan.update(engine='b' * 40, engine_content='c' * 64)
+                else:
+                    plan['executor_sha'] = 'd' * 40
+                plan['id'] = engine.plan_id(plan)
+                retained_bytes = (json.dumps(plan, indent=2) + '\n').encode()
+                (reuse / 'plan.json').write_bytes(retained_bytes)
+
+                class RetainedPlanEngine:
+                    def __init__(self, _directory, _executor_sha=None):
+                        self.plan = plan
+                        self.calls = []
+                    def auth_input_snapshot(self):
+                        return None
+                    def prepare(self, reuse=None, dev=None):
+                        self.calls.append((reuse, dev))
+                    def result(self, _error=None):
+                        pass
+
+                destination = root / 'new-run'
+                fake = RetainedPlanEngine(destination)
+                stdout = io.StringIO()
+                argv = ['engine.py', 'prepare', '--directory', str(destination), '--environment', 'development',
+                        '--source', plan['source'], '--tag', plan['tag'], '--components', 'bff',
+                        '--reuse', str(reuse), '--release-source-mode', 'legacy_monorepo',
+                        '--executor-sha', 'e' * 40]
+                with patch.object(engine, 'Engine', return_value=fake), patch('sys.argv', argv), patch('sys.stdout', stdout):
+                    self.assertEqual(engine.main(), 0, stdout.getvalue())
+                self.assertEqual((destination / 'plan.json').read_bytes(), retained_bytes)
+                self.assertEqual(len(fake.calls), 1)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            reuse = root / 'retained'
+            reuse.mkdir()
+            plan = {'schema': 3, 'source': 'a' * 40, 'branch': 'develop', 'tag': 'legacy-stage1',
+                    'normalized': {'environment': 'development'}, 'identities': {'bff': {'digest': 'old'}},
+                    'dev_reference': None, 'selected': ['bff'], 'release_source_mode': 'legacy_monorepo',
+                    'executor_sha': 'd' * 40}
+            plan['id'] = engine.plan_id(plan)
+            (reuse / 'plan.json').write_bytes(json.dumps(plan).encode())
+            base_argv = ['engine.py', 'prepare', '--directory', str(root / 'new-run'),
+                         '--environment', 'development', '--source', plan['source'], '--tag', plan['tag'],
+                         '--components', 'bff', '--reuse', str(reuse), '--release-source-mode', 'legacy_monorepo',
+                         '--executor-sha', 'e' * 40]
+            for changed in (
+                    ['--source', 'f' * 40], ['--environment', 'production'], ['--components', 'frontend']):
+                argv = list(base_argv)
+                flag = changed[0]
+                argv[argv.index(flag) + 1] = changed[1]
+                with self.subTest(changed=changed), patch('sys.argv', argv), patch('sys.stdout', io.StringIO()):
+                    self.assertEqual(engine.main(), 1)
+
+            schema4 = dict(plan, schema=4, release_version='2026.11.4')
+            schema4.pop('engine_content', None)
+            schema4['id'] = engine.plan_id(schema4)
+            (reuse / 'plan.json').write_text(json.dumps(schema4))
+            with patch('sys.argv', base_argv), patch('sys.stdout', io.StringIO()):
+                self.assertEqual(engine.main(), 1, 'new schema-4 plans must keep the explicit public version')
+
     def setUp(self):
         self.real_node = shutil.which('node')
         self.vercel_chunk = os.environ.get('LWC_TEST_VERCEL_CHUNK')

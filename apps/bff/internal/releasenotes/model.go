@@ -333,6 +333,12 @@ func DecodeIndexForReader(data []byte) (Index, error) {
 	if err := decodeStrict(envelope.CurrentDeployment, MaxIndexBytes, &marker); err != nil || ValidateMarker(marker) != nil {
 		return index, nil
 	}
+	if envelope.SchemaVersion == SchemaVersion && marker.SchemaVersion != SchemaVersion ||
+		envelope.SchemaVersion == IndexSchemaV2 && marker.SchemaVersion != MarkerSchemaV2 {
+		// A mixed-schema marker is not current evidence, but a separately valid
+		// immutable history list remains readable through this tolerant path.
+		return index, nil
+	}
 	index.CurrentDeployment = &marker
 	return index, nil
 }

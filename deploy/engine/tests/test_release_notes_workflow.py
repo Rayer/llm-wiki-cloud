@@ -1578,6 +1578,8 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
                                  "history": index["versions"]}
                     elif self.path.startswith("/api/v1/public/release-notes/2026.11.1?locale=en"):
                         value = {**json.loads(body), "requested_product_version": "2026.11.1",
+                                 "published_at": "2026-11-01T22:58:30+08:00",
+                                 "requested_locale": "en", "locale_fallback": False, "is_current": False,
                                  "canonical_product_version": "2026.11.1", "legacy_alias": False,
                                  "legacy_fallback": False}
                     else:

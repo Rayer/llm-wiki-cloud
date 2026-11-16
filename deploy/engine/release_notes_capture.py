@@ -121,12 +121,13 @@ def capture(directory: Path, operation: str, run_id: str, run_attempt: int, *, w
     plan_bytes = read_bytes(directory / "plan.json")
     state_bytes = read_bytes(directory / "state.json")
     result_bytes = read_bytes(directory / "result.json")
-    receipt_bytes = read_bytes(directory / "receipts" / "bff.json")
     plan, state, result = (read_object(data, name) for name, data in
                            (("plan", plan_bytes), ("state", state_bytes), ("result", result_bytes)))
+    selected = plan.get("selected", [])
+    receipt_bytes = read_bytes(directory / "receipts" / "bff.json") if "bff" in selected else None
     component_receipts = {
         component: read_bytes(directory / "receipts" / f"{component}.json")
-        for component in ("frontend", "worker") if component in plan.get("selected", [])
+        for component in ("frontend", "worker") if component in selected
     }
     target = plan.get("normalized", {}).get("environment")
     environment = {"development": "dev", "production": "prod"}.get(target)
@@ -141,7 +142,7 @@ def capture(directory: Path, operation: str, run_id: str, run_attempt: int, *, w
         prior = state.get("components", {}).get("bff", {}).get("prior")
         if not isinstance(prior, dict) or prior.get("revision") != revision or prior.get("image") != image:
             raise release_notes.ReleaseNotesError("index_update", "rollback-prior-readback-mismatch")
-    else:
+    elif "bff" in selected:
         candidate = state.get("components", {}).get("bff", {}).get("candidate") or {}
         if candidate.get("revision") and candidate["revision"] != revision:
             raise release_notes.ReleaseNotesError("index_update", "selected-target-readback-mismatch")

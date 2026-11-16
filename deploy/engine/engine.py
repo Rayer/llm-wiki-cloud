@@ -138,6 +138,38 @@ def resumable_release_identity_matches(retained_plan, requested_plan):
     return retained_identity == requested_identity
 
 
+def retained_legacy_resume_plan(args):
+    """Return the exact schema-2/3 plan bytes for a versionless retained resume."""
+    if args.operation != 'prepare' or getattr(args, 'release_version', None) or not args.reuse:
+        return None
+    path = Path(args.reuse).resolve() / 'plan.json'
+    try:
+        if not path.is_file() or path.is_symlink() or path.stat().st_size > 4 * 1024 * 1024:
+            return None
+        raw = path.read_bytes()
+        plan = json.loads(raw.decode('utf-8'))
+    except (OSError, UnicodeError, ValueError, TypeError):
+        return None
+    if not isinstance(plan, dict) or plan.get('schema') not in (2, 3) or 'release_version' in plan:
+        raise Breakpoint('legacy-resume-plan-invalid', 'failed', False,
+                         'inspect-retained-artifact', stage='prepare')
+    try:
+        selected = selection(args.components)
+        branch = 'develop' if args.environment == 'development' else 'main'
+        valid = (plan.get('id') == plan_id(plan) and plan.get('source') == args.source and
+                 plan.get('tag') == args.tag and plan.get('selected') == selected and
+                 plan.get('branch') == branch and
+                 plan.get('normalized', {}).get('environment') == args.environment and
+                 release_source_mode(plan) == args.release_source_mode and
+                 re.fullmatch(r'[0-9a-f]{40}', plan.get('source', '')) is not None)
+    except (Breakpoint, AttributeError, KeyError, TypeError, ValueError):
+        valid = False
+    if not valid:
+        raise Breakpoint('legacy-resume-plan-mismatch', 'failed', False,
+                         'inspect-retained-artifact', stage='prepare')
+    return raw
+
+
 def plan_id(plan):
     if plan.get('schema') == 2:
         return digest({key: value for key, value in plan.items() if key != 'id'})
@@ -1602,7 +1634,12 @@ def main():
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             if args.operation in ('prepare', 'auth-preflight') and not (directory / 'plan.json').exists():
                 require(all((args.environment, args.source, args.tag, args.components)), 'missing-admission-input')
-                write(directory / 'plan.json', admit(args))
+                legacy_resume_plan = retained_legacy_resume_plan(args) if args.operation == 'prepare' else None
+                if legacy_resume_plan is None:
+                    write(directory / 'plan.json', admit(args))
+                else:
+                    # The legacy plan ID covers the original plan schema; preserve its bytes exactly.
+                    (directory / 'plan.json').write_bytes(legacy_resume_plan)
             engine = Engine(directory, args.executor_sha)
             if args.rejection_evidence is not None or args.rejection_artifact_id is not None:
                 require(args.operation == 'deploy' and args.rejection_evidence is not None and
@@ -1615,6 +1652,13 @@ def main():
                 engine.quota_rejection_evidence_dir = Path(args.rejection_evidence).resolve()
                 engine.quota_rejection_artifact_id = args.rejection_artifact_id
             if args.operation in ('prepare', 'auth-preflight'):
+                if engine.plan.get('schema') in (2, 3) and not args.release_version:
+                    require(args.operation == 'prepare' and args.reuse and
+                            (Path(args.reuse).resolve() / 'plan.json').is_file() and
+                            (Path(args.reuse).resolve() / 'plan.json').read_bytes() ==
+                            (directory / 'plan.json').read_bytes() and
+                            release_source_mode(engine.plan) == args.release_source_mode,
+                            'legacy-resume-artifact-required')
                 pinned_auth = engine.auth_input_snapshot()
                 require(args.auth_schema_version is None or pinned_auth is None or
                         pinned_auth['schema_version'] == args.auth_schema_version,
