@@ -1330,6 +1330,11 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
                 server.requests = []
                 server_thread = threading.Thread(target=server.serve_forever, daemon=True)
                 server_thread.start()
+                # urllib.request.urlopen lazily caches a process-global opener.
+                # This fixture temporarily installs proxy settings so only its
+                # owned localhost request bypasses the blocked proxy; restore
+                # the exact prior opener with the environment on every exit.
+                previous_urlopen_opener = urllib.request._opener
                 real_urlopen = urllib.request.urlopen
 
                 def local_build_info_urlopen(request, *args, **kwargs):
@@ -1358,9 +1363,13 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
                                          side_effect=local_build_info_urlopen):
                         marker, _ = release_notes_capture.capture(resumed_dir, "release", "605", 1)
                 finally:
-                    server.shutdown()
-                    server.server_close()
-                    server_thread.join(timeout=2)
+                    try:
+                        server.shutdown()
+                        server.server_close()
+                        server_thread.join(timeout=2)
+                    finally:
+                        urllib.request.install_opener(previous_urlopen_opener)
+                self.assertIs(urllib.request._opener, previous_urlopen_opener)
                 self.assertEqual(server.requests, [("/api/v1/public/version", "no-cache")])
                 gcloud_commands = [json.loads(line) for line in command_log.read_text().splitlines()]
                 self.assertEqual([command[1] for command in gcloud_commands], ["services", "revisions"])
