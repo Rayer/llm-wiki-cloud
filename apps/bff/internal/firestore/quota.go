@@ -1655,6 +1655,52 @@ func GetQuotaReservationSnapshotFromFirestore(ctx context.Context, fs *firestore
 	return quotaReservationFromData(reservationID, snapshot.Data()), true, snapshot.UpdateTime, nil
 }
 
+// GetQuotaReservationForAttemptSnapshotFromFirestore returns the reservation
+// incarnation named by execution evidence. It checks the live stable record
+// first, then its immutable per-attempt archive. If attemptID is absent, only
+// a legacy record with no distinct intent incarnation can be returned.
+func GetQuotaReservationForAttemptSnapshotFromFirestore(ctx context.Context, fs *firestore.Client, reservationID, attemptID, userID, projectID string) (QuotaReservation, bool, time.Time, error) {
+	reservationID, attemptID = strings.TrimSpace(reservationID), strings.TrimSpace(attemptID)
+	if fs == nil || reservationID == "" || strings.Contains(reservationID, "/") || strings.TrimSpace(reservationID) != reservationID ||
+		attemptID != "" && (strings.Contains(attemptID, "/") || strings.TrimSpace(attemptID) != attemptID) {
+		return QuotaReservation{}, false, time.Time{}, nil
+	}
+	legacyLookup := attemptID == ""
+	if legacyLookup {
+		attemptID = reservationID
+	}
+	ref := Collection(fs, pipelineQuotaReservationCollection).Doc(reservationID)
+	live, err := ref.Get(ctx)
+	if err != nil && status.Code(err) != codes.NotFound {
+		return QuotaReservation{}, false, time.Time{}, err
+	}
+	if err == nil {
+		reservation := quotaReservationFromData(reservationID, live.Data())
+		attemptMatches := reservation.AttemptID == attemptID
+		if legacyLookup {
+			attemptMatches = (reservation.AttemptID == "" || reservation.AttemptID == reservation.ID) && reservation.IntentStatus == ""
+		}
+		if attemptMatches && reservation.UserID == userID && reservation.ProjectID == projectID {
+			return reservation, true, live.UpdateTime, nil
+		}
+	}
+	if legacyLookup {
+		return QuotaReservation{}, false, time.Time{}, nil
+	}
+	archived, err := ref.Collection("attempts").Doc(attemptID).Get(ctx)
+	if status.Code(err) == codes.NotFound {
+		return QuotaReservation{}, false, time.Time{}, nil
+	}
+	if err != nil {
+		return QuotaReservation{}, false, time.Time{}, err
+	}
+	reservation := quotaReservationFromData(reservationID, archived.Data())
+	if reservation.ID != reservationID || reservation.AttemptID != attemptID || reservation.UserID != userID || reservation.ProjectID != projectID {
+		return QuotaReservation{}, false, time.Time{}, nil
+	}
+	return reservation, true, archived.UpdateTime, nil
+}
+
 func (c *Client) ListPendingQuotaReservations(ctx context.Context) ([]QuotaReservation, error) {
 	return ListPendingQuotaReservationsFromFirestore(ctx, c.fs)
 }

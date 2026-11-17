@@ -641,21 +641,19 @@ func (h *Handler) readCloudPipelineEventSnapshot(ctx context.Context, userID, pr
 		} else if listedInHistory {
 			record.reservationID = actualReservationID
 			candidate, pendingMatch := candidateByReservation[actualReservationID]
-			attemptMismatch := pendingMatch && actualAttemptID != "" && actualAttemptID != candidate.AttemptID
-			if pendingMatch && actualAttemptID == "" && candidate.AttemptID != candidate.ReservationID && candidate.IntentStatus != "" {
-				attemptMismatch = true
-			}
-			if listIdentityMismatch || listAttemptMismatch || attemptMismatch || pendingMatch && candidate.ExecutionID != "" && candidate.ExecutionID != id {
+			candidateMatch := pendingMatch && actualAttemptID != "" && actualAttemptID == candidate.AttemptID &&
+				(candidate.ExecutionID == "" || candidate.ExecutionID == id)
+			if listIdentityMismatch || listAttemptMismatch || pendingMatch && candidateMatch && candidate.ExecutionID != "" && candidate.ExecutionID != id {
 				record.reservationMissing = true
 			} else {
 				var candidatePtr *scopedfirestore.PipelineEventCandidate
-				if pendingMatch {
+				if candidateMatch {
 					candidatePtr = &candidate
 				}
 				if err := h.attachPipelineReservation(ctx, userID, projectID, &record, candidatePtr); err != nil {
 					return pipelineEventSnapshot{}, err
 				}
-				if pendingMatch {
+				if candidateMatch {
 					record.candidate = true
 				}
 			}
@@ -689,7 +687,7 @@ func (h *Handler) attachPipelineReservation(ctx context.Context, userID, project
 	if record.reservationID == "" {
 		return nil
 	}
-	reservation, exists, updateTime, err := scopedfirestore.GetQuotaReservationSnapshotFromFirestore(ctx, h.firestore.Raw(), record.reservationID)
+	reservation, exists, updateTime, err := scopedfirestore.GetQuotaReservationForAttemptSnapshotFromFirestore(ctx, h.firestore.Raw(), record.reservationID, record.attemptID, userID, projectID)
 	if err != nil {
 		return fmt.Errorf("read exact Pipeline reservation evidence: %w", err)
 	}

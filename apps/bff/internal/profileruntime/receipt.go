@@ -17,6 +17,7 @@ type CompileReceipt struct {
 	ProjectID                               string                                 `firestore:"project_id"`
 	ExecutionID                             string                                 `firestore:"execution_id"`
 	PipelineReservationID                   string                                 `firestore:"pipeline_reservation_id"`
+	PipelineAttemptID                       string                                 `firestore:"pipeline_attempt_id,omitempty"`
 	ProfileRevision                         int64                                  `firestore:"profile_revision"`
 	RequirementsDigest                      string                                 `firestore:"requirements_digest"`
 	ContentGeneration                       string                                 `firestore:"content_generation"`

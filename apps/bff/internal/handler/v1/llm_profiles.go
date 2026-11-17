@@ -20,6 +20,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/byok"
 	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"github.com/rayer/llm-wiki-bff/internal/llm"
+	"github.com/rayer/llm-wiki-bff/internal/pipelinequota"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/api/idtoken"
@@ -236,11 +237,20 @@ func (h *Handler) PipelineLLMProfile(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Pipeline profile request is not current"})
 		return
 	}
+	if reservation.Trigger == pipelinequota.TriggerScheduledDaily && reservation.IntentStatus != "" && reservation.CompileMode != "" &&
+		reservation.AttemptID != "" && reservation.AttemptID != reservation.ID && request.AttemptID != reservation.AttemptID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Pipeline profile request is not current"})
+		return
+	}
 	if _, err := h.AuthorizeProject(c.Request.Context(), request.UserID, request.ProjectID, ProjectRead); err != nil {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Project profile resolution is not authorized"})
 		return
 	}
-	source, profiles, snapshot, err := h.resolvePipelineProfileOperationWire(c.Request.Context(), request.ReservationID, request.UserID, request.ProjectID, request.IncludeCredentials)
+	resolve := h.pipelineProfileResolver
+	if resolve == nil {
+		resolve = h.resolvePipelineProfileOperationWire
+	}
+	source, profiles, snapshot, err := resolve(c.Request.Context(), request.ReservationID, request.UserID, request.ProjectID, request.IncludeCredentials)
 	if err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Project LLM source is unavailable"})
 		return

@@ -916,7 +916,7 @@ func (d *ProfileDispatcher) executeCompile(ctx context.Context, repo *firestoreP
 	if generationSnapshot.Manifest.GenerationID != w.ID || generationSnapshot.ManifestGeneration != receipt.ManifestGeneration || generationSnapshot.ManifestSHA256 != receipt.ManifestSHA256 || !listed || concepts.SHA256 != receipt.CanonicalConceptsDigest {
 		return errProfileCandidateNotCurrent
 	}
-	success, err := NewProfileCompileSuccess(generationSnapshot.Manifest, receipt.ManifestGeneration, nil, receipt.ConsumedBootstrapGuidance, receipt.PipelineReservationID)
+	success, err := NewProfileCompileSuccessForPipeline(generationSnapshot.Manifest, receipt.ManifestGeneration, nil, receipt.ConsumedBootstrapGuidance, receipt.PipelineReservationID, receipt.PipelineAttemptID)
 	if err != nil {
 		return err
 	}

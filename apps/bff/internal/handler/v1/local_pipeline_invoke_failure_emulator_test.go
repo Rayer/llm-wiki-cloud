@@ -19,6 +19,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/gcs"
 	handlerapi "github.com/rayer/llm-wiki-bff/internal/handler"
 	"github.com/rayer/llm-wiki-bff/internal/localpipeline"
+	"github.com/rayer/llm-wiki-bff/internal/pipelinediagnostic"
 	"github.com/rayer/llm-wiki-bff/internal/pipelinequota"
 	"github.com/rayer/llm-wiki-bff/internal/search"
 )
@@ -175,6 +176,7 @@ func TestPipelineIntentFailureAndScheduledMarkerRecoveryRemainFenced(t *testing.
 		"user_id": userID, "project_id": scheduledProject, "execution_id": "", "attempt_id": currentAttemptID,
 		"reserved_at": now, "day_key": pipelinequota.DayKeyUTC(now), "trigger": string(pipelinequota.TriggerScheduledDaily),
 		"budget_class": "scheduled_daily", "settlement_status": "pending", "outcome": "",
+		"intent_status": "ready", "intent_mode": "incremental", "mode": "incremental",
 	}); err != nil {
 		t.Fatalf("seed current scheduled reservation: %v", err)
 	}
@@ -190,8 +192,20 @@ func TestPipelineIntentFailureAndScheduledMarkerRecoveryRemainFenced(t *testing.
 	}); err != nil {
 		t.Fatalf("seed scheduled entitlement: %v", err)
 	}
-	if err := h.writeConfirmedPipelineInvokeFailure(ctx, userID, scheduledProject, reservationID, oldAttemptID); err != nil {
-		t.Fatalf("write stale scheduled marker with actual handler producer: %v", err)
+	legacyMarker := func(attemptID string) []byte {
+		t.Helper()
+		data, err := json.Marshal(pipelinediagnostic.ConfirmedInvokeFailure{
+			Version: 1, Status: "failed", AttemptID: attemptID, Stage: pipelinediagnostic.StageUnknown,
+			ErrorClass: pipelinediagnostic.ErrorClassUnknown, Execution: reservationID,
+			Message: pipelinediagnostic.ConfirmedInvokeFailureMessage,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+	if _, err := storeRoot.WithScope(userID, scheduledProject).WriteBytes(ctx, legacyMarker(oldAttemptID), "cache/pipeline-"+reservationID+".failure.json"); err != nil {
+		t.Fatalf("seed pre-upgrade stable-path stale marker: %v", err)
 	}
 	if err := manager.ReconcilePendingQuotaSettlements(ctx); err != nil {
 		t.Fatalf("native stale scheduled-marker recovery: %v", err)
@@ -211,7 +225,7 @@ func TestPipelineIntentFailureAndScheduledMarkerRecoveryRemainFenced(t *testing.
 	matchingReservation := scopedfirestore.Collection(fsClient.Raw(), "pipeline_quota_reservations").Doc(matchingReservationID)
 	if _, err := matchingReservation.Set(ctx, map[string]any{
 		"user_id": userID, "project_id": matchingProject, "execution_id": "", "attempt_id": matchingAttemptID,
-		"reserved_at": now, "day_key": pipelinequota.DayKeyUTC(now), "trigger": string(pipelinequota.TriggerScheduledDaily),
+		"reserved_at": now, "previous_last_run_at": now.Add(-30 * time.Minute), "day_key": pipelinequota.DayKeyUTC(now), "trigger": string(pipelinequota.TriggerScheduledDaily),
 		"budget_class": "scheduled_daily", "settlement_status": "pending", "outcome": "",
 	}); err != nil {
 		t.Fatalf("seed matching scheduled reservation: %v", err)
@@ -227,19 +241,32 @@ func TestPipelineIntentFailureAndScheduledMarkerRecoveryRemainFenced(t *testing.
 	if _, err := matchingBudget.Set(ctx, map[string]any{"used": true, "result": "pending", "updated_at": now}); err != nil {
 		t.Fatalf("seed matching scheduled entitlement: %v", err)
 	}
-	if err := h.writeConfirmedPipelineInvokeFailure(ctx, userID, matchingProject, matchingReservationID, matchingAttemptID); err != nil {
-		t.Fatalf("write matching scheduled marker with actual handler producer: %v", err)
+	matchingMarker := pipelinediagnostic.ConfirmedInvokeFailure{
+		Version: 1, Status: "failed", AttemptID: matchingAttemptID, Stage: pipelinediagnostic.StageUnknown,
+		ErrorClass: pipelinediagnostic.ErrorClassUnknown, Execution: matchingReservationID,
+		Message: pipelinediagnostic.ConfirmedInvokeFailureMessage,
+	}
+	matchingBytes, err := json.Marshal(matchingMarker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storeRoot.WithScope(userID, matchingProject).WriteBytes(ctx, matchingBytes, "cache/pipeline-"+matchingReservationID+".failure.json"); err != nil {
+		t.Fatalf("seed pre-upgrade stable-path confirmed marker: %v", err)
 	}
 	if err := manager.ReconcilePendingQuotaSettlements(ctx); err != nil {
-		t.Fatalf("native matching scheduled-marker recovery: %v", err)
+		t.Fatalf("native legacy scheduled-marker recovery: %v", err)
 	}
 	released, found, err := fsClient.GetQuotaReservation(ctx, matchingReservationID)
 	if err != nil || !found || released.AttemptID != matchingAttemptID || released.SettlementStatus != "released" || released.Outcome != "NOT_INVOKED" {
-		t.Fatalf("matching scheduled marker reservation=%+v found=%t err=%v; want exact-incarnation release", released, found, err)
+		t.Fatalf("legacy scheduled marker reservation=%+v found=%t err=%v; want exact-incarnation release", released, found, err)
 	}
 	active, err = fsClient.PipelineAdmissionActive(ctx, userID, matchingProject)
 	if err != nil || active {
-		t.Fatalf("matching marker did not release scheduled claim active=%t err=%v", active, err)
+		t.Fatalf("legacy marker did not release scheduled claim active=%t err=%v", active, err)
+	}
+	quotaAfterRelease, err := matchingQuota.Get(ctx)
+	if err != nil || !quotaAfterRelease.Data()["last_run_at"].(time.Time).Equal(now.Add(-30*time.Minute)) {
+		t.Fatalf("legacy marker did not restore prior quota timestamp data=%v err=%v", quotaAfterRelease.Data(), err)
 	}
 	budget, err := matchingBudget.Get(ctx)
 	if err != nil || budget.Data()["used"] != false || budget.Data()["result"] != "not_invoked" {
@@ -249,5 +276,64 @@ func TestPipelineIntentFailureAndScheduledMarkerRecoveryRemainFenced(t *testing.
 			}
 			return budget.Data()
 		}(), err)
+	}
+
+	const cloudLegacyProject = "scheduled-cloud-legacy"
+	cloudLegacyID := "lwc413-cloud-legacy-" + fmt.Sprint(time.Now().UnixNano())
+	cloudLegacyAttempt := "cloud-legacy-attempt"
+	previousLastRun := now.Add(-30 * time.Minute)
+	if _, err := scopedfirestore.Collection(fsClient.Raw(), "pipeline_quota_reservations").Doc(cloudLegacyID).Set(ctx, map[string]any{
+		"user_id": userID, "project_id": cloudLegacyProject, "execution_id": "", "attempt_id": cloudLegacyAttempt,
+		"reserved_at": now, "previous_last_run_at": previousLastRun, "day_key": pipelinequota.DayKeyUTC(now),
+		"trigger": string(pipelinequota.TriggerScheduledDaily), "budget_class": "scheduled_daily", "settlement_status": "pending",
+	}); err != nil {
+		t.Fatalf("seed legacy Cloud Run reservation: %v", err)
+	}
+	cloudLegacyQuota := scopedfirestore.Collection(fsClient.Raw(), "pipeline_quota").Doc(scopedfirestore.QuotaDocID(userID, cloudLegacyProject))
+	if _, err := cloudLegacyQuota.Set(ctx, map[string]any{
+		"user_id": userID, "project_id": cloudLegacyProject, "runs_today": 0, "day_key": pipelinequota.DayKeyUTC(now),
+		"active_reservation_id": cloudLegacyID, "active_trigger": string(pipelinequota.TriggerScheduledDaily), "last_run_at": now,
+	}); err != nil {
+		t.Fatalf("seed legacy Cloud Run shared quota claim: %v", err)
+	}
+	cloudLegacyBudget := scopedfirestore.Collection(fsClient.Raw(), "pipeline_scheduled_daily").Doc(cloudLegacyID)
+	if _, err := cloudLegacyBudget.Set(ctx, map[string]any{"used": true, "result": "pending", "updated_at": now}); err != nil {
+		t.Fatalf("seed legacy Cloud Run daily entitlement: %v", err)
+	}
+	cloudMarker := pipelinediagnostic.ConfirmedInvokeFailure{
+		Version: 1, Status: "failed", AttemptID: cloudLegacyAttempt, Stage: pipelinediagnostic.StageUnknown,
+		ErrorClass: pipelinediagnostic.ErrorClassUnknown, Execution: cloudLegacyID,
+		Message: pipelinediagnostic.ConfirmedInvokeFailureMessage,
+	}
+	cloudMarkerBytes, err := json.Marshal(cloudMarker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storeRoot.WithScope(userID, cloudLegacyProject).WriteBytes(ctx, cloudMarkerBytes, "cache/pipeline-"+cloudLegacyID+".failure.json"); err != nil {
+		t.Fatalf("seed stable-path legacy Cloud Run marker: %v", err)
+	}
+	cloudHandler := New(storeRoot, fsClient, search.NewIndex(), conceptcache.New(), nil, nil)
+	cloudHandler.SetPipelineQuotaStore(fsClient)
+	cloudHandler.SetPipelineJobURL("http://run.test/job:run")
+	cloudHandler.metadataTokenURL = "http://run.test/token"
+	cloudHandler.httpClient = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Path == "/token" {
+			return testHTTPResponse(http.StatusOK, `{"access_token":"fixture-token"}`), nil
+		}
+		return testHTTPResponse(http.StatusOK, `{"executions":[]}`), nil
+	})}
+	if err := cloudHandler.ReconcilePipelineQuota(ctx); err != nil {
+		t.Fatalf("Cloud Run legacy-marker reconciliation: %v", err)
+	}
+	cloudReleased, found, err := fsClient.GetQuotaReservation(ctx, cloudLegacyID)
+	if err != nil || !found || cloudReleased.AttemptID != cloudLegacyAttempt || cloudReleased.SettlementStatus != "released" || cloudReleased.Outcome != "NOT_INVOKED" {
+		t.Fatalf("Cloud Run legacy marker reservation=%+v found=%t err=%v", cloudReleased, found, err)
+	}
+	if active, err := fsClient.PipelineAdmissionActive(ctx, userID, cloudLegacyProject); err != nil || active {
+		t.Fatalf("Cloud Run legacy marker did not release shared claim active=%t err=%v", active, err)
+	}
+	cloudQuotaAfterRelease, err := cloudLegacyQuota.Get(ctx)
+	if err != nil || !cloudQuotaAfterRelease.Data()["last_run_at"].(time.Time).Equal(previousLastRun) {
+		t.Fatalf("Cloud Run legacy marker did not restore quota timestamp data=%v err=%v", cloudQuotaAfterRelease.Data(), err)
 	}
 }

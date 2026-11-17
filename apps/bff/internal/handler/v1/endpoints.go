@@ -1885,7 +1885,7 @@ func (h *Handler) pipelineExecutionStatusWithOwnerAndIncarnation(ctx context.Con
 			reservationID = cloudRunExecutionReservationID(execution, owner.userID, owner.projectID)
 			attemptID = cloudRunExecutionAttemptID(execution, owner.userID, owner.projectID)
 			h.attachPipelineDiagnostic(ctx, response, owner)
-			h.attachPipelineQuotaSettlement(ctx, response, owner, reservationID)
+			h.attachPipelineQuotaSettlement(ctx, response, owner, reservationID, attemptID)
 			h.attachPipelineExecutionEvidence(ctx, response, owner, executionID)
 		}
 		return response, reservationID, attemptID, nil
@@ -1910,7 +1910,7 @@ func (h *Handler) pipelineExecutionStatusWithOwnerAndIncarnation(ctx context.Con
 				h.attachPipelineDiagnostic(ctx, response, owner)
 				reservationID := cloudRunExecutionReservationID(execution, owner.userID, owner.projectID)
 				attemptID := cloudRunExecutionAttemptID(execution, owner.userID, owner.projectID)
-				h.attachPipelineQuotaSettlement(ctx, response, owner, reservationID)
+				h.attachPipelineQuotaSettlement(ctx, response, owner, reservationID, attemptID)
 				h.attachPipelineExecutionEvidence(ctx, response, owner, executionID)
 				return response, reservationID, attemptID, nil
 			}
@@ -2125,7 +2125,15 @@ func (h *Handler) hasConfirmedPipelineInvokeFailure(ctx context.Context, reserva
 	}
 	data, err := reader.ReadFileLimited(ctx, pipelinediagnostic.ConfirmedInvokeFailureObjectPath(reservation.ID, reservation.AttemptID), maxPipelineDiagnosticBytes+1)
 	if errors.Is(err, store.ErrObjectNotExist) || errors.Is(err, storage.ErrObjectNotExist) {
-		return false, nil
+		legacyScheduled := reservation.Trigger == pipelinequota.TriggerScheduledDaily && reservation.IntentStatus == "" &&
+			reservation.AttemptID != "" && reservation.AttemptID != reservation.ID
+		if !legacyScheduled {
+			return false, nil
+		}
+		data, err = reader.ReadFileLimited(ctx, "cache/pipeline-"+reservation.ID+".failure.json", maxPipelineDiagnosticBytes+1)
+		if errors.Is(err, store.ErrObjectNotExist) || errors.Is(err, storage.ErrObjectNotExist) {
+			return false, nil
+		}
 	}
 	if err != nil {
 		return false, err
@@ -2199,7 +2207,7 @@ func (h *Handler) attachPipelineDiagnostic(ctx context.Context, response *handle
 	}
 }
 
-func (h *Handler) attachPipelineQuotaSettlement(ctx context.Context, response *handler.PipelineExecutionResponse, owner *pipelineExecutionOwner, reservationID string) {
+func (h *Handler) attachPipelineQuotaSettlement(ctx context.Context, response *handler.PipelineExecutionResponse, owner *pipelineExecutionOwner, reservationID, attemptID string) {
 	ctx, span := observability.StartPipelineSpan(ctx, "pipeline.status.settlement")
 	outcome := "unknown"
 	defer func() { observability.FinishPipelineSpan(span, outcome) }()
@@ -2208,13 +2216,12 @@ func (h *Handler) attachPipelineQuotaSettlement(ctx context.Context, response *h
 		outcome = "not_applicable"
 		return
 	}
-	quotaStore := h.effectiveQuotaStore()
-	if quotaStore == nil {
+	if h.firestore == nil {
 		response.QuotaSettlement = "unknown"
 		return
 	}
-	reservation, exists, err := quotaStore.GetQuotaReservation(ctx, reservationID)
-	if err != nil || !exists || reservation.UserID != owner.userID || reservation.ProjectID != owner.projectID {
+	reservation, exists, _, err := scopedfirestore.GetQuotaReservationForAttemptSnapshotFromFirestore(ctx, h.firestore.Raw(), reservationID, attemptID, owner.userID, owner.projectID)
+	if err != nil || !exists {
 		response.QuotaSettlement = "unknown"
 		return
 	}

@@ -115,7 +115,7 @@ func (d *ProfileDispatcher) executePipelineIntent(ctx context.Context, repo *fir
 		// as its incarnation, which remains valid for legacy/manual reservations.
 		attemptID = work.ID
 	}
-	if reservation.AttemptID != attemptID {
+	if reservation.ID != work.ID || reservation.UserID != work.UserID || reservation.ProjectID != work.ProjectID || reservation.AttemptID != attemptID {
 		return nil
 	}
 	if reservation.IntentStatus == "preparing" {
@@ -125,6 +125,9 @@ func (d *ProfileDispatcher) executePipelineIntent(ctx context.Context, repo *fir
 		reservation, exists, err = store.GetPipelineIntent(ctx, work.UserID, work.ProjectID, work.ID)
 		if err != nil || !exists {
 			return err
+		}
+		if reservation.ID != work.ID || reservation.UserID != work.UserID || reservation.ProjectID != work.ProjectID || reservation.AttemptID != attemptID {
+			return nil
 		}
 	}
 	if reservation.IntentStatus != "ready" {

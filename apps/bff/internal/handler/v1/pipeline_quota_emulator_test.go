@@ -1737,15 +1737,6 @@ func TestScheduledPipelineIntentPreparationWorkerPublicationSettlementEmulator(t
 		t.Fatalf("durable scheduled preparation work=%v err=%v; want pending attempt-bound work", workSnapshot.Data(), err)
 	}
 
-	// Saving V3 while A waits must not change A's frozen V2 input.
-	thirdRequirements := []ProfileRequirement{{ID: "r1", Text: "V3: preserve explicit exhibit names and times."}}
-	thirdDigest := profileRequirementsDigest(thirdRequirements)
-	if _, err := stateRef.Set(ctx, ProfileState{
-		ProjectID: projectID, Revision: 3, Requirements: thirdRequirements,
-		BootstrapGuidance: &ProfileBootstrapGuidance{Status: "pending", ProfileRevision: 3, InputDigest: thirdDigest},
-	}); err != nil {
-		t.Fatalf("save later V3 Profile while scheduled A waits: %v", err)
-	}
 	profileProvider := &deterministicFakeProfileProvider{model: "controlled-local-model"}
 	dispatcher := &ProfileDispatcher{Handler: h, Provider: profilederive.NewProvider(profileProvider)}
 	if processed, err := dispatcher.Dispatch(ctx, 10); err != nil || processed != 1 {
@@ -1759,6 +1750,22 @@ func TestScheduledPipelineIntentPreparationWorkerPublicationSettlementEmulator(t
 	if !strings.Contains(profileProvider.input, "V2: preserve source venue") {
 		t.Fatalf("controlled local preparation input=%q; want frozen V2 requirements", profileProvider.input)
 	}
+	if intent.ConsumedBootstrapGuidance == nil {
+		t.Fatal("scheduled preparation did not pin its bootstrap guidance")
+	}
+	// Model the current V2 preview-ready state while A's real Worker publishes;
+	// the compile receipt must carry A through both bootstrap checks.
+	bootstrapRef := intent.ConsumedBootstrapGuidance
+	if _, err := stateRef.Set(ctx, ProfileState{
+		ProjectID: projectID, Revision: 2, Requirements: firstRequirements,
+		BootstrapGuidance: &ProfileBootstrapGuidance{
+			Revision: bootstrapRef.Revision, ProfileRevision: bootstrapRef.ProfileRevision, InputDigest: bootstrapRef.InputDigest,
+			Status: profileBootstrapPreviewReady, ModelVersion: bootstrapRef.ModelVersion, PromptVersion: bootstrapRef.PromptVersion,
+			SchemaVersion: bootstrapRef.SchemaVersion,
+		},
+	}); err != nil {
+		t.Fatalf("seed current V2 preview-ready Profile for compile continuation: %v", err)
+	}
 	fixture.mu.Lock()
 	requests := append([]map[string]string(nil), fixture.requests...)
 	fixture.mu.Unlock()
@@ -1769,11 +1776,6 @@ func TestScheduledPipelineIntentPreparationWorkerPublicationSettlementEmulator(t
 	if err != nil || firstArchive.Data()["intent_status"] != "failed" || firstArchive.Data()["settlement_status"] != "released" {
 		t.Fatalf("previous failed attempt archive=%v err=%v; want retained history", firstArchive.Data(), err)
 	}
-	currentProfile, err := h.profileRepository.(*firestoreProfileRepository).GetProfile(ctx, userID, projectID)
-	if err != nil || currentProfile.Revision != 3 || profileRequirementsDigest(currentProfile.Requirements) != thirdDigest {
-		t.Fatalf("current Profile changed by frozen V2 execution: state=%+v err=%v", currentProfile, err)
-	}
-
 	worker := buildLocalCloudPipelineFixtureWorker(t, ctx)
 	storageEndpoint := strings.TrimSpace(os.Getenv("STORAGE_EMULATOR_HOST"))
 	firestoreEndpoint := strings.TrimSpace(os.Getenv("FIRESTORE_EMULATOR_HOST"))
@@ -1798,14 +1800,50 @@ func TestScheduledPipelineIntentPreparationWorkerPublicationSettlementEmulator(t
 	compileSnapshot, err := stateRef.Collection(profileruntime.CompileReceiptsCollection).Doc(publication.GenerationID).Get(ctx)
 	var compileReceipt profileruntime.CompileReceipt
 	if err != nil || compileSnapshot.DataTo(&compileReceipt) != nil || compileReceipt.ExecutionID != intent.ExecutionID ||
-		compileReceipt.PipelineReservationID != reservationID || compileReceipt.ProfileRevision != 2 || compileReceipt.RequirementsDigest != firstDigest ||
+		compileReceipt.PipelineReservationID != reservationID || compileReceipt.PipelineAttemptID != attemptID || compileReceipt.ProfileRevision != 2 || compileReceipt.RequirementsDigest != firstDigest ||
 		compileReceipt.ConsumedGuidanceKind != "bootstrap" || compileReceipt.ConsumedBootstrapGuidance == nil ||
 		compileReceipt.ConsumedBootstrapGuidance.Revision != intent.ConsumedBootstrapGuidance.Revision {
-		t.Fatalf("scheduled Worker compile receipt=%+v err=%v; want exact frozen V2 bootstrap identity", compileReceipt, err)
+		t.Fatalf("scheduled Worker compile receipt=%+v err=%v; want exact frozen V2 reservation+attempt bootstrap identity", compileReceipt, err)
 	}
 	fixture.setStatus(intent.ExecutionID, "SUCCEEDED")
 	if err := h.ReconcilePipelineQuota(ctx); err != nil {
 		t.Fatalf("settle scheduled Worker publication: %v", err)
+	}
+	profileProvider.text = `{"tags":[],"dictionary_diff":"No tag changes.","requirements":[{"id":"r1","disposition":"compile_guidance","explanation":"Writing guidance remains pinned unchanged."}]}`
+	if processed, err := dispatcher.Dispatch(ctx, 10); err != nil || processed != 1 {
+		t.Fatalf("reconcile actual scheduled Worker compile receipt processed=%d err=%v; want one accepted V2 continuation", processed, err)
+	}
+	compiledProfile, err := h.profileRepository.(*firestoreProfileRepository).GetProfile(ctx, userID, projectID)
+	if err != nil || compiledProfile.Revision != 2 || compiledProfile.Candidate == nil || compiledProfile.Candidate.Source != "compile_auto" ||
+		compiledProfile.Candidate.ContentGeneration != publication.GenerationID {
+		compileWork := profileruntime.Work{UserID: userID, ProjectID: projectID, Kind: "compile", Revision: 2, ID: publication.GenerationID}
+		workSnapshot, workErr := scopedfirestore.Collection(fsClient.Raw(), profileruntime.WorkCollection).Doc(profileruntime.WorkID(compileWork)).Get(ctx)
+		t.Fatalf("scheduled attempt compile continuation Profile=%+v err=%v work=%v work_err=%v; want V2 candidate from published generation", compiledProfile, err, workSnapshot.Data(), workErr)
+	}
+	staleGeneration := "g_stale_" + strings.ReplaceAll(unique, "-", "_")
+	if err := h.RequestProfileCompileReconcile(ctx, userID, projectID, staleGeneration, 2, firstDigest); err != nil {
+		t.Fatalf("request stale-attempt compile negative control: %v", err)
+	}
+	staleRef := ProfileDerivedRef{Revision: strings.Repeat("e", 64), InputDigest: firstDigest, ModelVersion: "fixture-model",
+		PromptVersion: "profile-compile-auto-v1", SchemaVersion: "profile.dictionary.v1"}
+	staleGuidance := ProfileDerivedRef{Revision: strings.Repeat("f", 64), InputDigest: firstDigest, ModelVersion: "fixture-model",
+		PromptVersion: "profile-compile-auto-v1", SchemaVersion: "profile.guidance.v1"}
+	if _, err := h.profileRepository.(*firestoreProfileRepository).ProfileBootstrapCompileCandidateReady(ctx, userID, projectID, staleGeneration, 2, firstDigest,
+		intent.ConsumedBootstrapGuidance, staleRef, staleGuidance, ProfilePreview{}, reservationID, "stale-attempt"); !errors.Is(err, errProfileBootstrapNotCurrent) {
+		t.Fatalf("stale scheduled attempt compile candidate error=%v; want bootstrap-attempt rejection", err)
+	}
+	profileProvider.text = ""
+	thirdRequirements := []ProfileRequirement{{ID: "r1", Text: "V3: preserve explicit exhibit names and times."}}
+	thirdDigest := profileRequirementsDigest(thirdRequirements)
+	if _, err := stateRef.Set(ctx, ProfileState{
+		ProjectID: projectID, Revision: 3, Requirements: thirdRequirements,
+		BootstrapGuidance: &ProfileBootstrapGuidance{Status: "pending", ProfileRevision: 3, InputDigest: thirdDigest},
+	}); err != nil {
+		t.Fatalf("save later V3 Profile after frozen V2 continuation: %v", err)
+	}
+	currentProfile, err := h.profileRepository.(*firestoreProfileRepository).GetProfile(ctx, userID, projectID)
+	if err != nil || currentProfile.Revision != 3 || profileRequirementsDigest(currentProfile.Requirements) != thirdDigest {
+		t.Fatalf("current Profile changed by frozen V2 execution: state=%+v err=%v", currentProfile, err)
 	}
 	settled, found, err := fsClient.GetQuotaReservation(ctx, reservationID)
 	if err != nil || !found || settled.AttemptID != attemptID || settled.IntentStatus != "succeeded" || settled.SettlementStatus != "charged" {

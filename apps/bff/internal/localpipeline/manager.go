@@ -636,7 +636,15 @@ func (m *Manager) hasConfirmedInvokeFailure(ctx context.Context, reservation sco
 	storage := m.cfg.Storage.WithScope(reservation.UserID, reservation.ProjectID)
 	data, err := storage.ReadFileLimited(ctx, pipelinediagnostic.ConfirmedInvokeFailureObjectPath(reservation.ID, reservation.AttemptID), 4<<10+1)
 	if errors.Is(err, cloudstorage.ErrObjectNotExist) || errors.Is(err, storeapi.ErrObjectNotExist) {
-		return false, nil
+		legacyScheduled := reservation.Trigger == pipelinequota.TriggerScheduledDaily && reservation.IntentStatus == "" &&
+			reservation.AttemptID != "" && reservation.AttemptID != reservation.ID
+		if !legacyScheduled {
+			return false, nil
+		}
+		data, err = storage.ReadFileLimited(ctx, "cache/pipeline-"+reservation.ID+".failure.json", 4<<10+1)
+		if errors.Is(err, cloudstorage.ErrObjectNotExist) || errors.Is(err, storeapi.ErrObjectNotExist) {
+			return false, nil
+		}
 	}
 	if err != nil {
 		return false, err
@@ -1081,7 +1089,7 @@ func (m *Manager) StatusWithIncarnation(ctx context.Context, userID, projectID, 
 	attemptID, _ := data["quota_attempt_id"].(string)
 	response.QuotaSettlement = "not_applicable"
 	if reservationID != "" {
-		reservation, exists, err := scopedfirestore.GetQuotaReservationFromFirestore(ctx, m.cfg.Firestore, reservationID)
+		reservation, exists, _, err := scopedfirestore.GetQuotaReservationForAttemptSnapshotFromFirestore(ctx, m.cfg.Firestore, reservationID, attemptID, userID, projectID)
 		if err != nil {
 			response.QuotaSettlement = "unknown"
 		} else if exists {

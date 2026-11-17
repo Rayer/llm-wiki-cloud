@@ -541,7 +541,7 @@ func recordProfileCompileReceipt(ctx context.Context, cfg workerConfig, manifest
 		return err
 	}
 	receipt := profileruntime.CompileReceipt{
-		UserID: cfg.UserID, ProjectID: cfg.ProjectID, ExecutionID: cfg.ExecutionID, PipelineReservationID: cfg.PipelineReservationID,
+		UserID: cfg.UserID, ProjectID: cfg.ProjectID, ExecutionID: cfg.ExecutionID, PipelineReservationID: cfg.PipelineReservationID, PipelineAttemptID: cfg.PipelineAttemptID,
 		ProfileRevision: pin.ProfileRevision, RequirementsDigest: pin.RequirementsDigest,
 		ContentGeneration: manifest.GenerationID, ManifestSHA256: profileartifacts.SHA256(data), CanonicalConceptsDigest: manifestConceptDigest(manifest), ManifestGeneration: objectGeneration, CreatedAt: time.Now().UTC(),
 	}
