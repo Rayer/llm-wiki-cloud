@@ -157,7 +157,7 @@ def frontend_reuse_fixture(*, run_id="702", release_version="2026.11.5", deploym
     plan.update(schema=4, id="frontend-only-plan-" + run_id, release_version=release_version,
                 selected=["frontend"], identities={"frontend": identity})
     state.update(plan=plan["id"], status="success", sequence=44,
-                 components={"frontend": {"status": "verified", "candidate": {"deployment_id": deployment_id}}})
+                 components={"frontend": {"status": "verified", "candidate": {"deployment": deployment_id}}})
     result.update(release=plan["tag"], attempt=plan["id"], stage="success", status="success",
                   component="frontend", candidate=state["components"]["frontend"]["candidate"], prior=None,
                   expected={"source": plan["source"], "identity": hashlib.sha256(canonical(identity)).hexdigest()},
@@ -168,7 +168,8 @@ def frontend_reuse_fixture(*, run_id="702", release_version="2026.11.5", deploym
                    state_sha256=release_notes.digest_bytes(state_bytes),
                    result_sha256=release_notes.digest_bytes(result_bytes))
     receipt = {"schema": 2, "component": "frontend", "identity": identity, "build_sha": plan["source"],
-               "artifact": {"deployment_id": deployment_id}}
+               "artifact": {"archive": "frontend.tar.gz", "config": {}, "project": "frontend-project",
+                            "sha256": "sha256:" + "a" * 64, "target": "frontend-target", "team": "frontend-team"}}
     return plan_bytes, state_bytes, result_bytes, canonical(sidecar), None, {"frontend": canonical(receipt)}
 
 
@@ -424,6 +425,49 @@ class ReleaseNotesContractTests(unittest.TestCase):
             release_notes.normalize_operation(
                 *fixture[:4], environment="dev", workflow_operation="release", run_id="702", run_attempt=1,
                 service="svc", receipt_bytes=None, component_receipts=wrong_receipts)
+
+    def test_schema4_frontend_deployment_id_legacy_forms_and_conflicts(self):
+        deployment_id = "frontend-deploy-702"
+
+        def variant(candidate, artifact):
+            fixture = list(frontend_reuse_fixture(deployment_id=deployment_id))
+            plan, state, result, sidecar = (json.loads(fixture[index]) for index in range(4))
+            receipt = json.loads(fixture[5]["frontend"])
+            state["components"]["frontend"]["candidate"] = copy.deepcopy(candidate)
+            result["candidate"] = copy.deepcopy(candidate)
+            receipt["artifact"] = copy.deepcopy(artifact)
+            fixture[1], fixture[2] = canonical(state), canonical(result)
+            sidecar.update(state_sha256=release_notes.digest_bytes(fixture[1]),
+                           result_sha256=release_notes.digest_bytes(fixture[2]))
+            fixture[3] = canonical(sidecar)
+            fixture[5] = {"frontend": canonical(receipt)}
+            return tuple(fixture)
+
+        for label, candidate, artifact in (
+            ("legacy candidate", {"deployment_id": deployment_id}, {"deployment_id": deployment_id}),
+            ("legacy receipt", None, {"deployment_id": deployment_id}),
+        ):
+            with self.subTest(label=label):
+                fixture = variant(candidate, artifact)
+                marker, _ = release_notes.normalize_operation(
+                    *fixture[:4], environment="dev", workflow_operation="release", run_id="702", run_attempt=1,
+                    service="svc", receipt_bytes=None, component_receipts=fixture[5])
+                self.assertEqual(marker["component_builds"][0]["deployment_id"], deployment_id)
+
+        for label, candidate, artifact in (
+            ("missing native and legacy IDs", {}, {}),
+            ("candidate aliases disagree", {"deployment": deployment_id, "deployment_id": "other-deployment"}, {}),
+            ("receipt disagrees with native candidate", {"deployment": deployment_id},
+             {"deployment_id": "other-deployment"}),
+            ("malformed native ID cannot fall back", {"deployment": 42, "deployment_id": deployment_id},
+             {"deployment_id": deployment_id}),
+        ):
+            fixture = variant(candidate, artifact)
+            with self.subTest(label=label), self.assertRaisesRegex(
+                    release_notes.ReleaseNotesError, "selected-component-receipt-invalid"):
+                release_notes.normalize_operation(
+                    *fixture[:4], environment="dev", workflow_operation="release", run_id="702", run_attempt=1,
+                    service="svc", receipt_bytes=None, component_receipts=fixture[5])
 
     def test_bff_reuse_allows_only_same_full_identity_generation_with_newer_selected_run(self):
         store, current, plan_sha, _ = initial_schema2_migration_fixture()

@@ -10,7 +10,8 @@ import subprocess
 import textwrap
 import threading
 import unittest
-from io import BytesIO
+from contextlib import redirect_stdout
+from io import BytesIO, StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -2376,6 +2377,649 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
             self.assertEqual(store.writes, original_writes)
             self.assertEqual(json.loads(store.index)["current_deployment"], original_marker)
 
+
+R10_CARRIER_ROOT = Path(os.environ.get(
+    "LWC478_R10_CARRIER_DIR",
+    "/Users/rayer/.hermes/profiles/lwc-tpm/artifacts/lwc-2026.11.4/dev/owner-uat-followups/conditional-production",
+))
+R10_AUTHENTIC_METADATA_ROOT = Path(os.environ.get(
+    "LWC478_R10_AUTHENTIC_METADATA_DIR",
+    "/Users/rayer/.hermes/profiles/lwc-tpm/artifacts/lwc-2026.11.4/review-inputs/LWC-478-pr239-7213d4f3",
+))
+
+
+@unittest.skipUnless(R10_CARRIER_ROOT.is_dir() and R10_AUTHENTIC_METADATA_ROOT.is_dir(),
+                     "R10 authentic external carriers and run metadata are not supplied")
+class R10NativeReceiptRecoveryTests(unittest.TestCase):
+    PROD_RESULT_ID = "14270957011"
+    PROD_RUN_ID = "43955019304"
+    PROD_RUN_ATTEMPT = 1
+    PROD_PACKAGE_ID = "14268698408"
+    PROD_RESULT_SHA256 = "eaf0148799e22b1e4db1e93557b4c87d318a748d148c67190639ad1839410ed6"
+    DEV_RESULT_SHA256 = "306f681c57f19a9888bfb1c45c86ce564b33edb21d3ead2923cd36987fb67cfc"
+    PROD_PACKAGE_SHA256 = "0aa6cc2222100e464512f5fdb16df43e362adecf5f52240b993c8157679aeaf6"
+
+    def copy_result_carrier(self, name, destination):
+        path = R10_CARRIER_ROOT / name
+        archive_bytes = path.read_bytes()
+        self.assertLessEqual(len(archive_bytes), 40 * 1024 * 1024)
+        expected_sha = self.PROD_RESULT_SHA256 if name.startswith("production-final-") else self.DEV_RESULT_SHA256
+        self.assertEqual(hashlib.sha256(archive_bytes).hexdigest(), expected_sha)
+        with zipfile.ZipFile(BytesIO(archive_bytes)) as archive:
+            names = set(archive.namelist())
+            required = {"plan.json", "state.json", "result.json", "receipts/frontend.json"}
+            if name.startswith("production-final-"):
+                required.add("receipts/bff.json")
+                self.assertIn("release-notes-evidence.json", names)
+            self.assertTrue(required <= names)
+            self.assertNotIn("release-notes-publication.json", names)
+            self.assertNotIn("release-notes-operation.json", names)
+            for member in sorted(required | ({"release-notes-evidence.json"} if
+                                             "release-notes-evidence.json" in names else set())):
+                info = archive.getinfo(member)
+                self.assertLessEqual(info.file_size, release_notes.MAX_OPERATION_ARTIFACT_BYTES)
+                self.assertNotEqual((info.external_attr >> 16) & 0o170000, 0o120000)
+                target = destination / member
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(archive.read(member))
+        return path
+
+    def copy_package_carrier(self, destination):
+        path = R10_CARRIER_ROOT / "production-package-14268698408.zip"
+        archive_bytes = path.read_bytes()
+        self.assertEqual(hashlib.sha256(archive_bytes).hexdigest(), self.PROD_PACKAGE_SHA256)
+        expected = {"release-notes-manifest.json", "en.json", "zh-TW.json"}
+        with zipfile.ZipFile(BytesIO(archive_bytes)) as archive:
+            self.assertEqual(set(archive.namelist()), expected)
+            for member in sorted(expected):
+                info = archive.getinfo(member)
+                self.assertLessEqual(info.file_size, release_notes.MAX_CONTENT_BYTES + 32 * 1024)
+                self.assertNotEqual((info.external_attr >> 16) & 0o170000, 0o120000)
+                (destination / member).write_bytes(archive.read(member))
+        return path
+
+    def target_observation(self, result_directory):
+        plan = json.loads((result_directory / "plan.json").read_bytes())
+        state = json.loads((result_directory / "state.json").read_bytes())
+        environment = {"development": "dev", "production": "prod"}[plan["normalized"]["environment"]]
+        service = plan["normalized"]["bff"]["service_name"]
+        bff_candidate = state.get("components", {}).get("bff", {}).get("candidate", {})
+        bff_receipt_path = result_directory / "receipts/bff.json"
+        if bff_receipt_path.exists():
+            image = json.loads(bff_receipt_path.read_bytes())["artifact"]["image"]
+            revision = bff_candidate["revision"]
+            build_info = {
+                "environment": environment, "product_version": plan["release_version"],
+                "commit": plan["source"], "branch": plan["branch"], "tag": plan["tag"],
+                "image_tag": "bff-" + plan["release_version"], "service": service, "revision": revision,
+            }
+        else:
+            revision = "synthetic-current-bff-revision"
+            image = "registry.example/bff@sha256:" + "a" * 64
+            build_info = {
+                "environment": environment, "product_version": "2026.11.3",
+                "commit": "b" * 40, "branch": plan["branch"], "tag": "bff-current-2026.11.3",
+                "image_tag": "bff-v2026.11.3", "service": service, "revision": revision,
+            }
+        return {
+            "service": service, "service_uid": "synthetic-target-readback-uid", "service_generation": 114,
+            "revision": revision, "image": image, "image_digest": image.rsplit("@", 1)[1],
+            "traffic": [{"revisionName": revision, "percent": 100}], "build_info": build_info,
+            "url": "https://synthetic-current-target.invalid",
+        }
+
+    def test_authentic_dev_and_production_frontend_candidates_normalize_through_native_consumer(self):
+        fixtures = (
+            ("frontend-final-14220263997.zip", "development", "9001", 1),
+            ("production-final-14270957011.zip", "production", self.PROD_RUN_ID, self.PROD_RUN_ATTEMPT),
+        )
+        for name, environment, run_id, attempt in fixtures:
+            with self.subTest(carrier=name), TemporaryDirectory(prefix="lwc478-r10-carrier-") as temp:
+                result_directory = Path(temp)
+                carrier = self.copy_result_carrier(name, result_directory)
+                plan_bytes = (result_directory / "plan.json").read_bytes()
+                state = json.loads((result_directory / "state.json").read_bytes())
+                candidate = state["components"]["frontend"]["candidate"]
+                receipt = json.loads((result_directory / "receipts/frontend.json").read_bytes())
+                self.assertIn("deployment", candidate)
+                self.assertNotIn("deployment_id", candidate)
+                self.assertNotIn("deployment_id", receipt["artifact"])
+                self.assertEqual(receipt["identity"], json.loads(plan_bytes)["identities"]["frontend"])
+                retained = SimpleNamespace(directory=result_directory, plan=str(result_directory / "plan.json"),
+                                            environment={"development": "dev", "production": "prod"}[environment],
+                                            operation="release", run_id=run_id, run_attempt=attempt)
+                native = release_notes_publish.validate_retained_operation(result_directory, retained)
+                self.assertEqual(native["plan"]["selected"], json.loads(plan_bytes)["selected"])
+                with patch.object(release_notes_capture, "observe_service",
+                                  return_value=self.target_observation(result_directory)):
+                    marker, synthetic_sidecar = release_notes_capture.capture(
+                        result_directory, "release", run_id, attempt, write_sidecar=False)
+                build = marker["component_builds"][0]
+                self.assertEqual(build["deployment_id"], candidate["deployment"])
+                self.assertEqual(build["source_sha"], receipt["build_sha"])
+                self.assertEqual(build["build_config_sha256"], receipt["target_config"])
+                self.assertEqual(build["receipt_sha256"], release_notes.digest_bytes(
+                    (result_directory / "receipts/frontend.json").read_bytes()))
+                self.assertTrue(synthetic_sidecar)
+                self.assertFalse((result_directory / "release-notes-operation.json").exists())
+                if name.startswith("production-final-"):
+                    serving = json.loads((R10_CARRIER_ROOT / "production-post-notes-failure-serving.json").read_bytes())
+                    active_frontend_ids = {value.get("deploymentId") or value.get("deployment")
+                                           for value in serving["aliases"].values()}
+                    self.assertEqual(active_frontend_ids, {candidate["deployment"]})
+                else:
+                    reproduction = json.loads((R10_CARRIER_ROOT / "DEV-notes-coverage-gap-reproduction.json").read_bytes())
+                    self.assertEqual(reproduction["error"], "selected-component-receipt-invalid")
+                    self.assertEqual(reproduction["DEV_native_candidate"], candidate)
+
+    def authentic_runtime_metadata(self):
+        root = R10_AUTHENTIC_METADATA_ROOT
+        return tuple(json.loads((root / name).read_bytes()) for name in (
+            "authentic-result_metadata.json", "authentic-run.json",
+            "authentic-original-runtime-jobs.json", "authentic-package_metadata.json",
+            "authentic-package_run.json"))
+
+    def run_official_cli(self, script, arguments):
+        environment = os.environ.copy()
+        environment.update({
+            "GITHUB_REPOSITORY": "Rayer/llm-wiki-cloud",
+            "GOOGLE_APPLICATION_CREDENTIALS": "/dev/null",
+            "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE": "/dev/null",
+            "GCE_METADATA_HOST": "127.0.0.1:9",
+            "AWS_EC2_METADATA_DISABLED": "true",
+            "HTTP_PROXY": "http://127.0.0.1:9", "HTTPS_PROXY": "http://127.0.0.1:9",
+            "ALL_PROXY": "http://127.0.0.1:9", "http_proxy": "http://127.0.0.1:9",
+            "https_proxy": "http://127.0.0.1:9", "all_proxy": "http://127.0.0.1:9",
+            "NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost",
+        })
+        for name in ("GH_TOKEN", "GITHUB_TOKEN", "ACTIONS_RUNTIME_TOKEN", "ACTIONS_RUNTIME_URL"):
+            environment.pop(name, None)
+        return subprocess.run([sys.executable, str(script), *map(str, arguments)], cwd=ROOT,
+                              env=environment, text=True, capture_output=True, check=False)
+
+    def make_runtime_completion(self, result_directory, package_directory, proof_path=None):
+        result_metadata, run, jobs, package_metadata, package_run = self.authentic_runtime_metadata()
+        result = release_notes_workflow.validate_original_runtime_completion(
+            result_metadata, run, jobs, package_metadata, package_run,
+            result_directory=result_directory, package_directory=package_directory,
+            expected_result_artifact_id=self.PROD_RESULT_ID, expected_package_artifact_id=self.PROD_PACKAGE_ID,
+            environment="production", operation="release", repository="Rayer/llm-wiki-cloud",
+            output_path=str(proof_path) if proof_path else None)
+        return result, result_metadata, run, jobs, package_metadata, package_run
+
+    def recovery_cli_args(self, result_directory, package_directory, proof_path):
+        _, _, _, package_metadata, package_run = self.authentic_runtime_metadata()
+        package_digest = package_metadata["digest"]
+        return [
+            "--action", "resend", "--directory", str(result_directory), "--package-dir", str(package_directory),
+            "--environment", "prod", "--bucket", "synthetic-no-cloud", "--artifact-id", self.PROD_PACKAGE_ID,
+            "--result-artifact-id", self.PROD_RESULT_ID, "--artifact-digest", package_digest,
+            "--artifact-metadata-digest", package_digest, "--artifact-name", package_metadata["name"],
+            "--package-run-id", str(package_run["id"]), "--package-run-attempt", str(package_run["run_attempt"]),
+            "--runtime-completion-evidence", str(proof_path),
+            "--plan", str(result_directory / "plan.json"), "--operation", "release",
+            "--run-id", self.PROD_RUN_ID, "--run-attempt", str(self.PROD_RUN_ATTEMPT),
+            "--product-status", "released",
+        ]
+
+    def recovery_args(self, result_directory, package_directory, proof_path):
+        return release_notes_publish.parser().parse_args(
+            self.recovery_cli_args(result_directory, package_directory, proof_path))
+
+    def test_original_successful_step_time_recovers_both_missing_sidecars_and_verifies_notes_reader(self):
+        with TemporaryDirectory(prefix="lwc478-r10-recovery-") as temp:
+            root = Path(temp)
+            result_directory = root / "release"
+            package_directory = root / "package"
+            result_directory.mkdir()
+            package_directory.mkdir()
+            carrier = self.copy_result_carrier("production-final-14270957011.zip", result_directory)
+            package_carrier = self.copy_package_carrier(package_directory)
+            self.assertFalse((result_directory / "release-notes-publication.json").exists())
+            self.assertFalse((result_directory / "release-notes-operation.json").exists())
+
+            metadata_root = R10_AUTHENTIC_METADATA_ROOT
+            original_failure_stages = json.loads(
+                (result_directory / "release-notes-evidence.json").read_bytes())["stages"]
+            verify_operation = self.run_official_cli(
+                ROOT / "deploy/engine/release_notes_publish.py", [
+                    "--action", "verify-operation", "--directory", result_directory,
+                    "--environment", "prod", "--bucket", "synthetic-no-cloud",
+                    "--plan", result_directory / "plan.json", "--result-artifact-id", self.PROD_RESULT_ID,
+                    "--operation", "release", "--run-id", self.PROD_RUN_ID,
+                    "--run-attempt", str(self.PROD_RUN_ATTEMPT), "--product-status", "released",
+                ])
+            self.assertEqual(verify_operation.returncode, 0, verify_operation.stdout + verify_operation.stderr)
+            self.assertEqual(json.loads(verify_operation.stdout), {
+                "action": "verify-operation", "stage": "product_release",
+                "status": "verified", "product_status": "released",
+            })
+            appended_evidence = json.loads((result_directory / "release-notes-evidence.json").read_bytes())
+            self.assertEqual([stage["action"] for stage in appended_evidence["stages"]],
+                             ["prepare", "record-publication", "verify-operation"])
+            self.assertEqual(appended_evidence["stages"][:len(original_failure_stages)], original_failure_stages)
+            appended_verify = appended_evidence["stages"][-1]
+            self.assertEqual(appended_verify["event_sequence"], 3)
+            self.assertEqual(appended_verify["stage_attempt"], 1)
+            self.assertEqual(appended_verify["run_id"], self.PROD_RUN_ID)
+            self.assertEqual(appended_verify["run_attempt"], self.PROD_RUN_ATTEMPT)
+            self.assertFalse((result_directory / "release-notes-publication.json").exists())
+            self.assertFalse((result_directory / "release-notes-operation.json").exists())
+
+            package_outputs = root / "package-github-output"
+            package_validation = self.run_official_cli(
+                ROOT / "deploy/engine/release_notes_workflow.py", [
+                    "validate-resend-package-artifact",
+                    "--metadata", metadata_root / "authentic-package_metadata.json",
+                    "--run", metadata_root / "authentic-package_run.json",
+                    "--artifact-id", self.PROD_PACKAGE_ID,
+                    "--result-artifact-id", self.PROD_RESULT_ID,
+                    "--operation", "release", "--environment", "production",
+                    "--repository", "Rayer/llm-wiki-cloud", "--output", package_outputs,
+                ])
+            self.assertEqual(package_validation.returncode, 0,
+                             package_validation.stdout + package_validation.stderr)
+            self.assertIn("artifact_name=lwc-release-notes-2026.11.4-production-43954659089-1",
+                          package_outputs.read_text())
+            self.assertIn("package_run_id=43954659089", package_outputs.read_text())
+
+            proof_path = result_directory / "runtime-completion.json"
+            runtime_validation = self.run_official_cli(
+                ROOT / "deploy/engine/release_notes_workflow.py", [
+                    "validate-original-runtime-completion",
+                    "--result-metadata", metadata_root / "authentic-result_metadata.json",
+                    "--run", metadata_root / "authentic-run.json",
+                    "--jobs", metadata_root / "authentic-original-runtime-jobs.json",
+                    "--package-metadata", metadata_root / "authentic-package_metadata.json",
+                    "--package-run", metadata_root / "authentic-package_run.json",
+                    "--result-directory", result_directory, "--package-directory", package_directory,
+                    "--result-artifact-id", self.PROD_RESULT_ID,
+                    "--package-artifact-id", self.PROD_PACKAGE_ID,
+                    "--environment", "production", "--operation", "release",
+                    "--repository", "Rayer/llm-wiki-cloud", "--output", proof_path,
+                ])
+            self.assertEqual(runtime_validation.returncode, 0,
+                             runtime_validation.stdout + runtime_validation.stderr)
+            proof = json.loads(proof_path.read_bytes())
+            self.assertEqual(json.loads(runtime_validation.stdout), proof)
+            original_time = json.loads((R10_CARRIER_ROOT / "production-partial-release-time.json").read_bytes())[
+                "runtime_success_completed_at"]
+            self.assertEqual(proof["runtime_step_completed_at"], original_time)
+            self.assertEqual(proof["plan_sha256"], release_notes.digest_bytes((result_directory / "plan.json").read_bytes()))
+            self.assertFalse((result_directory / "release-notes-publication.json").exists())
+            self.assertFalse((result_directory / "release-notes-operation.json").exists())
+
+            observation = self.target_observation(result_directory)
+            with patch.object(release_notes_capture, "observe_service", return_value=observation):
+                marker, _ = release_notes_capture.capture(
+                    result_directory, "release", self.PROD_RUN_ID, self.PROD_RUN_ATTEMPT, write_sidecar=False)
+            self.assertEqual(marker["component_builds"][0]["deployment_id"],
+                             json.loads((result_directory / "state.json").read_bytes())[
+                                 "components"]["frontend"]["candidate"]["deployment"])
+
+            class ControlledNotesStore(MemoryNotesStore):
+                def active_marker_matches(self, candidate, *, directory, operation, run_id, run_attempt):
+                    return release_notes_capture.active_marker_matches(
+                        directory, operation, run_id, run_attempt, candidate)
+
+            store = ControlledNotesStore()
+            content_files = {locale: (package_directory / f"{locale}.json").read_bytes()
+                             for locale in ("en", "zh-TW")}
+
+            class Handler(http.server.BaseHTTPRequestHandler):
+                def do_GET(self):
+                    index = release_notes.validate_index(store.index)
+                    version = marker["release_version"]
+                    current_row = next(row for row in index["versions"] if row["product_version"] == version)
+                    if self.path == "/api/v1/public/release-notes":
+                        details, components = release_notes_publish._public_components(marker)
+                        value = {
+                            "schema_version": 1, "environment": "prod",
+                            "runtime_product_version": marker["product_version"], "current_status": "available",
+                            "current_product_version": version,
+                            "current": {"product_version": current_row["product_version"],
+                                        "published_at": current_row["published_at"],
+                                        "locales": sorted(current_row["locales"])},
+                            "history": [{"product_version": row["product_version"],
+                                         "published_at": row["published_at"],
+                                         "locales": sorted(row["locales"])}
+                                        for row in index["versions"] if row["product_version"] != version],
+                            "component_details_status": details, "current_components": components,
+                            "compatibility_aliases": [],
+                        }
+                    else:
+                        value = None
+                        for locale, body in content_files.items():
+                            endpoint = f"/api/v1/public/release-notes/{version}?locale={locale}"
+                            if self.path == endpoint:
+                                value = {
+                                    **json.loads(body), "published_at": current_row["published_at"],
+                                    "requested_locale": locale, "locale_fallback": False, "is_current": True,
+                                    "requested_product_version": version, "canonical_product_version": version,
+                                    "legacy_alias": False, "legacy_fallback": False,
+                                }
+                                break
+                        if value is None:
+                            self.send_error(404)
+                            return
+                    encoded = canonical(value)
+                    self.send_response(200)
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(encoded)
+
+                def log_message(self, _format, *_args):
+                    pass
+
+            server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                publisher_cli_args = self.recovery_cli_args(result_directory, package_directory, proof_path)
+                active_url = f"http://127.0.0.1:{server.server_port}"
+                publisher_stdout = StringIO()
+                with patch.dict(os.environ, {"GITHUB_REPOSITORY": "Rayer/llm-wiki-cloud",
+                                             "GOOGLE_APPLICATION_CREDENTIALS": "/dev/null",
+                                             "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE": "/dev/null",
+                                             "GCE_METADATA_HOST": "127.0.0.1:9",
+                                             "HTTP_PROXY": "http://127.0.0.1:9",
+                                             "HTTPS_PROXY": "http://127.0.0.1:9",
+                                             "ALL_PROXY": "http://127.0.0.1:9",
+                                             "http_proxy": "http://127.0.0.1:9",
+                                             "https_proxy": "http://127.0.0.1:9",
+                                             "all_proxy": "http://127.0.0.1:9",
+                                             "NO_PROXY": "127.0.0.1,localhost",
+                                             "no_proxy": "127.0.0.1,localhost"}), \
+                        patch.object(release_notes_capture, "observe_service", return_value=observation), \
+                        patch.object(release_notes_capture, "provider_json",
+                                     side_effect=AssertionError("provider access is blocked in this local fixture")), \
+                        patch.object(release_notes_capture, "build_info",
+                                     side_effect=AssertionError("provider access is blocked in this local fixture")), \
+                        patch.object(release_notes_capture, "active_service_url", return_value=active_url), \
+                        patch.object(release_notes_publish, "GCSCLIStore", return_value=store), \
+                        patch.object(sys, "argv", [str(ROOT / "deploy/engine/release_notes_publish.py"),
+                                                    *publisher_cli_args]), \
+                        redirect_stdout(publisher_stdout):
+                    publisher_exit = release_notes_publish.main()
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
+            self.assertEqual(publisher_exit, 0, publisher_stdout.getvalue())
+            self.assertIn('"status": "verified"', publisher_stdout.getvalue())
+            evidence_file = json.loads((result_directory / "release-notes-evidence.json").read_bytes())
+            self.assertEqual([stage["action"] for stage in evidence_file["stages"]],
+                             ["prepare", "record-publication", "verify-operation", "resend"])
+            evidence = evidence_file["stages"][-1]
+            self.assertEqual(evidence["status"], "verified")
+            self.assertEqual(evidence["currentness"], "verified")
+            self.assertEqual(evidence["published_at"], "2026-11-16T21:00:38Z")
+            self.assertEqual(evidence["published_at_source"], "runtime-step-completion")
+            self.assertEqual(evidence["runtime_step_completed_at"], original_time)
+            self.assertEqual(evidence["runtime_completion_evidence_sha256"],
+                             release_notes.digest_bytes(proof_path.read_bytes()))
+            self.assertEqual(evidence["content_sha256"], {
+                locale: release_notes.digest_bytes(body) for locale, body in content_files.items()})
+            self.assertEqual(set(evidence["reader_content_sha256"]), {"en", "zh-TW"})
+            self.assertEqual(evidence["reader_api_readback"]["reader_current_status"], "available")
+            self.assertEqual(evidence["reader_api_readback"]["reader_current_product_version"], "2026.11.4")
+            self.assertEqual(evidence["reader_api_readback"]["reader_verified_versions"], ["2026.11.4"])
+            self.assertEqual(evidence["reader_api_readback"]["reader_current_flags"], {"en": True, "zh-TW": True})
+            self.assertEqual(json.loads(store.index)["current_deployment"], marker)
+            self.assertEqual([row["product_version"] for row in release_notes.validate_index(store.index)["versions"]],
+                             ["2026.11.4"])
+            publication = json.loads((result_directory / "release-notes-publication.json").read_bytes())
+            self.assertEqual(publication["published_at"], original_time)
+            self.assertTrue((result_directory / "release-notes-operation.json").is_file())
+            self.assertEqual(hashlib.sha256(carrier.read_bytes()).hexdigest(), self.PROD_RESULT_SHA256)
+            self.assertEqual(hashlib.sha256(package_carrier.read_bytes()).hexdigest(), self.PROD_PACKAGE_SHA256)
+
+    def test_runtime_completion_rejects_foreign_repository_and_attempt(self):
+        with TemporaryDirectory(prefix="lwc478-r10-invalid-proof-") as temp:
+            root = Path(temp)
+            result_directory, package_directory = root / "release", root / "package"
+            result_directory.mkdir()
+            package_directory.mkdir()
+            self.copy_result_carrier("production-final-14270957011.zip", result_directory)
+            self.copy_package_carrier(package_directory)
+            _, result_metadata, run, jobs, package_metadata, package_run = self.make_runtime_completion(
+                result_directory, package_directory)
+
+            foreign_run = copy.deepcopy(run)
+            foreign_run["repository"]["full_name"] = "Rayer/other-repository"
+            with self.assertRaisesRegex(release_notes_workflow.PackageWorkflowError,
+                                       "runtime-completion-result-identity-invalid"):
+                release_notes_workflow.validate_original_runtime_completion(
+                    result_metadata, foreign_run, jobs, package_metadata, package_run,
+                    result_directory=result_directory, package_directory=package_directory,
+                    expected_result_artifact_id=self.PROD_RESULT_ID,
+                    expected_package_artifact_id=self.PROD_PACKAGE_ID,
+                    environment="production", operation="release", repository="Rayer/llm-wiki-cloud")
+
+            wrong_source_run = copy.deepcopy(run)
+            wrong_source_metadata = copy.deepcopy(result_metadata)
+            wrong_source_run["head_sha"] = "f" * 40
+            wrong_source_metadata["workflow_run"]["head_sha"] = "f" * 40
+            with self.assertRaisesRegex(release_notes_workflow.PackageWorkflowError,
+                                       "runtime-completion-plan-identity-invalid"):
+                release_notes_workflow.validate_original_runtime_completion(
+                    wrong_source_metadata, wrong_source_run, jobs, package_metadata, package_run,
+                    result_directory=result_directory, package_directory=package_directory,
+                    expected_result_artifact_id=self.PROD_RESULT_ID,
+                    expected_package_artifact_id=self.PROD_PACKAGE_ID,
+                    environment="production", operation="release", repository="Rayer/llm-wiki-cloud")
+
+            wrong_attempt_jobs = copy.deepcopy(jobs)
+            wrong_attempt_jobs["jobs"][0]["run_attempt"] += 1
+            with self.assertRaisesRegex(release_notes_workflow.PackageWorkflowError,
+                                       "runtime-completion-release-job-invalid"):
+                release_notes_workflow.validate_original_runtime_completion(
+                    result_metadata, run, wrong_attempt_jobs, package_metadata, package_run,
+                    result_directory=result_directory, package_directory=package_directory,
+                    expected_result_artifact_id=self.PROD_RESULT_ID,
+                    expected_package_artifact_id=self.PROD_PACKAGE_ID,
+                    environment="production", operation="release", repository="Rayer/llm-wiki-cloud")
+
+            wrong_job_name = copy.deepcopy(jobs)
+            wrong_job_name["jobs"][0]["name"] = "release"
+            with self.assertRaisesRegex(release_notes_workflow.PackageWorkflowError,
+                                       "runtime-completion-release-job-invalid"):
+                release_notes_workflow.validate_original_runtime_completion(
+                    result_metadata, run, wrong_job_name, package_metadata, package_run,
+                    result_directory=result_directory, package_directory=package_directory,
+                    expected_result_artifact_id=self.PROD_RESULT_ID,
+                    expected_package_artifact_id=self.PROD_PACKAGE_ID,
+                    environment="production", operation="release", repository="Rayer/llm-wiki-cloud")
+
+            unsuccessful_runtime_step = copy.deepcopy(jobs)
+            next(step for step in unsuccessful_runtime_step["jobs"][0]["steps"]
+                 if step.get("name") == release_notes_workflow.RUNTIME_STEP_NAME)["conclusion"] = "failure"
+            with self.assertRaisesRegex(release_notes_workflow.PackageWorkflowError,
+                                       "runtime-completion-step-invalid"):
+                release_notes_workflow.validate_original_runtime_completion(
+                    result_metadata, run, unsuccessful_runtime_step, package_metadata, package_run,
+                    result_directory=result_directory, package_directory=package_directory,
+                    expected_result_artifact_id=self.PROD_RESULT_ID,
+                    expected_package_artifact_id=self.PROD_PACKAGE_ID,
+                    environment="production", operation="release", repository="Rayer/llm-wiki-cloud")
+
+            failure_path = result_directory / "release-notes-evidence.json"
+            failure_evidence = json.loads(failure_path.read_bytes())
+            failure_evidence["stages"][-1]["safe_class"] = "unrelated-publication-failure"
+            failure_path.write_bytes(canonical(failure_evidence) + b"\n")
+            with self.assertRaisesRegex(release_notes_workflow.PackageWorkflowError,
+                                       "runtime-completion-release-failure-invalid"):
+                release_notes_workflow.validate_original_runtime_completion(
+                    result_metadata, run, jobs, package_metadata, package_run,
+                    result_directory=result_directory, package_directory=package_directory,
+                    expected_result_artifact_id=self.PROD_RESULT_ID,
+                    expected_package_artifact_id=self.PROD_PACKAGE_ID,
+                    environment="production", operation="release", repository="Rayer/llm-wiki-cloud")
+
+    def test_production_current_package_uses_its_exact_main_wrapper_and_rejects_history(self):
+        result_metadata, run, jobs, package_metadata, package_run = self.authentic_runtime_metadata()
+        accepted = release_notes_workflow.validate_resend_package_artifact(
+            package_metadata, package_run, expected_artifact_id=self.PROD_PACKAGE_ID,
+            result_artifact_id=self.PROD_RESULT_ID, operation="release",
+            environment="production", repository="Rayer/llm-wiki-cloud")
+        self.assertFalse(accepted["historical"])
+        self.assertEqual(accepted["artifact_name"], package_metadata["name"])
+        self.assertEqual(accepted["package_run_id"], str(package_run["id"]))
+        self.assertEqual(accepted["package_run_attempt"], "1")
+
+        for label, environment, operation in (
+                ("wrong environment", "development", "release"),
+                ("wrong operation", "production", "deploy")):
+            with self.subTest(label=label), self.assertRaisesRegex(
+                    release_notes_workflow.PackageWorkflowError, "package-artifact-not-qualified"):
+                release_notes_workflow.validate_resend_package_artifact(
+                    package_metadata, package_run, expected_artifact_id=self.PROD_PACKAGE_ID,
+                    result_artifact_id=self.PROD_RESULT_ID, operation=operation,
+                    environment=environment, repository="Rayer/llm-wiki-cloud")
+
+        wrong_branch = copy.deepcopy(package_run)
+        wrong_branch["head_branch"] = "develop"
+        wrong_branch["repository"]["full_name"] = "Rayer/llm-wiki-cloud"
+        with self.assertRaisesRegex(release_notes_workflow.PackageWorkflowError,
+                                   "package-artifact-not-qualified"):
+            release_notes_workflow.validate_resend_package_artifact(
+                package_metadata, wrong_branch, expected_artifact_id=self.PROD_PACKAGE_ID,
+                result_artifact_id=self.PROD_RESULT_ID, operation="release",
+                environment="production", repository="Rayer/llm-wiki-cloud")
+
+        foreign_repository = copy.deepcopy(package_run)
+        foreign_repository["repository"]["full_name"] = "Rayer/other-repository"
+        with self.assertRaisesRegex(release_notes_workflow.PackageWorkflowError,
+                                   "package-artifact-not-qualified"):
+            release_notes_workflow.validate_resend_package_artifact(
+                package_metadata, foreign_repository, expected_artifact_id=self.PROD_PACKAGE_ID,
+                result_artifact_id=self.PROD_RESULT_ID, operation="release",
+                environment="production", repository="Rayer/llm-wiki-cloud")
+
+        production_history = copy.deepcopy(package_metadata)
+        production_history["name"] = (
+            "lwc-release-notes-2026.11.4-development-history-release-"
+            f"{self.PROD_RESULT_ID}-{package_run['id']}-{package_run['run_attempt']}"
+        )
+        with self.assertRaisesRegex(release_notes_workflow.PackageWorkflowError,
+                                   "package-artifact-not-qualified"):
+            release_notes_workflow.validate_resend_package_artifact(
+                production_history, package_run, expected_artifact_id=self.PROD_PACKAGE_ID,
+                result_artifact_id=self.PROD_RESULT_ID, operation="release",
+                environment="production", repository="Rayer/llm-wiki-cloud")
+
+    def test_runtime_completion_rejects_unbound_verify_operation_tail(self):
+        for label in ("wrong run identity", "boolean schema version", "unknown event after verification"):
+            with self.subTest(label=label), TemporaryDirectory(prefix="lwc478-r10-verify-tail-") as temp:
+                root = Path(temp)
+                result_directory, package_directory = root / "release", root / "package"
+                result_directory.mkdir()
+                package_directory.mkdir()
+                self.copy_result_carrier("production-final-14270957011.zip", result_directory)
+                self.copy_package_carrier(package_directory)
+                verified = self.run_official_cli(
+                    ROOT / "deploy/engine/release_notes_publish.py", [
+                        "--action", "verify-operation", "--directory", result_directory,
+                        "--environment", "prod", "--bucket", "synthetic-no-cloud",
+                        "--plan", result_directory / "plan.json", "--result-artifact-id", self.PROD_RESULT_ID,
+                        "--operation", "release", "--run-id", self.PROD_RUN_ID,
+                        "--run-attempt", str(self.PROD_RUN_ATTEMPT), "--product-status", "released",
+                    ])
+                self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
+                evidence_path = result_directory / "release-notes-evidence.json"
+                evidence = json.loads(evidence_path.read_bytes())
+                if label == "wrong run identity":
+                    evidence["stages"][-1]["run_id"] = "43955019305"
+                elif label == "boolean schema version":
+                    evidence["stages"][-1]["schema_version"] = True
+                else:
+                    evidence["stages"].append({"action": "unexpected-resend-stage", "status": "verified"})
+                evidence_path.write_bytes(canonical(evidence) + b"\n")
+                result_metadata, run, jobs, package_metadata, package_run = self.authentic_runtime_metadata()
+                with self.assertRaisesRegex(release_notes_workflow.PackageWorkflowError,
+                                           "runtime-completion-release-failure-invalid"):
+                    release_notes_workflow.validate_original_runtime_completion(
+                        result_metadata, run, jobs, package_metadata, package_run,
+                        result_directory=result_directory, package_directory=package_directory,
+                        expected_result_artifact_id=self.PROD_RESULT_ID,
+                        expected_package_artifact_id=self.PROD_PACKAGE_ID,
+                        environment="production", operation="release", repository="Rayer/llm-wiki-cloud")
+
+    def test_arbitrary_timestamp_does_not_replace_missing_original_publication_record(self):
+        with TemporaryDirectory(prefix="lwc478-r10-unbound-time-") as temp:
+            root = Path(temp)
+            result_directory, package_directory = root / "release", root / "package"
+            result_directory.mkdir()
+            package_directory.mkdir()
+            self.copy_result_carrier("production-final-14270957011.zip", result_directory)
+            self.copy_package_carrier(package_directory)
+            args = self.recovery_args(result_directory, package_directory, "")
+            args.published_at = "2026-11-16T21:00:38Z"
+            with patch.object(release_notes_publish, "GCSCLIStore", return_value=MemoryNotesStore()):
+                with self.assertRaisesRegex(release_notes.ReleaseNotesError,
+                                            "retained-publication-time-unavailable"):
+                    release_notes_publish.execute(args)
+            self.assertFalse((result_directory / "release-notes-publication.json").exists())
+            self.assertFalse((result_directory / "release-notes-operation.json").exists())
+
+    def test_stale_target_rejects_recovery_before_notes_upload(self):
+        with TemporaryDirectory(prefix="lwc478-r10-stale-target-") as temp:
+            root = Path(temp)
+            result_directory, package_directory = root / "release", root / "package"
+            result_directory.mkdir()
+            package_directory.mkdir()
+            self.copy_result_carrier("production-final-14270957011.zip", result_directory)
+            self.copy_package_carrier(package_directory)
+            proof_path = result_directory / "runtime-completion.json"
+            self.make_runtime_completion(result_directory, package_directory, proof_path)
+            current = self.target_observation(result_directory)
+            stale = copy.deepcopy(current)
+            stale["service_generation"] += 1
+            args = self.recovery_args(result_directory, package_directory, proof_path)
+            with patch.dict(os.environ, {"GITHUB_REPOSITORY": "Rayer/llm-wiki-cloud"}), \
+                    patch.object(release_notes_capture, "observe_service", side_effect=[current, stale]), \
+                    patch.object(release_notes_publish, "GCSCLIStore",
+                                 side_effect=AssertionError("Notes storage access is blocked in this fixture")):
+                with self.assertRaisesRegex(release_notes.ReleaseNotesError, "release-transition-stale"):
+                    release_notes_publish.execute(args)
+            self.assertFalse((result_directory / "release-notes-publication.json").exists())
+            self.assertTrue((result_directory / "release-notes-operation.json").is_file())
+
+    def test_recovery_caller_is_the_actual_production_wrapper_and_keeps_attempt_binding(self):
+        production = yaml.safe_load((ROOT / ".github/workflows/promote-production.yml").read_text())
+        reusable = production["jobs"]["release"]
+        self.assertEqual(reusable["uses"], "./.github/workflows/cd.yml")
+        self.assertEqual(reusable["secrets"], "inherit")
+
+        cd = yaml.safe_load((ROOT / ".github/workflows/cd.yml").read_text())
+        steps = cd["jobs"]["notes-resend"]["steps"]
+        verify_operation = next(step for step in steps
+                                if step.get("name") == "Verify the retained product operation succeeded")
+        validation = next(step for step in steps if step.get("id") == "runtime-completion")
+        package_validation = next(step for step in steps
+                                  if step.get("name") == "Inspect exact TPM Release Notes artifact")
+        package_download = next(step for step in steps
+                                if step.get("name") == "Download exact TPM Release Notes artifact")
+        provider_auth = next(step for step in steps
+                             if step.get("uses", "").startswith("google-github-actions/auth@"))
+        publisher = next(step for step in steps if step.get("name") == "Resend Notes without product deployment")
+        self.assertLess(steps.index(verify_operation), steps.index(package_validation))
+        self.assertLess(steps.index(package_validation), steps.index(package_download))
+        self.assertLess(steps.index(package_download), steps.index(validation))
+        self.assertLess(steps.index(validation), next(
+            index for index, step in enumerate(steps) if step.get("name") == "Resend Notes without product deployment"))
+        self.assertLess(steps.index(validation), steps.index(provider_auth))
+        self.assertLess(steps.index(provider_auth), steps.index(publisher))
+        self.assertIn(
+            "actions/runs/$ORIGINAL_RUN_ID/attempts/$ORIGINAL_RUN_ATTEMPT/jobs?per_page=100",
+            validation["run"])
+        self.assertIn("validate-original-runtime-completion", validation["run"])
+        self.assertIn('--environment "$RESULT_ENVIRONMENT"', package_validation["run"])
+        self.assertIn('--repository "$GITHUB_REPOSITORY"', package_validation["run"])
+        self.assertIn("--runtime-completion-evidence", publisher["run"])
+        self.assertNotIn("--published-at", publisher["run"])
 
 if __name__ == "__main__":
     unittest.main()

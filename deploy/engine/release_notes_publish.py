@@ -31,6 +31,19 @@ PUBLICATION_FIELDS = {
     "schema_version", "environment", "operation", "run_id", "run_attempt",
     "plan_sha256", "state_sha256", "result_sha256", "receipt_sha256", "published_at",
 }
+RUNTIME_COMPLETION_FIELDS = {
+    "schema_version", "source", "repository", "workflow_path", "workflow_ref", "workflow_sha",
+    "environment", "operation", "run_id", "run_attempt", "result_artifact_id", "result_artifact_name",
+    "result_artifact_digest", "package_artifact_id", "package_artifact_name", "package_artifact_digest", "package_run_id",
+    "package_run_attempt", "package_manifest_sha256", "package_files_sha256", "plan_sha256",
+    "state_sha256", "result_sha256", "receipts_sha256", "job_id", "job_name", "job_conclusion",
+    "runtime_step_name", "runtime_step_conclusion", "runtime_step_completed_at", "run_metadata_sha256",
+    "jobs_metadata_sha256", "result_metadata_sha256", "package_metadata_sha256", "package_run_metadata_sha256",
+}
+RUNTIME_COMPLETED_AT_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?Z$")
+
+
+RUNTIME_JOB_NAME = "release / release"
 
 
 class GCSCLIStore:
@@ -359,6 +372,127 @@ def write_publication_record(directory: Path, args, plan_bytes: bytes) -> tuple[
             temporary_path.unlink(missing_ok=True)
         raise release_notes.ReleaseNotesError("product_release", "publication-time-evidence-write-failed") from None
     return record, data
+
+
+def _read_runtime_completion_evidence(directory: Path, args, plan_bytes: bytes,
+                                    manifest: dict, content_files: dict[str, bytes]) -> tuple[dict | None, str | None]:
+    evidence_path = getattr(args, "runtime_completion_evidence", "")
+    if not evidence_path:
+        return None, None
+    publication_path = directory / "release-notes-publication.json"
+    operation_path = directory / "release-notes-operation.json"
+    if publication_path.is_symlink() or operation_path.is_symlink():
+        raise release_notes.ReleaseNotesError("product_release", "runtime-completion-evidence-invalid")
+    if publication_path.exists() and operation_path.exists():
+        raise release_notes.ReleaseNotesError("product_release", "runtime-completion-evidence-unneeded")
+    if args.action != "resend" or args.environment != "prod" or args.operation != "release" or \
+            args.product_status != "released" or args.result_artifact_id == "" or \
+            not os.environ.get("GITHUB_REPOSITORY"):
+        raise release_notes.ReleaseNotesError("product_release", "runtime-completion-scope-invalid")
+    path = Path(evidence_path)
+    if path.is_symlink() or not path.is_file():
+        raise release_notes.ReleaseNotesError("product_release", "runtime-completion-evidence-invalid")
+    try:
+        evidence_bytes = path.read_bytes()
+    except OSError:
+        raise release_notes.ReleaseNotesError("product_release", "runtime-completion-evidence-invalid") from None
+    evidence = release_notes._json_object(evidence_bytes, "product_release", 32 * 1024, RUNTIME_COMPLETION_FIELDS)
+    plan = release_notes._json_object(plan_bytes, "product_release", release_notes.MAX_OPERATION_ARTIFACT_BYTES)
+    state_bytes = release_notes_capture.read_bytes(directory / "state.json")
+    result_bytes = release_notes_capture.read_bytes(directory / "result.json")
+    receipt_bytes, component_receipts = operation_receipts(directory, plan)
+    receipts_sha256 = {}
+    if receipt_bytes is not None:
+        receipts_sha256["bff"] = release_notes.digest_bytes(receipt_bytes)
+    receipts_sha256.update({component: release_notes.digest_bytes(data)
+                            for component, data in component_receipts.items()})
+    manifest_path = Path(args.package_dir) / "release-notes-manifest.json"
+    try:
+        manifest_bytes = manifest_path.read_bytes()
+    except OSError:
+        raise release_notes.ReleaseNotesError("product_release", "runtime-completion-package-invalid") from None
+    package_files_sha256 = {locale: release_notes.digest_bytes(data)
+                            for locale, data in sorted(content_files.items())}
+    run_id = str(args.run_id)
+    attempt = int(args.run_attempt)
+    expected_result_name = f"lwc-result-production-{run_id}-{attempt}"
+    expected_repository = os.environ.get("GITHUB_REPOSITORY", "")
+    sha_values = (
+        evidence.get("plan_sha256"), evidence.get("state_sha256"), evidence.get("result_sha256"),
+        evidence.get("package_manifest_sha256"), evidence.get("run_metadata_sha256"),
+        evidence.get("jobs_metadata_sha256"), evidence.get("result_metadata_sha256"),
+        evidence.get("package_metadata_sha256"), evidence.get("package_run_metadata_sha256"),
+    )
+    if (set(evidence) != RUNTIME_COMPLETION_FIELDS or evidence.get("schema_version") != 1 or
+            evidence.get("source") != "github-actions-run-attempt-jobs" or
+            evidence.get("repository") != expected_repository or
+            evidence.get("workflow_path") != ".github/workflows/promote-production.yml" or
+            evidence.get("workflow_ref") != "refs/heads/main" or
+            evidence.get("workflow_sha") != plan.get("executor_sha") or plan.get("branch") != "main" or
+            evidence.get("environment") != "production" or evidence.get("operation") != "release" or
+            evidence.get("run_id") != run_id or type(evidence.get("run_attempt")) is not int or
+            evidence.get("run_attempt") != attempt or
+            evidence.get("result_artifact_id") != args.result_artifact_id or
+            evidence.get("result_artifact_name") != expected_result_name or
+            not isinstance(evidence.get("result_artifact_digest"), str) or
+            re.fullmatch(r"sha256:[0-9a-f]{64}", evidence["result_artifact_digest"]) is None or
+            evidence.get("package_artifact_id") != args.artifact_id or
+            evidence.get("package_artifact_name") != args.artifact_name or
+            evidence.get("package_artifact_digest") != args.artifact_digest or
+            args.artifact_digest != args.artifact_metadata_digest or
+            evidence.get("package_run_id") != args.package_run_id or
+            evidence.get("package_run_attempt") != args.package_run_attempt or
+            evidence.get("plan_sha256") != release_notes.digest_bytes(plan_bytes) or
+            evidence.get("state_sha256") != release_notes.digest_bytes(state_bytes) or
+            evidence.get("result_sha256") != release_notes.digest_bytes(result_bytes) or
+            evidence.get("receipts_sha256") != receipts_sha256 or
+            evidence.get("package_manifest_sha256") != release_notes.digest_bytes(manifest_bytes) or
+            evidence.get("package_files_sha256") != package_files_sha256 or
+            manifest.get("release_plan_sha256") != release_notes.digest_bytes(plan_bytes) or
+            evidence.get("job_name") != RUNTIME_JOB_NAME or
+            not isinstance(evidence.get("job_id"), str) or re.fullmatch(r"[1-9][0-9]*", evidence["job_id"]) is None or
+            evidence.get("job_conclusion") not in ("success", "failure") or
+            evidence.get("runtime_step_name") != "Execute bounded runtime or explicit recovery" or
+            evidence.get("runtime_step_conclusion") != "success" or
+            not isinstance(evidence.get("runtime_step_completed_at"), str) or
+            not RUNTIME_COMPLETED_AT_RE.fullmatch(evidence["runtime_step_completed_at"]) or
+            not release_notes._valid_timestamp(evidence["runtime_step_completed_at"]) or
+            any(not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None for value in sha_values)):
+        raise release_notes.ReleaseNotesError("product_release", "runtime-completion-evidence-invalid")
+    return evidence, release_notes.digest_bytes(evidence_bytes)
+
+
+def recover_release_operation_evidence(directory: Path, args, plan_bytes: bytes, manifest: dict,
+                                       content_files: dict[str, bytes]) -> tuple[dict | None, str | None, bool]:
+    """Recover only missing release witnesses from bound runtime time and fresh target readback."""
+    if getattr(args, "runtime_completion_evidence", "") and (
+            release_notes.HISTORICAL_MANIFEST_FIELDS <= set(manifest) or
+            release_notes.is_historical_package_artifact_name(args.artifact_name)):
+        raise release_notes.ReleaseNotesError("product_release", "runtime-completion-package-identity-invalid")
+    evidence, evidence_sha256 = _read_runtime_completion_evidence(
+        directory, args, plan_bytes, manifest, content_files)
+    if evidence is None:
+        return None, None, False
+    sidecar_path = directory / "release-notes-operation.json"
+    publication_path = directory / "release-notes-publication.json"
+    publication_missing = not publication_path.exists()
+    try:
+        validate_retained_operation(directory, args)
+        if sidecar_path.exists():
+            marker, _ = operation_marker(directory, args)
+        else:
+            marker, _ = release_notes_capture.capture(directory, args.operation, args.run_id, args.run_attempt)
+        if marker is None or not release_notes_capture.active_marker_matches(
+                directory, args.operation, args.run_id, args.run_attempt, marker):
+            raise release_notes.ReleaseNotesError("service_readback", "release-transition-stale")
+        if publication_missing:
+            args.published_at = evidence["runtime_step_completed_at"]
+            write_publication_record(directory, args, plan_bytes)
+    except release_notes.ReleaseNotesError:
+        raise
+    except OSError:
+        raise release_notes.ReleaseNotesError("service_readback", "target-readback-unavailable") from None
+    return evidence, evidence_sha256, publication_missing
 
 
 def record_capture_failure(directory: Path, *, environment: str, operation: str, run_id: str,
@@ -709,6 +843,9 @@ def execute(args) -> dict:
     product_version = ""
     marker = None
     published_at = args.published_at
+    runtime_completion = None
+    runtime_completion_sha256 = None
+    recovered_runtime_time = False
     try:
         if args.action == "record-publication":
             publication, publication_bytes = write_publication_record(directory, args, plan_bytes)
@@ -745,6 +882,9 @@ def execute(args) -> dict:
                     raise release_notes.ReleaseNotesError("service_readback", "historical-operation-sidecar-present")
             elif release_notes.is_historical_package_artifact_name(args.artifact_name):
                 raise release_notes.ReleaseNotesError("validate", "historical-provenance-required")
+            if args.action == "resend":
+                runtime_completion, runtime_completion_sha256, recovered_runtime_time = \
+                    recover_release_operation_evidence(directory, args, plan_bytes, manifest, content_files)
             store = GCSCLIStore(args.bucket)
             if args.action in ("publish", "resend"):
                 publication, publication_bytes = publication_record(directory, args, plan_bytes)
@@ -753,7 +893,8 @@ def execute(args) -> dict:
                     publication_time_source = "historical-manifest"
                 elif publication is not None:
                     published_at = publication["published_at"]
-                    publication_time_source = "retained-release-operation"
+                    publication_time_source = ("runtime-step-completion" if recovered_runtime_time else
+                                               "retained-release-operation")
                 else:
                     raise release_notes.ReleaseNotesError("product_release", "retained-publication-time-unavailable")
             stage = "content_upload"
@@ -783,6 +924,8 @@ def execute(args) -> dict:
             operation_plan = release_notes._json_object(plan_bytes, "product_release", release_notes.MAX_OPERATION_ARTIFACT_BYTES)
             if args.action == "resend" and marker is not None and not release_notes_capture.active_marker_matches(
                     directory, args.operation, args.run_id, args.run_attempt, marker):
+                if runtime_completion is not None:
+                    raise release_notes.ReleaseNotesError("service_readback", "release-transition-stale")
                 marker = None
             bff_reused = (marker is not None and args.operation == "release" and
                           isinstance(operation_plan.get("selected"), list) and
@@ -838,6 +981,9 @@ def execute(args) -> dict:
                 "historical_package_artifact_name": args.artifact_name if historical_package else None,
                 "historical_result_artifact_id": args.result_artifact_id if historical_package else None,
             }
+            if runtime_completion is not None:
+                evidence["runtime_completion_evidence_sha256"] = runtime_completion_sha256
+                evidence["runtime_step_completed_at"] = runtime_completion["runtime_step_completed_at"]
         elif args.action == "skip-before-release":
             evidence = {
                 "schema_version": 1, "action": args.action, "environment": args.environment,
@@ -918,6 +1064,9 @@ def execute(args) -> dict:
             "owner_choice_required": True, "automatic_skip": False,
             "decision_actor": args.decision_actor or None, "decision_time": args.decision_time or None,
         }
+        if runtime_completion is not None:
+            evidence["runtime_completion_evidence_sha256"] = runtime_completion_sha256
+            evidence["runtime_step_completed_at"] = runtime_completion["runtime_step_completed_at"]
         write_evidence(directory, evidence)
         raise
     except (OSError, ValueError, TypeError):
@@ -930,6 +1079,9 @@ def execute(args) -> dict:
             "next_actions": ["retry", "skip", "stop"], "owner_choice_required": True,
             "automatic_skip": False,
         }
+        if runtime_completion is not None:
+            evidence["runtime_completion_evidence_sha256"] = runtime_completion_sha256
+            evidence["runtime_step_completed_at"] = runtime_completion["runtime_step_completed_at"]
         write_evidence(directory, evidence)
         raise release_notes.ReleaseNotesError(stage, "stage-input-invalid") from None
 
@@ -948,6 +1100,7 @@ def parser():
     result.add_argument("--artifact-name", default="")
     result.add_argument("--package-run-id", default="")
     result.add_argument("--package-run-attempt", default="")
+    result.add_argument("--runtime-completion-evidence", default="")
     result.add_argument("--plan", required=True)
     result.add_argument("--operation", required=True, choices=sorted(release_notes.TRANSITION_OPS))
     result.add_argument("--run-id", required=True)
