@@ -2298,6 +2298,7 @@ type quotaCloudRunExecution struct {
 	ReservationID string
 	AttemptID     string
 	Status        string
+	Full          bool
 }
 
 func newQuotaCloudRunFixture() *quotaCloudRunFixture {
@@ -2318,6 +2319,12 @@ func (f *quotaCloudRunFixture) reservationID(executionID string) string {
 func (f *quotaCloudRunFixture) setStatus(executionID, state string) {
 	f.mu.Lock()
 	f.executions[executionID].Status = state
+	f.mu.Unlock()
+}
+
+func (f *quotaCloudRunFixture) setFull(executionID string) {
+	f.mu.Lock()
+	f.executions[executionID].Full = true
 	f.mu.Unlock()
 }
 
@@ -2414,20 +2421,22 @@ func (f *quotaCloudRunFixture) roundTrip(request *http.Request) (*http.Response,
 }
 
 func (f *quotaCloudRunFixture) apiExecution(execution *quotaCloudRunExecution) map[string]any {
+	env := []any{
+		map[string]string{"name": "USER_ID", "value": execution.UserID},
+		map[string]string{"name": "PROJECT_ID", "value": execution.ProjectID},
+		map[string]string{"name": "TASK_TYPE", "value": "pipeline"},
+		map[string]string{"name": "PIPELINE_RESERVATION_ID", "value": execution.ReservationID},
+	}
+	if execution.Full {
+		env = append(env, map[string]string{"name": "CLEAN_REBUILD", "value": "true"})
+	}
+	if execution.AttemptID != "" {
+		env = append(env, map[string]string{"name": "PIPELINE_ATTEMPT_ID", "value": execution.AttemptID})
+	}
 	return map[string]any{
 		"name":             "projects/test/locations/local/jobs/job/executions/" + execution.ID,
 		"completionStatus": execution.Status,
-		"template": map[string]any{"containers": []any{map[string]any{"env": append([]any{
-			map[string]string{"name": "USER_ID", "value": execution.UserID},
-			map[string]string{"name": "PROJECT_ID", "value": execution.ProjectID},
-			map[string]string{"name": "TASK_TYPE", "value": "pipeline"},
-			map[string]string{"name": "PIPELINE_RESERVATION_ID", "value": execution.ReservationID},
-		}, func() []any {
-			if execution.AttemptID == "" {
-				return nil
-			}
-			return []any{map[string]string{"name": "PIPELINE_ATTEMPT_ID", "value": execution.AttemptID}}
-		}()...)}}},
+		"template":         map[string]any{"containers": []any{map[string]any{"env": env}}},
 	}
 }
 

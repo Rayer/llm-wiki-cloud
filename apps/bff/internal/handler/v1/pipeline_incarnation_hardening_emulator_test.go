@@ -272,6 +272,29 @@ func TestQuotaReservationAttemptReaderUsesExactArchiveEmulator(t *testing.T) {
 	if _, found, _, err := scopedfirestore.GetQuotaReservationForAttemptSnapshotFromFirestore(ctx, fsClient.Raw(), reservationID, attemptA, "foreign", "project"); err != nil || found {
 		t.Fatalf("foreign owner read found=%t err=%v; want unproven", found, err)
 	}
+	legacyManualID := "legacy-full-manual"
+	if _, err := scopedfirestore.Collection(fsClient.Raw(), "pipeline_quota_reservations").Doc(legacyManualID).Set(ctx, map[string]any{
+		"user_id": "owner", "project_id": "project", "attempt_id": legacyManualID, "trigger": "manual",
+		"intent_status": "succeeded", "mode": "full", "settlement_status": "charged",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	legacyManual, found, _, err := scopedfirestore.GetQuotaReservationForAttemptSnapshotFromFirestore(ctx, fsClient.Raw(), legacyManualID, "", "owner", "project")
+	if err != nil || !found || legacyManual.AttemptID != legacyManualID || legacyManual.Mode != pipelinequota.ModeFull || legacyManual.SettlementStatus != "charged" {
+		t.Fatalf("legacy full/manual reservation=%+v found=%t err=%v; want unique stable-ID match despite intent status", legacyManual, found, err)
+	}
+	missingManualAttemptID := "legacy-manual-without-incarnation"
+	if _, err := scopedfirestore.Collection(fsClient.Raw(), "pipeline_quota_reservations").Doc(missingManualAttemptID).Set(ctx, map[string]any{
+		"user_id": "owner", "project_id": "project", "trigger": "manual", "intent_status": "succeeded", "mode": "full", "settlement_status": "charged",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, _, err := scopedfirestore.GetQuotaReservationForAttemptSnapshotFromFirestore(ctx, fsClient.Raw(), missingManualAttemptID, "", "owner", "project"); err != nil || found {
+		t.Fatalf("non-unique manual reservation without attempt found=%t err=%v; want unproven", found, err)
+	}
+	if _, found, _, err := scopedfirestore.GetQuotaReservationForAttemptSnapshotFromFirestore(ctx, fsClient.Raw(), reservationID, "", "owner", "project"); err != nil || found {
+		t.Fatalf("distinct scheduled reservation without execution attempt found=%t err=%v; want unproven", found, err)
+	}
 	if _, err := reservation.Collection("attempts").Doc("malformed").Set(ctx, map[string]any{"user_id": "owner", "project_id": "project", "attempt_id": attemptA}); err != nil {
 		t.Fatal(err)
 	}
@@ -335,6 +358,40 @@ func TestHistoricalCloudExecutionStatusAndEventUseArchivedAttemptEmulator(t *tes
 	statusB, gotReservationB, gotAttemptB, err := h.pipelineExecutionStatusForOwnerWithIncarnation(ctx, executionB, userID, projectID)
 	if err != nil || statusB == nil || gotReservationB != reservationID || gotAttemptB != attemptB || statusB.QuotaSettlement != "pending" {
 		t.Fatalf("current B Cloud Run status=%+v reservation=%q attempt=%q err=%v; want live pending settlement", statusB, gotReservationB, gotAttemptB, err)
+	}
+
+	const manualReservationID = "legacy-manual-full"
+	manualExecutionID := fixture.addExecution(userID, projectID, manualReservationID, "SUCCEEDED")
+	fixture.setFull(manualExecutionID)
+	manualReservation := scopedfirestore.Collection(fsClient.Raw(), "pipeline_quota_reservations").Doc(manualReservationID)
+	if _, err := manualReservation.Set(ctx, map[string]any{
+		"user_id": userID, "project_id": projectID, "attempt_id": manualReservationID, "execution_id": manualExecutionID,
+		"trigger": "manual", "budget_class": "manual", "intent_status": "succeeded", "mode": "full", "settlement_status": "charged",
+	}); err != nil {
+		t.Fatalf("seed legacy full/manual reservation: %v", err)
+	}
+	manualStatus, gotManualReservation, gotManualAttempt, err := h.pipelineExecutionStatusForOwnerWithIncarnation(ctx, manualExecutionID, userID, projectID)
+	if err != nil || manualStatus == nil || gotManualReservation != manualReservationID || gotManualAttempt != "" || manualStatus.QuotaSettlement != "charged" {
+		t.Fatalf("legacy full/manual Cloud Run status=%+v reservation=%q attempt=%q err=%v; want unique legacy settlement", manualStatus, gotManualReservation, gotManualAttempt, err)
+	}
+
+	missingAttemptExecutionID := fixture.addExecution(userID, projectID, reservationID, "RUNNING")
+	missingAttemptStatus, gotMissingReservation, gotMissingAttempt, err := h.pipelineExecutionStatusForOwnerWithIncarnation(ctx, missingAttemptExecutionID, userID, projectID)
+	if err != nil || missingAttemptStatus == nil || gotMissingReservation != reservationID || gotMissingAttempt != "" || missingAttemptStatus.QuotaSettlement != "unknown" {
+		t.Fatalf("distinct scheduled execution without attempt status=%+v reservation=%q attempt=%q err=%v; want unknown settlement", missingAttemptStatus, gotMissingReservation, gotMissingAttempt, err)
+	}
+
+	events, err := h.readCloudPipelineEventSnapshot(ctx, userID, projectID)
+	if err != nil {
+		t.Fatalf("read Cloud Run event snapshot with legacy/manual and scheduled executions: %v", err)
+	}
+	manualEvent, ok := events.records[manualExecutionID]
+	if !ok || manualEvent.reservationMissing || manualEvent.attemptID != manualReservationID || manualEvent.trigger != string(pipelinequota.TriggerManual) || manualEvent.mode != string(pipelinequota.ModeFull) || manualEvent.quota != "charged" {
+		t.Fatalf("legacy full/manual event=%+v found=%t; want exact stable identity and charged settlement", manualEvent, ok)
+	}
+	missingAttemptEvent, ok := events.records[missingAttemptExecutionID]
+	if !ok || !missingAttemptEvent.reservationMissing || missingAttemptEvent.attemptID != "" {
+		t.Fatalf("distinct scheduled event without attempt=%+v found=%t; want identity unproven", missingAttemptEvent, ok)
 	}
 }
 

@@ -52,12 +52,13 @@ func TestLocalStatusProjectsExactArchivedQuotaAttemptEmulator(t *testing.T) {
 		if err := manager.Close(cleanupCtx); err != nil {
 			t.Errorf("close local status manager: %v", err)
 		}
-		for _, id := range []string{"execution-a", "execution-b"} {
+		for _, id := range []string{"execution-a", "execution-b", "execution-manual"} {
 			_, _ = scopedfirestore.Collection(fsClient.Raw(), "executions").Doc(id).Delete(cleanupCtx)
 		}
 		reservationRef := scopedfirestore.Collection(fsClient.Raw(), "pipeline_quota_reservations").Doc("daily-reservation")
 		_, _ = reservationRef.Collection("attempts").Doc("attempt-a").Delete(cleanupCtx)
 		_, _ = reservationRef.Delete(cleanupCtx)
+		_, _ = scopedfirestore.Collection(fsClient.Raw(), "pipeline_quota_reservations").Doc("manual-reservation").Delete(cleanupCtx)
 		_ = storageClient.Close()
 		_ = fsClient.Close()
 	})
@@ -91,5 +92,21 @@ func TestLocalStatusProjectsExactArchivedQuotaAttemptEmulator(t *testing.T) {
 	statusB, reservationB, gotAttemptB, err := manager.StatusWithIncarnation(ctx, userID, projectID, "execution-b")
 	if err != nil || statusB == nil || reservationB != reservationID || gotAttemptB != attemptB || statusB.QuotaSettlement != "pending" {
 		t.Fatalf("local current B status=%+v reservation=%q attempt=%q err=%v; want live pending settlement", statusB, reservationB, gotAttemptB, err)
+	}
+	if _, err := executions.Doc("execution-manual").Set(ctx, map[string]any{
+		"user_id": userID, "project_id": projectID, "execution_id": "execution-manual", "native": true, "task_type": "pipeline",
+		"status": "SUCCEEDED", "started_at": time.Now().UTC(), "quota_reservation_id": "manual-reservation",
+	}); err != nil {
+		t.Fatalf("seed legacy local manual/full execution: %v", err)
+	}
+	if _, err := scopedfirestore.Collection(fsClient.Raw(), "pipeline_quota_reservations").Doc("manual-reservation").Set(ctx, map[string]any{
+		"user_id": userID, "project_id": projectID, "attempt_id": "manual-reservation", "trigger": "manual",
+		"intent_status": "succeeded", "mode": "full", "settlement_status": "charged",
+	}); err != nil {
+		t.Fatalf("seed legacy local manual/full reservation: %v", err)
+	}
+	manualStatus, manualReservation, manualAttempt, err := manager.StatusWithIncarnation(ctx, userID, projectID, "execution-manual")
+	if err != nil || manualStatus == nil || manualReservation != "manual-reservation" || manualAttempt != "" || manualStatus.QuotaSettlement != "charged" {
+		t.Fatalf("legacy local manual/full status=%+v reservation=%q attempt=%q err=%v; want exact stable-ID settlement", manualStatus, manualReservation, manualAttempt, err)
 	}
 }

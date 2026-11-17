@@ -66,6 +66,7 @@ func TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure(t *testin
 	if storageEndpoint == "" || firestoreEndpoint == "" {
 		t.Skip("requires loopback STORAGE_EMULATOR_HOST and FIRESTORE_EMULATOR_HOST")
 	}
+	workerFirestoreEndpoint := emulatorHostPort(t, firestoreEndpoint)
 	firestoreProxy := newGatedTCPProxy(t, emulatorHostPort(t, firestoreEndpoint))
 	t.Setenv("FIRESTORE_EMULATOR_HOST", firestoreProxy.Address())
 
@@ -999,8 +1000,10 @@ func TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure(t *testin
 		t.Fatalf("create proxy-backed native finish Storage client: %v", err)
 	}
 	t.Setenv("STORAGE_EMULATOR_HOST", storageEndpoint)
+	workerEnvProbePath := filepath.Join(t.TempDir(), "worker-emulator-env.txt")
+	workerWithEnvProbe := newLocalPipelineWorkerEnvProbe(t, worker, workerEnvProbePath)
 	manager, err = localpipeline.New(localpipeline.Config{
-		Firestore: fsClient.Raw(), Storage: raceStorageClient, Worker: worker, Stderr: workerStderr,
+		Firestore: fsClient.Raw(), Storage: raceStorageClient, Worker: workerWithEnvProbe, Stderr: workerStderr,
 		Project: project, Bucket: bucket, Database: database, Scope: scope, WorkDir: t.TempDir(),
 		PipelineConfigPath: generatedConfigPath, PipelineBindingsPath: privateBindingsPath,
 		ProfileResolverURL: profileResolverURL,
@@ -1015,10 +1018,17 @@ func TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure(t *testin
 	}
 	staleWorkspace := t.TempDir()
 	t.Setenv("WORKSPACE_DIR", staleWorkspace)
+	// fsClient was constructed while FIRESTORE_EMULATOR_HOST pointed at the
+	// proxy. newWorkerCommand inherits the current environment, so route only
+	// the real Worker directly to the owned emulator; Manager.finish still uses
+	// the already-created proxy-backed Firestore client.
+	t.Setenv("FIRESTORE_EMULATOR_HOST", workerFirestoreEndpoint)
+	t.Logf("FAULT_BOUNDARY_ROUTE manager_firestore=%s worker_firestore=%s worker_scope=%s", firestoreProxy.Address(), os.Getenv("FIRESTORE_EMULATOR_HOST"), scope)
 	failedID := postLocalPipelineRun(t, ctx, server.Client(), server.URL, token, staleFinishProject, http.StatusAccepted)
 	readyPath := filepath.Join(staleWorkspace, "fixture-outage-ready")
 	releasePath := filepath.Join(staleWorkspace, "fixture-outage-release")
 	waitForLocalFixtureFile(t, ctx, readyPath)
+	assertLocalPipelineWorkerEmulatorEnv(t, workerEnvProbePath, workerFirestoreEndpoint, scope)
 	staleRawObject := localcloud.Scope(scope).ObjectPrefix() + storeapi.ProjectObjectPath(userID, staleFinishProject, "raw/fixture-outage.md")
 	if err := cloudClient.Bucket(bucket).Object(staleRawObject).Delete(ctx); err != nil {
 		t.Fatalf("remove failure marker after native materialization: %v", err)
@@ -1032,12 +1042,17 @@ func TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure(t *testin
 	if err := firestoreProxy.WaitPaused(ctx); err != nil {
 		t.Fatalf("wait for actual native finish transaction barrier: %v", err)
 	}
-	t.Setenv("FIRESTORE_EMULATOR_HOST", emulatorHostPort(t, firestoreEndpoint))
+	leaseObjectName := localcloud.Scope(scope).ObjectPrefix() + storeapi.ProjectObjectPath(userID, staleFinishProject, generation.LeasePath)
+	if _, err := cloudClient.Bucket(bucket).Object(leaseObjectName).Attrs(ctx); !errors.Is(err, cloudstorage.ErrObjectNotExist) {
+		t.Fatalf("native finish barrier fired before Worker second-fence lease release: attrs error=%v", err)
+	}
+	t.Logf("FAULT_BOUNDARY_CONFIRMED execution=%s child_finished_before_manager_finish=true second_fence_lease_absent=true", failedID)
 	reconciliationFS, err = scopedfirestore.NewClientWithDatabase(project, database, "", "")
 	if err != nil {
 		t.Fatalf("create direct loopback Firestore reconciler client: %v", err)
 	}
-	t.Setenv("FIRESTORE_EMULATOR_HOST", firestoreProxy.Address())
+	// Keep the Worker environment on the direct emulator for the same-input
+	// retry. Existing Manager Firestore clients remain bound to the proxy.
 	reconciler, err := localpipeline.New(localpipeline.Config{
 		Firestore: reconciliationFS.Raw(), Storage: storageClient, Worker: worker,
 		Project: project, Bucket: bucket, Database: database, Scope: scope, WorkDir: t.TempDir(),
@@ -1080,7 +1095,7 @@ func TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure(t *testin
 		t.Fatalf("resumed stale finish changed reconciled lock running=%v err=%v, want released", running, err)
 	}
 	manager, err = localpipeline.New(localpipeline.Config{
-		Firestore: fsClient.Raw(), Storage: storageClient, Worker: worker, Stderr: workerStderr,
+		Firestore: fsClient.Raw(), Storage: storageClient, Worker: workerWithEnvProbe, Stderr: workerStderr,
 		Project: project, Bucket: bucket, Database: database, Scope: scope, WorkDir: t.TempDir(),
 		PipelineConfigPath: generatedConfigPath, PipelineBindingsPath: privateBindingsPath,
 		ProfileResolverURL: profileResolverURL,
@@ -1096,11 +1111,15 @@ func TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure(t *testin
 	if err := os.Remove(releasePath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("reset retry release signal: %v", err)
 	}
+	if err := os.Remove(workerEnvProbePath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("reset Worker emulator environment probe: %v", err)
+	}
 	if _, err := staleFinishStorage.WriteBytes(ctx, []byte("same failure input"), "raw/fixture-outage.md"); err != nil {
 		t.Fatalf("restore same failed input for retry: %v", err)
 	}
 	retryFailedID := postLocalPipelineRun(t, ctx, server.Client(), server.URL, token, staleFinishProject, http.StatusAccepted)
 	waitForLocalFixtureFile(t, ctx, readyPath)
+	assertLocalPipelineWorkerEmulatorEnv(t, workerEnvProbePath, workerFirestoreEndpoint, scope)
 	if err := os.WriteFile(releasePath, []byte("release"), 0o600); err != nil {
 		t.Fatalf("release same-input retry failure: %v", err)
 	}
@@ -2034,4 +2053,31 @@ func (localPipelineCitationTransport) RoundTrip(request *http.Request) (*http.Re
 		Body:       io.NopCloser(bytes.NewReader(responseBody)),
 		Request:    request,
 	}, nil
+}
+
+func newLocalPipelineWorkerEnvProbe(t *testing.T, worker, outputPath string) string {
+	t.Helper()
+	wrapperPath := filepath.Join(t.TempDir(), "olw_worker_env_probe")
+	script := "#!/bin/sh\nprintf 'FIRESTORE_EMULATOR_HOST=%s\\nLOCAL_CLOUD_SCOPE=%s\\n' \"$FIRESTORE_EMULATOR_HOST\" \"$LOCAL_CLOUD_SCOPE\" >> " + shellSingleQuote(outputPath) + "\nexec " + shellSingleQuote(worker) + " \"$@\"\n"
+	if err := os.WriteFile(wrapperPath, []byte(script), 0o700); err != nil {
+		t.Fatalf("write Worker environment probe wrapper: %v", err)
+	}
+	return wrapperPath
+}
+
+func assertLocalPipelineWorkerEmulatorEnv(t *testing.T, path, firestoreEndpoint, scope string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read actual Worker environment probe: %v", err)
+	}
+	want := []string{"FIRESTORE_EMULATOR_HOST=" + firestoreEndpoint, "LOCAL_CLOUD_SCOPE=" + scope}
+	got := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("actual Worker Firestore/scope environment=%q; want %q", got, want)
+	}
+}
+
+func shellSingleQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }

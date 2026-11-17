@@ -1678,7 +1678,11 @@ func GetQuotaReservationForAttemptSnapshotFromFirestore(ctx context.Context, fs 
 		reservation := quotaReservationFromData(reservationID, live.Data())
 		attemptMatches := reservation.AttemptID == attemptID
 		if legacyLookup {
-			attemptMatches = (reservation.AttemptID == "" || reservation.AttemptID == reservation.ID) && reservation.IntentStatus == ""
+			// Older executions have no attempt env. Their stable-ID incarnation
+			// remains exact even when IntentStatus is set; empty-ID legacy fallback
+			// keeps the older confirmed-only rule and excludes scheduled work.
+			attemptMatches = reservation.AttemptID == reservation.ID ||
+				reservation.AttemptID == "" && reservation.IntentStatus == "" && reservation.Trigger != pipelinequota.TriggerScheduledDaily
 		}
 		if attemptMatches && reservation.UserID == userID && reservation.ProjectID == projectID {
 			return reservation, true, live.UpdateTime, nil
