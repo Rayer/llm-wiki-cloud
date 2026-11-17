@@ -570,6 +570,61 @@ def validate_resend_package_artifact(metadata: dict, run: dict, *, expected_arti
     return result
 
 
+def _verified_operation_append_matches(stage: dict, stages: list[dict], *, plan: dict,
+                                      plan_bytes: bytes,
+                                      result_bytes: bytes, receipt_bytes: bytes | None,
+                                      component_receipts: dict[str, bytes],
+                                      result_artifact_id: str, operation: str,
+                                      run_id: str, run_attempt: int) -> bool:
+    """Accept only the exact successful verify-operation event appended by the resend caller."""
+    selected = plan.get("selected")
+    identities = plan.get("identities")
+    if (not isinstance(selected, list) or not isinstance(identities, dict) or
+            any(component not in identities for component in selected)):
+        return False
+    identity_sha256 = hashlib.sha256(json.dumps(
+        {component: identities[component] for component in selected},
+        sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    selected_receipts = {}
+    if "bff" in selected and isinstance(receipt_bytes, bytes):
+        selected_receipts["bff"] = hashlib.sha256(receipt_bytes).hexdigest()
+    selected_receipts.update({component: hashlib.sha256(component_receipts[component]).hexdigest()
+                              for component in ("frontend", "worker")
+                              if component in selected and isinstance(component_receipts.get(component), bytes)})
+    receipt_components = set(selected) & {"bff", "frontend", "worker"}
+    if set(selected_receipts) != receipt_components:
+        return False
+    if len(selected_receipts) == 1:
+        receipt_sha256 = next(iter(selected_receipts.values()))
+    else:
+        receipt_sha256 = hashlib.sha256(json.dumps(
+            selected_receipts, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    expected = {
+        "schema_version": 1,
+        "action": "verify-operation",
+        "environment": "prod",
+        "stage": "product_release",
+        "status": "verified",
+        "product_status": "released",
+        "plan_sha256": hashlib.sha256(plan_bytes).hexdigest(),
+        "result_artifact_id": result_artifact_id,
+        "operation": operation,
+        "run_id": run_id,
+        "run_attempt": run_attempt,
+        "result_sha256": hashlib.sha256(result_bytes).hexdigest(),
+        "identity_sha256": identity_sha256,
+        "receipt_sha256": receipt_sha256,
+    }
+    expected_fields = set(expected) | {"event_sequence", "stage_attempt", "recorded_at"}
+    return (
+        set(stage) == expected_fields and
+        all(stage.get(key) == value for key, value in expected.items()) and
+        type(stage.get("event_sequence")) is int and stage["event_sequence"] == len(stages) and
+        type(stage.get("stage_attempt")) is int and stage["stage_attempt"] == 1 and
+        _valid_timestamp(stage.get("recorded_at"))
+    )
+
+
 def validate_original_runtime_completion(result_metadata: dict, run: dict, jobs_response: dict,
                                          package_metadata: dict, package_run: dict, *,
                                          result_directory: Path, package_directory: Path,
@@ -709,7 +764,21 @@ def validate_original_runtime_completion(result_metadata: dict, run: dict, jobs_
                 stage.get("artifact_digest") == package_binding["artifact_digest"] and
                 stage.get("content_sha256") == package_files_sha256]
     publication_failures = [stage for stage in stages if stage.get("action") == "record-publication"]
-    if (not prepares or not publication_failures or stages[-1] is not publication_failures[-1] or
+    original_publication_failure = publication_failures[-1] if publication_failures else None
+    verify_operation_events = [stage for stage in stages if stage.get("action") == "verify-operation"]
+    original_failure_is_terminal = (original_publication_failure is not None and
+                                    stages[-1] is original_publication_failure and not verify_operation_events)
+    verified_operation_was_appended = (
+        original_publication_failure is not None and len(stages) >= 2 and
+        stages[-2] is original_publication_failure and len(verify_operation_events) == 1 and
+        stages[-1] is verify_operation_events[0] and
+        _verified_operation_append_matches(
+            verify_operation_events[0], stages, plan=plan, plan_bytes=plan_bytes,
+            result_bytes=result_bytes, receipt_bytes=receipt_bytes,
+            component_receipts=component_receipts, result_artifact_id=expected_result_artifact_id,
+            operation=operation, run_id=run_id, run_attempt=int(attempt)))
+    if (not prepares or not publication_failures or
+            not (original_failure_is_terminal or verified_operation_was_appended) or
             publication_failures[-1].get("environment") != "prod" or
             publication_failures[-1].get("status") != "failed" or
             publication_failures[-1].get("stage") != "index_update" or
