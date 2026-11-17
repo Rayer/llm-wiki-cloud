@@ -2526,7 +2526,7 @@ class R10NativeReceiptRecoveryTests(unittest.TestCase):
         jobs = {
             "total_count": 1,
             "jobs": [{
-                "id": 2001, "name": "release", "run_id": int(self.PROD_RUN_ID),
+                "id": 2001, "name": "release / release", "run_id": int(self.PROD_RUN_ID),
                 "run_attempt": self.PROD_RUN_ATTEMPT, "status": "completed", "conclusion": "failure",
                 "steps": [{"name": "Execute bounded runtime or explicit recovery", "status": "completed",
                            "conclusion": "success", "completed_at": completed_at}]
@@ -2718,6 +2718,17 @@ class R10NativeReceiptRecoveryTests(unittest.TestCase):
                                        "runtime-completion-release-job-invalid"):
                 release_notes_workflow.validate_original_runtime_completion(
                     result_metadata, run, wrong_attempt_jobs, package_metadata, package_run,
+                    result_directory=result_directory, package_directory=package_directory,
+                    expected_result_artifact_id=self.PROD_RESULT_ID,
+                    expected_package_artifact_id=self.PROD_PACKAGE_ID,
+                    environment="production", operation="release", repository="Rayer/llm-wiki-cloud")
+
+            wrong_job_name = copy.deepcopy(jobs)
+            wrong_job_name["jobs"][0]["name"] = "release"
+            with self.assertRaisesRegex(release_notes_workflow.PackageWorkflowError,
+                                       "runtime-completion-release-job-invalid"):
+                release_notes_workflow.validate_original_runtime_completion(
+                    result_metadata, run, wrong_job_name, package_metadata, package_run,
                     result_directory=result_directory, package_directory=package_directory,
                     expected_result_artifact_id=self.PROD_RESULT_ID,
                     expected_package_artifact_id=self.PROD_PACKAGE_ID,

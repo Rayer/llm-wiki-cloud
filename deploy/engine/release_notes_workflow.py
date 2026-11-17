@@ -56,6 +56,7 @@ PACKAGE_NAME_RE = re.compile(
     r"^lwc-release-notes-(?P<version>(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?)-development-(?:(?P<history>history)-(?P<operation>release|deploy|rollback|reactivate|promote)-(?P<result_id>[1-9][0-9]*)-)?(?P<run_id>[1-9][0-9]*)-(?P<attempt>[1-9][0-9]*)$")
 ARTIFACT_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 RUNTIME_STEP_NAME = "Execute bounded runtime or explicit recovery"
+RUNTIME_JOB_NAME = "release / release"
 RUNTIME_COMPLETED_AT_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?Z$")
 ACTION_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 ID_RE = re.compile(r"^[1-9][0-9]*$")
@@ -595,7 +596,7 @@ def validate_original_runtime_completion(result_metadata: dict, run: dict, jobs_
     if (not isinstance(jobs, list) or type(jobs_response.get("total_count")) is not int or
             jobs_response["total_count"] != len(jobs)):
         _fail("runtime-completion-jobs-invalid")
-    release_jobs = [job for job in jobs if isinstance(job, dict) and job.get("name") == "release"]
+    release_jobs = [job for job in jobs if isinstance(job, dict) and job.get("name") == RUNTIME_JOB_NAME]
     if len(release_jobs) != 1:
         _fail("runtime-completion-release-job-invalid")
     release_job = release_jobs[0]

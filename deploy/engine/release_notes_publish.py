@@ -43,6 +43,9 @@ RUNTIME_COMPLETION_FIELDS = {
 RUNTIME_COMPLETED_AT_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?Z$")
 
 
+RUNTIME_JOB_NAME = "release / release"
+
+
 class GCSCLIStore:
     def __init__(self, bucket: str):
         if not bucket or "/" in bucket:
@@ -446,7 +449,7 @@ def _read_runtime_completion_evidence(directory: Path, args, plan_bytes: bytes,
             evidence.get("package_manifest_sha256") != release_notes.digest_bytes(manifest_bytes) or
             evidence.get("package_files_sha256") != package_files_sha256 or
             manifest.get("release_plan_sha256") != release_notes.digest_bytes(plan_bytes) or
-            evidence.get("job_name") != "release" or
+            evidence.get("job_name") != RUNTIME_JOB_NAME or
             not isinstance(evidence.get("job_id"), str) or re.fullmatch(r"[1-9][0-9]*", evidence["job_id"]) is None or
             evidence.get("job_conclusion") not in ("success", "failure") or
             evidence.get("runtime_step_name") != "Execute bounded runtime or explicit recovery" or
