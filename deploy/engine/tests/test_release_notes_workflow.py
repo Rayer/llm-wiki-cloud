@@ -2911,7 +2911,7 @@ class R10NativeReceiptRecoveryTests(unittest.TestCase):
                 environment="production", repository="Rayer/llm-wiki-cloud")
 
     def test_runtime_completion_rejects_unbound_verify_operation_tail(self):
-        for label in ("wrong run identity", "unknown event after verification"):
+        for label in ("wrong run identity", "boolean schema version", "unknown event after verification"):
             with self.subTest(label=label), TemporaryDirectory(prefix="lwc478-r10-verify-tail-") as temp:
                 root = Path(temp)
                 result_directory, package_directory = root / "release", root / "package"
@@ -2932,6 +2932,8 @@ class R10NativeReceiptRecoveryTests(unittest.TestCase):
                 evidence = json.loads(evidence_path.read_bytes())
                 if label == "wrong run identity":
                     evidence["stages"][-1]["run_id"] = "43955019305"
+                elif label == "boolean schema version":
+                    evidence["stages"][-1]["schema_version"] = True
                 else:
                     evidence["stages"].append({"action": "unexpected-resend-stage", "status": "verified"})
                 evidence_path.write_bytes(canonical(evidence) + b"\n")

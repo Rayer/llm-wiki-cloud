@@ -618,6 +618,8 @@ def _verified_operation_append_matches(stage: dict, stages: list[dict], *, plan:
     expected_fields = set(expected) | {"event_sequence", "stage_attempt", "recorded_at"}
     return (
         set(stage) == expected_fields and
+        type(stage.get("schema_version")) is int and
+        type(stage.get("run_attempt")) is int and
         all(stage.get(key) == value for key, value in expected.items()) and
         type(stage.get("event_sequence")) is int and stage["event_sequence"] == len(stages) and
         type(stage.get("stage_attempt")) is int and stage["stage_attempt"] == 1 and
