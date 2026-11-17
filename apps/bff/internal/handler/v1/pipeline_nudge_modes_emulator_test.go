@@ -195,7 +195,9 @@ func TestPipelineNudgeAllAcceptedProducerModesUseDiscoveredEvidence(t *testing.T
 			}
 			execution := cloudEventExecution(runID, ownerID, projectID, now.Format(time.RFC3339Nano), now.Add(time.Minute).Format(time.RFC3339Nano))
 			execution.RunningCount, execution.FailedCount, execution.CompletionStatus = 0, 1, "FAILED"
-			execution.Template.Containers[0].Env = append(execution.Template.Containers[0].Env, cloudRunEnv{Name: pipelineReservationEnvName, Value: reservationID})
+			execution.Template.Containers[0].Env = append(execution.Template.Containers[0].Env,
+				cloudRunEnv{Name: pipelineReservationEnvName, Value: reservationID},
+				cloudRunEnv{Name: pipelineAttemptEnvName, Value: pipelineReservationAttemptID(reservation)})
 			if tc.mode == pipelinequota.ModeFull {
 				execution.Template.Containers[0].Env = append(execution.Template.Containers[0].Env, cloudRunEnv{Name: "CLEAN_REBUILD", Value: "true"})
 			}

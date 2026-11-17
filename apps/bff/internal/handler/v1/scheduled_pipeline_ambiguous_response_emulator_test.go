@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"github.com/rayer/llm-wiki-bff/internal/localfs"
 	"github.com/rayer/llm-wiki-bff/internal/pipelinequota"
+	"github.com/rayer/llm-wiki-bff/internal/profileruntime"
 	"github.com/rayer/llm-wiki-bff/internal/search"
 )
 
@@ -68,34 +70,29 @@ func (s *scheduledPreinvokeStoreFailures) ReleaseQuotaReservationIfAttempt(ctx c
 	return s.Client.ReleaseQuotaReservationIfAttempt(ctx, reservationID, attemptID)
 }
 
-type scheduledAttemptReleaseResult struct {
-	released bool
-	err      error
-}
-
 type scheduledAttemptReleaseGate struct {
 	*scopedfirestore.Client
 	targetAttemptID string
 	entered         chan struct{}
 	resume          chan struct{}
-	result          chan scheduledAttemptReleaseResult
+	result          chan error
 	once            sync.Once
 }
 
-func (s *scheduledAttemptReleaseGate) ReleaseQuotaReservationIfAttempt(ctx context.Context, reservationID, attemptID string) (bool, error) {
+func (s *scheduledAttemptReleaseGate) FailPipelineIntent(ctx context.Context, reservationID, attemptID, userID, projectID, expectedStatus, stage, code, message string) error {
 	if attemptID == s.targetAttemptID {
 		s.once.Do(func() { close(s.entered) })
 		select {
 		case <-s.resume:
 		case <-ctx.Done():
-			return false, ctx.Err()
+			return ctx.Err()
 		}
 	}
-	released, err := s.Client.ReleaseQuotaReservationIfAttempt(ctx, reservationID, attemptID)
+	err := s.Client.FailPipelineIntent(ctx, reservationID, attemptID, userID, projectID, expectedStatus, stage, code, message)
 	if attemptID == s.targetAttemptID {
-		s.result <- scheduledAttemptReleaseResult{released: released, err: err}
+		s.result <- err
 	}
-	return released, err
+	return err
 }
 
 func TestScheduledAcceptedInvocationWith503RemainsClaimedAndReconcilesEmulator(t *testing.T) {
@@ -277,6 +274,14 @@ func TestScheduledConfirmedNotInvokedMarkerCannotReleaseReusedDailyReservationEm
 	if firstAttemptID == "" {
 		t.Fatal("first scheduled reservation has no attempt incarnation")
 	}
+	if err := h.ensurePipelineIntentWork(ctx, reservation); err != nil {
+		t.Fatalf("enqueue durable work for first scheduled attempt: %v", err)
+	}
+	oldWork := profileruntime.Work{UserID: userID, ProjectID: projectID, Kind: "pipeline", ID: reservationID, AttemptID: firstAttemptID}
+	oldWorkSnapshot, err := scopedfirestore.Collection(fsClient.Raw(), profileruntime.WorkCollection).Doc(profileruntime.WorkID(oldWork)).Get(ctx)
+	if err != nil || oldWorkSnapshot.DataTo(&oldWork) != nil || !oldWork.Pending {
+		t.Fatalf("read first scheduled durable work=%+v err=%v; want pending work for attempt A", oldWork, err)
+	}
 	confirmed, err := h.hasConfirmedPipelineInvokeFailure(ctx, reservation)
 	if err != nil || !confirmed {
 		t.Fatalf("confirmed-not-invoked marker=%t err=%v; want durable recovery evidence", confirmed, err)
@@ -284,7 +289,7 @@ func TestScheduledConfirmedNotInvokedMarkerCannotReleaseReusedDailyReservationEm
 	gate := &scheduledAttemptReleaseGate{
 		Client: fsClient, targetAttemptID: firstAttemptID,
 		entered: make(chan struct{}), resume: make(chan struct{}),
-		result: make(chan scheduledAttemptReleaseResult, 1),
+		result: make(chan error, 1),
 	}
 	h.SetPipelineQuotaStore(gate)
 	staleReconcile := make(chan error, 1)
@@ -296,16 +301,17 @@ func TestScheduledConfirmedNotInvokedMarkerCannotReleaseReusedDailyReservationEm
 	case <-ctx.Done():
 		t.Fatal("timed out waiting for stale reconciler to reach transactional release")
 	}
-	// A concurrent reconciler completes release for attempt A while the first
-	// reconciler is paused after reading A's evidence but before its transaction.
-	released, err := fsClient.ReleaseQuotaReservationIfAttempt(ctx, reservationID, firstAttemptID)
-	if err != nil || !released {
+	// A concurrent reconciler completes failure settlement for attempt A while
+	// the first reconciler is paused after reading A's evidence but before its
+	// transaction.
+	if err := fsClient.FailPipelineIntent(ctx, reservationID, firstAttemptID, userID, projectID,
+		reservation.IntentStatus, "pipeline_invocation", "pipeline_invoke_failed", "fixture confirmed no execution"); err != nil {
 		close(gate.resume)
-		t.Fatalf("competing release of first attempt released=%t err=%v; want true", released, err)
+		t.Fatalf("competing failure settlement of first attempt: %v", err)
 	}
 	reservation, found, err = fsClient.GetQuotaReservation(ctx, reservationID)
-	if err != nil || !found || reservation.SettlementStatus != "released" || reservation.ExecutionID != "" {
-		t.Fatalf("recovered reservation=%+v found=%t err=%v; want released with no execution", reservation, found, err)
+	if err != nil || !found || reservation.SettlementStatus != "released" || reservation.IntentStatus != "failed" || reservation.ExecutionID != "" {
+		t.Fatalf("recovered reservation=%+v found=%t err=%v; want failed and released with no execution", reservation, found, err)
 	}
 	fixture.mu.Lock()
 	invocations = fixture.next
@@ -337,12 +343,13 @@ func TestScheduledConfirmedNotInvokedMarkerCannotReleaseReusedDailyReservationEm
 		t.Fatalf("same-day retry attempt IDs first=%q second=%q; want distinct nonempty incarnations", firstAttemptID, secondAttemptID)
 	}
 	close(gate.resume)
-	if err := <-staleReconcile; err != nil {
-		t.Fatalf("stale reconciler returned error: %v", err)
+	staleReconcileErr := <-staleReconcile
+	if staleReconcileErr == nil || !strings.Contains(staleReconcileErr.Error(), "identity mismatch") {
+		t.Fatalf("stale reconciler result=%v; want identity mismatch for stale attempt A", staleReconcileErr)
 	}
-	staleRelease := <-gate.result
-	if staleRelease.err != nil || staleRelease.released {
-		t.Fatalf("stale attempt release result=%+v; want atomic no-op after reservation reuse", staleRelease)
+	staleFailure := <-gate.result
+	if staleFailure == nil || !strings.Contains(staleFailure.Error(), "identity mismatch") {
+		t.Fatalf("stale attempt failure result=%v; want fenced identity mismatch after reservation reuse", staleFailure)
 	}
 	reservation, found, err = fsClient.GetQuotaReservation(ctx, reservationID)
 	if err != nil || !found || reservation.AttemptID != secondAttemptID || reservation.ExecutionID != "" || reservation.SettlementStatus != "pending" {
@@ -353,8 +360,20 @@ func TestScheduledConfirmedNotInvokedMarkerCannotReleaseReusedDailyReservationEm
 		t.Fatalf("reconcile second accepted response loss: %v", err)
 	}
 	reservation, found, err = fsClient.GetQuotaReservation(ctx, reservationID)
-	if err != nil || !found || reservation.AttemptID != secondAttemptID || reservation.ExecutionID != "fixture-execution-1" || reservation.SettlementStatus != "pending" {
+	if err != nil || !found || reservation.AttemptID != secondAttemptID || reservation.ExecutionID != "fixture-execution-1" || reservation.IntentStatus != "compiling" || reservation.SettlementStatus != "pending" {
 		t.Fatalf("second attempt reservation after reconcile=%+v found=%t err=%v; old confirmed-not-invoked marker must not release it", reservation, found, err)
+	}
+	oldWorkDispatcher := &ProfileDispatcher{Handler: h}
+	if err := oldWorkDispatcher.executePipelineIntent(ctx, nil, oldWork); err != nil {
+		t.Fatalf("execute late work from released attempt A: %v", err)
+	}
+	reservation, found, err = fsClient.GetQuotaReservation(ctx, reservationID)
+	if err != nil || !found || reservation.AttemptID != secondAttemptID || reservation.ExecutionID != "fixture-execution-1" || reservation.IntentStatus != "compiling" || reservation.SettlementStatus != "pending" {
+		t.Fatalf("late A work changed current reservation=%+v found=%t err=%v; attempt B must remain held", reservation, found, err)
+	}
+	firstHistory, err := scopedfirestore.Collection(fsClient.Raw(), "pipeline_quota_reservations").Doc(reservationID).Collection("attempts").Doc(firstAttemptID).Get(ctx)
+	if err != nil || firstHistory.Data()["attempt_id"] != firstAttemptID || firstHistory.Data()["settlement_status"] != "released" || firstHistory.Data()["intent_status"] != "failed" {
+		t.Fatalf("archived attempt A=%v err=%v; want immutable failed/released history", firstHistory.Data(), err)
 	}
 	for _, mode := range []pipelinequota.ExecutionMode{pipelinequota.ModeIncremental, pipelinequota.ModeFull} {
 		_, reserved, err := fsClient.ReserveQuota(ctx, "manual-after-stale-marker-"+string(mode), userID, projectID,

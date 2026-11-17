@@ -261,6 +261,9 @@ func readPipelineIntentGuidance(ctx context.Context, client *firestore.Client, c
 	reservationRef := scopedfirestore.Collection(client, "pipeline_quota_reservations").Doc(cfg.PipelineReservationID)
 	snapshot, err := reservationRef.Get(ctx)
 	if status.Code(err) == codes.NotFound {
+		if cfg.PipelineAttemptID != "" {
+			return nil, true, errors.New("Pipeline Profile snapshot for this attempt is unavailable")
+		}
 		return nil, false, nil
 	}
 	if err != nil {
@@ -271,10 +274,21 @@ func readPipelineIntentGuidance(ctx context.Context, client *firestore.Client, c
 		return nil, true, fmt.Errorf("decode Pipeline Profile snapshot: %w", err)
 	}
 	reservation.ConsumedActiveGuidance = profileGuidanceRefFromFirestore(snapshot.Data()["consumed_active_guidance"])
+	reservationAttemptID := reservation.AttemptID
+	if reservationAttemptID == "" {
+		reservationAttemptID = cfg.PipelineReservationID
+	}
+	if cfg.PipelineAttemptID != "" && reservationAttemptID != cfg.PipelineAttemptID {
+		return nil, true, errors.New("Pipeline attempt identity does not match the reservation")
+	}
 	if reservation.IntentMode == "" {
 		return nil, false, nil
 	}
-	if reservation.UserID != cfg.UserID || reservation.ProjectID != cfg.ProjectID || reservation.AttemptID != cfg.PipelineReservationID ||
+	expectedAttemptID := cfg.PipelineAttemptID
+	if expectedAttemptID == "" {
+		expectedAttemptID = cfg.PipelineReservationID
+	}
+	if reservation.UserID != cfg.UserID || reservation.ProjectID != cfg.ProjectID || reservationAttemptID != expectedAttemptID ||
 		(reservation.IntentStatus != "invoking" && reservation.IntentStatus != "invocation_unknown" && reservation.IntentStatus != "compiling") ||
 		reservation.SettlementStatus != "pending" || reservation.ProfileRevision < 0 ||
 		!isLowerSHA256(reservation.RequirementsDigest) || profileRequirementsDigest(reservation.ProfileRequirements) != reservation.RequirementsDigest {

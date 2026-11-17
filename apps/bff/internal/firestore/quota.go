@@ -242,6 +242,7 @@ type ScheduledPipelineStatus struct {
 	BudgetUsed           bool       `json:"budget_used"`
 	LastAttemptAt        *time.Time `json:"last_attempt_at,omitempty"`
 	LastAttemptID        string     `json:"last_attempt_id,omitempty"`
+	LastReservationID    string     `json:"-"`
 	LastExecutionID      string     `json:"last_execution_id,omitempty"`
 	LastResult           string     `json:"last_result,omitempty"`
 }
@@ -502,12 +503,47 @@ func (c *Client) RecordScheduledPipelineCheck(ctx context.Context, status Schedu
 
 func (c *Client) RecordScheduledPipelineAttempt(ctx context.Context, userID, projectID, dayKey, reservationID, attemptID, executionID, result string, attemptedAt time.Time) error {
 	statusRef := Collection(c.fs, pipelineScheduledStatusCollection).Doc(QuotaDocID(userID, projectID))
-	_, err := statusRef.Set(ctx, map[string]interface{}{
-		"user_id": userID, "project_id": projectID, "day_key": dayKey, "budget_used": result != "not_invoked",
-		"last_attempt_at": attemptedAt, "last_attempt_id": attemptID, "last_reservation_id": reservationID,
-		"last_execution_id": executionID, "last_result": result, "updated_at": time.Now().UTC(),
-	}, firestore.MergeAll)
-	return err
+	reservationRef := Collection(c.fs, pipelineQuotaReservationCollection).Doc(reservationID)
+	return c.fs.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+		reservationSnapshot, err := tx.Get(reservationRef)
+		if status.Code(err) == codes.NotFound {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		reservation := quotaReservationFromData(reservationID, reservationSnapshot.Data())
+		if reservation.UserID != userID || reservation.ProjectID != projectID || reservation.AttemptID != attemptID ||
+			reservation.Trigger != pipelinequota.TriggerScheduledDaily || reservation.DayKey != dayKey {
+			return nil
+		}
+		current, err := tx.Get(statusRef)
+		if err != nil && status.Code(err) != codes.NotFound {
+			return err
+		}
+		if err == nil {
+			data := current.Data()
+			if data["user_id"] != userID || data["project_id"] != projectID {
+				return errors.New("scheduled Pipeline status owner mismatch")
+			}
+			currentReservationID := strings.TrimSpace(stringFromData(data, "last_reservation_id"))
+			if currentReservationID == "" {
+				currentReservationID = strings.TrimSpace(stringFromData(data, "last_attempt_id"))
+			}
+			currentAttemptID := strings.TrimSpace(stringFromData(data, "last_attempt_id"))
+			sameAttempt := currentReservationID == reservationID && currentAttemptID == attemptID
+			if !sameAttempt {
+				if currentAt, ok := firestoreTimestamp(data["last_attempt_at"]); ok && !currentAt.Before(attemptedAt) {
+					return nil
+				}
+			}
+		}
+		return tx.Set(statusRef, map[string]interface{}{
+			"user_id": userID, "project_id": projectID, "day_key": dayKey, "budget_used": reservation.SettlementStatus != "released",
+			"last_attempt_at": attemptedAt, "last_attempt_id": attemptID, "last_reservation_id": reservationID,
+			"last_execution_id": executionID, "last_result": result, "updated_at": time.Now().UTC(),
+		}, firestore.MergeAll)
+	})
 }
 
 func (c *Client) LoadScheduledPipelineStatus(ctx context.Context, userID, projectID string, now time.Time) (ScheduledPipelineStatus, error) {
@@ -526,6 +562,10 @@ func (c *Client) LoadScheduledPipelineStatus(ctx context.Context, userID, projec
 		result.RawDirtyFiles = intFromFirestore(data["raw_dirty_files"])
 		result.AnnotationDirtyFiles = intFromFirestore(data["annotation_dirty_files"])
 		result.LastAttemptID, _ = data["last_attempt_id"].(string)
+		result.LastReservationID, _ = data["last_reservation_id"].(string)
+		if result.LastReservationID == "" {
+			result.LastReservationID = result.LastAttemptID
+		}
 		result.LastExecutionID, _ = data["last_execution_id"].(string)
 		result.LastResult, _ = data["last_result"].(string)
 		if value, ok := firestoreTimestamp(data["last_check_at"]); ok {
@@ -544,6 +584,39 @@ func (c *Client) LoadScheduledPipelineStatus(ctx context.Context, userID, projec
 	}
 	if status.Code(err) != codes.NotFound {
 		result.BudgetUsed, _ = budgetSnapshot.Data()["used"].(bool)
+	}
+	reservationID := strings.TrimSpace(result.LastReservationID)
+	if reservationID != "" && result.LastAttemptID != "" {
+		reservation, exists, reservationErr := GetQuotaReservationFromFirestore(ctx, c.fs, reservationID)
+		if reservationErr != nil {
+			return ScheduledPipelineStatus{}, reservationErr
+		}
+		reservationAttemptID := reservation.AttemptID
+		if reservationAttemptID == "" {
+			reservationAttemptID = reservation.ID
+		}
+		if !exists || reservation.UserID != userID || reservation.ProjectID != projectID || reservationAttemptID != result.LastAttemptID {
+			result.LastExecutionID = ""
+			result.LastResult = "unknown"
+		} else {
+			if reservation.ExecutionID != "" {
+				result.LastExecutionID = reservation.ExecutionID
+			}
+			switch reservation.IntentStatus {
+			case "preparing", "ready":
+				result.LastResult = reservation.IntentStatus
+			case "invoking", "compiling":
+				result.LastResult = "accepted"
+			case "invocation_unknown":
+				result.LastResult = "unknown"
+			case "failed":
+				result.LastResult = "FAILED"
+			case "succeeded":
+				result.LastResult = "SUCCEEDED"
+			case "cancelled":
+				result.LastResult = "CANCELLED"
+			}
+		}
 	}
 	return result, nil
 }
@@ -626,12 +699,12 @@ func (c *Client) ReserveScheduledQuotaWithAttempt(
 	newRawFiles, rawDirtyFiles, annotationDirtyFiles int,
 ) (snap pipelinequota.Snapshot, reserved bool, err error) {
 	attemptID = strings.TrimSpace(attemptID)
-	if attemptID == "" {
+	if attemptID == "" || strings.ContainsAny(attemptID, "/\\") {
 		return pipelinequota.Snapshot{}, false, errors.New("invalid pipeline quota attempt ID")
 	}
 	return c.reservePipelineQuota(ctx, reservationID, userID, projectID, limits, now, mode,
 		pipelinequota.TriggerScheduledDaily, "scheduled_daily", attemptID, isDemo, alreadyRunning,
-		newRawFiles, rawDirtyFiles, annotationDirtyFiles, false, "", nil)
+		newRawFiles, rawDirtyFiles, annotationDirtyFiles, true, "", nil)
 }
 
 func (c *Client) reservePipelineQuota(
@@ -798,6 +871,30 @@ func (c *Client) reservePipelineQuota(
 			}
 			intent = bindFullModeGuidanceToRequirements(intent, mode)
 		}
+		var priorAttemptArchive *firestore.DocumentRef
+		var priorAttemptData map[string]interface{}
+		if trigger == pipelinequota.TriggerScheduledDaily && existingBudget != nil && existingBudget.Exists() {
+			priorSnapshot, priorErr := tx.Get(reservationRef)
+			if priorErr != nil && status.Code(priorErr) != codes.NotFound {
+				return priorErr
+			}
+			if priorErr == nil {
+				priorData := priorSnapshot.Data()
+				priorAttempt := strings.TrimSpace(stringFromData(priorData, "attempt_id"))
+				if priorAttempt != "" && priorAttempt != attemptID {
+					priorAttemptArchive = reservationRef.Collection("attempts").Doc(priorAttempt)
+					archived, archiveErr := tx.Get(priorAttemptArchive)
+					if archiveErr != nil && status.Code(archiveErr) != codes.NotFound {
+						return archiveErr
+					}
+					if status.Code(archiveErr) == codes.NotFound {
+						priorAttemptData = priorData
+					} else if archived.Data()["attempt_id"] != priorAttempt || archived.Data()["user_id"] != userID || archived.Data()["project_id"] != projectID {
+						return errors.New("scheduled Pipeline attempt history identity conflicts")
+					}
+				}
+			}
+		}
 
 		today := pipelinequota.DayKeyUTC(now)
 		newRuns := pre.RunsToday
@@ -834,7 +931,6 @@ func (c *Client) reservePipelineQuota(
 			reservationData["attempt_id"] = attemptID
 		}
 		if captureProfileIntent {
-			reservationData["attempt_id"] = reservationID
 			reservationData["intent_status"] = intent.Status
 			reservationData["intent_mode"] = string(mode)
 			reservationData["profile_revision"] = intent.ProfileRevision
@@ -865,6 +961,11 @@ func (c *Client) reservePipelineQuota(
 			reservationData["auto_pipeline_admin_revision"] = automationAdminRevision
 		}
 		if trigger == pipelinequota.TriggerScheduledDaily && existingBudget != nil && existingBudget.Exists() {
+			if priorAttemptArchive != nil && priorAttemptData != nil {
+				if err := tx.Create(priorAttemptArchive, priorAttemptData); err != nil {
+					return err
+				}
+			}
 			if err := tx.Set(reservationRef, reservationData); err != nil {
 				return err
 			}
@@ -912,6 +1013,20 @@ func (c *Client) reservePipelineQuota(
 // accepts the job. The reservation ID is also in the job environment so a
 // reconciler can recover if this write is temporarily unavailable.
 func (c *Client) LinkQuotaReservation(ctx context.Context, reservationID, executionID string) error {
+	return c.linkQuotaReservation(ctx, reservationID, "", executionID)
+}
+
+// LinkQuotaReservationForAttempt records an execution only while the reservation
+// still represents the caller's accepted incarnation.
+func (c *Client) LinkQuotaReservationForAttempt(ctx context.Context, reservationID, attemptID, executionID string) error {
+	attemptID = strings.TrimSpace(attemptID)
+	if attemptID == "" {
+		return errors.New("pipeline quota attempt ID is required")
+	}
+	return c.linkQuotaReservation(ctx, reservationID, attemptID, executionID)
+}
+
+func (c *Client) linkQuotaReservation(ctx context.Context, reservationID, expectedAttemptID, executionID string) error {
 	reservationRef := Collection(c.fs, pipelineQuotaReservationCollection).Doc(reservationID)
 	now := time.Now().UTC()
 	return c.fs.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
@@ -920,8 +1035,33 @@ func (c *Client) LinkQuotaReservation(ctx context.Context, reservationID, execut
 			return err
 		}
 		reservation := quotaReservationFromData(reservationID, snapshot.Data())
+		reservationAttemptID := reservation.AttemptID
+		if reservationAttemptID == "" {
+			reservationAttemptID = reservation.ID
+		}
+		if expectedAttemptID != "" && reservationAttemptID != expectedAttemptID {
+			return nil
+		}
 		if reservation.SettlementStatus == "released" || reservation.UserID == "" || reservation.ProjectID == "" {
 			return errors.New("pipeline reservation cannot be linked")
+		}
+		var scheduledStatusRef *firestore.DocumentRef
+		var updateScheduledStatus bool
+		if reservation.Trigger == pipelinequota.TriggerScheduledDaily {
+			scheduledStatusRef = Collection(c.fs, pipelineScheduledStatusCollection).Doc(QuotaDocID(reservation.UserID, reservation.ProjectID))
+			statusSnapshot, statusErr := tx.Get(scheduledStatusRef)
+			if statusErr != nil && status.Code(statusErr) != codes.NotFound {
+				return statusErr
+			}
+			if statusErr == nil {
+				data := statusSnapshot.Data()
+				currentReservationID := strings.TrimSpace(stringFromData(data, "last_reservation_id"))
+				if currentReservationID == "" {
+					currentReservationID = strings.TrimSpace(stringFromData(data, "last_attempt_id"))
+				}
+				updateScheduledStatus = data["user_id"] == reservation.UserID && data["project_id"] == reservation.ProjectID &&
+					currentReservationID == reservationID && strings.TrimSpace(stringFromData(data, "last_attempt_id")) == reservationAttemptID
+			}
 		}
 		if reservation.ExecutionID != "" && reservation.ExecutionID != executionID {
 			return errors.New("pipeline reservation execution link conflicts")
@@ -945,9 +1085,12 @@ func (c *Client) LinkQuotaReservation(ctx context.Context, reservationID, execut
 			if err := tx.Set(budgetRef, map[string]interface{}{"execution_id": executionID, "updated_at": now}, firestore.MergeAll); err != nil {
 				return err
 			}
-			statusRef := Collection(c.fs, pipelineScheduledStatusCollection).Doc(QuotaDocID(reservation.UserID, reservation.ProjectID))
-			if err := tx.Set(statusRef, map[string]interface{}{"last_execution_id": executionID, "updated_at": now}, firestore.MergeAll); err != nil {
-				return err
+			if updateScheduledStatus {
+				if err := tx.Set(scheduledStatusRef, map[string]interface{}{
+					"last_execution_id": executionID, "last_result": "accepted", "updated_at": now,
+				}, firestore.MergeAll); err != nil {
+					return err
+				}
 			}
 		}
 		return nil
@@ -1062,7 +1205,11 @@ func releaseQuotaReservationInTransaction(ctx context.Context, tx *firestore.Tra
 		return false, err
 	}
 	reservation := quotaReservationFromData(reservationID, reservationSnapshot.Data())
-	if expectedAttemptID != "" && reservation.AttemptID != expectedAttemptID {
+	reservationAttemptID := reservation.AttemptID
+	if reservationAttemptID == "" {
+		reservationAttemptID = reservation.ID
+	}
+	if expectedAttemptID != "" && reservationAttemptID != expectedAttemptID {
 		return false, nil
 	}
 	if reservation.SettlementStatus != "pending" || reservation.ExecutionID != "" {
@@ -1528,12 +1675,26 @@ func ListPendingQuotaReservationsFromFirestore(ctx context.Context, fs *firestor
 // SettleQuotaReservation applies a confirmed terminal result. Replays are
 // idempotent because the reservation state and any refund share one transaction.
 func (c *Client) SettleQuotaReservation(ctx context.Context, reservationID, executionStatus string) (string, error) {
+	return c.settleQuotaReservation(ctx, reservationID, "", executionStatus)
+}
+
+// SettleQuotaReservationForAttempt settles only the reservation incarnation
+// carried by the execution evidence.
+func (c *Client) SettleQuotaReservationForAttempt(ctx context.Context, reservationID, attemptID, executionStatus string) (string, error) {
+	attemptID = strings.TrimSpace(attemptID)
+	if attemptID == "" {
+		return "", errors.New("pipeline quota attempt ID is required")
+	}
+	return c.settleQuotaReservation(ctx, reservationID, attemptID, executionStatus)
+}
+
+func (c *Client) settleQuotaReservation(ctx context.Context, reservationID, expectedAttemptID, executionStatus string) (string, error) {
 	ctx, span := observability.StartPipelineSpan(ctx, "pipeline.quota.settle")
 	var settlement string
 	var applied bool
 	err := c.fs.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
 		var err error
-		settlement, applied, err = SettleQuotaReservationInTransactionWithResult(ctx, tx, c.fs, reservationID, executionStatus)
+		settlement, applied, err = SettleQuotaReservationInTransactionWithAttempt(ctx, tx, c.fs, reservationID, expectedAttemptID, executionStatus)
 		return err
 	})
 	outcome := "success"
@@ -1557,6 +1718,12 @@ func SettleQuotaReservationInTransaction(ctx context.Context, tx *firestore.Tran
 // the outer RunTransaction returns successfully, because Firestore may retry
 // this closure.
 func SettleQuotaReservationInTransactionWithResult(ctx context.Context, tx *firestore.Transaction, fs *firestore.Client, reservationID, executionStatus string) (string, bool, error) {
+	return SettleQuotaReservationInTransactionWithAttempt(ctx, tx, fs, reservationID, "", executionStatus)
+}
+
+// SettleQuotaReservationInTransactionWithAttempt ignores late results for a
+// reused stable reservation ID when the attempt incarnation no longer matches.
+func SettleQuotaReservationInTransactionWithAttempt(ctx context.Context, tx *firestore.Transaction, fs *firestore.Client, reservationID, expectedAttemptID, executionStatus string) (string, bool, error) {
 	if strings.TrimSpace(reservationID) == "" {
 		return "not_applicable", false, nil
 	}
@@ -1569,6 +1736,13 @@ func SettleQuotaReservationInTransactionWithResult(ctx context.Context, tx *fire
 		return "", false, err
 	}
 	reservation := quotaReservationFromData(reservationID, reservationSnapshot.Data())
+	reservationAttemptID := reservation.AttemptID
+	if reservationAttemptID == "" {
+		reservationAttemptID = reservation.ID
+	}
+	if expectedAttemptID != "" && reservationAttemptID != expectedAttemptID {
+		return "not_applicable", false, nil
+	}
 	if reservation.SettlementStatus != "pending" {
 		return reservation.SettlementStatus, false, nil
 	}
@@ -1581,6 +1755,24 @@ func SettleQuotaReservationInTransactionWithResult(ctx context.Context, tx *fire
 	if reservation.BudgetClass == "scheduled_daily" {
 		if _, err := tx.Get(budgetRef); err != nil {
 			return "", false, err
+		}
+	}
+	var scheduledStatusRef *firestore.DocumentRef
+	var updateScheduledStatus bool
+	if reservation.BudgetClass == "scheduled_daily" {
+		scheduledStatusRef = Collection(fs, pipelineScheduledStatusCollection).Doc(QuotaDocID(reservation.UserID, reservation.ProjectID))
+		statusSnapshot, statusErr := tx.Get(scheduledStatusRef)
+		if statusErr != nil && status.Code(statusErr) != codes.NotFound {
+			return "", false, statusErr
+		}
+		if statusErr == nil {
+			data := statusSnapshot.Data()
+			currentReservationID := strings.TrimSpace(stringFromData(data, "last_reservation_id"))
+			if currentReservationID == "" {
+				currentReservationID = strings.TrimSpace(stringFromData(data, "last_attempt_id"))
+			}
+			updateScheduledStatus = data["user_id"] == reservation.UserID && data["project_id"] == reservation.ProjectID &&
+				currentReservationID == reservation.ID && strings.TrimSpace(stringFromData(data, "last_attempt_id")) == reservation.AttemptID
 		}
 	}
 	var autoProjectRef *firestore.DocumentRef
@@ -1670,12 +1862,18 @@ func SettleQuotaReservationInTransactionWithResult(ctx context.Context, tx *fire
 		}, firestore.MergeAll); err != nil {
 			return "", false, err
 		}
-		statusRef := Collection(fs, pipelineScheduledStatusCollection).Doc(QuotaDocID(reservation.UserID, reservation.ProjectID))
-		if err := tx.Set(statusRef, map[string]interface{}{
-			"last_attempt_at": reservation.ReservedAt, "last_attempt_id": reservation.ID,
-			"last_execution_id": reservation.ExecutionID, "last_result": state, "updated_at": now,
-		}, firestore.MergeAll); err != nil {
-			return "", false, err
+		if updateScheduledStatus {
+			attemptID := reservation.AttemptID
+			if attemptID == "" {
+				attemptID = reservation.ID
+			}
+			if err := tx.Set(scheduledStatusRef, map[string]interface{}{
+				"last_attempt_at": reservation.ReservedAt, "last_attempt_id": attemptID,
+				"last_reservation_id": reservation.ID, "last_execution_id": reservation.ExecutionID,
+				"last_result": state, "updated_at": now,
+			}, firestore.MergeAll); err != nil {
+				return "", false, err
+			}
 		}
 	}
 	if autoProjectRef != nil {

@@ -624,13 +624,14 @@ func TestLocalPipelineHTTPTriggerRunsWorkerAndReportsSuccessAndFailure(t *testin
 		t.Fatalf("read scheduled pipeline status surface: %v", err)
 	}
 	var statusPayload struct {
-		LastExecution     *handlerapi.PipelineExecutionResponse    `json:"last_execution"`
-		ScheduledPipeline *scopedfirestore.ScheduledPipelineStatus `json:"scheduled_pipeline"`
+		LastExecution      *handlerapi.PipelineExecutionResponse    `json:"last_execution"`
+		ScheduledPipeline  *scopedfirestore.ScheduledPipelineStatus `json:"scheduled_pipeline"`
+		ScheduledExecution *handlerapi.PipelineExecutionResponse    `json:"scheduled_execution"`
 	}
 	statusDecodeErr := json.NewDecoder(io.LimitReader(statusResponse.Body, 1<<20)).Decode(&statusPayload)
 	_ = statusResponse.Body.Close()
-	if statusResponse.StatusCode != http.StatusOK || statusDecodeErr != nil || statusPayload.LastExecution == nil || statusPayload.LastExecution.Status != "SUCCEEDED" || statusPayload.ScheduledPipeline == nil || !statusPayload.ScheduledPipeline.BudgetUsed {
-		t.Fatalf("scheduled status API status=%d execution=%+v scheduled=%+v decodeErr=%v", statusResponse.StatusCode, statusPayload.LastExecution, statusPayload.ScheduledPipeline, statusDecodeErr)
+	if statusResponse.StatusCode != http.StatusOK || statusDecodeErr != nil || statusPayload.LastExecution == nil || statusPayload.LastExecution.Status != "SUCCEEDED" || statusPayload.ScheduledPipeline == nil || !statusPayload.ScheduledPipeline.BudgetUsed || statusPayload.ScheduledPipeline.LastAttemptID != scheduledReservation.AttemptID || statusPayload.ScheduledExecution == nil || statusPayload.ScheduledExecution.Name != scheduledExecutionID || statusPayload.ScheduledExecution.Status != "SUCCEEDED" {
+		t.Fatalf("scheduled status API status=%d execution=%+v scheduled=%+v exact=%+v decodeErr=%v", statusResponse.StatusCode, statusPayload.LastExecution, statusPayload.ScheduledPipeline, statusPayload.ScheduledExecution, statusDecodeErr)
 	}
 
 	queryCache := cache.New()
@@ -1417,11 +1418,11 @@ func localPipelineWorkerTraceIdentities(t *testing.T, path string) []otlpfixture
 			}
 			fields[key] = value
 		}
-		if len(fields) != 10 || fields["case"] != "UC5" || fields["service_name"] != "lwc-worker" || fields["scope"] != "llm-wiki-worker/pipeline" {
-			t.Fatalf("native-worker trace identity did not use the fixed test schema")
-		}
 		if fields["name"] != "pipeline.worker" {
 			continue
+		}
+		if len(fields) != 10 || fields["case"] != "UC5" || fields["service_name"] != "lwc-worker" || fields["scope"] != "llm-wiki-worker/pipeline" {
+			t.Fatalf("native-worker trace identity did not use the fixed test schema: fields=%v", fields)
 		}
 		traceID, spanID := fields["trace_id"], fields["span_id"]
 		if decoded, err := hex.DecodeString(traceID); err != nil || len(decoded) != 16 {

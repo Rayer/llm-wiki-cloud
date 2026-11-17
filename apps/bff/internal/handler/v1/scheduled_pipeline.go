@@ -252,14 +252,23 @@ func (h *Handler) runScheduledProject(ctx context.Context, qs scheduledPipelineQ
 		}
 		return false, false, true
 	}
-	executionID, err := h.invokePipelineJobStageWithReservation(ctx, userID, projectID, false, pipelineStageFull, reservationID)
-	if err != nil {
-		if errors.Is(err, errPipelineInvocationOutcomeUnknown) {
-			if attemptErr := qs.RecordScheduledPipelineAttempt(ctx, userID, projectID, dayKey, reservationID, attemptID, "", "unknown", now); attemptErr != nil {
-				h.recordScheduledCheckOK(ctx, statusStore, userID, projectID, now, "unavailable", pending, newRaw, rawDirty, annotationDirty)
+	intentStore, ok := h.effectiveQuotaStore().(pipelineIntentQuotaStore)
+	if !ok {
+		admission := h.effectiveQuotaStore().(pipelineAdmissionStore)
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_, releaseErr := admission.ReleaseQuotaReservationIfAttempt(releaseCtx, reservationID, attemptID)
+		cancel()
+		if releaseErr != nil {
+			if evidenceErr := h.persistScheduledNotInvokedEvidence(userID, projectID, reservationID, attemptID); evidenceErr != nil {
+				log.Print("scheduled pipeline recovery evidence unavailable")
 			}
 			return false, false, true
 		}
+		return false, false, true
+	}
+	reservation, exists, intentErr := intentStore.GetPipelineIntent(ctx, userID, projectID, reservationID)
+	if intentErr != nil || !exists || reservation.AttemptID != attemptID ||
+		(reservation.IntentStatus != "preparing" && reservation.IntentStatus != "ready") {
 		admission := h.effectiveQuotaStore().(pipelineAdmissionStore)
 		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		released, releaseErr := admission.ReleaseQuotaReservationIfAttempt(releaseCtx, reservationID, attemptID)
@@ -268,27 +277,44 @@ func (h *Handler) runScheduledProject(ctx context.Context, qs scheduledPipelineQ
 			if evidenceErr := h.persistScheduledNotInvokedEvidence(userID, projectID, reservationID, attemptID); evidenceErr != nil {
 				log.Print("scheduled pipeline recovery evidence unavailable")
 			}
-			return false, false, true
 		}
-		if !released {
-			return false, false, true
+		if intentErr != nil || !released {
+			h.recordScheduledCheckOK(ctx, statusStore, userID, projectID, now, "unavailable", pending, newRaw, rawDirty, annotationDirty)
 		}
-		reason := "unavailable"
-		if errors.Is(err, auth.ErrAccountInactive) {
-			reason = "ineligible"
-		}
-		if !h.recordScheduledCheckOK(ctx, statusStore, userID, projectID, now, reason, pending, newRaw, rawDirty, annotationDirty) {
-			return false, false, true
-		}
-		return false, reason == "ineligible", reason == "unavailable"
+		return false, false, true
 	}
-	if h.localPipeline == nil {
-		if err := h.effectiveQuotaStore().LinkQuotaReservation(ctx, reservationID, executionID); err != nil {
-			// The execution environment carries the reservation ID for reconciliation.
+	intentStatus := reservation.IntentStatus
+	if err := qs.RecordScheduledPipelineAttempt(ctx, userID, projectID, dayKey, reservationID, attemptID, "", intentStatus, now); err != nil {
+		admission := h.effectiveQuotaStore().(pipelineAdmissionStore)
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_, releaseErr := admission.ReleaseQuotaReservationIfAttempt(releaseCtx, reservationID, attemptID)
+		cancel()
+		if releaseErr != nil {
+			if evidenceErr := h.persistScheduledNotInvokedEvidence(userID, projectID, reservationID, attemptID); evidenceErr != nil {
+				log.Print("scheduled pipeline recovery evidence unavailable")
+			}
+		}
+		return false, false, true
+	}
+	if err := h.ensurePipelineIntentWork(ctx, reservation); err != nil {
+		h.recordScheduledCheckOK(ctx, statusStore, userID, projectID, now, "unavailable", pending, newRaw, rawDirty, annotationDirty)
+		return false, false, true
+	}
+	executionID := ""
+	if reservation.IntentStatus == "ready" {
+		executionID, intentStatus, err = h.startPipelineIntent(ctx, intentStore, reservation)
+		if err != nil {
+			log.Print("scheduled Pipeline intent continuation pending reconciliation")
+			if intentStatus == "" {
+				intentStatus = "unknown"
+			}
 		}
 	}
-	if err := qs.RecordScheduledPipelineAttempt(ctx, userID, projectID, dayKey, reservationID, attemptID, executionID, "accepted", now); err != nil {
+	if err := qs.RecordScheduledPipelineAttempt(ctx, userID, projectID, dayKey, reservationID, attemptID, executionID, intentStatus, now); err != nil {
 		return true, false, true
+	}
+	if intentStatus == "failed" || intentStatus == "invocation_unknown" || intentStatus == "unknown" {
+		return false, false, true
 	}
 	return true, false, false
 }
@@ -423,14 +449,21 @@ func (h *Handler) scheduledPipelineExecutionStatus(ctx context.Context, userID, 
 	if quotaStore == nil {
 		return nil
 	}
-	reservation, found, err := quotaStore.GetQuotaReservation(ctx, scheduled.LastAttemptID)
+	reservationID := strings.TrimSpace(scheduled.LastReservationID)
+	if reservationID == "" {
+		reservationID = strings.TrimSpace(scheduled.LastAttemptID)
+	}
+	reservation, found, err := quotaStore.GetQuotaReservation(ctx, reservationID)
 	if err != nil || !found || reservation.UserID != userID || reservation.ProjectID != projectID ||
 		reservation.Trigger != pipelinequota.TriggerScheduledDaily || reservation.BudgetClass != "scheduled_daily" ||
+		reservation.AttemptID != scheduled.LastAttemptID ||
 		(reservation.ExecutionID != "" && reservation.ExecutionID != scheduled.LastExecutionID) {
 		return nil
 	}
-	response, err := h.pipelineExecutionStatusForOwner(ctx, scheduled.LastExecutionID, userID, projectID)
-	if err != nil || response == nil {
+	response, actualReservationID, actualAttemptID, err := h.pipelineExecutionStatusForOwnerWithIncarnation(ctx, scheduled.LastExecutionID, userID, projectID)
+	if err != nil || response == nil || actualReservationID != reservationID ||
+		(actualAttemptID != "" && actualAttemptID != scheduled.LastAttemptID) ||
+		(actualAttemptID == "" && reservation.AttemptID != reservation.ID && reservation.IntentStatus != "") {
 		return nil
 	}
 	h.attachExactPipelineExecutionEvidence(ctx, response, &pipelineExecutionOwner{userID: userID, projectID: projectID}, scheduled.LastExecutionID)

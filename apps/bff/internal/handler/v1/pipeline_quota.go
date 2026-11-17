@@ -44,6 +44,32 @@ type pipelineQuotaStore interface {
 	SettleQuotaReservation(ctx context.Context, reservationID, executionStatus string) (string, error)
 }
 
+type pipelineQuotaAttemptStore interface {
+	LinkQuotaReservationForAttempt(ctx context.Context, reservationID, attemptID, executionID string) error
+	SettleQuotaReservationForAttempt(ctx context.Context, reservationID, attemptID, executionStatus string) (string, error)
+}
+
+func pipelineReservationAttemptID(reservation firestore.QuotaReservation) string {
+	if reservation.AttemptID != "" {
+		return reservation.AttemptID
+	}
+	return reservation.ID
+}
+
+func linkPipelineQuotaReservation(ctx context.Context, store pipelineQuotaStore, reservation firestore.QuotaReservation, executionID string) error {
+	if attemptStore, ok := store.(pipelineQuotaAttemptStore); ok {
+		return attemptStore.LinkQuotaReservationForAttempt(ctx, reservation.ID, pipelineReservationAttemptID(reservation), executionID)
+	}
+	return store.LinkQuotaReservation(ctx, reservation.ID, executionID)
+}
+
+func settlePipelineQuotaReservation(ctx context.Context, store pipelineQuotaStore, reservation firestore.QuotaReservation, state string) (string, error) {
+	if attemptStore, ok := store.(pipelineQuotaAttemptStore); ok {
+		return attemptStore.SettleQuotaReservationForAttempt(ctx, reservation.ID, pipelineReservationAttemptID(reservation), state)
+	}
+	return store.SettleQuotaReservation(ctx, reservation.ID, state)
+}
+
 type scheduledPipelineQuotaStore interface {
 	ReserveScheduledQuota(ctx context.Context, reservationID, userID, projectID string, limits pipelinequota.Limits, now time.Time, mode pipelinequota.ExecutionMode, isDemo, alreadyRunning bool, newRawFiles, rawDirtyFiles, annotationDirtyFiles int) (pipelinequota.Snapshot, bool, error)
 	ReserveScheduledQuotaWithAttempt(ctx context.Context, reservationID, attemptID, userID, projectID string, limits pipelinequota.Limits, now time.Time, mode pipelinequota.ExecutionMode, isDemo, alreadyRunning bool, newRawFiles, rawDirtyFiles, annotationDirtyFiles int) (pipelinequota.Snapshot, bool, error)

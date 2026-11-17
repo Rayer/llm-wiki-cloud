@@ -139,6 +139,7 @@ type pipelineLLMProfile struct {
 
 type pipelineLLMProfileRequest struct {
 	ReservationID      string `json:"reservation_id"`
+	AttemptID          string `json:"attempt_id,omitempty"`
 	UserID             string `json:"user_id"`
 	ProjectID          string `json:"project_id"`
 	IncludeCredentials bool   `json:"include_credentials"`
@@ -210,12 +211,14 @@ func (h *Handler) PipelineLLMProfile(c *gin.Context) {
 	var request pipelineLLMProfileRequest
 	bindErr := decodeStrictLLMJSON(c, maxLLMProfileRequestBytes, &request)
 	reservationValid := auth.ValidPathSegment(request.ReservationID)
+	attemptValid := request.AttemptID == "" || auth.ValidPathSegment(request.AttemptID)
 	userValid := auth.ValidPathSegment(request.UserID)
 	projectValid := auth.ValidPathSegment(request.ProjectID)
-	if bindErr != nil || !reservationValid || !userValid || !projectValid {
+	if bindErr != nil || !reservationValid || !attemptValid || !userValid || !projectValid {
 		slog.InfoContext(c.Request.Context(), "pipeline.profile.resolve.request_rejected",
 			"json_valid", bindErr == nil,
 			"reservation_id_valid", reservationValid,
+			"attempt_id_valid", attemptValid,
 			"user_id_valid", userValid,
 			"project_id_valid", projectValid,
 		)
@@ -228,7 +231,8 @@ func (h *Handler) PipelineLLMProfile(c *gin.Context) {
 		return
 	}
 	reservation, exists, err := quotaStore.GetQuotaReservation(c.Request.Context(), request.ReservationID)
-	if err != nil || !exists || reservation.SettlementStatus != "pending" || reservation.UserID != request.UserID || reservation.ProjectID != request.ProjectID {
+	if err != nil || !exists || reservation.SettlementStatus != "pending" || reservation.UserID != request.UserID || reservation.ProjectID != request.ProjectID ||
+		request.AttemptID != "" && reservation.AttemptID != request.AttemptID {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Pipeline profile request is not current"})
 		return
 	}

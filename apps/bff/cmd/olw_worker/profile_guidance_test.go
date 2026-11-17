@@ -661,6 +661,8 @@ func TestPipelineIntentWithoutProfileIsAdmittedAndReadableByWorker(t *testing.T)
 	unique := fmt.Sprintf("%d", time.Now().UnixNano())
 	cloudProject := "lwc415-no-profile-" + unique
 	userID, projectID := "owner-"+unique, "project-"+unique
+	dayKey := pipelinequota.DayKeyUTC(time.Now().UTC())
+	reservationID, attemptID := scopedfirestore.ScheduledPipelineBudgetID(userID, projectID, dayKey), "attempt-"+unique
 	scope := "lwc415-no-profile-" + unique
 	t.Setenv("GOOGLE_CLOUD_PROJECT", cloudProject)
 	t.Setenv("LOCAL_CLOUD_SCOPE", scope)
@@ -671,11 +673,11 @@ func TestPipelineIntentWithoutProfileIsAdmittedAndReadableByWorker(t *testing.T)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	reservationID := "intent-" + unique
 	reservationRef := scopedfirestore.Collection(client.Raw(), "pipeline_quota_reservations").Doc(reservationID)
 	quotaRef := scopedfirestore.Collection(client.Raw(), "pipeline_quota").Doc(scopedfirestore.QuotaDocID(userID, projectID))
+	budgetRef := scopedfirestore.Collection(client.Raw(), "pipeline_scheduled_daily").Doc(reservationID)
 	t.Cleanup(func() {
-		for _, ref := range []*firestore.DocumentRef{reservationRef, quotaRef} {
+		for _, ref := range []*firestore.DocumentRef{reservationRef, quotaRef, budgetRef} {
 			if _, err := ref.Delete(context.Background()); err != nil {
 				t.Errorf("delete owned intent fixture %s: %v", ref.Path, err)
 			}
@@ -685,31 +687,31 @@ func TestPipelineIntentWithoutProfileIsAdmittedAndReadableByWorker(t *testing.T)
 		}
 	})
 
-	_, reserved, err := client.ReserveQuotaForPipelineIntent(ctx, reservationID, userID, projectID,
+	_, reserved, err := client.ReserveScheduledQuotaWithAttempt(ctx, reservationID, attemptID, userID, projectID,
 		pipelinequota.Limits{DailyLimit: 5, Cooldown: time.Hour, MinNewRaw: 1}, time.Now().UTC(),
 		pipelinequota.ModeIncremental, false, false, 1, 0, 0)
 	if err != nil || !reserved {
-		t.Fatalf("admit Pipeline without Profile: reserved=%t err=%v", reserved, err)
+		t.Fatalf("admit scheduled Pipeline without Profile: reserved=%t err=%v", reserved, err)
 	}
 	intent, exists, err := client.GetPipelineIntent(ctx, userID, projectID, reservationID)
 	wantDigest := profileRequirementsDigest([]profileGuidanceRequirement{})
-	if err != nil || !exists || intent.IntentStatus != "ready" || intent.ProfileRevision != 0 ||
+	if err != nil || !exists || intent.AttemptID != attemptID || intent.IntentStatus != "ready" || intent.ProfileRevision != 0 ||
 		len(intent.ProfileRequirements) != 0 || intent.RequirementsDigest != wantDigest || intent.ConsumedGuidanceKind != "none" {
 		t.Fatalf("admitted no-Profile intent=%+v exists=%t err=%v", intent, exists, err)
 	}
 
-	_, claimed, err := client.BeginPipelineIntentInvocation(ctx, reservationID, reservationID, userID, projectID)
+	_, claimed, err := client.BeginPipelineIntentInvocation(ctx, reservationID, attemptID, userID, projectID)
 	if err != nil || !claimed {
 		t.Fatalf("claim admitted intent: claimed=%t err=%v", claimed, err)
 	}
-	cfg := workerConfig{UserID: userID, ProjectID: projectID, PipelineReservationID: reservationID}
+	cfg := workerConfig{UserID: userID, ProjectID: projectID, PipelineReservationID: reservationID, PipelineAttemptID: attemptID}
 	pin, found, err := readPipelineIntentGuidance(ctx, client.Raw(), cfg, &profileGuidanceObjectStore{objects: map[string][]byte{}})
 	if err != nil || !found || pin != nil {
 		t.Fatalf("Worker read of admitted no-Profile intent: pin=%+v found=%t err=%v", pin, found, err)
 	}
 }
 
-func TestLWC427ActualReservationProducerRoundTripsActiveGuidanceAndLegacyWire(t *testing.T) {
+func TestScheduledActualProducerRoundTripsActiveGuidanceAndLegacyWire(t *testing.T) {
 	endpoint := strings.TrimSpace(os.Getenv("FIRESTORE_EMULATOR_HOST"))
 	if endpoint == "" {
 		t.Skip("requires owned loopback Firestore emulator")
@@ -723,7 +725,10 @@ func TestLWC427ActualReservationProducerRoundTripsActiveGuidanceAndLegacyWire(t 
 	}
 	unique := fmt.Sprintf("%d", time.Now().UnixNano())
 	cloudProject, scope := "lwc427-worker-"+unique, "lwc427-worker-"+unique
-	userID, projectID, reservationID := "owner-"+unique, "project-"+unique, "intent-"+unique
+	userID, projectID := "owner-"+unique, "project-"+unique
+	dayKey := pipelinequota.DayKeyUTC(time.Now().UTC())
+	reservationID := scopedfirestore.ScheduledPipelineBudgetID(userID, projectID, dayKey)
+	attemptID := "attempt-" + unique
 	t.Setenv("GOOGLE_CLOUD_PROJECT", cloudProject)
 	t.Setenv("LOCAL_CLOUD_SCOPE", scope)
 	client, err := scopedfirestore.NewClientWithDatabaseAndScope(cloudProject, "", userID, projectID, scope)
@@ -737,8 +742,9 @@ func TestLWC427ActualReservationProducerRoundTripsActiveGuidanceAndLegacyWire(t 
 	candidateRef := stateRef.Collection("candidates").Doc(candidateID)
 	reservationRef := scopedfirestore.Collection(client.Raw(), "pipeline_quota_reservations").Doc(reservationID)
 	quotaRef := scopedfirestore.Collection(client.Raw(), "pipeline_quota").Doc(scopedfirestore.QuotaDocID(userID, projectID))
+	budgetRef := scopedfirestore.Collection(client.Raw(), "pipeline_scheduled_daily").Doc(reservationID)
 	t.Cleanup(func() {
-		for _, ref := range []*firestore.DocumentRef{stateRef, candidateRef, reservationRef, quotaRef} {
+		for _, ref := range []*firestore.DocumentRef{stateRef, candidateRef, reservationRef, quotaRef, budgetRef} {
 			if _, err := ref.Delete(context.Background()); err != nil {
 				t.Errorf("delete owned emulator fixture %s: %v", ref.Path, err)
 			}
@@ -769,23 +775,26 @@ func TestLWC427ActualReservationProducerRoundTripsActiveGuidanceAndLegacyWire(t 
 	}); err != nil {
 		t.Fatalf("seed active Profile candidate: %v", err)
 	}
-	_, reserved, err := client.ReserveQuotaForPipelineIntent(ctx, reservationID, userID, projectID,
+	_, reserved, err := client.ReserveScheduledQuotaWithAttempt(ctx, reservationID, attemptID, userID, projectID,
 		pipelinequota.Limits{DailyLimit: 5, Cooldown: time.Hour, MinNewRaw: 1}, time.Now().UTC(),
 		pipelinequota.ModeFull, false, false, 1, 0, 0)
 	if err != nil || !reserved {
 		t.Fatalf("reserve full intent through actual producer: reserved=%t err=%v", reserved, err)
 	}
 	intent, exists, err := client.GetPipelineIntent(ctx, userID, projectID, reservationID)
-	if err != nil || !exists || intent.IntentStatus != "ready" || intent.ConsumedGuidanceKind != "active" || intent.ConsumedActiveGuidance == nil {
+	if err != nil || !exists || intent.AttemptID != attemptID || intent.IntentStatus != "ready" || intent.ConsumedGuidanceKind != "active" || intent.ConsumedActiveGuidance == nil {
 		t.Fatalf("actual producer reservation=%+v exists=%t err=%v", intent, exists, err)
 	}
-	if _, claimed, err := client.BeginPipelineIntentInvocation(ctx, reservationID, reservationID, userID, projectID); err != nil || !claimed {
+	if attemptID == reservationID {
+		t.Fatal("scheduled producer collapsed the fresh attempt into its stable daily reservation ID")
+	}
+	if _, claimed, err := client.BeginPipelineIntentInvocation(ctx, reservationID, attemptID, userID, projectID); err != nil || !claimed {
 		t.Fatalf("claim active guidance intent: claimed=%t err=%v", claimed, err)
 	}
 	objects := &profileGuidanceObjectStore{objects: map[string][]byte{
 		"users/" + userID + "/projects/" + projectID + "/" + profileartifacts.GuidanceObjectPath(ref.Revision): artifact,
 	}}
-	cfg := workerConfig{UserID: userID, ProjectID: projectID, PipelineReservationID: reservationID}
+	cfg := workerConfig{UserID: userID, ProjectID: projectID, PipelineReservationID: reservationID, PipelineAttemptID: attemptID}
 	read := func() (*profileGuidancePin, bool, error) {
 		return readPipelineIntentGuidance(ctx, client.Raw(), cfg, objects)
 	}
@@ -839,6 +848,65 @@ func TestLWC427ActualReservationProducerRoundTripsActiveGuidanceAndLegacyWire(t 
 				t.Fatalf("negative guard handled=%t err=%v, want %q", handled, err, tc.want)
 			}
 		})
+	}
+}
+
+func TestLegacyScheduledBootstrapNegativeControlStillBlocksWorker(t *testing.T) {
+	endpoint := strings.TrimSpace(os.Getenv("FIRESTORE_EMULATOR_HOST"))
+	if endpoint == "" {
+		t.Skip("requires owned loopback Firestore emulator")
+	}
+	parsed, err := url.Parse("http://" + endpoint)
+	if err != nil || parsed.Host == "" {
+		t.Fatal("invalid Firestore emulator host")
+	}
+	if host, _, err := net.SplitHostPort(parsed.Host); err != nil || host != "127.0.0.1" {
+		t.Fatalf("Firestore emulator must use numeric loopback, got %q", endpoint)
+	}
+	unique := fmt.Sprintf("%d", time.Now().UnixNano())
+	cloudProject, scope := "lwc493-negative-"+unique, "lwc493-negative-"+unique
+	userID, projectID, reservationID := "owner-"+unique, "project-"+unique, "legacy-"+unique
+	t.Setenv("GOOGLE_CLOUD_PROJECT", cloudProject)
+	t.Setenv("LOCAL_CLOUD_SCOPE", scope)
+	client, err := scopedfirestore.NewClientWithDatabaseAndScope(cloudProject, "", userID, projectID, scope)
+	if err != nil {
+		t.Fatalf("create scoped Firestore emulator client: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	stateRef := scopedfirestore.Collection(client.Raw(), "projects").Doc(userID + "_" + projectID).Collection("profile").Doc("state")
+	reservationRef := scopedfirestore.Collection(client.Raw(), "pipeline_quota_reservations").Doc(reservationID)
+	t.Cleanup(func() {
+		for _, ref := range []*firestore.DocumentRef{stateRef, reservationRef} {
+			if _, err := ref.Delete(context.Background()); err != nil {
+				t.Errorf("delete negative-control fixture %s: %v", ref.Path, err)
+			}
+		}
+		if err := client.Close(); err != nil {
+			t.Errorf("close negative-control Firestore client: %v", err)
+		}
+	})
+	requirements := []profileGuidanceRequirement{{ID: "r1", Text: "Prepare first compile guidance."}}
+	digest := profileRequirementsDigest(requirements)
+	if _, err := stateRef.Set(ctx, map[string]interface{}{
+		"project_id": projectID, "revision": int64(2), "requirements": requirements,
+		"bootstrap_guidance": map[string]interface{}{"status": "pending", "profile_revision": int64(2), "input_digest": digest},
+	}); err != nil {
+		t.Fatalf("seed pending bootstrap state: %v", err)
+	}
+	if _, err := reservationRef.Set(ctx, map[string]interface{}{
+		"user_id": userID, "project_id": projectID, "attempt_id": reservationID,
+		"trigger": "scheduled_daily", "settlement_status": "pending",
+	}); err != nil {
+		t.Fatalf("seed pre-hotfix scheduled reservation wire: %v", err)
+	}
+	cfg := workerConfig{UserID: userID, ProjectID: projectID, PipelineReservationID: reservationID, PipelineAttemptID: reservationID}
+	if pin, found, err := readPipelineIntentGuidance(ctx, client.Raw(), cfg, &profileGuidanceObjectStore{objects: map[string][]byte{}}); err != nil || found || pin != nil {
+		t.Fatalf("legacy no-intent Worker wire pin=%+v found=%t err=%v; want the existing no-Profile path", pin, found, err)
+	}
+	_, err = readActiveProfileGuidance(ctx, client.Raw(), cfg, &profileGuidanceObjectStore{objects: map[string][]byte{}})
+	if err == nil || err.Error() != "Profile bootstrap guidance is pending confirmation; first compile is blocked" {
+		t.Fatalf("legacy scheduled worker error=%v; want original pending-bootstrap guard", err)
 	}
 }
 

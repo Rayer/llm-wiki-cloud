@@ -183,7 +183,7 @@ func (h *Handler) ReconcilePipelineQuota(ctx context.Context) (resultErr error) 
 			}
 			continue
 		}
-		if cloudRunExecutionReservationID(execution, reservation.UserID, reservation.ProjectID) != reservation.ID {
+		if !cloudRunExecutionMatchesReservation(execution, reservation) {
 			lookupOutcome = "not_applicable"
 			observability.FinishPipelineSpan(lookupSpan, lookupOutcome)
 			continue
@@ -222,7 +222,7 @@ func (h *Handler) ReconcilePipelineQuota(ctx context.Context) (resultErr error) 
 				if ctx.Err() != nil {
 					return finish(nil)
 				}
-				if cloudRunExecutionReservationID(execution, reservation.UserID, reservation.ProjectID) != reservationID {
+				if !cloudRunExecutionMatchesReservation(execution, reservation) {
 					continue
 				}
 				// This matching execution is the one candidate for this reservation in
@@ -242,7 +242,7 @@ func (h *Handler) ReconcilePipelineQuota(ctx context.Context) (resultErr error) 
 					continue
 				}
 				linkCtx, linkSpan := observability.StartPipelineSpan(lookupCtx, "pipeline.quota.link")
-				linkErr := quotaStore.LinkQuotaReservation(linkCtx, reservationID, executionID)
+				linkErr := linkPipelineQuotaReservation(linkCtx, quotaStore, reservation, executionID)
 				linkOutcome := "success"
 				if linkErr != nil {
 					linkOutcome = "degraded"
@@ -301,7 +301,7 @@ func (h *Handler) settleCloudRunQuotaReservation(ctx context.Context, quotaStore
 	if state != "SUCCEEDED" && state != "FAILED" && state != "CANCELLED" {
 		return "pending", nil
 	}
-	settlement, err := quotaStore.SettleQuotaReservation(ctx, reservation.ID, state)
+	settlement, err := settlePipelineQuotaReservation(ctx, quotaStore, reservation, state)
 	if err != nil {
 		return pipelineTraceOutcome(err), err
 	}
@@ -330,6 +330,39 @@ func cloudRunExecutionReservationID(execution cloudRunExecution, userID, project
 		}
 	}
 	return ""
+}
+
+func cloudRunExecutionAttemptID(execution cloudRunExecution, userID, projectID string) string {
+	userID = strings.TrimSpace(userID)
+	projectID = strings.TrimSpace(projectID)
+	if userID == "" || projectID == "" {
+		return ""
+	}
+	for _, container := range execution.Template.Containers {
+		env := make(map[string]string)
+		for _, variable := range container.Env {
+			env[variable.Name] = variable.Value
+		}
+		if env["USER_ID"] == userID && env["PROJECT_ID"] == projectID && env["TASK_TYPE"] == "pipeline" {
+			return strings.TrimSpace(env[pipelineAttemptEnvName])
+		}
+	}
+	return ""
+}
+
+func cloudRunExecutionMatchesReservation(execution cloudRunExecution, reservation firestore.QuotaReservation) bool {
+	if cloudRunExecutionReservationID(execution, reservation.UserID, reservation.ProjectID) != reservation.ID {
+		return false
+	}
+	actualAttemptID := cloudRunExecutionAttemptID(execution, reservation.UserID, reservation.ProjectID)
+	if actualAttemptID != "" {
+		return actualAttemptID == pipelineReservationAttemptID(reservation)
+	}
+	// Before attempt IDs were carried in the Worker environment, manual and
+	// non-intent reservations used their stable reservation ID as the attempt.
+	// Legacy scheduled jobs with a distinct attempt remain recoverable only while
+	// their original non-intent reservation is still current.
+	return reservation.AttemptID == "" || reservation.AttemptID == reservation.ID || reservation.IntentStatus == ""
 }
 
 func (h *Handler) RunPipelineQuotaReconciler(ctx context.Context) {

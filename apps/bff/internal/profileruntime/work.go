@@ -24,6 +24,7 @@ type Work struct {
 	Kind            string                       `firestore:"kind"`
 	Revision        int64                        `firestore:"revision"`
 	ID              string                       `firestore:"id"`
+	AttemptID       string                       `firestore:"attempt_id,omitempty"`
 	RequestID       string                       `firestore:"request_id,omitempty" json:"-"`
 	CandidateID     string                       `firestore:"candidate_id"`
 	Due             time.Time                    `firestore:"due"`
@@ -37,7 +38,11 @@ type Work struct {
 }
 
 func WorkID(w Work) string {
-	sum := sha256.Sum256([]byte(w.UserID + "\x00" + w.ProjectID + "\x00" + w.Kind + "\x00" + w.ID))
+	key := w.UserID + "\x00" + w.ProjectID + "\x00" + w.Kind + "\x00" + w.ID
+	if w.AttemptID != "" && w.AttemptID != w.ID {
+		key += "\x00" + w.AttemptID
+	}
+	sum := sha256.Sum256([]byte(key))
 	return hex.EncodeToString(sum[:])
 }
 

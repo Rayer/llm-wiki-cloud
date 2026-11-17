@@ -33,6 +33,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/localfs"
 	"github.com/rayer/llm-wiki-bff/internal/pipelinequota"
 	"github.com/rayer/llm-wiki-bff/internal/profileartifacts"
+	"github.com/rayer/llm-wiki-bff/internal/profilederive"
 	"github.com/rayer/llm-wiki-bff/internal/profileruntime"
 	"github.com/rayer/llm-wiki-bff/internal/search"
 	storeapi "github.com/rayer/llm-wiki-bff/internal/storage"
@@ -1574,6 +1575,283 @@ func TestScheduledPipelineSweepAdmissionAndReconciliationEmulator(t *testing.T) 
 	}
 }
 
+func TestScheduledPipelineIntentPreparationWorkerPublicationSettlementEmulator(t *testing.T) {
+	if !requireLoopbackEmulator(t, "FIRESTORE_EMULATOR_HOST") || !requireLoopbackEmulator(t, "STORAGE_EMULATOR_HOST") {
+		t.Skip("requires owned loopback Firestore and Storage emulators")
+	}
+	const project, database = "llm-wiki-cloud", "(default)"
+	unique := fmt.Sprintf("%d", time.Now().UnixNano())
+	userID, projectID := "lwc493-owner-"+unique, "affected-"+unique
+	workerBucket := "lwc493-worker-" + unique
+	scope := "lwc493-local-" + unique
+	t.Setenv("GOOGLE_CLOUD_PROJECT", project)
+	t.Setenv("FIRESTORE_DATABASE_ID", database)
+	t.Setenv("LOCAL_CLOUD_SCOPE", scope)
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	defer cancel()
+	now := time.Now().UTC().Truncate(time.Microsecond).Add(-2 * time.Second)
+	dayKey := pipelinequota.DayKeyUTC(now)
+	reservationID := scopedfirestore.ScheduledPipelineBudgetID(userID, projectID, dayKey)
+	oldAttemptID := "old-attempt-" + unique
+
+	storageClient, err := cloudstorage.NewClient(ctx)
+	if err != nil {
+		t.Fatalf("create loopback Storage client: %v", err)
+	}
+	fsClient, err := scopedfirestore.NewClientWithDatabaseAndScope(project, database, "", "", scope)
+	if err != nil {
+		_ = storageClient.Close()
+		t.Fatalf("create loopback Firestore client: %v", err)
+	}
+	quotaClient, err := gcs.NewClient(workerBucket)
+	if err != nil {
+		_ = fsClient.Close()
+		_ = storageClient.Close()
+		t.Fatalf("create scoped loopback GCS client: %v", err)
+	}
+	if err := storageClient.Bucket(workerBucket).Create(ctx, project, nil); err != nil {
+		t.Fatalf("create isolated Worker fixture bucket: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+		stateRef := scopedfirestore.Collection(fsClient.Raw(), "projects").Doc(projectDocID(userID, projectID)).Collection("profile").Doc("state")
+		if err := deletePipelineQuotaFirestoreScope(cleanupCtx, fsClient.Raw(), scope); err != nil {
+			t.Errorf("clean LWC-493 Firestore scope: %v", err)
+		}
+		if err := deletePipelineQuotaObjectScope(cleanupCtx, storageClient, workerBucket, scope); err != nil {
+			t.Errorf("clean LWC-493 scoped GCS objects: %v", err)
+		}
+		for _, collection := range []string{"compile_receipts", "attempts", "candidates", "jobs"} {
+			parent := stateRef
+			if collection == "attempts" {
+				parent = scopedfirestore.Collection(fsClient.Raw(), "pipeline_quota_reservations").Doc(reservationID)
+			}
+			docs, err := parent.Collection(collection).Documents(cleanupCtx).GetAll()
+			if err == nil {
+				for _, doc := range docs {
+					_, _ = doc.Ref.Delete(cleanupCtx)
+				}
+			}
+		}
+		works, err := scopedfirestore.Collection(fsClient.Raw(), profileruntime.WorkCollection).Where("user_id", "==", userID).Documents(cleanupCtx).GetAll()
+		if err == nil {
+			for _, doc := range works {
+				_, _ = doc.Ref.Delete(cleanupCtx)
+			}
+		}
+		for _, ref := range []*cloudfirestore.DocumentRef{
+			stateRef,
+			scopedfirestore.Collection(fsClient.Raw(), "projects").Doc(projectDocID(userID, projectID)),
+			scopedfirestore.Collection(fsClient.Raw(), "pipeline_quota_reservations").Doc(reservationID),
+			scopedfirestore.Collection(fsClient.Raw(), "pipeline_quota").Doc(scopedfirestore.QuotaDocID(userID, projectID)),
+			scopedfirestore.Collection(fsClient.Raw(), "pipeline_scheduled_daily").Doc(reservationID),
+			scopedfirestore.Collection(fsClient.Raw(), "pipeline_scheduled_status").Doc(scopedfirestore.QuotaDocID(userID, projectID)),
+		} {
+			_, _ = ref.Delete(cleanupCtx)
+		}
+		if err := deleteQuotaFixtureBucket(cleanupCtx, storageClient, workerBucket); err != nil {
+			t.Errorf("clean LWC-493 Worker bucket: %v", err)
+		}
+		if err := quotaClient.Close(); err != nil {
+			t.Errorf("close LWC-493 scoped GCS client: %v", err)
+		}
+		if err := fsClient.Close(); err != nil {
+			t.Errorf("close LWC-493 Firestore client: %v", err)
+		}
+		if err := storageClient.Close(); err != nil {
+			t.Errorf("close LWC-493 Storage client: %v", err)
+		}
+	})
+
+	config := []byte("[pipeline]\nauto_approve = true\nauto_commit = false\nauto_maintain = false\nrelation_extraction = false\nrun_timeout_seconds = 15\n")
+	configWriter := storageClient.Bucket(workerBucket).Object("pipeline-config/synto.toml").NewWriter(ctx)
+	if _, err := configWriter.Write(config); err != nil {
+		_ = configWriter.Close()
+		t.Fatalf("write local Worker config: %v", err)
+	}
+	if err := configWriter.Close(); err != nil {
+		t.Fatalf("close local Worker config: %v", err)
+	}
+	_, err = scopedfirestore.Collection(fsClient.Raw(), "projects").Doc(projectDocID(userID, projectID)).Set(ctx, map[string]interface{}{
+		"user_id": userID, "project_id": projectID, "status": "ready",
+	})
+	if err != nil {
+		t.Fatalf("seed owned QA Project: %v", err)
+	}
+
+	firstRequirements := []ProfileRequirement{{ID: "r1", Text: "V2: preserve source venue and date details."}}
+	firstDigest := profileRequirementsDigest(firstRequirements)
+	stateRef := scopedfirestore.Collection(fsClient.Raw(), "projects").Doc(projectDocID(userID, projectID)).Collection("profile").Doc("state")
+	if _, err := stateRef.Set(ctx, ProfileState{
+		ProjectID: projectID, Revision: 2, Requirements: firstRequirements,
+		BootstrapGuidance: &ProfileBootstrapGuidance{Status: "pending", ProfileRevision: 2, InputDigest: firstDigest},
+	}); err != nil {
+		t.Fatalf("seed saved V2 Profile with unprepared bootstrap: %v", err)
+	}
+	projectStore := quotaClient.WithScope(userID, projectID)
+	if _, err := projectStore.WriteBytes(ctx, []byte("LWC413_CAUSAL_E2E: scheduled source content"), "raw/lwc413-e2e-source.md"); err != nil {
+		t.Fatalf("seed affected source backlog: %v", err)
+	}
+
+	reservationRef := scopedfirestore.Collection(fsClient.Raw(), "pipeline_quota_reservations").Doc(reservationID)
+	budgetRef := scopedfirestore.Collection(fsClient.Raw(), "pipeline_scheduled_daily").Doc(reservationID)
+	if _, err := reservationRef.Set(ctx, map[string]interface{}{
+		"user_id": userID, "project_id": projectID, "attempt_id": oldAttemptID,
+		"trigger": "scheduled_daily", "budget_class": "scheduled_daily", "day_key": dayKey,
+		"settlement_status": "released", "intent_status": "failed", "intent_mode": "incremental",
+		"reserved_at": now.Add(-time.Minute), "created_at": now.Add(-time.Minute),
+	}); err != nil {
+		t.Fatalf("seed prior failed/released scheduled attempt: %v", err)
+	}
+	if _, err := budgetRef.Set(ctx, map[string]interface{}{
+		"user_id": userID, "project_id": projectID, "day_key": dayKey, "used": false,
+	}); err != nil {
+		t.Fatalf("seed reusable daily entitlement: %v", err)
+	}
+	fixture := newQuotaCloudRunFixture()
+	h := New(quotaClient, fsClient, search.NewIndex(), conceptcache.New(), nil, nil)
+	h.SetAccountLookup(func(context.Context, string) (*auth.UserRecord, error) {
+		return &auth.UserRecord{Status: auth.AccountActive, Role: "member"}, nil
+	})
+	h.SetPipelineQuotaConfig(5, 1, 1, nil)
+	h.SetScheduledPipelineConfig("0 * * * *", "UTC", "https://bff.example", "lwc493-scheduler@llm-wiki-cloud.iam.gserviceaccount.com")
+	h.SetPipelineJobURL("http://run.test/job:run")
+	h.metadataTokenURL = "http://run.test/token"
+	h.httpClient = &http.Client{Transport: roundTripFunc(fixture.roundTrip)}
+
+	sweep, err := h.RunScheduledPipelineSweep(ctx, now)
+	if err != nil || sweep.Accepted != 1 || sweep.Unavailable != 0 {
+		t.Fatalf("scheduled affected-state sweep=%+v err=%v; want one durable preparing attempt", sweep, err)
+	}
+	intent, found, err := fsClient.GetPipelineIntent(ctx, userID, projectID, reservationID)
+	if err != nil || !found || intent.AttemptID == "" || intent.AttemptID == reservationID || intent.IntentStatus != "preparing" ||
+		intent.ProfileRevision != 2 || intent.RequirementsDigest != firstDigest || len(intent.ProfileRequirements) != 1 {
+		t.Fatalf("scheduled producer intent=%+v found=%t err=%v; want fresh attempt and frozen preparing V2 snapshot", intent, found, err)
+	}
+	attemptID := intent.AttemptID
+	work := profileruntime.Work{UserID: userID, ProjectID: projectID, Kind: "pipeline", ID: reservationID, AttemptID: attemptID}
+	workRef := scopedfirestore.Collection(fsClient.Raw(), profileruntime.WorkCollection).Doc(profileruntime.WorkID(work))
+	workSnapshot, err := workRef.Get(ctx)
+	if err != nil || workSnapshot.Data()["attempt_id"] != attemptID || workSnapshot.Data()["pending"] != true {
+		t.Fatalf("durable scheduled preparation work=%v err=%v; want pending attempt-bound work", workSnapshot.Data(), err)
+	}
+
+	// Saving V3 while A waits must not change A's frozen V2 input.
+	thirdRequirements := []ProfileRequirement{{ID: "r1", Text: "V3: preserve explicit exhibit names and times."}}
+	thirdDigest := profileRequirementsDigest(thirdRequirements)
+	if _, err := stateRef.Set(ctx, ProfileState{
+		ProjectID: projectID, Revision: 3, Requirements: thirdRequirements,
+		BootstrapGuidance: &ProfileBootstrapGuidance{Status: "pending", ProfileRevision: 3, InputDigest: thirdDigest},
+	}); err != nil {
+		t.Fatalf("save later V3 Profile while scheduled A waits: %v", err)
+	}
+	profileProvider := &deterministicFakeProfileProvider{model: "controlled-local-model"}
+	dispatcher := &ProfileDispatcher{Handler: h, Provider: profilederive.NewProvider(profileProvider)}
+	if processed, err := dispatcher.Dispatch(ctx, 10); err != nil || processed != 1 {
+		t.Fatalf("auto-continue scheduled preparation processed=%d err=%v; want one attempt", processed, err)
+	}
+	intent, found, err = fsClient.GetPipelineIntent(ctx, userID, projectID, reservationID)
+	if err != nil || !found || intent.AttemptID != attemptID || intent.ProfileRevision != 2 || intent.RequirementsDigest != firstDigest ||
+		intent.IntentStatus != "compiling" || intent.ExecutionID != "fixture-execution-1" || intent.ConsumedBootstrapGuidance == nil {
+		t.Fatalf("prepared scheduled intent=%+v found=%t err=%v; want frozen V2 ready/invoked exactly once", intent, found, err)
+	}
+	if !strings.Contains(profileProvider.input, "V2: preserve source venue") {
+		t.Fatalf("controlled local preparation input=%q; want frozen V2 requirements", profileProvider.input)
+	}
+	fixture.mu.Lock()
+	requests := append([]map[string]string(nil), fixture.requests...)
+	fixture.mu.Unlock()
+	if len(requests) != 1 || requests[0][pipelineReservationEnvName] != reservationID || requests[0][pipelineAttemptEnvName] != attemptID {
+		t.Fatalf("scheduled provider request env=%v; want one fenced reservation/attempt invocation", requests)
+	}
+	firstArchive, err := scopedfirestore.Collection(fsClient.Raw(), "pipeline_quota_reservations").Doc(reservationID).Collection("attempts").Doc(oldAttemptID).Get(ctx)
+	if err != nil || firstArchive.Data()["intent_status"] != "failed" || firstArchive.Data()["settlement_status"] != "released" {
+		t.Fatalf("previous failed attempt archive=%v err=%v; want retained history", firstArchive.Data(), err)
+	}
+	currentProfile, err := h.profileRepository.(*firestoreProfileRepository).GetProfile(ctx, userID, projectID)
+	if err != nil || currentProfile.Revision != 3 || profileRequirementsDigest(currentProfile.Requirements) != thirdDigest {
+		t.Fatalf("current Profile changed by frozen V2 execution: state=%+v err=%v", currentProfile, err)
+	}
+
+	worker := buildLocalCloudPipelineFixtureWorker(t, ctx)
+	storageEndpoint := strings.TrimSpace(os.Getenv("STORAGE_EMULATOR_HOST"))
+	firestoreEndpoint := strings.TrimSpace(os.Getenv("FIRESTORE_EMULATOR_HOST"))
+	profileResolver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"schema_version":2,"snapshot_digest":%q,"role_map_version":1,"source":"bootstrap","profiles":[]}`, strings.Repeat("a", 64))
+	}))
+	defer profileResolver.Close()
+	firstWorker, err := runScheduledQuotaWorkerFixture(t, ctx, worker, workerBucket, userID, projectID,
+		intent.ExecutionID, reservationID, attemptID, scope, database, firestoreEndpoint, storageEndpoint, profileResolver.URL+"/internal/pipeline/llm-profile")
+	if err != nil {
+		t.Fatalf("run actual scheduled Worker consumer: %v\n%s", err, firstWorker)
+	}
+	publicationBytes, err := projectStore.ReadLocalPublicationReceipt(ctx, intent.ExecutionID)
+	if err != nil {
+		t.Fatalf("read scheduled Worker publication receipt: %v", err)
+	}
+	publication, err := localcloud.DecodePublicationReceipt(publicationBytes)
+	if err != nil || publication.ExecutionID != intent.ExecutionID {
+		t.Fatalf("scheduled Worker publication=%+v err=%v", publication, err)
+	}
+	compileSnapshot, err := stateRef.Collection(profileruntime.CompileReceiptsCollection).Doc(publication.GenerationID).Get(ctx)
+	var compileReceipt profileruntime.CompileReceipt
+	if err != nil || compileSnapshot.DataTo(&compileReceipt) != nil || compileReceipt.ExecutionID != intent.ExecutionID ||
+		compileReceipt.PipelineReservationID != reservationID || compileReceipt.ProfileRevision != 2 || compileReceipt.RequirementsDigest != firstDigest ||
+		compileReceipt.ConsumedGuidanceKind != "bootstrap" || compileReceipt.ConsumedBootstrapGuidance == nil ||
+		compileReceipt.ConsumedBootstrapGuidance.Revision != intent.ConsumedBootstrapGuidance.Revision {
+		t.Fatalf("scheduled Worker compile receipt=%+v err=%v; want exact frozen V2 bootstrap identity", compileReceipt, err)
+	}
+	fixture.setStatus(intent.ExecutionID, "SUCCEEDED")
+	if err := h.ReconcilePipelineQuota(ctx); err != nil {
+		t.Fatalf("settle scheduled Worker publication: %v", err)
+	}
+	settled, found, err := fsClient.GetQuotaReservation(ctx, reservationID)
+	if err != nil || !found || settled.AttemptID != attemptID || settled.IntentStatus != "succeeded" || settled.SettlementStatus != "charged" {
+		t.Fatalf("settled scheduled reservation=%+v found=%t err=%v; want exact attempt charged", settled, found, err)
+	}
+	scheduledStatus, err := fsClient.LoadScheduledPipelineStatus(ctx, userID, projectID, now)
+	if err != nil || scheduledStatus.LastAttemptID != attemptID || scheduledStatus.LastReservationID != reservationID ||
+		scheduledStatus.LastExecutionID != intent.ExecutionID || scheduledStatus.LastResult != "SUCCEEDED" || !scheduledStatus.BudgetUsed {
+		t.Fatalf("scheduled exact-incarnation status=%+v err=%v", scheduledStatus, err)
+	}
+	newRaw, rawDirty, annotationDirty, err := h.pendingWorkForProject(ctx, userID, projectID)
+	if err != nil || newRaw+rawDirty+annotationDirty != 0 {
+		t.Fatalf("published source backlog counts=%d/%d/%d err=%v; want zero remaining source work", newRaw, rawDirty, annotationDirty, err)
+	}
+
+	if _, err := projectStore.WriteBytes(ctx, []byte("the next legal pending source"), "raw/next.md"); err != nil {
+		t.Fatalf("seed next legal source work: %v", err)
+	}
+	secondIntent := triggerQuotaPipelineIntent(t, h, userID, projectID)
+	if secondIntent.IntentID == "" || secondIntent.IntentStatus != "preparing" || secondIntent.ExecutionID != "" {
+		t.Fatalf("next legal manual intent=%+v; want durable V3 preparation", secondIntent)
+	}
+	if processed, err := dispatcher.Dispatch(ctx, 10); err != nil || processed < 1 {
+		t.Fatalf("auto-continue next legal manual intent processed=%d err=%v", processed, err)
+	}
+	manualReservation, found, err := fsClient.GetPipelineIntent(ctx, userID, projectID, secondIntent.IntentID)
+	if err != nil || !found || manualReservation.IntentStatus != "compiling" || manualReservation.ExecutionID == "" {
+		t.Fatalf("next legal manual reservation=%+v found=%t err=%v", manualReservation, found, err)
+	}
+	secondWorker, err := runScheduledQuotaWorkerFixture(t, ctx, worker, workerBucket, userID, projectID,
+		manualReservation.ExecutionID, manualReservation.ID, pipelineReservationAttemptID(manualReservation), scope, database, firestoreEndpoint, storageEndpoint, profileResolver.URL+"/internal/pipeline/llm-profile")
+	if err != nil {
+		t.Fatalf("run second legal Worker execution: %v\n%s", err, secondWorker)
+	}
+	fixture.setStatus(manualReservation.ExecutionID, "SUCCEEDED")
+	if err := h.ReconcilePipelineQuota(ctx); err != nil {
+		t.Fatalf("settle second legal Worker execution: %v", err)
+	}
+	settledManual, found, err := fsClient.GetQuotaReservation(ctx, manualReservation.ID)
+	manualRuns, manualDay, _, quotaErr := fsClient.LoadQuotaState(ctx, userID, projectID)
+	if err != nil || !found || settledManual.SettlementStatus != "charged" || settledManual.IntentStatus != "succeeded" ||
+		quotaErr != nil || manualRuns != 1 || manualDay != pipelinequota.DayKeyUTC(time.Now().UTC()) {
+		t.Fatalf("second legal run settlement=%+v found=%t err=%v manual_quota=%d/%q quotaErr=%v", settledManual, found, err, manualRuns, manualDay, quotaErr)
+	}
+}
+
 func TestScheduledPipelineEntrypointRejectsUnauthenticatedCaller(t *testing.T) {
 	h := New(nil, nil, nil, nil, nil, nil)
 	const audience = "https://bff.example"
@@ -1692,6 +1970,32 @@ func runCloudRunQuotaFixtureWorker(t *testing.T, ctx context.Context, worker, bu
 	command.Env = []string{
 		"GOOGLE_CLOUD_PROJECT=llm-wiki-cloud", "GCP_PROJECT=llm-wiki-cloud",
 		"STORAGE_EMULATOR_HOST=" + storageEndpoint, "LOCAL_CLOUD_SCOPE=", "TMPDIR=" + os.TempDir(),
+	}
+	output, err := command.CombinedOutput()
+	return output, err
+}
+
+func runScheduledQuotaWorkerFixture(t *testing.T, ctx context.Context, worker, bucket, userID, projectID, executionID, reservationID, attemptID, scope, database, firestoreEndpoint, storageEndpoint, profileResolverURL string) ([]byte, error) {
+	t.Helper()
+	configPath := filepath.Join(t.TempDir(), "synto.toml")
+	bindingsPath := filepath.Join(filepath.Dir(configPath), "private-bindings.json")
+	if err := os.WriteFile(configPath, []byte("[pipeline]\nauto_approve = true\nauto_commit = false\nauto_maintain = false\nrelation_extraction = false\nrun_timeout_seconds = 15\n"), 0o600); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(bindingsPath, []byte(`{"environment":"local"}`), 0o600); err != nil {
+		return nil, err
+	}
+	command := exec.CommandContext(ctx, worker,
+		"--bucket", bucket, "--user-id", userID, "--project-id", projectID,
+		"--execution-id", executionID, "--pipeline-config", configPath, "--pipeline-private-bindings", bindingsPath,
+		"run", `[["run","--auto-approve"]]`)
+	command.Env = []string{
+		"GOOGLE_CLOUD_PROJECT=llm-wiki-cloud", "GCP_PROJECT=llm-wiki-cloud",
+		"FIRESTORE_EMULATOR_HOST=" + firestoreEndpoint, "FIRESTORE_DATABASE_ID=" + database,
+		"STORAGE_EMULATOR_HOST=" + storageEndpoint, "LOCAL_CLOUD_SCOPE=" + scope,
+		"LWC_PROFILE_RESOLVER_URL=" + profileResolverURL, "LWC_PROFILE_RESOLVER_AUDIENCE=https://bff.example",
+		"PIPELINE_RESERVATION_ID=" + reservationID, "PIPELINE_ATTEMPT_ID=" + attemptID,
+		"TMPDIR=" + os.TempDir(),
 	}
 	output, err := command.CombinedOutput()
 	return output, err
@@ -1954,6 +2258,7 @@ type quotaCloudRunExecution struct {
 	UserID        string
 	ProjectID     string
 	ReservationID string
+	AttemptID     string
 	Status        string
 }
 
@@ -1993,11 +2298,15 @@ func (f *quotaCloudRunFixture) setExecutionUnavailable(executionID string, unava
 }
 
 func (f *quotaCloudRunFixture) addExecution(userID, projectID, reservationID, state string) string {
+	return f.addExecutionWithAttempt(userID, projectID, reservationID, "", state)
+}
+
+func (f *quotaCloudRunFixture) addExecutionWithAttempt(userID, projectID, reservationID, attemptID, state string) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.next++
 	executionID := fmt.Sprintf("fixture-execution-%d", f.next)
-	f.executions[executionID] = &quotaCloudRunExecution{ID: executionID, UserID: userID, ProjectID: projectID, ReservationID: reservationID, Status: state}
+	f.executions[executionID] = &quotaCloudRunExecution{ID: executionID, UserID: userID, ProjectID: projectID, ReservationID: reservationID, AttemptID: attemptID, Status: state}
 	return executionID
 }
 
@@ -2033,7 +2342,7 @@ func (f *quotaCloudRunFixture) roundTrip(request *http.Request) (*http.Response,
 		if f.projectsWithInvokeError[env["PROJECT_ID"]] {
 			return testHTTPResponse(http.StatusForbidden, `{"error":"fixture invoke rejected"}`), nil
 		}
-		executionID := f.addExecution(env["USER_ID"], env["PROJECT_ID"], env["PIPELINE_RESERVATION_ID"], "RUNNING")
+		executionID := f.addExecutionWithAttempt(env["USER_ID"], env["PROJECT_ID"], env["PIPELINE_RESERVATION_ID"], env["PIPELINE_ATTEMPT_ID"], "RUNNING")
 		if f.loseResponseProjects[env["PROJECT_ID"]] {
 			return nil, errors.New("fixture accepted invocation but lost response")
 		}
@@ -2070,12 +2379,17 @@ func (f *quotaCloudRunFixture) apiExecution(execution *quotaCloudRunExecution) m
 	return map[string]any{
 		"name":             "projects/test/locations/local/jobs/job/executions/" + execution.ID,
 		"completionStatus": execution.Status,
-		"template": map[string]any{"containers": []any{map[string]any{"env": []any{
+		"template": map[string]any{"containers": []any{map[string]any{"env": append([]any{
 			map[string]string{"name": "USER_ID", "value": execution.UserID},
 			map[string]string{"name": "PROJECT_ID", "value": execution.ProjectID},
 			map[string]string{"name": "TASK_TYPE", "value": "pipeline"},
 			map[string]string{"name": "PIPELINE_RESERVATION_ID", "value": execution.ReservationID},
-		}}}},
+		}, func() []any {
+			if execution.AttemptID == "" {
+				return nil
+			}
+			return []any{map[string]string{"name": "PIPELINE_ATTEMPT_ID", "value": execution.AttemptID}}
+		}()...)}}},
 	}
 }
 

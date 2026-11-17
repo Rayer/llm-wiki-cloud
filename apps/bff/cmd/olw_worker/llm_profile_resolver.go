@@ -50,6 +50,7 @@ type pipelineLLMModels struct {
 
 type pipelineLLMProfileResolverRequest struct {
 	ReservationID      string `json:"reservation_id"`
+	AttemptID          string `json:"attempt_id,omitempty"`
 	UserID             string `json:"user_id"`
 	ProjectID          string `json:"project_id"`
 	IncludeCredentials bool   `json:"include_credentials"`
@@ -90,7 +91,7 @@ func resolvePipelineLLMProfileResponseWithCredentials(ctx context.Context, cfg w
 	}
 	client.Timeout = 10 * time.Second
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	body, err := json.Marshal(pipelineLLMProfileResolverRequest{ReservationID: cfg.PipelineReservationID, UserID: cfg.UserID, ProjectID: cfg.ProjectID, IncludeCredentials: includeCredentials})
+	body, err := json.Marshal(pipelineLLMProfileResolverRequest{ReservationID: cfg.PipelineReservationID, AttemptID: cfg.PipelineAttemptID, UserID: cfg.UserID, ProjectID: cfg.ProjectID, IncludeCredentials: includeCredentials})
 	if err != nil {
 		return pipelineLLMProfileResponse{}, errors.New("Pipeline profile request is invalid")
 	}

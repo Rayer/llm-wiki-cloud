@@ -1247,6 +1247,7 @@ const (
 	pipelineStageSuggestedQueries = "suggested-queries"
 	pipelineStageEnvName          = "PIPELINE_STAGE"
 	pipelineReservationEnvName    = "PIPELINE_RESERVATION_ID"
+	pipelineAttemptEnvName        = "PIPELINE_ATTEMPT_ID"
 )
 
 // invokePipelineJob starts the shared Cloud Run pipeline job for userID/projectID.
@@ -1277,6 +1278,10 @@ func confirmedPipelineInvocationRejection(statusCode int) bool {
 }
 
 func (h *Handler) invokePipelineJobStageWithReservation(ctx context.Context, userID, projectID string, cleanRebuild bool, stage, reservationID string) (executionID string, err error) {
+	return h.invokePipelineJobStageWithAttempt(ctx, userID, projectID, cleanRebuild, stage, reservationID, reservationID)
+}
+
+func (h *Handler) invokePipelineJobStageWithAttempt(ctx context.Context, userID, projectID string, cleanRebuild bool, stage, reservationID, attemptID string) (executionID string, err error) {
 	ctx, invokeSpan := observability.StartPipelineSpan(ctx, "pipeline.job.invoke")
 	defer func() {
 		outcome := pipelineTraceOutcome(err)
@@ -1312,6 +1317,14 @@ func (h *Handler) invokePipelineJobStageWithReservation(ctx context.Context, use
 		return "", fmt.Errorf("clean_rebuild is only valid for full pipeline stage")
 	}
 	if h.localPipeline != nil {
+		if executor, ok := h.localPipeline.(interface {
+			StartWithAttempt(context.Context, string, string, string, bool, string, string) (string, error)
+		}); ok {
+			return executor.StartWithAttempt(ctx, userID, projectID, stage, cleanRebuild, reservationID, attemptID)
+		}
+		if attemptID != "" && attemptID != reservationID {
+			return "", errors.New("local pipeline executor cannot fence reservation attempts")
+		}
 		return h.localPipeline.Start(ctx, userID, projectID, stage, cleanRebuild, reservationID)
 	}
 
@@ -1336,6 +1349,10 @@ func (h *Handler) invokePipelineJobStageWithReservation(ctx context.Context, use
 	}
 	if reservationID != "" {
 		env = append(env, gin.H{"name": pipelineReservationEnvName, "value": reservationID})
+		if attemptID == "" {
+			attemptID = reservationID
+		}
+		env = append(env, gin.H{"name": pipelineAttemptEnvName, "value": attemptID})
 	}
 	if cleanRebuild {
 		// Worker treats only explicit true as clean rebuild; omitted means false.
@@ -1806,7 +1823,12 @@ func (h *Handler) pipelineExecutionStatusForOwner(ctx context.Context, execution
 }
 
 func (h *Handler) pipelineExecutionStatusForOwnerWithIdentity(ctx context.Context, executionID, userID, projectID string) (*handler.PipelineExecutionResponse, string, error) {
-	return h.pipelineExecutionStatusWithOwnerAndIdentity(ctx, executionID, &pipelineExecutionOwner{
+	response, reservationID, _, err := h.pipelineExecutionStatusForOwnerWithIncarnation(ctx, executionID, userID, projectID)
+	return response, reservationID, err
+}
+
+func (h *Handler) pipelineExecutionStatusForOwnerWithIncarnation(ctx context.Context, executionID, userID, projectID string) (*handler.PipelineExecutionResponse, string, string, error) {
+	return h.pipelineExecutionStatusWithOwnerAndIncarnation(ctx, executionID, &pipelineExecutionOwner{
 		userID:    userID,
 		projectID: projectID,
 	})
@@ -1826,48 +1848,60 @@ func (h *Handler) pipelineExecutionStatusWithOwner(ctx context.Context, executio
 // the exact Cloud Run execution detail used to construct the response. Keep
 // this identity internal to source discovery; it is not part of API JSON.
 func (h *Handler) pipelineExecutionStatusWithOwnerAndIdentity(ctx context.Context, executionID string, owner *pipelineExecutionOwner) (*handler.PipelineExecutionResponse, string, error) {
+	response, reservationID, _, err := h.pipelineExecutionStatusWithOwnerAndIncarnation(ctx, executionID, owner)
+	return response, reservationID, err
+}
+
+func (h *Handler) pipelineExecutionStatusWithOwnerAndIncarnation(ctx context.Context, executionID string, owner *pipelineExecutionOwner) (*handler.PipelineExecutionResponse, string, string, error) {
 	if h.localPipeline != nil && owner != nil {
+		if executor, ok := h.localPipeline.(interface {
+			StatusWithIncarnation(context.Context, string, string, string) (*handler.PipelineExecutionResponse, string, string, error)
+		}); ok {
+			return executor.StatusWithIncarnation(ctx, owner.userID, owner.projectID, executionID)
+		}
 		response, err := h.localPipeline.Status(ctx, owner.userID, owner.projectID, executionID)
-		return response, "", err
+		return response, "", "", err
 	}
 	token, err := h.getMetadataAccessToken(ctx)
 	if err != nil {
-		return nil, "", err
+		return nil, "", "", err
 	}
 
 	if executionID != "" {
 		execution, err := h.fetchCloudRunExecution(ctx, token, executionID)
 		if err != nil {
-			return nil, "", err
+			return nil, "", "", err
 		}
 		if shortCloudRunExecutionName(execution.Name, true) != executionID {
-			return nil, "", errPipelineExecutionNotFound
+			return nil, "", "", errPipelineExecutionNotFound
 		}
 		if owner != nil && !cloudRunExecutionOwnedBy(execution, owner.userID, owner.projectID) {
-			return nil, "", errPipelineExecutionNotFound
+			return nil, "", "", errPipelineExecutionNotFound
 		}
 		response := newPipelineExecutionResponse(execution)
 		reservationID := ""
+		attemptID := ""
 		if owner != nil {
 			reservationID = cloudRunExecutionReservationID(execution, owner.userID, owner.projectID)
+			attemptID = cloudRunExecutionAttemptID(execution, owner.userID, owner.projectID)
 			h.attachPipelineDiagnostic(ctx, response, owner)
 			h.attachPipelineQuotaSettlement(ctx, response, owner, reservationID)
 			h.attachPipelineExecutionEvidence(ctx, response, owner, executionID)
 		}
-		return response, reservationID, nil
+		return response, reservationID, attemptID, nil
 	}
 
 	pageToken := ""
 	for {
 		executions, err := h.listCloudRunExecutions(ctx, token, pageToken)
 		if err != nil {
-			return nil, "", err
+			return nil, "", "", err
 		}
 		if owner == nil {
 			if len(executions.Executions) == 0 {
-				return nil, "", nil
+				return nil, "", "", nil
 			}
-			return newPipelineExecutionResponse(executions.Executions[0]), "", nil
+			return newPipelineExecutionResponse(executions.Executions[0]), "", "", nil
 		}
 		for _, execution := range executions.Executions {
 			if cloudRunExecutionOwnedBy(execution, owner.userID, owner.projectID) {
@@ -1875,13 +1909,14 @@ func (h *Handler) pipelineExecutionStatusWithOwnerAndIdentity(ctx context.Contex
 				executionID := shortCloudRunExecutionName(execution.Name, true)
 				h.attachPipelineDiagnostic(ctx, response, owner)
 				reservationID := cloudRunExecutionReservationID(execution, owner.userID, owner.projectID)
+				attemptID := cloudRunExecutionAttemptID(execution, owner.userID, owner.projectID)
 				h.attachPipelineQuotaSettlement(ctx, response, owner, reservationID)
 				h.attachPipelineExecutionEvidence(ctx, response, owner, executionID)
-				return response, reservationID, nil
+				return response, reservationID, attemptID, nil
 			}
 		}
 		if executions.NextPageToken == "" {
-			return nil, "", nil
+			return nil, "", "", nil
 		}
 		pageToken = executions.NextPageToken
 	}
@@ -2076,7 +2111,7 @@ func (h *Handler) writeConfirmedPipelineInvokeFailure(ctx context.Context, userI
 	if err != nil {
 		return err
 	}
-	_, err = h.store.Scope(userID, projectID).WriteBytes(ctx, data, "cache/pipeline-"+reservationID+".failure.json")
+	_, err = h.store.Scope(userID, projectID).WriteBytes(ctx, data, pipelinediagnostic.ConfirmedInvokeFailureObjectPath(reservationID, attemptID))
 	return err
 }
 
@@ -2088,7 +2123,7 @@ func (h *Handler) hasConfirmedPipelineInvokeFailure(ctx context.Context, reserva
 	if !ok {
 		return false, nil
 	}
-	data, err := reader.ReadFileLimited(ctx, "cache/pipeline-"+reservation.ID+".failure.json", maxPipelineDiagnosticBytes+1)
+	data, err := reader.ReadFileLimited(ctx, pipelinediagnostic.ConfirmedInvokeFailureObjectPath(reservation.ID, reservation.AttemptID), maxPipelineDiagnosticBytes+1)
 	if errors.Is(err, store.ErrObjectNotExist) || errors.Is(err, storage.ErrObjectNotExist) {
 		return false, nil
 	}
