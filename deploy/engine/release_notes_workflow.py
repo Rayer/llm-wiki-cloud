@@ -497,34 +497,57 @@ def validate_history_result_handoff(metadata: dict, run: dict, result_directory:
 
 def validate_resend_package_artifact(metadata: dict, run: dict, *, expected_artifact_id: str,
                                      result_artifact_id: str, operation: str,
+                                     environment: str = "development",
+                                     repository: str | None = None,
                                      output_path: str | None = None) -> dict:
     """Validate a private package artifact's run identity and optional history binding."""
     if (not isinstance(metadata, dict) or not isinstance(run, dict) or
             not ID_RE.fullmatch(expected_artifact_id) or not ID_RE.fullmatch(result_artifact_id) or
-            operation not in release_notes.TRANSITION_OPS):
+            operation not in release_notes.TRANSITION_OPS or environment not in DESTINATIONS):
         _fail("package-artifact-input-invalid")
     workflow_run = metadata.get("workflow_run")
     name = metadata.get("name")
-    match = PACKAGE_NAME_RE.fullmatch(name) if isinstance(name, str) else None
+    current_match = CURRENT_PACKAGE_NAME_RE.fullmatch(name) if isinstance(name, str) else None
+    history_match = PACKAGE_NAME_RE.fullmatch(name) if isinstance(name, str) else None
+    historical = bool(history_match and history_match.group("history"))
+    if current_match and current_match.group("environment") == environment:
+        match = current_match
+        run_id, run_attempt = match.group("run_id"), match.group("attempt")
+        package_environment = environment
+        package_branch = DESTINATIONS[environment]["branch"]
+        package_workflow = DESTINATIONS[environment]["workflow_path"]
+    elif historical and environment == "development":
+        match = history_match
+        run_id, run_attempt = match.group("run_id"), match.group("attempt")
+        package_environment = "development"
+        package_branch = DESTINATIONS[package_environment]["branch"]
+        package_workflow = DESTINATIONS[package_environment]["workflow_path"]
+    else:
+        _fail("package-artifact-not-qualified")
+    if package_environment == "production" and operation != "release":
+        _fail("package-artifact-not-qualified")
     run_id = str(workflow_run.get("id")) if isinstance(workflow_run, dict) else ""
     if (not isinstance(workflow_run, dict) or
             type(metadata.get("id")) is not int or metadata.get("id") != int(expected_artifact_id) or
-            metadata.get("expired") is not False or not match or
+            metadata.get("expired") is not False or
             not ID_RE.fullmatch(run_id) or run_id != match.group("run_id") or
             type(run.get("id")) is not int or run.get("id") != int(run_id) or
-            type(run.get("run_attempt")) is not int or run.get("run_attempt") != int(match.group("attempt")) or
+            type(run.get("run_attempt")) is not int or run.get("run_attempt") != int(run_attempt) or
             run.get("event") != "workflow_dispatch" or
-            not _workflow_path_matches(run.get("path"), WORKFLOW_PATH) or
+            not _workflow_path_matches(run.get("path"), package_workflow, package_branch) or
             run.get("status") != "completed" or run.get("conclusion") != "success" or
-            run.get("head_branch") != "develop" or
+            run.get("head_branch") != package_branch or
             not isinstance(run.get("head_sha"), str) or re.fullmatch(r"[0-9a-f]{40}", run["head_sha"]) is None or
             not isinstance(metadata.get("digest"), str) or
             ARTIFACT_DIGEST_RE.fullmatch(metadata["digest"]) is None or
             not _valid_timestamp(metadata.get("expires_at")) or
-            workflow_run.get("head_branch") != run.get("head_branch") or
-            workflow_run.get("head_sha") != run.get("head_sha")):
+            workflow_run.get("head_branch") != package_branch or
+            workflow_run.get("head_sha") != run.get("head_sha") or
+            (repository is not None and
+             (not REPOSITORY_RE.fullmatch(repository) or
+              not isinstance(run.get("repository"), dict) or
+              run["repository"].get("full_name") != repository))):
         _fail("package-artifact-not-qualified")
-    historical = match.group("history") == "history"
     if historical and (match.group("operation") != operation or match.group("result_id") != result_artifact_id):
         _fail("historical-artifact-binding-mismatch")
     result = {
@@ -648,9 +671,10 @@ def validate_original_runtime_completion(result_metadata: dict, run: dict, jobs_
 
     package_binding = validate_resend_package_artifact(
         package_metadata, package_run, expected_artifact_id=expected_package_artifact_id,
-        result_artifact_id=expected_result_artifact_id, operation=operation)
+        result_artifact_id=expected_result_artifact_id, operation=operation,
+        environment=environment, repository=repository)
     package_name = package_binding["artifact_name"]
-    package_name_match = PACKAGE_NAME_RE.fullmatch(package_name)
+    package_name_match = CURRENT_PACKAGE_NAME_RE.fullmatch(package_name)
     if (package_binding["historical"] or not package_name_match or
             package_name_match.group("version") != plan["release_version"]):
         _fail("runtime-completion-package-identity-invalid")
@@ -1534,6 +1558,8 @@ def _argument_parser():
     package_artifact.add_argument("--artifact-id", required=True)
     package_artifact.add_argument("--result-artifact-id", required=True)
     package_artifact.add_argument("--operation", choices=sorted(release_notes.TRANSITION_OPS), required=True)
+    package_artifact.add_argument("--environment", choices=tuple(DESTINATIONS), required=True)
+    package_artifact.add_argument("--repository", required=True)
     package_artifact.add_argument("--output", default="")
     runtime_completion = subparsers.add_parser("validate-original-runtime-completion")
     runtime_completion.add_argument("--result-metadata", required=True)
@@ -1648,6 +1674,7 @@ def main(argv=None):
                 _read_json(Path(args.metadata)), _read_json(Path(args.run)),
                 expected_artifact_id=args.artifact_id,
                 result_artifact_id=args.result_artifact_id, operation=args.operation,
+                environment=args.environment, repository=args.repository,
                 output_path=args.output)
         elif args.command == "validate-original-runtime-completion":
             result = validate_original_runtime_completion(

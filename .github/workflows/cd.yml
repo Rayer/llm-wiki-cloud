@@ -603,7 +603,8 @@ jobs:
             --run "$RUNNER_TEMP/notes-package-run.json" \
             --artifact-id "$RELEASE_NOTES_ARTIFACT_ID" \
             --result-artifact-id "$RELEASE_NOTES_RESULT_ARTIFACT_ID" \
-            --operation "$RELEASE_NOTES_OPERATION" --output "$GITHUB_OUTPUT"
+            --operation "$RELEASE_NOTES_OPERATION" --environment "$RESULT_ENVIRONMENT" \
+            --repository "$GITHUB_REPOSITORY" --output "$GITHUB_OUTPUT"
       - name: Download exact TPM Release Notes artifact
         if: inputs.release_notes_action == 'run' || inputs.release_notes_action == 'retry'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093

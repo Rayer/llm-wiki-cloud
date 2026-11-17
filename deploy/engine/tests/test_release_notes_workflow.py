@@ -2381,9 +2381,14 @@ R10_CARRIER_ROOT = Path(os.environ.get(
     "LWC478_R10_CARRIER_DIR",
     "/Users/rayer/.hermes/profiles/lwc-tpm/artifacts/lwc-2026.11.4/dev/owner-uat-followups/conditional-production",
 ))
+R10_AUTHENTIC_METADATA_ROOT = Path(os.environ.get(
+    "LWC478_R10_AUTHENTIC_METADATA_DIR",
+    "/Users/rayer/.hermes/profiles/lwc-tpm/artifacts/lwc-2026.11.4/review-inputs/LWC-478-pr239-7213d4f3",
+))
 
 
-@unittest.skipUnless(R10_CARRIER_ROOT.is_dir(), "R10 authentic external carriers are not supplied")
+@unittest.skipUnless(R10_CARRIER_ROOT.is_dir() and R10_AUTHENTIC_METADATA_ROOT.is_dir(),
+                     "R10 authentic external carriers and run metadata are not supplied")
 class R10NativeReceiptRecoveryTests(unittest.TestCase):
     PROD_RESULT_ID = "14270957011"
     PROD_RUN_ID = "43955019304"
@@ -2506,46 +2511,15 @@ class R10NativeReceiptRecoveryTests(unittest.TestCase):
                     self.assertEqual(reproduction["error"], "selected-component-receipt-invalid")
                     self.assertEqual(reproduction["DEV_native_candidate"], candidate)
 
+    def authentic_runtime_metadata(self):
+        root = R10_AUTHENTIC_METADATA_ROOT
+        return tuple(json.loads((root / name).read_bytes()) for name in (
+            "authentic-result_metadata.json", "authentic-run.json",
+            "authentic-original-runtime-jobs.json", "authentic-package_metadata.json",
+            "authentic-package_run.json"))
+
     def make_runtime_completion(self, result_directory, package_directory, proof_path=None):
-        result_metadata = {
-            "id": int(self.PROD_RESULT_ID), "name": f"lwc-result-production-{self.PROD_RUN_ID}-{self.PROD_RUN_ATTEMPT}",
-            "expired": False, "digest": "sha256:" + self.PROD_RESULT_SHA256,
-            "expires_at": "2027-02-14T00:00:00Z",
-            "workflow_run": {"id": int(self.PROD_RUN_ID), "head_branch": "main",
-                             "head_sha": "a777142032190b1902872bba6a24bf372cf612e6"},
-        }
-        run = {
-            "id": int(self.PROD_RUN_ID), "run_attempt": self.PROD_RUN_ATTEMPT,
-            "event": "workflow_dispatch", "path": ".github/workflows/promote-production.yml@refs/heads/main",
-            "status": "completed", "conclusion": "failure", "head_branch": "main",
-            "head_sha": "a777142032190b1902872bba6a24bf372cf612e6",
-            "repository": {"full_name": "Rayer/llm-wiki-cloud"}, "workflow_id": 1001,
-        }
-        partial = json.loads((R10_CARRIER_ROOT / "production-partial-release-time.json").read_bytes())
-        completed_at = partial["runtime_success_completed_at"]
-        jobs = {
-            "total_count": 1,
-            "jobs": [{
-                "id": 2001, "name": "release / release", "run_id": int(self.PROD_RUN_ID),
-                "run_attempt": self.PROD_RUN_ATTEMPT, "status": "completed", "conclusion": "failure",
-                "steps": [{"name": "Execute bounded runtime or explicit recovery", "status": "completed",
-                           "conclusion": "success", "completed_at": completed_at}]
-            }],
-        }
-        package_run_id = "44000000001"
-        package_head = "b" * 40
-        package_name = f"lwc-release-notes-2026.11.4-development-{package_run_id}-1"
-        package_digest = "sha256:" + self.PROD_PACKAGE_SHA256
-        package_metadata = {
-            "id": int(self.PROD_PACKAGE_ID), "name": package_name, "digest": package_digest,
-            "expired": False, "expires_at": "2027-12-01T00:00:00Z",
-            "workflow_run": {"id": int(package_run_id), "head_branch": "develop", "head_sha": package_head},
-        }
-        package_run = {
-            "id": int(package_run_id), "run_attempt": 1, "event": "workflow_dispatch",
-            "path": ".github/workflows/deploy-dev.yml@refs/heads/develop", "status": "completed",
-            "conclusion": "success", "head_branch": "develop", "head_sha": package_head,
-        }
+        result_metadata, run, jobs, package_metadata, package_run = self.authentic_runtime_metadata()
         result = release_notes_workflow.validate_original_runtime_completion(
             result_metadata, run, jobs, package_metadata, package_run,
             result_directory=result_directory, package_directory=package_directory,
@@ -2555,14 +2529,14 @@ class R10NativeReceiptRecoveryTests(unittest.TestCase):
         return result, result_metadata, run, jobs, package_metadata, package_run
 
     def recovery_args(self, result_directory, package_directory, proof_path):
-        package_name = f"lwc-release-notes-2026.11.4-development-44000000001-1"
-        package_digest = "sha256:" + self.PROD_PACKAGE_SHA256
+        _, _, _, package_metadata, package_run = self.authentic_runtime_metadata()
+        package_digest = package_metadata["digest"]
         return release_notes_publish.parser().parse_args([
             "--action", "resend", "--directory", str(result_directory), "--package-dir", str(package_directory),
             "--environment", "prod", "--bucket", "synthetic-no-cloud", "--artifact-id", self.PROD_PACKAGE_ID,
             "--result-artifact-id", self.PROD_RESULT_ID, "--artifact-digest", package_digest,
-            "--artifact-metadata-digest", package_digest, "--artifact-name", package_name,
-            "--package-run-id", "44000000001", "--package-run-attempt", "1",
+            "--artifact-metadata-digest", package_digest, "--artifact-name", package_metadata["name"],
+            "--package-run-id", str(package_run["id"]), "--package-run-attempt", str(package_run["run_attempt"]),
             "--runtime-completion-evidence", str(proof_path),
             "--plan", str(result_directory / "plan.json"), "--operation", "release",
             "--run-id", self.PROD_RUN_ID, "--run-attempt", str(self.PROD_RUN_ATTEMPT),
@@ -2734,6 +2708,18 @@ class R10NativeReceiptRecoveryTests(unittest.TestCase):
                     expected_package_artifact_id=self.PROD_PACKAGE_ID,
                     environment="production", operation="release", repository="Rayer/llm-wiki-cloud")
 
+            unsuccessful_runtime_step = copy.deepcopy(jobs)
+            next(step for step in unsuccessful_runtime_step["jobs"][0]["steps"]
+                 if step.get("name") == release_notes_workflow.RUNTIME_STEP_NAME)["conclusion"] = "failure"
+            with self.assertRaisesRegex(release_notes_workflow.PackageWorkflowError,
+                                       "runtime-completion-step-invalid"):
+                release_notes_workflow.validate_original_runtime_completion(
+                    result_metadata, run, unsuccessful_runtime_step, package_metadata, package_run,
+                    result_directory=result_directory, package_directory=package_directory,
+                    expected_result_artifact_id=self.PROD_RESULT_ID,
+                    expected_package_artifact_id=self.PROD_PACKAGE_ID,
+                    environment="production", operation="release", repository="Rayer/llm-wiki-cloud")
+
             failure_path = result_directory / "release-notes-evidence.json"
             failure_evidence = json.loads(failure_path.read_bytes())
             failure_evidence["stages"][-1]["safe_class"] = "unrelated-publication-failure"
@@ -2746,6 +2732,58 @@ class R10NativeReceiptRecoveryTests(unittest.TestCase):
                     expected_result_artifact_id=self.PROD_RESULT_ID,
                     expected_package_artifact_id=self.PROD_PACKAGE_ID,
                     environment="production", operation="release", repository="Rayer/llm-wiki-cloud")
+
+    def test_production_current_package_uses_its_exact_main_wrapper_and_rejects_history(self):
+        result_metadata, run, jobs, package_metadata, package_run = self.authentic_runtime_metadata()
+        accepted = release_notes_workflow.validate_resend_package_artifact(
+            package_metadata, package_run, expected_artifact_id=self.PROD_PACKAGE_ID,
+            result_artifact_id=self.PROD_RESULT_ID, operation="release",
+            environment="production", repository="Rayer/llm-wiki-cloud")
+        self.assertFalse(accepted["historical"])
+        self.assertEqual(accepted["artifact_name"], package_metadata["name"])
+        self.assertEqual(accepted["package_run_id"], str(package_run["id"]))
+        self.assertEqual(accepted["package_run_attempt"], "1")
+
+        for label, environment, operation in (
+                ("wrong environment", "development", "release"),
+                ("wrong operation", "production", "deploy")):
+            with self.subTest(label=label), self.assertRaisesRegex(
+                    release_notes_workflow.PackageWorkflowError, "package-artifact-not-qualified"):
+                release_notes_workflow.validate_resend_package_artifact(
+                    package_metadata, package_run, expected_artifact_id=self.PROD_PACKAGE_ID,
+                    result_artifact_id=self.PROD_RESULT_ID, operation=operation,
+                    environment=environment, repository="Rayer/llm-wiki-cloud")
+
+        wrong_branch = copy.deepcopy(package_run)
+        wrong_branch["head_branch"] = "develop"
+        wrong_branch["repository"]["full_name"] = "Rayer/llm-wiki-cloud"
+        with self.assertRaisesRegex(release_notes_workflow.PackageWorkflowError,
+                                   "package-artifact-not-qualified"):
+            release_notes_workflow.validate_resend_package_artifact(
+                package_metadata, wrong_branch, expected_artifact_id=self.PROD_PACKAGE_ID,
+                result_artifact_id=self.PROD_RESULT_ID, operation="release",
+                environment="production", repository="Rayer/llm-wiki-cloud")
+
+        foreign_repository = copy.deepcopy(package_run)
+        foreign_repository["repository"]["full_name"] = "Rayer/other-repository"
+        with self.assertRaisesRegex(release_notes_workflow.PackageWorkflowError,
+                                   "package-artifact-not-qualified"):
+            release_notes_workflow.validate_resend_package_artifact(
+                package_metadata, foreign_repository, expected_artifact_id=self.PROD_PACKAGE_ID,
+                result_artifact_id=self.PROD_RESULT_ID, operation="release",
+                environment="production", repository="Rayer/llm-wiki-cloud")
+
+        production_history = copy.deepcopy(package_metadata)
+        production_history["name"] = (
+            "lwc-release-notes-2026.11.4-development-history-release-"
+            f"{self.PROD_RESULT_ID}-{package_run['id']}-{package_run['run_attempt']}"
+        )
+        with self.assertRaisesRegex(release_notes_workflow.PackageWorkflowError,
+                                   "package-artifact-not-qualified"):
+            release_notes_workflow.validate_resend_package_artifact(
+                production_history, package_run, expected_artifact_id=self.PROD_PACKAGE_ID,
+                result_artifact_id=self.PROD_RESULT_ID, operation="release",
+                environment="production", repository="Rayer/llm-wiki-cloud")
 
     def test_arbitrary_timestamp_does_not_replace_missing_original_publication_record(self):
         with TemporaryDirectory(prefix="lwc478-r10-unbound-time-") as temp:
@@ -2802,6 +2840,10 @@ class R10NativeReceiptRecoveryTests(unittest.TestCase):
             "actions/runs/$ORIGINAL_RUN_ID/attempts/$ORIGINAL_RUN_ATTEMPT/jobs?per_page=100",
             validation["run"])
         self.assertIn("validate-original-runtime-completion", validation["run"])
+        package_validation = next(step for step in steps
+                                  if step.get("name") == "Inspect exact TPM Release Notes artifact")
+        self.assertIn('--environment "$RESULT_ENVIRONMENT"', package_validation["run"])
+        self.assertIn('--repository "$GITHUB_REPOSITORY"', package_validation["run"])
         resend = next(step for step in steps if step.get("name") == "Resend Notes without product deployment")
         self.assertIn("--runtime-completion-evidence", resend["run"])
         self.assertNotIn("--published-at", resend["run"])
