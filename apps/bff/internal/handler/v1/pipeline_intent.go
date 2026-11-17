@@ -61,7 +61,7 @@ func (h *Handler) ensurePipelineIntentWork(ctx context.Context, reservation scop
 	client := h.firestore.Raw()
 	work := profileruntime.Work{
 		UserID: reservation.UserID, ProjectID: reservation.ProjectID, Kind: "pipeline",
-		Revision: reservation.ProfileRevision, ID: reservation.ID, Due: time.Now().UTC(),
+		Revision: reservation.ProfileRevision, ID: reservation.ID, AttemptID: reservation.AttemptID, Due: time.Now().UTC(),
 	}
 	workRef := scopedfirestore.Collection(client, profileruntime.WorkCollection).Doc(profileruntime.WorkID(work))
 	reservationRef := scopedfirestore.Collection(client, "pipeline_quota_reservations").Doc(reservation.ID)
@@ -109,6 +109,15 @@ func (d *ProfileDispatcher) executePipelineIntent(ctx context.Context, repo *fir
 		}
 		return nil
 	}
+	attemptID := work.AttemptID
+	if attemptID == "" {
+		// Work created before attempt-bound pipeline work used the reservation ID
+		// as its incarnation, which remains valid for legacy/manual reservations.
+		attemptID = work.ID
+	}
+	if reservation.ID != work.ID || reservation.UserID != work.UserID || reservation.ProjectID != work.ProjectID || reservation.AttemptID != attemptID {
+		return nil
+	}
 	if reservation.IntentStatus == "preparing" {
 		if err := d.preparePipelineIntent(ctx, repo, store, reservation); err != nil {
 			return err
@@ -116,6 +125,9 @@ func (d *ProfileDispatcher) executePipelineIntent(ctx context.Context, repo *fir
 		reservation, exists, err = store.GetPipelineIntent(ctx, work.UserID, work.ProjectID, work.ID)
 		if err != nil || !exists {
 			return err
+		}
+		if reservation.ID != work.ID || reservation.UserID != work.UserID || reservation.ProjectID != work.ProjectID || reservation.AttemptID != attemptID {
+			return nil
 		}
 	}
 	if reservation.IntentStatus != "ready" {
@@ -204,8 +216,8 @@ func (h *Handler) startPipelineIntent(ctx context.Context, store pipelineIntentQ
 		}
 		return latest.ExecutionID, latest.IntentStatus, nil
 	}
-	executionID, err = h.invokePipelineJobStageWithReservation(ctx, claimed.UserID, claimed.ProjectID,
-		claimed.CompileMode == pipelinequota.ModeFull, pipelineStageFull, claimed.ID)
+	executionID, err = h.invokePipelineJobStageWithAttempt(ctx, claimed.UserID, claimed.ProjectID,
+		claimed.CompileMode == pipelinequota.ModeFull, pipelineStageFull, claimed.ID, claimed.AttemptID)
 	if err != nil {
 		if errors.Is(err, errPipelineInvocationOutcomeUnknown) {
 			_ = store.MarkPipelineIntentInvocationUnknown(context.WithoutCancel(ctx), claimed.ID, claimed.AttemptID, claimed.UserID, claimed.ProjectID)
@@ -228,7 +240,7 @@ func (h *Handler) startPipelineIntent(ctx context.Context, store pipelineIntentQ
 	}
 	if h.localPipeline == nil {
 		if quotaStore := h.effectiveQuotaStore(); quotaStore != nil {
-			if err := quotaStore.LinkQuotaReservation(ctx, claimed.ID, executionID); err != nil {
+			if err := linkPipelineQuotaReservation(ctx, quotaStore, claimed, executionID); err != nil {
 				_ = store.MarkPipelineIntentInvocationUnknown(context.WithoutCancel(ctx), claimed.ID, claimed.AttemptID, claimed.UserID, claimed.ProjectID)
 				return executionID, "invocation_unknown", nil
 			}

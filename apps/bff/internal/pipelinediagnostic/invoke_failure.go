@@ -9,6 +9,17 @@ import (
 
 const ConfirmedInvokeFailureMessage = "pipeline invocation failed before an execution was accepted"
 
+// ConfirmedInvokeFailureObjectPath isolates recovery evidence by reservation
+// incarnation. Legacy reservations and manual reservations whose attempt ID
+// equals the reservation ID keep their established object path.
+func ConfirmedInvokeFailureObjectPath(reservationID, attemptID string) string {
+	name := "pipeline-" + reservationID
+	if attemptID != "" && attemptID != reservationID {
+		name += "-" + attemptID
+	}
+	return "cache/" + name + ".failure.json"
+}
+
 // ConfirmedInvokeFailure is the shared marker written when invocation was
 // definitively rejected before an execution was accepted. AttemptID is only
 // present for scheduled reservations, whose stable daily reservation ID may

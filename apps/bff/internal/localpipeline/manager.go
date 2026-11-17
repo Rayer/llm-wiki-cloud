@@ -66,11 +66,11 @@ type process struct {
 }
 
 type processResult struct {
-	executionID, userID, projectID, beforeID, reservationID, requestID string
-	actualStartedAt                                                    time.Time
-	childSucceeded                                                     bool
-	spawnFailed                                                        bool
-	childErr                                                           error
+	executionID, userID, projectID, beforeID, reservationID, attemptID, requestID string
+	actualStartedAt                                                               time.Time
+	childSucceeded                                                                bool
+	spawnFailed                                                                   bool
+	childErr                                                                      error
 }
 
 func New(cfg Config) (*Manager, error) {
@@ -133,14 +133,15 @@ func (m *Manager) ReconcileInterrupted(ctx context.Context) (resultErr error) {
 		if state == "UNKNOWN" && reason == "" {
 			reason = "BFF restarted before the worker result could be confirmed"
 		}
-		if err := m.persistRecoveredExecution(requestCtx, ref, lock.Ref, executionID, stringValue(execution.Data()["quota_reservation_id"]), state, reason); err != nil {
+		if err := m.persistRecoveredExecution(requestCtx, ref, lock.Ref, executionID,
+			stringValue(execution.Data()["quota_reservation_id"]), stringValue(execution.Data()["quota_attempt_id"]), state, reason); err != nil {
 			return err
 		}
 	}
 	return m.ReconcilePendingQuotaSettlements(ctx)
 }
 
-func (m *Manager) persistRecoveredExecution(ctx context.Context, executionRef, lockRef *cloudfirestore.DocumentRef, executionID, reservationID, state, reason string) (resultErr error) {
+func (m *Manager) persistRecoveredExecution(ctx context.Context, executionRef, lockRef *cloudfirestore.DocumentRef, executionID, reservationID, attemptID, state, reason string) (resultErr error) {
 	ctx, resultSpan := observability.StartPipelineSpan(ctx, "pipeline.recovery.result")
 	defer func() { observability.FinishPipelineSpan(resultSpan, localPipelineTraceOutcome(resultErr)) }()
 	txCtx, txSpan := observability.StartPipelineSpan(ctx, "pipeline.recovery.transaction")
@@ -175,7 +176,10 @@ func (m *Manager) persistRecoveredExecution(ctx context.Context, executionRef, l
 			return lockErr
 		}
 		lockExists := lockErr == nil
-		settlement, applied, err = scopedfirestore.SettleQuotaReservationInTransactionWithResult(ctx, tx, m.cfg.Firestore, reservationID, state)
+		if attemptID == "" && reservationID != "" {
+			attemptID = reservationID
+		}
+		settlement, applied, err = scopedfirestore.SettleQuotaReservationInTransactionWithAttempt(ctx, tx, m.cfg.Firestore, reservationID, attemptID, state)
 		if err != nil {
 			return err
 		}
@@ -262,7 +266,11 @@ func (m *Manager) ReconcilePendingQuotaSettlements(ctx context.Context) (resultE
 						}
 						return nil
 					}
-					settlement, applied, err = scopedfirestore.SettleQuotaReservationInTransactionWithResult(ctx, tx, m.cfg.Firestore, reservation.ID, "FAILED")
+					attemptID := reservation.AttemptID
+					if attemptID == "" {
+						attemptID = reservation.ID
+					}
+					settlement, applied, err = scopedfirestore.SettleQuotaReservationInTransactionWithAttempt(ctx, tx, m.cfg.Firestore, reservation.ID, attemptID, "FAILED")
 					return err
 				})
 				if txErr == nil {
@@ -282,7 +290,13 @@ func (m *Manager) ReconcilePendingQuotaSettlements(ctx context.Context) (resultE
 				return err
 			}
 			data := snapshot.Data()
+			expectedAttemptID := reservation.AttemptID
+			if expectedAttemptID == "" {
+				expectedAttemptID = reservation.ID
+			}
+			storedAttemptID := stringValue(data["quota_attempt_id"])
 			if data["native"] != true || data["quota_reservation_id"] != reservation.ID ||
+				storedAttemptID != expectedAttemptID && (storedAttemptID != "" || reservation.IntentStatus != "" && expectedAttemptID != reservation.ID) ||
 				data["user_id"] != reservation.UserID || data["project_id"] != reservation.ProjectID {
 				transactionOutcome, settlement = "no_op", "no_op"
 				return nil
@@ -310,8 +324,10 @@ func (m *Manager) ReconcilePendingQuotaSettlements(ctx context.Context) (resultE
 				currentData := current.Data()
 				currentStatus, _ := currentData["status"].(string)
 				currentReservationID, _ := currentData["quota_reservation_id"].(string)
+				currentAttemptID := stringValue(currentData["quota_attempt_id"])
 				if currentReservationID != reservation.ID || currentData["user_id"] != reservation.UserID ||
-					currentData["project_id"] != reservation.ProjectID || currentData["native"] != true {
+					currentData["project_id"] != reservation.ProjectID || currentData["native"] != true ||
+					currentAttemptID != expectedAttemptID && (currentAttemptID != "" || reservation.IntentStatus != "" && expectedAttemptID != reservation.ID) {
 					transactionOutcome, settlement, applied = "no_op", "no_op", false
 					return nil
 				}
@@ -329,7 +345,7 @@ func (m *Manager) ReconcilePendingQuotaSettlements(ctx context.Context) (resultE
 					return err
 				}
 				lockExists := err == nil
-				settlement, applied, err = scopedfirestore.SettleQuotaReservationInTransactionWithResult(ctx, tx, m.cfg.Firestore, reservation.ID, state)
+				settlement, applied, err = scopedfirestore.SettleQuotaReservationInTransactionWithAttempt(ctx, tx, m.cfg.Firestore, reservation.ID, expectedAttemptID, state)
 				if err != nil {
 					return err
 				}
@@ -618,9 +634,17 @@ func (e recordedExitError) ExitCode() int { return e.code }
 
 func (m *Manager) hasConfirmedInvokeFailure(ctx context.Context, reservation scopedfirestore.QuotaReservation) (bool, error) {
 	storage := m.cfg.Storage.WithScope(reservation.UserID, reservation.ProjectID)
-	data, err := storage.ReadFileLimited(ctx, "cache/pipeline-"+reservation.ID+".failure.json", 4<<10+1)
+	data, err := storage.ReadFileLimited(ctx, pipelinediagnostic.ConfirmedInvokeFailureObjectPath(reservation.ID, reservation.AttemptID), 4<<10+1)
 	if errors.Is(err, cloudstorage.ErrObjectNotExist) || errors.Is(err, storeapi.ErrObjectNotExist) {
-		return false, nil
+		legacyScheduled := reservation.Trigger == pipelinequota.TriggerScheduledDaily && reservation.IntentStatus == "" &&
+			reservation.AttemptID != "" && reservation.AttemptID != reservation.ID
+		if !legacyScheduled {
+			return false, nil
+		}
+		data, err = storage.ReadFileLimited(ctx, "cache/pipeline-"+reservation.ID+".failure.json", 4<<10+1)
+		if errors.Is(err, cloudstorage.ErrObjectNotExist) || errors.Is(err, storeapi.ErrObjectNotExist) {
+			return false, nil
+		}
 	}
 	if err != nil {
 		return false, err
@@ -636,6 +660,10 @@ func (m *Manager) hasConfirmedInvokeFailure(ctx context.Context, reservation sco
 }
 
 func (m *Manager) Start(ctx context.Context, userID, projectID, stage string, cleanRebuild bool, reservationID string) (string, error) {
+	return m.StartWithAttempt(ctx, userID, projectID, stage, cleanRebuild, reservationID, reservationID)
+}
+
+func (m *Manager) StartWithAttempt(ctx context.Context, userID, projectID, stage string, cleanRebuild bool, reservationID, attemptID string) (string, error) {
 	if !auth.ValidPathSegment(userID) || !auth.ValidPathSegment(projectID) {
 		return "", errors.New("invalid Project identity")
 	}
@@ -687,6 +715,13 @@ func (m *Manager) Start(ctx context.Context, userID, projectID, stage string, cl
 			if data["user_id"] != userID || data["project_id"] != projectID || data["settlement_status"] != "pending" {
 				return errors.New("local pipeline quota reservation is unavailable")
 			}
+			currentAttemptID, _ := data["attempt_id"].(string)
+			if attemptID == "" {
+				attemptID = reservationID
+			}
+			if currentAttemptID != attemptID {
+				return errors.New("local pipeline quota attempt identity mismatch")
+			}
 			intentMode, _ := data["intent_mode"].(string)
 			intentReservation = intentMode != ""
 			if value, exists := data["project_pipeline_sequence"].(int64); exists {
@@ -695,6 +730,10 @@ func (m *Manager) Start(ctx context.Context, userID, projectID, stage string, cl
 			}
 		}
 		lockRecord := map[string]any{"user_id": userID, "project_id": projectID, "execution_id": executionID, "status": "RUNNING", "updated_at": started}
+		if reservationID != "" {
+			lockRecord["quota_reservation_id"] = reservationID
+			lockRecord["quota_attempt_id"] = attemptID
+		}
 		if requestID := observability.RequestIDFromContext(ctx); requestID != "" {
 			lockRecord["request_id"] = requestID
 		}
@@ -711,6 +750,9 @@ func (m *Manager) Start(ctx context.Context, userID, projectID, stage string, cl
 			"status": "RUNNING", "started_at": started,
 			"manifest_generation_before": beforeID,
 			"quota_reservation_id":       reservationID, "quota_settlement": quotaSettlement,
+		}
+		if reservationID != "" {
+			execution["quota_attempt_id"] = attemptID
 		}
 		if requestID := observability.RequestIDFromContext(ctx); requestID != "" {
 			execution["request_id"] = requestID
@@ -735,10 +777,10 @@ func (m *Manager) Start(ctx context.Context, userID, projectID, stage string, cl
 	}
 
 	requestID := observability.RequestIDFromContext(ctx)
-	cmd := newWorkerCommand(m.cfg, executionID, userID, projectID, stage, cleanRebuild, reservationID, os.Environ(), observability.TraceParentFromContext(ctx), requestID)
+	cmd := newWorkerCommandWithAttempt(m.cfg, executionID, userID, projectID, stage, cleanRebuild, reservationID, attemptID, os.Environ(), observability.TraceParentFromContext(ctx), requestID)
 	p := &process{cmd: cmd, done: make(chan struct{})}
 	if err := m.startProcess(executionID, p, cmd.Start); err != nil {
-		result := processResult{executionID: executionID, userID: userID, projectID: projectID, beforeID: beforeID, reservationID: reservationID, requestID: requestID, spawnFailed: true, childErr: err}
+		result := processResult{executionID: executionID, userID: userID, projectID: projectID, beforeID: beforeID, reservationID: reservationID, attemptID: attemptID, requestID: requestID, spawnFailed: true, childErr: err}
 		m.savePendingResult(result)
 		finishCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		finishErr := m.finish(finishCtx, result)
@@ -757,7 +799,7 @@ func (m *Manager) Start(ctx context.Context, userID, projectID, stage string, cl
 		// its terminal transaction if this immediate write cannot be persisted.
 		log.Printf("local pipeline actual-start marker deferred for %s", executionID)
 	}
-	go m.wait(p, executionID, userID, projectID, beforeID, reservationID, requestID, actualStartedAt)
+	go m.wait(p, executionID, userID, projectID, beforeID, reservationID, attemptID, requestID, actualStartedAt)
 	return executionID, nil
 }
 
@@ -784,9 +826,9 @@ func persistActualStart(ctx context.Context, executionRef *cloudfirestore.Docume
 	return lastErr
 }
 
-func (m *Manager) wait(p *process, executionID, userID, projectID, beforeID, reservationID, requestID string, actualStartedAt time.Time) {
+func (m *Manager) wait(p *process, executionID, userID, projectID, beforeID, reservationID, attemptID, requestID string, actualStartedAt time.Time) {
 	err := p.cmd.Wait()
-	result := processResult{executionID: executionID, userID: userID, projectID: projectID, beforeID: beforeID, reservationID: reservationID, requestID: requestID, actualStartedAt: actualStartedAt, childSucceeded: err == nil, childErr: err}
+	result := processResult{executionID: executionID, userID: userID, projectID: projectID, beforeID: beforeID, reservationID: reservationID, attemptID: attemptID, requestID: requestID, actualStartedAt: actualStartedAt, childSucceeded: err == nil, childErr: err}
 	m.savePendingResult(result)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -853,7 +895,11 @@ func (m *Manager) finish(ctx context.Context, result processResult) (resultErr e
 		if err != nil {
 			return err
 		}
-		settlement, applied, err = scopedfirestore.SettleQuotaReservationInTransactionWithResult(ctx, tx, m.cfg.Firestore, result.reservationID, transactionStatus)
+		attemptID := result.attemptID
+		if attemptID == "" && result.reservationID != "" {
+			attemptID = result.reservationID
+		}
+		settlement, applied, err = scopedfirestore.SettleQuotaReservationInTransactionWithAttempt(ctx, tx, m.cfg.Firestore, result.reservationID, attemptID, transactionStatus)
 		if err != nil {
 			return err
 		}
@@ -971,6 +1017,11 @@ func (m *Manager) startProcess(executionID string, p *process, start func() erro
 }
 
 func (m *Manager) Status(ctx context.Context, userID, projectID, executionID string) (*handlerapi.PipelineExecutionResponse, error) {
+	response, _, _, err := m.StatusWithIncarnation(ctx, userID, projectID, executionID)
+	return response, err
+}
+
+func (m *Manager) StatusWithIncarnation(ctx context.Context, userID, projectID, executionID string) (*handlerapi.PipelineExecutionResponse, string, string, error) {
 	collection := scopedfirestore.Collection(m.cfg.Firestore, "executions")
 	var snapshots []*cloudfirestore.DocumentSnapshot
 	var err error
@@ -978,7 +1029,7 @@ func (m *Manager) Status(ctx context.Context, userID, projectID, executionID str
 		var snapshot *cloudfirestore.DocumentSnapshot
 		snapshot, err = collection.Doc(executionID).Get(ctx)
 		if status.Code(err) == codes.NotFound {
-			return nil, ErrExecutionNotFound
+			return nil, "", "", ErrExecutionNotFound
 		}
 		if err == nil {
 			snapshots = []*cloudfirestore.DocumentSnapshot{snapshot}
@@ -987,7 +1038,7 @@ func (m *Manager) Status(ctx context.Context, userID, projectID, executionID str
 		snapshots, err = collection.Where("user_id", "==", userID).Where("project_id", "==", projectID).Documents(ctx).GetAll()
 	}
 	if err != nil {
-		return nil, err
+		return nil, "", "", err
 	}
 	var selected *cloudfirestore.DocumentSnapshot
 	var selectedStart time.Time
@@ -1003,9 +1054,9 @@ func (m *Manager) Status(ctx context.Context, userID, projectID, executionID str
 	}
 	if selected == nil {
 		if executionID == "" {
-			return nil, nil
+			return nil, "", "", nil
 		}
-		return nil, ErrExecutionNotFound
+		return nil, "", "", ErrExecutionNotFound
 	}
 	data := selected.Data()
 	state, _ := data["status"].(string)
@@ -1035,16 +1086,17 @@ func (m *Manager) Status(ctx context.Context, userID, projectID, executionID str
 		}
 	}
 	reservationID, _ := data["quota_reservation_id"].(string)
+	attemptID, _ := data["quota_attempt_id"].(string)
 	response.QuotaSettlement = "not_applicable"
 	if reservationID != "" {
-		reservation, exists, err := scopedfirestore.GetQuotaReservationFromFirestore(ctx, m.cfg.Firestore, reservationID)
+		reservation, exists, _, err := scopedfirestore.GetQuotaReservationForAttemptSnapshotFromFirestore(ctx, m.cfg.Firestore, reservationID, attemptID, userID, projectID)
 		if err != nil {
 			response.QuotaSettlement = "unknown"
 		} else if exists {
 			response.QuotaSettlement = reservation.SettlementStatus
 		}
 	}
-	return response, nil
+	return response, reservationID, attemptID, nil
 }
 
 func (m *Manager) Running(ctx context.Context, userID, projectID string) (bool, error) {
@@ -1111,6 +1163,10 @@ func workerArgs(stage string) []string {
 }
 
 func newWorkerCommand(cfg Config, executionID, userID, projectID, stage string, cleanRebuild bool, reservationID string, parentEnv []string, traceParent, requestID string) *exec.Cmd {
+	return newWorkerCommandWithAttempt(cfg, executionID, userID, projectID, stage, cleanRebuild, reservationID, reservationID, parentEnv, traceParent, requestID)
+}
+
+func newWorkerCommandWithAttempt(cfg Config, executionID, userID, projectID, stage string, cleanRebuild bool, reservationID, attemptID string, parentEnv []string, traceParent, requestID string) *exec.Cmd {
 	args := workerArgs(stage)
 	if cfg.PipelineConfigPath != "" {
 		args = append(args, "--pipeline-config", cfg.PipelineConfigPath, "--pipeline-private-bindings", cfg.PipelineBindingsPath)
@@ -1127,6 +1183,7 @@ func newWorkerCommand(cfg Config, executionID, userID, projectID, stage string, 
 		"PROJECT_ID":               projectID,
 		"EXECUTION_ID":             executionID,
 		"PIPELINE_RESERVATION_ID":  reservationID,
+		"PIPELINE_ATTEMPT_ID":      attemptID,
 		"LWC_PROFILE_RESOLVER_URL": cfg.ProfileResolverURL,
 		"CLEAN_REBUILD":            fmt.Sprintf("%t", cleanRebuild),
 		// Always replace inherited carrier values, including with empty values,

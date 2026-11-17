@@ -597,7 +597,7 @@ func (h *Handler) readCloudPipelineEventSnapshot(ctx context.Context, userID, pr
 		candidateByReservation[candidate.ReservationID] = candidate
 	}
 	for id := range needed {
-		response, actualReservationID, err := h.pipelineExecutionStatusForOwnerWithIdentity(ctx, id, userID, projectID)
+		response, actualReservationID, actualAttemptID, err := h.pipelineExecutionStatusForOwnerWithIncarnation(ctx, id, userID, projectID)
 		if errors.Is(err, errPipelineExecutionNotFound) || errors.Is(err, handlerapi.ErrPipelineExecutionNotFound) || response == nil && err == nil {
 			unresolved = append(unresolved, id)
 			continue
@@ -612,17 +612,26 @@ func (h *Handler) readCloudPipelineEventSnapshot(ctx context.Context, userID, pr
 		record := pipelineEventRunRecord{
 			id: id, status: strings.ToUpper(response.Status), startedAt: actualStarted,
 			actualStarted: actualStarted, endedAt: endedAt, publication: publication,
-			quota: response.QuotaSettlement, response: response, mode: normalizePipelineMode(response.CompileMode),
+			quota: response.QuotaSettlement, response: response, mode: normalizePipelineMode(response.CompileMode), attemptID: actualAttemptID,
 		}
 		listedExecution, listedInHistory := listed[id]
 		listedReservationID := ""
 		if listedInHistory {
 			listedReservationID = cloudRunExecutionReservationID(listedExecution, userID, projectID)
 		}
+		listedAttemptID := ""
+		if listedInHistory {
+			listedAttemptID = cloudRunExecutionAttemptID(listedExecution, userID, projectID)
+		}
 		listIdentityMismatch := listedInHistory && listedReservationID != "" && listedReservationID != actualReservationID
+		listAttemptMismatch := listedInHistory && listedAttemptID != "" && actualAttemptID != "" && listedAttemptID != actualAttemptID
 		if candidate, ok := candidateByExecution[id]; ok {
 			record.reservationID = actualReservationID
-			if actualReservationID == "" || candidate.ReservationID != actualReservationID || listIdentityMismatch {
+			attemptMismatch := actualAttemptID != "" && actualAttemptID != candidate.AttemptID
+			if actualAttemptID == "" && candidate.AttemptID != candidate.ReservationID && candidate.IntentStatus != "" {
+				attemptMismatch = true
+			}
+			if actualReservationID == "" || candidate.ReservationID != actualReservationID || listIdentityMismatch || listAttemptMismatch || attemptMismatch {
 				record.reservationMissing = true
 			} else {
 				if err := h.attachPipelineReservation(ctx, userID, projectID, &record, &candidate); err != nil {
@@ -632,17 +641,19 @@ func (h *Handler) readCloudPipelineEventSnapshot(ctx context.Context, userID, pr
 		} else if listedInHistory {
 			record.reservationID = actualReservationID
 			candidate, pendingMatch := candidateByReservation[actualReservationID]
-			if listIdentityMismatch || pendingMatch && candidate.ExecutionID != "" && candidate.ExecutionID != id {
+			candidateMatch := pendingMatch && actualAttemptID != "" && actualAttemptID == candidate.AttemptID &&
+				(candidate.ExecutionID == "" || candidate.ExecutionID == id)
+			if listIdentityMismatch || listAttemptMismatch || pendingMatch && candidateMatch && candidate.ExecutionID != "" && candidate.ExecutionID != id {
 				record.reservationMissing = true
 			} else {
 				var candidatePtr *scopedfirestore.PipelineEventCandidate
-				if pendingMatch {
+				if candidateMatch {
 					candidatePtr = &candidate
 				}
 				if err := h.attachPipelineReservation(ctx, userID, projectID, &record, candidatePtr); err != nil {
 					return pipelineEventSnapshot{}, err
 				}
-				if pendingMatch {
+				if candidateMatch {
 					record.candidate = true
 				}
 			}
@@ -676,12 +687,17 @@ func (h *Handler) attachPipelineReservation(ctx context.Context, userID, project
 	if record.reservationID == "" {
 		return nil
 	}
-	reservation, exists, updateTime, err := scopedfirestore.GetQuotaReservationSnapshotFromFirestore(ctx, h.firestore.Raw(), record.reservationID)
+	reservation, exists, updateTime, err := scopedfirestore.GetQuotaReservationForAttemptSnapshotFromFirestore(ctx, h.firestore.Raw(), record.reservationID, record.attemptID, userID, projectID)
 	if err != nil {
 		return fmt.Errorf("read exact Pipeline reservation evidence: %w", err)
 	}
 	if !exists || reservation.UserID != userID || reservation.ProjectID != projectID ||
 		(reservation.ExecutionID != "" && reservation.ExecutionID != record.id) || (reservation.ExecutionID == "" && reservation.SettlementStatus != "pending") {
+		record.reservationMissing = true
+		return nil
+	}
+	if record.attemptID != "" && reservation.AttemptID != record.attemptID ||
+		record.attemptID == "" && reservation.AttemptID != "" && reservation.AttemptID != reservation.ID && reservation.IntentStatus != "" {
 		record.reservationMissing = true
 		return nil
 	}

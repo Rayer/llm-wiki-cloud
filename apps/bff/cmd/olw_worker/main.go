@@ -45,6 +45,7 @@ type workerConfig struct {
 	LocalCloudScope              string
 	ExecutionID                  string
 	PipelineReservationID        string
+	PipelineAttemptID            string
 	APIKey                       string
 	InitVault                    bool
 	Postprocess                  bool
@@ -524,6 +525,9 @@ func configFromEnvironment(cfg workerConfig) workerConfig {
 	}
 	if cfg.PipelineReservationID == "" {
 		cfg.PipelineReservationID = envOr("PIPELINE_RESERVATION_ID", "")
+	}
+	if cfg.PipelineAttemptID == "" {
+		cfg.PipelineAttemptID = envOr("PIPELINE_ATTEMPT_ID", "")
 	}
 	if cfg.APIKey == "" && !cfg.apiKeySet {
 		cfg.APIKey = envOr("LLM_API_KEY", envOr("DEEPSEEK_API_KEY", ""))

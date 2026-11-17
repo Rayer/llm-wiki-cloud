@@ -28,6 +28,7 @@ type ProfileCompileSuccess struct {
 	canonicalConceptsDigest   string
 	consumedBootstrapGuidance *profileartifacts.BootstrapGuidanceRef
 	pipelineReservationID     string
+	pipelineAttemptID         string
 }
 
 // NewProfileCompileSuccess accepts only a fully successful publisher result.
@@ -44,6 +45,18 @@ func NewProfileCompileSuccess(manifest generation.Manifest, manifestGeneration i
 			return ProfileCompileSuccess{}, errors.New("invalid Pipeline reservation evidence")
 		}
 	}
+	return newProfileCompileSuccess(manifest, manifestGeneration, compileErr, consumedBootstrapGuidance, pipelineReservationID, "")
+}
+
+func NewProfileCompileSuccessForPipeline(manifest generation.Manifest, manifestGeneration int64, compileErr error, consumedBootstrapGuidance *profileartifacts.BootstrapGuidanceRef, reservationID, attemptID string) (ProfileCompileSuccess, error) {
+	reservationID, attemptID = strings.TrimSpace(reservationID), strings.TrimSpace(attemptID)
+	if reservationID != "" && !auth.ValidPathSegment(reservationID) || attemptID != "" && !auth.ValidPathSegment(attemptID) || reservationID == "" && attemptID != "" {
+		return ProfileCompileSuccess{}, errors.New("invalid Pipeline reservation evidence")
+	}
+	return newProfileCompileSuccess(manifest, manifestGeneration, compileErr, consumedBootstrapGuidance, reservationID, attemptID)
+}
+
+func newProfileCompileSuccess(manifest generation.Manifest, manifestGeneration int64, compileErr error, consumedBootstrapGuidance *profileartifacts.BootstrapGuidanceRef, pipelineReservationID, pipelineAttemptID string) (ProfileCompileSuccess, error) {
 	if compileErr != nil {
 		return ProfileCompileSuccess{}, errors.New("Profile compile did not complete successfully")
 	}
@@ -73,7 +86,7 @@ func NewProfileCompileSuccess(manifest generation.Manifest, manifestGeneration i
 	success := ProfileCompileSuccess{
 		manifest: manifest, manifestGeneration: manifestGeneration,
 		manifestSHA256: profileartifacts.SHA256(manifestBytes), canonicalConceptsDigest: concepts.SHA256,
-		consumedBootstrapGuidance: consumedRef, pipelineReservationID: pipelineReservationID,
+		consumedBootstrapGuidance: consumedRef, pipelineReservationID: pipelineReservationID, pipelineAttemptID: pipelineAttemptID,
 	}
 	if err := success.validate(); err != nil {
 		return ProfileCompileSuccess{}, err
@@ -85,6 +98,9 @@ func (s ProfileCompileSuccess) validate() error {
 	if s.manifest.Validate() != nil || s.manifestGeneration <= 0 || !isLowerProfileDigest(s.manifestSHA256) ||
 		!isLowerProfileDigest(s.canonicalConceptsDigest) {
 		return errors.New("invalid Profile compile success evidence")
+	}
+	if s.pipelineReservationID != "" && !auth.ValidPathSegment(s.pipelineReservationID) || s.pipelineAttemptID != "" && (!auth.ValidPathSegment(s.pipelineAttemptID) || s.pipelineReservationID == "") {
+		return errors.New("invalid Pipeline compile incarnation evidence")
 	}
 	concepts, conceptsListed := s.manifest.File("cache/concepts.jsonl")
 	_, idMapListed := s.manifest.File("cache/id_map.json")
@@ -179,7 +195,7 @@ func (h *Handler) RunProfileCompileDerivation(ctx context.Context, userID, proje
 	}
 	if state.Active == nil {
 		if !profileBootstrapRefMatches(state.BootstrapGuidance, success.consumedBootstrapGuidance, revision, currentDigest) &&
-			!h.profileBootstrapIntentRefMatches(ctx, project.UserID, project.ProjectID, revision, currentDigest, success.pipelineReservationID, state.BootstrapGuidance, success.consumedBootstrapGuidance) {
+			!h.profileBootstrapIntentRefMatches(ctx, project.UserID, project.ProjectID, revision, currentDigest, success.pipelineReservationID, success.pipelineAttemptID, state.BootstrapGuidance, success.consumedBootstrapGuidance) {
 			return ProfileState{}, errProfileBootstrapNotCurrent
 		}
 		generations, ok := h.store.Scope(project.UserID, project.ProjectID).(profileTagGenerationStore)
@@ -285,7 +301,7 @@ func (h *Handler) RunProfileCompileDerivation(ctx context.Context, userID, proje
 	return committed, commitErr
 }
 
-func (h *Handler) profileBootstrapIntentRefMatches(ctx context.Context, userID, projectID string, revision int64, digest, reservationID string, current *ProfileBootstrapGuidance, consumed *profileartifacts.BootstrapGuidanceRef) bool {
+func (h *Handler) profileBootstrapIntentRefMatches(ctx context.Context, userID, projectID string, revision int64, digest, reservationID, attemptID string, current *ProfileBootstrapGuidance, consumed *profileartifacts.BootstrapGuidanceRef) bool {
 	if reservationID == "" || current == nil || consumed == nil || current.Status != profileBootstrapPreviewReady ||
 		current.ProfileRevision != revision || current.InputDigest != digest {
 		return false
@@ -303,7 +319,10 @@ func (h *Handler) profileBootstrapIntentRefMatches(ctx context.Context, userID, 
 		return false
 	}
 	intent, exists, err := store.GetPipelineIntent(ctx, userID, projectID, reservationID)
-	return err == nil && exists && intent.AttemptID == reservationID && intent.ProfileRevision == revision &&
+	if attemptID == "" {
+		attemptID = reservationID
+	}
+	return err == nil && exists && intent.ID == reservationID && intent.AttemptID == attemptID && intent.ProfileRevision == revision &&
 		intent.RequirementsDigest == digest && intent.ConsumedGuidanceKind == "bootstrap" &&
 		intent.ConsumedBootstrapGuidance != nil && *intent.ConsumedBootstrapGuidance == expected &&
 		(intent.IntentStatus == "invoking" || intent.IntentStatus == "invocation_unknown" || intent.IntentStatus == "compiling" || intent.IntentStatus == "succeeded")

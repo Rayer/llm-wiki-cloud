@@ -62,6 +62,7 @@ type Handler struct {
 	profileRepository              profileRepository
 	byokCredentialBox              *byok.CredentialBox
 	projectLLMClientResolver       func(context.Context, string, string) (llm.ProjectChatClient, string, error)
+	pipelineProfileResolver        func(context.Context, string, string, string, bool) (string, []pipelineLLMProfile, llm.OperationProfileSnapshot, error)
 	byokEnvironment                string
 	byokDeploymentCredentials      map[string]BYOKDeploymentCredential
 	pipelineWorkerAudience         string

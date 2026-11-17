@@ -277,6 +277,68 @@ func TestPendingResultsAndReservationsShareReconciliationDetailBudget(t *testing
 
 }
 
+func TestStatusWithIncarnationReturnsStoredQuotaAttempt(t *testing.T) {
+	emulator := strings.TrimSpace(os.Getenv("FIRESTORE_EMULATOR_HOST"))
+	if emulator == "" {
+		t.Skip("requires loopback Firestore emulator")
+	}
+	host, _, err := net.SplitHostPort(emulator)
+	if err != nil {
+		t.Fatalf("FIRESTORE_EMULATOR_HOST must be host:port: %v", err)
+	}
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		t.Fatalf("resolve Firestore emulator host: %v", err)
+	}
+	loopback := false
+	for _, ip := range ips {
+		loopback = loopback || ip.IsLoopback()
+	}
+	if !loopback {
+		t.Fatal("FIRESTORE_EMULATOR_HOST must resolve to loopback")
+	}
+	const project, database = "lwc493-local-status", "(default)"
+	unique := fmt.Sprintf("%d", time.Now().UnixNano())
+	scope, userID, projectID := "lwc493-local-status-"+unique, "owner-"+unique, "project-"+unique
+	reservationID, attemptID, executionID := "reservation-"+unique, "attempt-"+unique, "execution-"+unique
+	t.Setenv("GOOGLE_CLOUD_PROJECT", project)
+	t.Setenv("FIRESTORE_DATABASE_ID", database)
+	client, err := scopedfirestore.NewClientWithDatabaseAndScope(project, database, "", "", scope)
+	if err != nil {
+		t.Fatalf("create loopback Firestore client: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	executionRef := scopedfirestore.Collection(client.Raw(), "executions").Doc(executionID)
+	reservationRef := scopedfirestore.Collection(client.Raw(), "pipeline_quota_reservations").Doc(reservationID)
+	t.Cleanup(func() {
+		cleanup, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cleanupCancel()
+		_, _ = executionRef.Delete(cleanup)
+		_, _ = reservationRef.Delete(cleanup)
+		if err := client.Close(); err != nil {
+			t.Errorf("close Firestore client: %v", err)
+		}
+	})
+	startedAt := time.Now().UTC()
+	if _, err := executionRef.Set(ctx, map[string]any{
+		"native": true, "user_id": userID, "project_id": projectID, "status": "RUNNING",
+		"started_at": startedAt, "quota_reservation_id": reservationID, "quota_attempt_id": attemptID,
+	}); err != nil {
+		t.Fatalf("seed exact local execution: %v", err)
+	}
+	if _, err := reservationRef.Set(ctx, map[string]any{
+		"user_id": userID, "project_id": projectID, "attempt_id": attemptID, "settlement_status": "pending",
+	}); err != nil {
+		t.Fatalf("seed exact local reservation: %v", err)
+	}
+	manager := &Manager{cfg: Config{Firestore: client.Raw()}}
+	response, gotReservationID, gotAttemptID, err := manager.StatusWithIncarnation(ctx, userID, projectID, executionID)
+	if err != nil || response == nil || response.Name != executionID || gotReservationID != reservationID || gotAttemptID != attemptID {
+		t.Fatalf("local status response=%+v reservation=%q attempt=%q err=%v", response, gotReservationID, gotAttemptID, err)
+	}
+}
+
 func TestReconciliationTraceRetainsCommittedTerminalStatus(t *testing.T) {
 	emulator := strings.TrimSpace(os.Getenv("FIRESTORE_EMULATOR_HOST"))
 	if emulator == "" {
@@ -420,7 +482,7 @@ func TestReconciliationTraceRetainsCommittedTerminalStatus(t *testing.T) {
 	missingID := "missing-execution-" + suffix
 	missingRef := scopedfirestore.Collection(fsClient.Raw(), "executions").Doc(missingID)
 	spanStart := len(exporter.GetSpans())
-	if err := manager.persistRecoveredExecution(ctx, missingRef, lock, missingID, "", "FAILED", "stale candidate"); err != nil {
+	if err := manager.persistRecoveredExecution(ctx, missingRef, lock, missingID, "", "", "FAILED", "stale candidate"); err != nil {
 		t.Fatalf("persistRecoveredExecution(missing): %v", err)
 	}
 	var missingTransactionSpans int

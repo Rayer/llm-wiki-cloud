@@ -162,6 +162,7 @@ func TestCloudPipelineEventsBoundedGlobalScanAndExactRunOverlay(t *testing.T) {
 				reservationID = "res-list"
 			}
 			execution.Template.Containers[0].Env = append(execution.Template.Containers[0].Env, cloudRunEnv{Name: pipelineReservationEnvName, Value: reservationID})
+			execution.Template.Containers[0].Env = append(execution.Template.Containers[0].Env, cloudRunEnv{Name: pipelineAttemptEnvName, Value: "attempt-" + reservationID})
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(execution)
 			return
@@ -183,7 +184,9 @@ func TestCloudPipelineEventsBoundedGlobalScanAndExactRunOverlay(t *testing.T) {
 		}
 		if includeOwnedInList && pageNumber == 1 {
 			owned := cloudEventExecution("exact-list-run", "user-a", "project-a", "2026-10-25T01:00:00Z", "")
-			owned.Template.Containers[0].Env = append(owned.Template.Containers[0].Env, cloudRunEnv{Name: pipelineReservationEnvName, Value: "res-list"})
+			owned.Template.Containers[0].Env = append(owned.Template.Containers[0].Env,
+				cloudRunEnv{Name: pipelineReservationEnvName, Value: "res-list"},
+				cloudRunEnv{Name: pipelineAttemptEnvName, Value: "attempt-res-list"})
 			executions[0] = owned
 		}
 		w.Header().Set("Content-Type", "application/json")

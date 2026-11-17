@@ -36,6 +36,17 @@ func (s *scheduledLinkFailureStore) LinkQuotaReservation(ctx context.Context, re
 	return s.Client.LinkQuotaReservation(ctx, reservationID, executionID)
 }
 
+func (s *scheduledLinkFailureStore) LinkQuotaReservationForAttempt(ctx context.Context, reservationID, attemptID, executionID string) error {
+	s.mu.Lock()
+	fail := s.failNext
+	s.failNext = false
+	s.mu.Unlock()
+	if fail {
+		return errors.New("synthetic reservation link write failure")
+	}
+	return s.Client.LinkQuotaReservationForAttempt(ctx, reservationID, attemptID, executionID)
+}
+
 func TestScheduledInvokeFaultIsolationAndLinkReconciliationEmulator(t *testing.T) {
 	if !requireLoopbackEmulator(t, "FIRESTORE_EMULATOR_HOST") {
 		t.Skip("requires loopback Firestore emulator")
@@ -115,17 +126,20 @@ func TestScheduledInvokeFaultIsolationAndLinkReconciliationEmulator(t *testing.T
 
 	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
 	sweep, err := h.RunScheduledPipelineSweep(ctx, now)
-	if err != nil || sweep.Scanned != 4 || sweep.Accepted != 2 || sweep.Unavailable != 2 || sweep.Skipped != 0 {
-		t.Fatalf("fault-isolated sweep=%+v err=%v; want two accepted and two isolated unavailable Projects", sweep, err)
+	if err != nil || sweep.Scanned != 4 || sweep.Accepted != 1 || sweep.Unavailable != 3 || sweep.Skipped != 0 {
+		t.Fatalf("fault-isolated sweep=%+v err=%v; want one linked accepted and three isolated unavailable Projects", sweep, err)
 	}
 	fixture.mu.Lock()
 	actualInvocations, invokeRequests := fixture.next, append([]map[string]string(nil), fixture.requests...)
 	fixture.mu.Unlock()
 	if actualInvocations != 2 || len(invokeRequests) != 3 {
-		t.Fatalf("Cloud Run fixture execution/request counts=%d/%d; want two accepted executions and three attempts including definite pre-invoke rejection", actualInvocations, len(invokeRequests))
+		t.Fatalf("Cloud Run fixture execution/request counts=%d/%d; want two provider acceptances and three attempts including definite pre-invoke rejection", actualInvocations, len(invokeRequests))
 	}
 	if invokeRequests[1][pipelineReservationEnvName] != scopedfirestore.ScheduledPipelineBudgetID(userID, linkFailureProject, pipelinequota.DayKeyUTC(now)) {
 		t.Fatalf("link-failure invoke reservation=%q; want stable Project/day reservation", invokeRequests[1][pipelineReservationEnvName])
+	}
+	if invokeRequests[1][pipelineAttemptEnvName] == "" || invokeRequests[1][pipelineAttemptEnvName] == invokeRequests[1][pipelineReservationEnvName] {
+		t.Fatalf("scheduled worker attempt=%q; want fresh incarnation distinct from stable daily ID", invokeRequests[1][pipelineAttemptEnvName])
 	}
 	if invokeRequests[1][pipelineStageEnvName] != pipelineStageFull || invokeRequests[1]["CLEAN_REBUILD"] != "" {
 		t.Fatalf("scheduled worker override=%v; want incremental mode and no clean rebuild", invokeRequests[1])

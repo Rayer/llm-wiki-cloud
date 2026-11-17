@@ -287,7 +287,7 @@ func validProfileRuntimeIdentity(w profileruntime.Work) bool {
 		return false
 	}
 	if w.Kind == "pipeline" || w.Kind == "pipeline_automation" {
-		return w.Revision >= 0
+		return w.Revision >= 0 && (w.AttemptID == "" || auth.ValidPathSegment(w.AttemptID))
 	}
 	if w.Kind == "document_import" {
 		return w.Revision > 0 && auth.ValidPathSegment(w.DocumentID)
@@ -916,7 +916,7 @@ func (d *ProfileDispatcher) executeCompile(ctx context.Context, repo *firestoreP
 	if generationSnapshot.Manifest.GenerationID != w.ID || generationSnapshot.ManifestGeneration != receipt.ManifestGeneration || generationSnapshot.ManifestSHA256 != receipt.ManifestSHA256 || !listed || concepts.SHA256 != receipt.CanonicalConceptsDigest {
 		return errProfileCandidateNotCurrent
 	}
-	success, err := NewProfileCompileSuccess(generationSnapshot.Manifest, receipt.ManifestGeneration, nil, receipt.ConsumedBootstrapGuidance, receipt.PipelineReservationID)
+	success, err := NewProfileCompileSuccessForPipeline(generationSnapshot.Manifest, receipt.ManifestGeneration, nil, receipt.ConsumedBootstrapGuidance, receipt.PipelineReservationID, receipt.PipelineAttemptID)
 	if err != nil {
 		return err
 	}
@@ -955,7 +955,11 @@ func markProfileRuntimeExhausted(ctx context.Context, tx *firestore.Transaction,
 		} else if err != nil {
 			return err
 		}
-		return scopedfirestore.SettlePipelineIntentRuntimeExhaustedInTransaction(ctx, tx, repo.client, w.ID, w.ID, w.UserID, w.ProjectID, w.Revision)
+		attemptID := w.AttemptID
+		if attemptID == "" {
+			attemptID = w.ID
+		}
+		return scopedfirestore.SettlePipelineIntentRuntimeExhaustedInTransaction(ctx, tx, repo.client, w.ID, attemptID, w.UserID, w.ProjectID, w.Revision)
 	}
 	if w.Kind == "document_import" {
 		return documentimport.NewFirestoreRepository(repo.client).FailDispatchInTransaction(ctx, tx, w.UserID, w.ProjectID, w.DocumentID, w.ID)
