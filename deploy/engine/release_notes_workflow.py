@@ -211,6 +211,60 @@ def selected_components_from_plan(plan_bytes: bytes) -> list[str]:
     return selected
 
 
+def _valid_source_identity_map(identity: object) -> bool:
+    """Validate the component map emitted by source_identity() in engine.py."""
+    if not isinstance(identity, dict) or set(identity) != {"profile", "inputs", "files"}:
+        return False
+    if (not isinstance(identity.get("profile"), str) or
+            re.fullmatch(r"[0-9a-f]{64}", identity["profile"]) is None or
+            not isinstance(identity.get("inputs"), str) or
+            re.fullmatch(r"[0-9a-f]{64}", identity["inputs"]) is None):
+        return False
+    files = identity.get("files")
+    if not isinstance(files, list) or not files:
+        return False
+    names = []
+    for item in files:
+        if not isinstance(item, list) or len(item) != 2:
+            return False
+        path, blob = item
+        if (not isinstance(path, str) or not path or path == "." or "\x00" in path or
+                PurePosixPath(path).is_absolute() or
+                PurePosixPath(path).as_posix() != path or
+                any(part in (".", "..") for part in PurePosixPath(path).parts) or
+                not isinstance(blob, str) or re.fullmatch(r"[0-9a-f]{40}", blob) is None):
+            return False
+        names.append(path)
+    if names != sorted(set(names)):
+        return False
+    expected_inputs = hashlib.sha256(
+        json.dumps(files, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return identity["inputs"] == expected_inputs
+
+
+def _valid_independent_auth_source(source: object) -> bool:
+    if not isinstance(source, dict) or set(source) != {
+            "repository_id", "revision", "tree_sha256", "artifact_id", "run_id", "run_attempt"}:
+        return False
+    return (isinstance(source.get("repository_id"), str) and
+            re.fullmatch(r"github:[1-9][0-9]*", source["repository_id"]) is not None and
+            isinstance(source.get("revision"), str) and
+            re.fullmatch(r"[0-9a-f]{40}", source["revision"]) is not None and
+            isinstance(source.get("tree_sha256"), str) and
+            ARTIFACT_DIGEST_RE.fullmatch(source["tree_sha256"]) is not None and
+            isinstance(source.get("artifact_id"), str) and ID_RE.fullmatch(source["artifact_id"]) is not None and
+            type(source.get("run_id")) is int and source["run_id"] > 0 and
+            type(source.get("run_attempt")) is int and source["run_attempt"] > 0)
+
+
+def _valid_plan_component_identity(plan: dict, component: str, identity: object) -> bool:
+    if (component == "auth" and plan.get("schema") in (3, 4) and
+            plan.get("release_source_mode") == "independent"):
+        return (isinstance(identity, str) and ARTIFACT_DIGEST_RE.fullmatch(identity) is not None and
+                _valid_independent_auth_source(plan.get("auth_source")))
+    return _valid_source_identity_map(identity)
+
+
 def bff_selected_from_plan(plan_bytes: bytes) -> bool:
     return "bff" in selected_components_from_plan(plan_bytes)
 
@@ -338,14 +392,25 @@ def _validate_plan_for_environment(plan_bytes: bytes, environment: str) -> dict:
     source = plan.get("source")
     selected = selected_components_from_plan(plan_bytes)
     identities = plan.get("identities")
-    if (not isinstance(normalized, dict) or normalized.get("environment") != environment or
+    schema = plan.get("schema")
+    release_source_mode = plan.get("release_source_mode")
+    auth_source = plan.get("auth_source")
+    auth_source_valid = (auth_source is None or
+                         (schema in (3, 4) and release_source_mode == "independent" and
+                          _valid_independent_auth_source(auth_source)))
+    if (type(schema) is not int or schema not in (2, 3, 4) or
+            ("release_source_mode" in plan and
+             release_source_mode not in ("independent", "legacy_monorepo")) or
+            (schema == 2 and "release_source_mode" in plan) or not auth_source_valid or
+            not isinstance(normalized, dict) or normalized.get("environment") != environment or
             (environment == "production" and plan.get("branch") != destination["branch"]) or
             not isinstance(source, str) or re.fullmatch(r"[0-9a-f]{40}", source) is None or
             not isinstance(plan.get("id"), str) or not plan.get("id") or
             not isinstance(plan.get("tag"), str) or not plan.get("tag") or
             not isinstance(identities, dict) or
             set(identities) != set(selected) or
-            any(not isinstance(identities.get(component), dict) for component in selected) or
+            any(not _valid_plan_component_identity(plan, component, identities.get(component))
+                for component in selected) or
             (plan.get("schema") == 4 and not release_notes.valid_version(plan.get("release_version")))):
         _fail("release-plan-not-bff-dev")
     return plan
