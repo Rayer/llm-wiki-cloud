@@ -54,6 +54,26 @@ def _runtime_inputs(source_sha, schema_version=3, environment='dev'):
     return copy.deepcopy(_cached_runtime_inputs(source_sha, schema_version, environment))
 
 
+def _frontend_only_retained_auth_inputs(source_sha):
+    origin = 'https://bff.example'
+    return {
+        'schema_version': 4, 'environment': 'dev', 'target': 'auth',
+        'source_sha': source_sha, 'config_id': 'sha256:' + 'e' * 64,
+        'gcp_project': 'llm-wiki-cloud', 'firestore_database_id': 'llm-wiki-cloud-dev',
+        'local_cloud_scope': '', 'auth_service_url': 'https://auth.example',
+        'sync_service_url': origin, 'allowed_hosts': ['auth.example'],
+        'allowed_origins': ['https://wiki.example'],
+        'auth_session_environment': 'llm-wiki-cloud-dev', 'auth_session_migration': 'disabled',
+        'registration_enabled': None, 'auth_demo_user_id': 'demo-user',
+        'auth_demo_user_email': 'demo@example.test', 'auth_demo_user_role': 'member',
+        'jwt_secret_version': 'projects/llm-wiki-cloud/secrets/jwt/versions/1',
+        'google': {'enabled': False},
+        'config_secret_resource': 'projects/llm-wiki-cloud/secrets/lwc-auth-app-config-dev',
+        'oauth_resources': [], 'management_scopes': [], 'consumer_verifiers': [],
+        'consumer_public_projection': {'resource': origin}, 'portal': {'lwc_bff_origin': origin},
+    }
+
+
 def _write_runtime_pair(directory, *, envelope=4, runtime=3, source_sha='c' * 40,
                         auth_image_digest='a' * 64, auth_identity=RUNTIME_AUTH_IDENTITY):
     directory = Path(directory)
@@ -1718,6 +1738,129 @@ class Acceptance(unittest.TestCase):
                     Breakpoint, 'independent-auth-artifact-config-schema-unsupported'):
                 provider.prepare_independent_auth()
             provider_run.assert_not_called()
+
+    def test_frontend_only_unselected_auth_carries_retained_schema_four_snapshot(self):
+        source = 'c' * 40
+        auth_build_source = 'b' * 40
+        original_auth_source = {
+            'repository_id': 'github:200', 'revision': 'd' * 40,
+            'tree_sha256': 'sha256:' + 'f' * 64, 'artifact_id': '456',
+            'run_id': 789, 'run_attempt': 1,
+        }
+        image = ('asia-east1-docker.pkg.dev/llm-wiki-cloud/gateauth-ci-images/gateauth@sha256:' +
+                 'a' * 64)
+
+        def make_fixture(case):
+            root = self.root / ('frontend-auth-' + case)
+            root.mkdir()
+            auth_inputs = _frontend_only_retained_auth_inputs(auth_build_source)
+            if case == 'runtime-schema-3':
+                auth_inputs = _runtime_inputs(auth_build_source, schema_version=3)
+            elif case == 'wrong-environment':
+                auth_inputs['environment'] = 'prod'
+            elif case == 'wrong-config-origin':
+                auth_inputs['portal']['lwc_bff_origin'] = 'https://wrong.example'
+            elif case == 'missing-config-id':
+                del auth_inputs['config_id']
+
+            auth_identity = engine.source_identity('auth', source, original_auth_source)
+            auth_receipt = {
+                'schema': 4, 'component': 'auth', 'identity': auth_identity,
+                'build_sha': auth_build_source, 'artifact': {'image': image},
+                'target_config': None,
+                'build': {'identity_verified': True, 'status': 'SUCCESS',
+                          'build_id': 'test-build-id'},
+                'auth_config_inputs': auth_inputs, 'auth_materialization_schema': 1,
+                'auth_supported_schema_versions': [1, 2, 3, 4],
+                'auth_source': {
+                    'repository_id': original_auth_source['repository_id'],
+                    'revision': original_auth_source['revision'],
+                    'tree_sha256': original_auth_source['tree_sha256'],
+                    'artifact_id': original_auth_source['artifact_id'],
+                    'build_run_id': original_auth_source['run_id'],
+                    'build_run_attempt': original_auth_source['run_attempt'],
+                },
+            }
+            auth_dir = root / 'auth'
+            (auth_dir / 'receipts').mkdir(parents=True)
+            write(auth_dir / 'receipts/auth.json', auth_receipt)
+
+            normalized = copy.deepcopy(self.normalized)
+            normalized['auth'].pop('runtime_inputs', None)
+            release = self.make(('frontend',), name='frontend-only-' + case,
+                                normalized=normalized, source_sha=source)
+            release.plan.update(
+                schema=4, release_version='2026.11.5', executor_sha='e' * 40,
+                release_source_mode='independent',
+                auth_source=(dict(original_auth_source) if case != 'wrong-source'
+                             else {**original_auth_source, 'revision': '9' * 40}),
+                dev_reference='456')
+            release.plan['id'] = engine.plan_id(release.plan)
+            release.state['plan'] = release.plan['id']
+            write(release.directory / 'plan.json', release.plan)
+            write(release.state_path, release.state)
+
+            reuse = root / 'reuse'
+            (reuse / 'receipts').mkdir(parents=True)
+            archive = b'RETAINED_TEST_ONLY_FRONTEND_ARCHIVE'
+            (reuse / 'frontend.tgz').write_bytes(archive)
+            target = release.provider.p['frontend']
+            write(reuse / 'receipts/frontend.json', {
+                'schema': 2, 'component': 'frontend',
+                'identity': release.plan['identities']['frontend'],
+                'build_sha': source,
+                'target_config': engine.digest(release.plan['normalized']['frontend']),
+                'artifact': {
+                    'archive': 'frontend.tgz',
+                    'sha256': hashlib.sha256(archive).hexdigest(),
+                    'config': {'schema_version': target['config_schema_version'],
+                               'config_url': target['config_url']},
+                    'target': 'preview', 'project': 'prj_test', 'team': 'team_test',
+                },
+            })
+            write(reuse / 'receipts/auth.json', auth_receipt)
+            return release, auth_dir, reuse, auth_receipt
+        release, auth_dir, reuse, auth_receipt = make_fixture('compatible')
+        provenance = SimpleNamespace(directory=auth_dir,
+                                     validate_dev_receipt_pair=lambda: None)
+        with patch.object(engine, 'Engine', return_value=provenance):
+            release.prepare(reuse=reuse, dev=auth_dir)
+        carried = read(release.directory / 'receipts/auth.json')
+        self.assertEqual(release.state['status'], 'ready')
+        self.assertEqual(release.receipt('auth'), carried)
+        self.assertEqual(carried, auth_receipt,
+                         'an unselected Auth dependency keeps its authentic product/config source')
+        self.assertEqual(carried['build_sha'], auth_build_source)
+        self.assertEqual(carried['auth_config_inputs']['source_sha'], auth_build_source)
+        self.assertEqual(carried['auth_config_inputs']['schema_version'], 4)
+        self.assertEqual((release.directory / 'frontend.tgz').read_bytes(),
+                         (reuse / 'frontend.tgz').read_bytes())
+        self.assertFalse((release.directory / 'dev-source-metadata.json').exists(),
+                         'a frontend-only package does not invent a new DEV operation sidecar')
+
+        release, _, reuse, auth_receipt = make_fixture('compatible-no-dev')
+        release.prepare(reuse=reuse, dev=None)
+        carried = read(release.directory / 'receipts/auth.json')
+        self.assertEqual(release.state['status'], 'ready')
+        self.assertEqual(carried, auth_receipt,
+                         'the no-provenance path keeps the retained Auth receipt unchanged')
+
+        release, _, reuse, _ = make_fixture('missing-config-id')
+        with self.assertRaisesRegex(Breakpoint, 'auth-source-artifact-incompatible'):
+            release.prepare(reuse=reuse, dev=None)
+        self.assertNotEqual(release.state['status'], 'ready')
+        self.assertFalse((release.directory / 'receipts/auth.json').exists(),
+                         'an unidentified retained config is rejected before Ready')
+
+        for case in ('wrong-source', 'wrong-environment', 'runtime-schema-3', 'wrong-config-origin'):
+            with self.subTest(case=case):
+                release, auth_dir, reuse, _ = make_fixture(case)
+                provenance = SimpleNamespace(directory=auth_dir,
+                                             validate_dev_receipt_pair=lambda: None)
+                with patch.object(engine, 'Engine', return_value=provenance):
+                    with self.assertRaisesRegex(Breakpoint, 'auth-source-artifact-incompatible'):
+                        release.prepare(reuse=reuse, dev=auth_dir)
+                self.assertNotEqual(release.state['status'], 'ready')
 
     def test_auth_stage1_snapshot_refreshes_for_cross_plan_and_production_image_reuse(self):
         old=self.ready(self.make(('auth',),name='auth-stage1-old'))

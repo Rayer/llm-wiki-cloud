@@ -546,13 +546,22 @@ class Engine:
 
     def receipt(self, c):
         r = read(self.directory / 'receipts' / (c+'.json'))
-        require(r['component'] == c and r['identity'] == self.plan['identities'][c], 'artifact-source-incompatible')
+        expected_identity = self.plan['identities'].get(c)
+        if (expected_identity is None and c == 'auth' and
+                release_source_mode(self.plan) == 'independent' and
+                isinstance(self.plan.get('auth_source'), dict)):
+            expected_identity = source_identity('auth', self.plan['source'], self.plan['auth_source'])
+        require(r['component'] == c and r['identity'] == expected_identity, 'artifact-source-incompatible')
         if c == 'frontend':
             require(r['target_config'] == digest(self.plan['normalized']['frontend']), 'artifact-config-incompatible')
         if c == 'auth' and release_source_mode(self.plan) == 'independent':
             source = self.plan.get('auth_source')
             require(isinstance(source, dict), 'independent-auth-source-required')
             try:
+                auth_inputs = (self.auth_input_snapshot()
+                               if self.plan['normalized']['environment'] == 'development' else None)
+                if 'auth' in self.plan['selected'] and self.plan['normalized']['environment'] == 'development':
+                    require(auth_inputs is not None, 'auth-input-snapshot-invalid')
                 expected_source = {
                     'repository_id': source['repository_id'],
                     'revision': source['revision'],
@@ -563,8 +572,8 @@ class Engine:
                 }
                 validate_auth_component_receipt(
                     r, 'independent',
-                    self.plan.get('source') if self.plan['normalized']['environment'] == 'development' else None,
-                    self.auth_input_snapshot() if self.plan['normalized']['environment'] == 'development' else None,
+                    self.plan.get('source') if auth_inputs is not None else None,
+                    auth_inputs,
                     expected_source)
             except (ReceiptError, KeyError, TypeError) as exc:
                 raise Breakpoint('artifact-auth-receipt-incompatible', 'failed', False,
@@ -1102,32 +1111,49 @@ class Engine:
             require(auth_receipt_path is not None and auth_receipt_path.is_file(),
                     'auth-source-artifact-unavailable')
             expected_identity = source_identity('auth', self.plan['source'], self.plan['auth_source'])
-            if self.auth_input_snapshot()['schema_version'] == 3:
+            auth_inputs = self.auth_input_snapshot()
+            if auth_inputs is not None and auth_inputs['schema_version'] == 3:
                 require(retained_runtime3_pair_compatible(
-                    source_directory, self.auth_input_snapshot(), self.plan['auth_source'],
+                    source_directory, auth_inputs, self.plan['auth_source'],
                     expected_identity), 'auth-source-artifact-incompatible')
             auth_receipt = read(auth_receipt_path)
-            require(auth_receipt.get('component') == 'auth' and auth_receipt.get('schema') in (3, 4) and
-                    auth_receipt.get('identity') == expected_identity and
-                    auth_receipt.get('auth_source') == {
-                        'repository_id': self.plan['auth_source']['repository_id'],
-                        'revision': self.plan['auth_source']['revision'],
-                        'tree_sha256': self.plan['auth_source']['tree_sha256'],
-                        'artifact_id': self.plan['auth_source']['artifact_id'],
-                        'build_run_id': self.plan['auth_source']['run_id'],
-                        'build_run_attempt': self.plan['auth_source']['run_attempt'],
-                    } and self.auth_receipt_supports_schema(
-                        auth_receipt, self.auth_input_snapshot()['schema_version']),
+            expected_auth_source = {
+                'repository_id': self.plan['auth_source']['repository_id'],
+                'revision': self.plan['auth_source']['revision'],
+                'tree_sha256': self.plan['auth_source']['tree_sha256'],
+                'artifact_id': self.plan['auth_source']['artifact_id'],
+                'build_run_id': self.plan['auth_source']['run_id'],
+                'build_run_attempt': self.plan['auth_source']['run_attempt'],
+            }
+            try:
+                validate_auth_component_receipt(
+                    auth_receipt, 'independent', expected_auth_source=expected_auth_source)
+            except (ReceiptError, KeyError, TypeError) as exc:
+                raise Breakpoint('auth-source-artifact-incompatible', 'failed', False,
+                                 'inspect-retained-artifact', cause=str(exc)) from None
+            retained_inputs = auth_receipt.get('auth_config_inputs')
+            require(auth_receipt.get('identity') == expected_identity and
+                    self.auth_receipt_supports_schema(
+                        auth_receipt, auth_inputs['schema_version'] if auth_inputs is not None else 4) and
+                    (auth_inputs is not None or
+                     (isinstance(retained_inputs, dict) and
+                      retained_inputs.get('schema_version') == 4 and
+                      retained_inputs.get('environment') == 'dev' and
+                      retained_inputs.get('source_sha') == auth_receipt.get('build_sha') and
+                      isinstance(retained_inputs.get('config_id'), str) and
+                      re.fullmatch(r'sha256:[0-9a-f]{64}', retained_inputs['config_id']) is not None)),
                     'auth-source-artifact-incompatible')
             auth_receipt = copy.deepcopy(auth_receipt)
-            auth_receipt['build_sha'] = self.plan['source']
-            auth_receipt['auth_config_inputs'] = self.auth_input_snapshot()
-            auth_receipt['auth_materialization_schema'] = 1
+            if auth_inputs is not None:
+                auth_receipt['build_sha'] = self.plan['source']
+                auth_receipt['auth_config_inputs'] = auth_inputs
+                auth_receipt['auth_materialization_schema'] = 1
             self.provider.usable('auth', auth_receipt['artifact'])
             write(self.directory / 'receipts/auth.json', auth_receipt)
+        has_dev_backend = any(c in self.plan['selected'] for c in ('auth', 'bff', 'worker', 'exportjob'))
         if (self.plan['normalized']['environment'] == 'development' and
                 source_mode == 'independent' and
-                isinstance(self.plan.get('auth_source'), dict)):
+                isinstance(self.plan.get('auth_source'), dict) and has_dev_backend):
             auth_receipt_path = self.directory / 'receipts/auth.json'
             if auth_receipt_path.exists():
                 auth_receipt = read(auth_receipt_path)
@@ -1151,7 +1177,6 @@ class Engine:
                              'artifact_digest': 'sha256:' + match.group(1)},
                 }
                 write(self.directory / 'dev-source-metadata.json', metadata)
-        has_dev_backend = any(c in self.plan['selected'] for c in ('auth', 'bff', 'worker', 'exportjob'))
         if (self.plan['normalized']['environment'] == 'development' and has_dev_backend and
                 source_mode == 'independent'):
             require(os.environ.get('GAT4_DEV_RECEIPT_MODE') == 'independent' and
