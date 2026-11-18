@@ -1015,8 +1015,13 @@ def _prepare_marker_transition(marker: dict, previous: dict | None,
     if isinstance(previous, dict) and previous.get("schema_version") == MARKER_SCHEMA_VERSION:
         replay_candidate = dict(marker)
         replay_previous = dict(previous)
+        selected_builds = {item["component"]: item for item in replay_candidate.get("component_builds", [])}
+        carried_builds = {item["component"]: item for item in replay_previous.get("component_builds", [])}
+        carried_builds.update(selected_builds)
+        replay_candidate["component_builds"] = [carried_builds[key] for key in sorted(carried_builds)]
         replay_candidate["previous_release"] = replay_previous["previous_release"]
         if replay_candidate == replay_previous:
+            marker["component_builds"] = replay_candidate["component_builds"]
             marker["previous_release"] = previous["previous_release"]
             return
     if marker.get("operation") == "rollback":

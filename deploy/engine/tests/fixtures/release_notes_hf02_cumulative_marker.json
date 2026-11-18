@@ -1,0 +1,141 @@
+{
+  "candidate_marker": {
+    "branch": "develop",
+    "commit": "835f463c2e139d8f58f67b191c13cae57337609c",
+    "component_builds": [],
+    "deployment_evidence_digest": "sha256:ecf5d2290db3f336cace1016bfbefdd88b207924ea56821b2aace620074fa41d",
+    "environment": "dev",
+    "image_digest": "sha256:770ec0dee9fbdc7b9952694f3de2ab5a74d81ebe0deacbc245ac2ea85a6d6d3c",
+    "image_tag": "835f463c2e139d8f58f67b191c13cae57337609c",
+    "operation": "release",
+    "operation_run_attempt": 1,
+    "operation_run_id": "44196150919",
+    "previous_release": null,
+    "product_version": "1.0.0",
+    "release_version": "2026.11.4",
+    "revision": "llm-wiki-bff-dev-00335-vgb",
+    "schema_version": 2,
+    "service": "llm-wiki-bff-dev",
+    "service_generation": 399,
+    "service_uid": "159513e5-456e-4493-a4bb-3db10ed2c5b0",
+    "tag": ""
+  },
+  "current_marker": {
+    "branch": "develop",
+    "commit": "835f463c2e139d8f58f67b191c13cae57337609c",
+    "component_builds": [
+      {
+        "component": "worker",
+        "image_digest": "sha256:b06e3f3ee07ea1fe4b7f640ba90372a3a5e929d9034f524aaf74bd135f0ccaf8",
+        "job_name": "olw-pipeline-dev",
+        "receipt_sha256": "42e1689dc10d37a162e743b46ca898ba3aa720edab043692c8e8e748704db6e9",
+        "source_sha": "835f463c2e139d8f58f67b191c13cae57337609c"
+      }
+    ],
+    "deployment_evidence_digest": "sha256:ecf5d2290db3f336cace1016bfbefdd88b207924ea56821b2aace620074fa41d",
+    "environment": "dev",
+    "image_digest": "sha256:770ec0dee9fbdc7b9952694f3de2ab5a74d81ebe0deacbc245ac2ea85a6d6d3c",
+    "image_tag": "835f463c2e139d8f58f67b191c13cae57337609c",
+    "operation": "release",
+    "operation_run_attempt": 1,
+    "operation_run_id": "44196150919",
+    "previous_release": {
+      "bff": {
+        "branch": "develop",
+        "commit": "286055d2d56e25ead6bdd0c3044072a36906e2af",
+        "image_digest": "sha256:4d1e8c3734bb3782ae0b7c55b2df0f18d16416335b9aabc76fbca7ba71cb2b00",
+        "image_tag": "286055d2d56e25ead6bdd0c3044072a36906e2af",
+        "product_version": "1.0.0",
+        "revision": "llm-wiki-bff-dev-00333-8rp",
+        "service": "llm-wiki-bff-dev",
+        "service_generation": 397,
+        "service_uid": "159513e5-456e-4493-a4bb-3db10ed2c5b0",
+        "tag": ""
+      },
+      "component_builds": [
+        {
+          "component": "worker",
+          "image_digest": "sha256:b06e3f3ee07ea1fe4b7f640ba90372a3a5e929d9034f524aaf74bd135f0ccaf8",
+          "job_name": "olw-pipeline-dev",
+          "receipt_sha256": "42e1689dc10d37a162e743b46ca898ba3aa720edab043692c8e8e748704db6e9",
+          "source_sha": "835f463c2e139d8f58f67b191c13cae57337609c"
+        }
+      ],
+      "marker_sha256": "656a0bcc4587e30059be80f7b87f929cef075aee1d71fa4b7e4a1f1840f7c5e3",
+      "release_version": "2026.11.4"
+    },
+    "product_version": "1.0.0",
+    "release_version": "2026.11.4",
+    "revision": "llm-wiki-bff-dev-00335-vgb",
+    "schema_version": 2,
+    "service": "llm-wiki-bff-dev",
+    "service_generation": 399,
+    "service_uid": "159513e5-456e-4493-a4bb-3db10ed2c5b0",
+    "tag": ""
+  },
+  "expected_after_old_prepare_diff": [
+    "previous_release"
+  ],
+  "expected_before_prepare_diff": [
+    "component_builds",
+    "previous_release"
+  ],
+  "fixture_schema": 1,
+  "provenance": {
+    "current_index_projection": {
+      "locales": {
+        "en": {
+          "object_path": "release-notes/v1/versions/2026.11.4/en/d0f0fc698759558833176b0943f75eb7deedd7bff15b69225e70dfd59e689b58.json",
+          "sha256": "d0f0fc698759558833176b0943f75eb7deedd7bff15b69225e70dfd59e689b58"
+        },
+        "zh-TW": {
+          "object_path": "release-notes/v1/versions/2026.11.4/zh-TW/49c40756d41077535c051e5eb1bb1aac52872d69b6c87c459db79b65036cb3e9.json",
+          "sha256": "49c40756d41077535c051e5eb1bb1aac52872d69b6c87c459db79b65036cb3e9"
+        }
+      },
+      "product_version": "2026.11.4",
+      "projection_only": true,
+      "published_at": "2026-11-16T10:00:37Z",
+      "sha256": "960d291e85d6cae3ea5d8dc2bc00e06d69cb6358e2365bac4fe42dd89d4140fd"
+    },
+    "current_marker_token_sha256": "c71f2fd7fa8bb43bcb4c016cdf8c7e99156a1ef0a2bdcf6ea75279ca0df36675",
+    "environment": "dev",
+    "nonsecret_projection_only": true,
+    "operation": "release",
+    "original_runtime_run_attempt": 1,
+    "original_runtime_run_id": 44196150919,
+    "plan_id": "e8c5140bfe05555fa835bed50df70a5c59bf56308fb1a464c827e4feff1b0c1e",
+    "plan_sha256": "42850d186b4a3ce7e46cfd5408f76498139e2961b41c163906fbd8e50e39e229",
+    "resend_run_id": 44198557850,
+    "result_artifact_id": 14380701654,
+    "result_artifact_sha256": "3333c09bd4670b6ede158f9a1b4854156b8fc3318bfdd6a8e8df1eee9ba610e1",
+    "source": "authentic same-operation DEV marker extracted by operation_marker from result artifact 14380701654 and exact read-only current index bytes",
+    "source_files": {
+      "failure-current-index-raw.json": {
+        "sha256": "960d291e85d6cae3ea5d8dc2bc00e06d69cb6358e2365bac4fe42dd89d4140fd",
+        "size_bytes": 3953
+      },
+      "native/plan.json": {
+        "sha256": "42850d186b4a3ce7e46cfd5408f76498139e2961b41c163906fbd8e50e39e229",
+        "size_bytes": 78231
+      },
+      "native/receipts/bff.json": {
+        "sha256": "0dd1ce581349f1c340da3d38ba5ed65ff622224fdd3bdf1f2720a4f8781ef53a",
+        "size_bytes": 33887
+      },
+      "native/release-notes-operation.json": {
+        "sha256": "7bd8a80b7f14d86f830c16fb54a79e58ce5629436c9492197c835e4a332a0fe0",
+        "size_bytes": 921
+      },
+      "native/result.json": {
+        "sha256": "7d2defdf737958396afb8beab04c516ef72923b95138157af80cfb1909ef2591",
+        "size_bytes": 1515
+      },
+      "native/state.json": {
+        "sha256": "d66efffec76e8735f4ec0912182d7ac09599a776893c4765187ff1837b0cfc5c",
+        "size_bytes": 1196
+      }
+    },
+    "source_sha": "835f463c2e139d8f58f67b191c13cae57337609c"
+  }
+}
