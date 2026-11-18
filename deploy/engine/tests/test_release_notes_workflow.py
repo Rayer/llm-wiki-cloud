@@ -37,6 +37,54 @@ DOWNLOAD_ACTION = "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5
 PINNED_DOWNLOAD_SOURCE = ROOT / "scripts/fixtures/actions-download-artifact-d3f86a106a0bac45b974a628896c90dbdf5c8093/src/download-artifact.ts"
 ARTIFACT_SDK_BOUNDARY = ROOT / "deploy/engine/tests/lwc478_artifact_sdk_boundary.cjs"
 ARTIFACT_SDK_NODE_MODULES = ROOT / "deploy/engine/tests/artifact-sdk/node_modules"
+IDENTITY_FIXTURE_SOURCE = "21ffd9d96139f0753b0cbbbb2e919e60998a3342"
+AUTH_SOURCE_FIXTURE = {
+    "repository_id": "github:1439745097",
+    "revision": "c9ff48fed905a10225805cd816376cf99b582cbf",
+    "tree_sha256": "sha256:" + "f" * 64,
+    "artifact_id": "13393843472",
+    "run_id": 41980211267,
+    "run_attempt": 1,
+}
+_SOURCE_IDENTITY_FIXTURES = {}
+
+
+def producer_identity_fixture(component, auth_source=None):
+    """Use engine.source_identity() with a bounded Git inventory for offline plans."""
+    if auth_source is not None:
+        return engine.source_identity(component, IDENTITY_FIXTURE_SOURCE, auth_source)
+    if component in _SOURCE_IDENTITY_FIXTURES:
+        return copy.deepcopy(_SOURCE_IDENTITY_FIXTURES[component])
+    profile = engine.PROFILES[component]
+    original_run = engine.run
+    tracked = original_run(["git", "ls-tree", "-r", "--name-only", IDENTITY_FIXTURE_SOURCE]).splitlines()
+    input_files = [path for path in tracked
+                   if any(path == input_root or path.startswith(input_root.rstrip("/") + "/")
+                          for input_root in profile["inputs"])]
+    input_files = [path for path in input_files
+                   if not (component == "frontend" and ("/tests/" in path or path.endswith("AGENTS.md")))]
+    if not input_files:
+        raise AssertionError(f"No tracked source identity input found for {component}")
+    input_file = input_files[0]
+    blob = original_run(["git", "rev-parse", f"{IDENTITY_FIXTURE_SOURCE}:{input_file}"])
+
+    def bounded_run(args, **kwargs):
+        if args[:2] == ["git", "ls-tree"]:
+            return input_file
+        if args[:2] == ["go", "list"]:
+            return ""
+        if args[:2] == ["git", "ls-files"]:
+            return ""
+        if args[:2] == ["git", "rev-parse"]:
+            return blob
+        if args[:2] == ["git", "hash-object"]:
+            return blob
+        raise AssertionError(f"Unexpected source_identity command: {args[:2]}")
+
+    with patch.object(engine, "run", side_effect=bounded_run):
+        value = engine.source_identity(component, IDENTITY_FIXTURE_SOURCE)
+    _SOURCE_IDENTITY_FIXTURES[component] = copy.deepcopy(value)
+    return value
 
 
 class ReleaseNotesWorkflowLayoutTests(unittest.TestCase):
@@ -527,8 +575,8 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
             "tag": "2026.11.4",
             "source": "a" * 40,
             "normalized": {"environment": "development"},
-            "identities": {"bff": {"profile": "bff", "digest": "inputs"},
-                           "frontend": {"profile": "frontend", "digest": "frontend-inputs"}},
+            "identities": {"bff": producer_identity_fixture("bff"),
+                           "frontend": producer_identity_fixture("frontend")},
             "selected": ["bff", "frontend"],
         }
         self.plan_bytes = canonical(self.plan)
@@ -577,11 +625,13 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
         return path
 
     def make_ready_handoff(self, root, selected=("bff", "frontend"), schema=3,
-                           environment="development"):
+                           environment="development", independent_auth=False):
+        root.mkdir(parents=True, exist_ok=True)
         producer_sha = "b" * 40
         production = environment == "production"
         branch = "main" if production else "develop"
         package_environment = "prod" if production else "dev"
+        auth_source = AUTH_SOURCE_FIXTURE if independent_auth else None
         plan = {
             "schema": schema,
             "tag": "v2026.11.5",
@@ -589,12 +639,19 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
             "branch": branch,
             "executor_sha": producer_sha,
             "normalized": {"environment": environment, "auth": {"runtime_inputs": {"schema_version": 4}}},
-            "identities": {component: {"profile": component, "digest": f"{component}-inputs"}
+            "identities": {component: producer_identity_fixture(
+                component, auth_source if component == "auth" else None)
                            for component in selected},
             "dev_reference": "731" if production else None,
             "selected": list(selected),
-            "release_source_mode": "legacy_monorepo",
         }
+        if schema == 2:
+            plan["engine"] = producer_sha
+            plan["engine_content"] = "e" * 64
+        else:
+            plan["release_source_mode"] = "independent" if independent_auth else "legacy_monorepo"
+        if auth_source is not None:
+            plan["auth_source"] = dict(auth_source)
         if schema == 4:
             plan["release_version"] = "2026.11.4"
         plan["id"] = release_notes_workflow._plan_id(plan)
@@ -686,7 +743,7 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
 
     def make_historical_result(self, root):
         source = "a" * 40
-        identity = {"profile": "bff", "digest": "synthetic-history-inputs"}
+        identity = producer_identity_fixture("bff")
         candidate = {"revision": "revision-historical-fixture"}
         plan = {
             "schema": 3, "source": source, "executor_sha": source, "branch": "develop",
@@ -740,7 +797,7 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
             "schema": 3, "tag": "v2026.11.5", "source": "a" * 40,
             "branch": "develop", "executor_sha": producer_sha,
             "normalized": {"environment": "development", "gcp": {"project_id": "fixture-project"}},
-            "identities": {"bff": {"profile": "bff", "digest": "native-fixture-inputs"}},
+            "identities": {"bff": producer_identity_fixture("bff")},
             "dev_reference": None, "selected": ["bff"],
             "release_source_mode": "legacy_monorepo",
         }
@@ -1378,6 +1435,110 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
 
                 invalid_plan = dict(fixture["plan"], identities={})
                 with self.assertRaises(release_notes_workflow.PackageWorkflowError):
+                    release_notes_workflow._validate_development_plan(canonical(invalid_plan))
+
+    def test_ready_and_package_readers_accept_only_producer_identity_shapes(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            legacy_directory = root / "legacy"
+            legacy_directory.mkdir()
+            for schema in (2, 3, 4):
+                with self.subTest(schema=schema):
+                    fixture = self.make_ready_handoff(
+                        legacy_directory / str(schema), selected=("bff",), schema=schema)
+                    accepted = release_notes_workflow._validate_development_plan(fixture["plan_bytes"])
+                    self.assertEqual(accepted["identities"]["bff"],
+                                     producer_identity_fixture("bff"))
+
+            auth_root = root / "auth-independent"
+            auth_root.mkdir()
+            fixture = self.make_ready_handoff(
+                auth_root, selected=("auth",), schema=4, independent_auth=True)
+            plan = fixture["plan"]
+            expected_auth_identity = engine.source_identity(
+                "auth", IDENTITY_FIXTURE_SOURCE, AUTH_SOURCE_FIXTURE)
+            self.assertEqual(plan["identities"]["auth"], expected_auth_identity)
+            ready_output = auth_root / "ready-output"
+            ready = release_notes_workflow.validate_ready_handoff(
+                fixture["metadata"], fixture["run"], fixture["artifact_list"], fixture["result_metadata"],
+                expected_artifact_id=fixture["ready_id"],
+                expected_result_artifact_id=fixture["result_id"],
+                ready_directory=fixture["ready_dir"], result_directory=fixture["result_dir"],
+                output_path=str(ready_output))
+            self.assertEqual(ready["components"], "auth")
+            self.assertEqual(ready["resume_inputs"]["auth_artifact_id"], AUTH_SOURCE_FIXTURE["artifact_id"])
+            self.assertEqual(ready["resume_inputs"]["auth_run_id"], str(AUTH_SOURCE_FIXTURE["run_id"]))
+            self.assertTrue(ready_output.is_file())
+
+            # This local package payload and artifact transport metadata are synthetic; the plan bytes are the
+            # exact schema-4 producer identity returned by the same Ready reader above.
+            package = auth_root / "package"
+            package.mkdir()
+            body = note("2026.11.4", "en", "Synthetic local Notes payload")
+            manifest = {
+                "schema_version": 1, "product": "llm-wiki-cloud", "product_version": "2026.11.4",
+                "environment": "dev",
+                "release_plan_sha256": hashlib.sha256(fixture["plan_bytes"]).hexdigest(),
+                "release_note_snapshot_ref": "LWC-A-62:test-only",
+                "release_note_snapshot_sha256": "sha256:" + "f" * 64,
+                "delivered_scope_evidence_sha256": "sha256:" + "e" * 64,
+                "files": {"en": {"path": "en.json", "sha256": hashlib.sha256(body).hexdigest()}},
+            }
+            (package / "release-notes-manifest.json").write_bytes(canonical(manifest))
+            (package / "en.json").write_bytes(body)
+            action_digest = "a" * 64
+            metadata = {
+                "id": 803, "name": "lwc-release-notes-2026.11.4-development-604-1",
+                "digest": "sha256:" + action_digest, "expired": False,
+                "expires_at": "2027-02-12T00:00:00Z",
+                "workflow_run": {"id": 604, "head_branch": "develop", "head_sha": "c" * 40},
+            }
+            uploaded = release_notes_workflow.verify_uploaded_package(
+                package, fixture["ready_dir"] / "plan.json", metadata,
+                expected_artifact_id="803", expected_name=metadata["name"], action_digest=action_digest,
+                run=self.make_package_producer_run(), run_id="604", run_attempt="1",
+                ready_artifact_id=fixture["ready_id"], output_path=str(auth_root / "package-output"))
+            self.assertEqual(uploaded["product_version"], "2026.11.4")
+            self.assertEqual(uploaded["resume_inputs"]["auth_revision"], AUTH_SOURCE_FIXTURE["revision"])
+
+            invalid_cases = []
+            bad = copy.deepcopy(plan)
+            bad["identities"]["auth"] = "sha256:" + "A" * 64
+            invalid_cases.append(("uppercase digest", bad))
+            bad = copy.deepcopy(plan)
+            bad["identities"]["auth"] = "a" * 64
+            invalid_cases.append(("missing digest prefix", bad))
+            bad = copy.deepcopy(plan)
+            del bad["auth_source"]
+            invalid_cases.append(("missing independent provenance", bad))
+            bad = copy.deepcopy(plan)
+            bad["auth_source"]["repository_id"] = "not-a-github-repository-id"
+            invalid_cases.append(("malformed independent provenance", bad))
+            bad = copy.deepcopy(plan)
+            bad["identities"]["auth"] = producer_identity_fixture("auth")
+            invalid_cases.append(("independent auth without digest identity", bad))
+            legacy_auth = self.make_ready_handoff(
+                auth_root / "schema2-auth", selected=("auth",), schema=2)
+            bad = copy.deepcopy(legacy_auth["plan"])
+            bad["identities"]["auth"] = "sha256:" + "d" * 64
+            invalid_cases.append(("schema-2 string identity", bad))
+            legacy_bff = self.make_ready_handoff(
+                auth_root / "legacy-bff", selected=("bff",), schema=3)
+            bad = copy.deepcopy(legacy_bff["plan"])
+            bad["identities"]["bff"] = "sha256:" + "d" * 64
+            invalid_cases.append(("string identity on non-Auth component", bad))
+            bad = copy.deepcopy(legacy_bff["plan"])
+            bad["identities"]["bff"]["inputs"] = "a" * 64
+            invalid_cases.append(("component input digest mismatch", bad))
+            bad = copy.deepcopy(legacy_bff["plan"])
+            bad["release_source_mode"] = "unsupported"
+            invalid_cases.append(("unknown release source mode", bad))
+            bad = copy.deepcopy(legacy_auth["plan"])
+            bad["release_source_mode"] = "legacy_monorepo"
+            invalid_cases.append(("schema-2 with a schema-3 mode field", bad))
+            for label, invalid_plan in invalid_cases:
+                with self.subTest(invalid_identity=label), self.assertRaisesRegex(
+                        release_notes_workflow.PackageWorkflowError, "release-plan-not-bff-dev"):
                     release_notes_workflow._validate_development_plan(canonical(invalid_plan))
 
     def test_component_only_ready_resume_capture_and_publication_do_not_prepare_bff(self):
