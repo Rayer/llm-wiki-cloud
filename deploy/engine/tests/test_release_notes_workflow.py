@@ -37,7 +37,8 @@ DOWNLOAD_ACTION = "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5
 PINNED_DOWNLOAD_SOURCE = ROOT / "scripts/fixtures/actions-download-artifact-d3f86a106a0bac45b974a628896c90dbdf5c8093/src/download-artifact.ts"
 ARTIFACT_SDK_BOUNDARY = ROOT / "deploy/engine/tests/lwc478_artifact_sdk_boundary.cjs"
 ARTIFACT_SDK_NODE_MODULES = ROOT / "deploy/engine/tests/artifact-sdk/node_modules"
-IDENTITY_FIXTURE_SOURCE = "21ffd9d96139f0753b0cbbbb2e919e60998a3342"
+# Use the checked-out tree so source fixtures work in shallow PR merge checkouts.
+IDENTITY_FIXTURE_SOURCE = "HEAD"
 AUTH_SOURCE_FIXTURE = {
     "repository_id": "github:1439745097",
     "revision": "c9ff48fed905a10225805cd816376cf99b582cbf",
