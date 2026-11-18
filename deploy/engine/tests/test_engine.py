@@ -1760,6 +1760,8 @@ class Acceptance(unittest.TestCase):
                 auth_inputs['environment'] = 'prod'
             elif case == 'wrong-config-origin':
                 auth_inputs['portal']['lwc_bff_origin'] = 'https://wrong.example'
+            elif case == 'missing-config-id':
+                del auth_inputs['config_id']
 
             auth_identity = engine.source_identity('auth', source, original_auth_source)
             auth_receipt = {
@@ -1816,6 +1818,7 @@ class Acceptance(unittest.TestCase):
                     'target': 'preview', 'project': 'prj_test', 'team': 'team_test',
                 },
             })
+            write(reuse / 'receipts/auth.json', auth_receipt)
             return release, auth_dir, reuse, auth_receipt
         release, auth_dir, reuse, auth_receipt = make_fixture('compatible')
         provenance = SimpleNamespace(directory=auth_dir,
@@ -1834,6 +1837,20 @@ class Acceptance(unittest.TestCase):
                          (reuse / 'frontend.tgz').read_bytes())
         self.assertFalse((release.directory / 'dev-source-metadata.json').exists(),
                          'a frontend-only package does not invent a new DEV operation sidecar')
+
+        release, _, reuse, auth_receipt = make_fixture('compatible-no-dev')
+        release.prepare(reuse=reuse, dev=None)
+        carried = read(release.directory / 'receipts/auth.json')
+        self.assertEqual(release.state['status'], 'ready')
+        self.assertEqual(carried, auth_receipt,
+                         'the no-provenance path keeps the retained Auth receipt unchanged')
+
+        release, _, reuse, _ = make_fixture('missing-config-id')
+        with self.assertRaisesRegex(Breakpoint, 'auth-source-artifact-incompatible'):
+            release.prepare(reuse=reuse, dev=None)
+        self.assertNotEqual(release.state['status'], 'ready')
+        self.assertFalse((release.directory / 'receipts/auth.json').exists(),
+                         'an unidentified retained config is rejected before Ready')
 
         for case in ('wrong-source', 'wrong-environment', 'runtime-schema-3', 'wrong-config-origin'):
             with self.subTest(case=case):

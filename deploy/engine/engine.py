@@ -1139,7 +1139,9 @@ class Engine:
                      (isinstance(retained_inputs, dict) and
                       retained_inputs.get('schema_version') == 4 and
                       retained_inputs.get('environment') == 'dev' and
-                      retained_inputs.get('source_sha') == auth_receipt.get('build_sha'))),
+                      retained_inputs.get('source_sha') == auth_receipt.get('build_sha') and
+                      isinstance(retained_inputs.get('config_id'), str) and
+                      re.fullmatch(r'sha256:[0-9a-f]{64}', retained_inputs['config_id']) is not None)),
                     'auth-source-artifact-incompatible')
             auth_receipt = copy.deepcopy(auth_receipt)
             if auth_inputs is not None:
