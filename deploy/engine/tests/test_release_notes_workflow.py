@@ -1531,6 +1531,18 @@ class ReleaseNotesWorkflowInputTests(unittest.TestCase):
             bad = copy.deepcopy(legacy_bff["plan"])
             bad["identities"]["bff"]["inputs"] = "a" * 64
             invalid_cases.append(("component input digest mismatch", bad))
+            for invalid_path in (".", "bad\x00path"):
+                bad = copy.deepcopy(legacy_bff["plan"])
+                identity = bad["identities"]["bff"]
+                identity["files"][0][0] = invalid_path
+                identity["inputs"] = hashlib.sha256(json.dumps(
+                    identity["files"], sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+                bad["id"] = engine.plan_id(bad)
+                with self.subTest(invalid_source_path=repr(invalid_path)):
+                    self.assertEqual(identity["inputs"], hashlib.sha256(json.dumps(
+                        identity["files"], sort_keys=True, separators=(",", ":")).encode()).hexdigest())
+                    self.assertFalse(release_notes_workflow._valid_source_identity_map(identity))
+                invalid_cases.append((f"non-Git source path {invalid_path!r}", bad))
             bad = copy.deepcopy(legacy_bff["plan"])
             bad["release_source_mode"] = "unsupported"
             invalid_cases.append(("unknown release source mode", bad))

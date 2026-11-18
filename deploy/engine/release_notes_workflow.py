@@ -228,7 +228,8 @@ def _valid_source_identity_map(identity: object) -> bool:
         if not isinstance(item, list) or len(item) != 2:
             return False
         path, blob = item
-        if (not isinstance(path, str) or not path or PurePosixPath(path).is_absolute() or
+        if (not isinstance(path, str) or not path or path == "." or "\x00" in path or
+                PurePosixPath(path).is_absolute() or
                 PurePosixPath(path).as_posix() != path or
                 any(part in (".", "..") for part in PurePosixPath(path).parts) or
                 not isinstance(blob, str) or re.fullmatch(r"[0-9a-f]{40}", blob) is None):
