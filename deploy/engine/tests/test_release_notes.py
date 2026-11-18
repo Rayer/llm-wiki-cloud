@@ -506,6 +506,120 @@ class ReleaseNotesContractTests(unittest.TestCase):
         with self.assertRaisesRegex(release_notes.ReleaseNotesError, "release-bff-reuse-mismatch"):
             release_notes.publish_marker_only(store, changed_bff, bff_reused=True)
 
+    def test_hf02_cumulative_marker_replay_is_exact_readback_and_rejects_drift(self):
+        fixture_path = Path(__file__).parent / "fixtures" / "release_notes_hf02_cumulative_marker.json"
+        fixture = json.loads(fixture_path.read_bytes())
+        candidate = copy.deepcopy(fixture["candidate_marker"])
+        current = copy.deepcopy(fixture["current_marker"])
+        version = "2026.11.4"
+        provenance = fixture["provenance"]
+        current_row = {
+            "product_version": provenance["current_index_projection"]["product_version"],
+            "published_at": provenance["current_index_projection"]["published_at"],
+            "locales": copy.deepcopy(provenance["current_index_projection"]["locales"]),
+        }
+        published_at = current_row["published_at"]
+        self.assertEqual(provenance["resend_run_id"], 44198557850)
+        self.assertEqual(provenance["result_artifact_id"], 14380701654)
+        self.assertEqual(provenance["source_sha"], candidate["commit"])
+        self.assertEqual(provenance["plan_sha256"], "42850d186b4a3ce7e46cfd5408f76498139e2961b41c163906fbd8e50e39e229")
+        self.assertTrue(provenance["current_index_projection"]["projection_only"])
+        self.assertEqual(fixture["expected_before_prepare_diff"], ["component_builds", "previous_release"])
+        self.assertEqual(fixture["expected_after_old_prepare_diff"], ["previous_release"])
+        files = {
+            locale: note(version=version, locale=locale, changed="HF02 local replay fixture")
+            for locale in ("en", "zh-TW")
+        }
+
+        def store_for(active_marker=None):
+            locales = {
+                locale: {
+                    "sha256": release_notes.digest_bytes(body),
+                    "object_path": release_notes.exact_object_path(version, locale,
+                                                                    release_notes.digest_bytes(body)),
+                }
+                for locale, body in files.items()
+            }
+            index = {
+                "schema_version": release_notes.INDEX_SCHEMA_VERSION,
+                "versions": [{"product_version": version, "published_at": published_at,
+                              "locales": locales}],
+                "current_deployment": copy.deepcopy(current),
+                "legacy_aliases": [],
+            }
+            store = MemoryNotesStore()
+            store.index = canonical(index)
+            store.generation = 12
+            store.next_generation = 13
+            store.active_marker = copy.deepcopy(current if active_marker is None else active_marker)
+            return store
+
+        # The fixture preserves authentic extracted candidate/current marker identities; locale bodies are
+        # deliberately local synthetic bytes so this test never reads or writes a live Notes object.
+        store = store_for()
+        original_index = store.index
+        original_row = copy.deepcopy(json.loads(original_index)["versions"][0])
+        result = release_notes.publish_package(
+            store, files, product_version=version, published_at="2099-01-01T00:00:00Z",
+            marker=candidate, transition_plan_sha256=fixture["provenance"]["plan_sha256"],
+            allow_alias_creation=False)
+        self.assertEqual(result.stage, "exact_readback")
+        self.assertEqual(result.index_generation, 12)
+        self.assertEqual(store.writes, 0)
+        self.assertEqual(store.index, original_index)
+        self.assertEqual(store.active_marker, current)
+        after = json.loads(store.index)
+        self.assertEqual(after["current_deployment"], current)
+        self.assertEqual(after["versions"][0], original_row)
+        self.assertEqual(after["versions"][0]["published_at"], published_at)
+        self.assertEqual(candidate["component_builds"], current["component_builds"])
+        self.assertEqual(candidate["previous_release"], current["previous_release"])
+
+        # Check the authentic readback projection too: the real current locale hashes/paths and
+        # original timestamp remain byte-for-byte stable on an exact marker replay.
+        projected_index = {
+            "schema_version": release_notes.INDEX_SCHEMA_VERSION,
+            "versions": [copy.deepcopy(current_row)],
+            "current_deployment": copy.deepcopy(current),
+            "legacy_aliases": [],
+        }
+        projected_store = MemoryNotesStore()
+        projected_store.index = canonical(projected_index)
+        projected_store.generation = 21
+        projected_store.active_marker = copy.deepcopy(current)
+        projection_before = projected_store.index
+        projection_result = release_notes.publish_marker_only(projected_store, copy.deepcopy(fixture["candidate_marker"]))
+        self.assertEqual(projection_result.stage, "exact_readback")
+        self.assertEqual(projection_result.index_generation, 21)
+        self.assertEqual(projected_store.index, projection_before)
+        self.assertEqual(json.loads(projected_store.index)["versions"][0], current_row)
+
+        negative_controls = (
+            ("foreign resend identity", {**copy.deepcopy(candidate), "operation_run_id": "44198557850"}, None),
+            ("changed deployment evidence", {**copy.deepcopy(candidate),
+                                              "deployment_evidence_digest": "sha256:" + "0" * 64}, None),
+            ("changed carried worker receipt", {
+                **copy.deepcopy(candidate),
+                "component_builds": [{**copy.deepcopy(current["component_builds"][0]),
+                                       "receipt_sha256": "0" * 64}],
+            }, None),
+            ("stale active target", copy.deepcopy(candidate), {
+                **copy.deepcopy(current), "service_generation": current["service_generation"] + 1,
+            }),
+        )
+        for label, changed, active_marker in negative_controls:
+            with self.subTest(label=label):
+                denied = store_for(active_marker)
+                before_index, before_generation, before_writes = denied.index, denied.generation, denied.writes
+                with self.assertRaisesRegex(release_notes.ReleaseNotesError, "release-transition-stale"):
+                    release_notes.publish_package(
+                        denied, files, product_version=version, published_at=published_at,
+                        marker=changed, transition_plan_sha256=fixture["provenance"]["plan_sha256"],
+                        allow_alias_creation=False)
+                self.assertEqual(denied.index, before_index)
+                self.assertEqual(denied.generation, before_generation)
+                self.assertEqual(denied.writes, before_writes)
+
     def test_schema4_rollback_restores_v_identity_with_fresh_operation_generation(self):
         v_fixture = schema4_fixture(operation_fixture(
             operation="release", service_generation=42, revision="rev-v", product_version="1.2.3"),
