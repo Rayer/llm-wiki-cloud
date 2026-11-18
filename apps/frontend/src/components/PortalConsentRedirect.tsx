@@ -2,11 +2,10 @@
 
 import { useEffect, useState } from 'react';
 import { loadRuntimeConfig } from '@/lib/runtime-config';
-
-const transactionPattern = /^lwc_mcp_tx_[A-Za-z0-9_-]{43}$/;
+import { isCanonicalConsentTransactionId } from '@/lib/consent-transaction';
 
 export function portalConsentURL(authURL: string, transactionId: string): string {
-  if (!transactionPattern.test(transactionId)) throw new Error('Invalid consent transaction');
+  if (!isCanonicalConsentTransactionId(transactionId)) throw new Error('Invalid consent transaction');
   const configured = new URL(authURL);
   if (configured.pathname !== '/' || configured.search || configured.hash || configured.username || configured.password) {
     throw new Error('Auth URL must be an origin');
@@ -20,7 +19,7 @@ export function PortalConsentRedirect({ transactionId }: { transactionId: string
   const [error, setError] = useState(false);
 
   useEffect(() => {
-    if (!transactionId || !transactionPattern.test(transactionId)) return;
+    if (!isCanonicalConsentTransactionId(transactionId)) return;
     let active = true;
     void loadRuntimeConfig().then(config => {
       if (!active) return;
@@ -31,7 +30,7 @@ export function PortalConsentRedirect({ transactionId }: { transactionId: string
     return () => { active = false; };
   }, [transactionId]);
 
-  if (!transactionId || !transactionPattern.test(transactionId)) {
+  if (!isCanonicalConsentTransactionId(transactionId)) {
     return (
       <main className="mx-auto max-w-2xl p-8" role="status" aria-live="polite">
         <h1 className="text-xl font-semibold">無法確認這筆授權</h1>

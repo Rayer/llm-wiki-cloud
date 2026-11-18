@@ -1,7 +1,7 @@
 import React from 'react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { AuthProvider } from '@/lib/auth';
-import MCPOAuthConsentPage from '@/app/(workspace)/oauth/consent/page';
+import { MCPOAuthConsentClient } from '@/components/MCPOAuthConsentClient';
 import { readStoredAccessToken, writeStoredAccessToken, writeStoredAuthUser } from '@/lib/auth-core';
 import { setRuntimeConfigForTests } from '@/lib/runtime-config';
 import { installShellIntersectionObserver } from './shell-intersection-observer-helper';
@@ -50,8 +50,9 @@ import { usePathname } from 'next/navigation';
 import { Shell } from '@/components/Shell';
 import { GoogleCompletionClient } from '@/components/GoogleCompletionClient';
 
-const transactionId = `lwc_mcp_tx_${'R'.repeat(43)}`;
-const consentPage = await MCPOAuthConsentPage({ searchParams: Promise.resolve({ transaction_id: transactionId }) });
+// Legacy component fixture only: the active /oauth/consent route is covered by gat42-portal-consent.test.tsx.
+const transactionId = `lwc_mcp_tx_${'A'.repeat(43)}`;
+const legacyConsentClientFixture = <MCPOAuthConsentClient transactionId={transactionId} />;
 const consentPath = `/oauth/consent?transaction_id=${transactionId}`;
 const briefResource = 'https://brief.dev.rayer.idv.tw/mcp';
 const authToken = (sub: string) => `header.${btoa(JSON.stringify({ sub }))}.signature`;
@@ -138,10 +139,10 @@ afterEach(() => {
   sessionStorage.clear();
 });
 
-it('shows a fixed Daily Brief landing above the signed-out login modal without trusting return_to', async () => {
+it('legacy fixture shows a fixed Daily Brief landing above the signed-out login modal without trusting return_to', async () => {
   navigation.pathname = '/oauth/consent';
   window.history.replaceState({}, '', `${consentPath}&return_to=${encodeURIComponent('https://evil.example/')}`);
-  view = render(<App>{consentPage}</App>);
+  view = render(<App>{legacyConsentClientFixture}</App>);
 
   const recovery = await screen.findByRole('link', { name: 'MCPOAuth.returnToDailyBrief' });
   expect(recovery.getAttribute('href')).toBe('https://brief.dev.rayer.idv.tw/');
@@ -151,11 +152,11 @@ it('shows a fixed Daily Brief landing above the signed-out login modal without t
   expect(calls.every(({ authorization }) => authorization === null)).toBe(true);
 
   navigation.pathname = '/advanced';
-  view.rerender(<App>{consentPage}</App>);
+  view.rerender(<App>{legacyConsentClientFixture}</App>);
   expect(screen.queryByRole('link', { name: 'MCPOAuth.returnToDailyBrief' })).toBeNull();
 });
 
-it('returns from provider cancellation to the same transaction and offers the fixed landing when it expired', async () => {
+it('legacy fixture returns from provider cancellation to the same transaction and offers the fixed landing when it expired', async () => {
   writeStoredAccessToken(localStorage, authToken('account-a'));
   writeStoredAuthUser(localStorage, { id: 'account-a', email: 'account-a@example.test' });
   sessionStorage.setItem('lwc-google-login-return-to', selectionReturnContext());
@@ -170,18 +171,18 @@ it('returns from provider cancellation to the same transaction and offers the fi
     if (url.includes('/api/v1/auth/mcp/oauth/consent/')) return jsonResponse({ error: 'expired' }, 410);
     return jsonResponse({});
   });
-  view = render(<App>{consentPage}</App>);
+  view = render(<App>{legacyConsentClientFixture}</App>);
 
   fireEvent.click(await screen.findByRole('button', { name: 'GoogleCompletion.returnToConsent' }));
   await waitFor(() => expect(navigation.replace).toHaveBeenCalledWith(consentPath));
-  view.rerender(<App>{consentPage}</App>);
+  view.rerender(<App>{legacyConsentClientFixture}</App>);
   const recovery = await screen.findByRole('link', { name: 'MCPOAuth.returnToDailyBrief' });
   expect(recovery.getAttribute('href')).toBe('https://brief.dev.rayer.idv.tw/');
   expect(calls.some(({ url, method }) => url.includes(`/consent/${transactionId}`) && method === 'POST')).toBe(false);
   expect(calls.filter(({ url }) => url.includes(`/consent/${transactionId}`)).every(({ authorization }) => authorization === `Bearer ${authToken('account-a')}`)).toBe(true);
 });
 
-it('offers fixed recovery after a flagged selection becomes terminal and sends no decision', async () => {
+it('legacy fixture offers fixed recovery after a flagged selection becomes terminal and sends no decision', async () => {
   writeStoredAccessToken(localStorage, authToken('account-a'));
   writeStoredAuthUser(localStorage, { id: 'account-a', email: 'account-a@example.test' });
   let consentReads = 0;
@@ -197,7 +198,7 @@ it('offers fixed recovery after a flagged selection becomes terminal and sends n
     }
     return jsonResponse({});
   });
-  view = render(<App>{consentPage}</App>);
+  view = render(<App>{legacyConsentClientFixture}</App>);
 
   fireEvent.click(await screen.findByRole('button', { name: 'MCPOAuth.continueWithAccount' }));
   const recovery = await screen.findByRole('link', { name: 'MCPOAuth.returnToDailyBrief' });
@@ -206,7 +207,7 @@ it('offers fixed recovery after a flagged selection becomes terminal and sends n
   expect(screen.queryByRole('button', { name: 'MCPOAuth.allow' })).toBeNull();
 });
 
-it('retains only fixed Daily Brief navigation context when password sign-in changes A to B before a 410', async () => {
+it('legacy fixture retains only fixed Daily Brief navigation context when password sign-in changes A to B before a 410', async () => {
   writeStoredAccessToken(localStorage, authToken('account-a'));
   writeStoredAuthUser(localStorage, { id: 'account-a', email: 'account-a@example.test' });
   let consentReads = 0;
@@ -229,7 +230,7 @@ it('retains only fixed Daily Brief navigation context when password sign-in chan
     }
     return jsonResponse({});
   });
-  view = render(<App>{consentPage}</App>);
+  view = render(<App>{legacyConsentClientFixture}</App>);
 
   fireEvent.click(await screen.findByRole('button', { name: 'MCPOAuth.useAnotherAccount' }));
   await screen.findByRole('dialog');
@@ -249,7 +250,7 @@ it('retains only fixed Daily Brief navigation context when password sign-in chan
   expect(screen.queryByRole('button', { name: 'MCPOAuth.allow' })).toBeNull();
 });
 
-it('mounts the actual consent route with providers over an empty Wiki list and sends no decision', async () => {
+it('legacy fixture preserves empty Wiki list refusal without sending a decision', async () => {
   writeStoredAccessToken(localStorage, authToken('account-a'));
   writeStoredAuthUser(localStorage, { id: 'account-a', email: 'account-a@example.test' });
   mocks.getProjects.mockResolvedValueOnce([]);
@@ -263,7 +264,7 @@ it('mounts the actual consent route with providers over an empty Wiki list and s
     return jsonResponse({});
   });
 
-  view = render(<App>{consentPage}</App>);
+  view = render(<App>{legacyConsentClientFixture}</App>);
   expect(await screen.findByText('Daily Brief MCP client')).toBeDefined();
   await waitFor(() => expect(mocks.getProjects).toHaveBeenCalled());
   expect(mocks.bootstrapDefaultProject).not.toHaveBeenCalled();
