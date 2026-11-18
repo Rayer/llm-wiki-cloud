@@ -4,7 +4,7 @@ import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { portalConsentURL } from '@/components/PortalConsentRedirect';
+import { PortalConsentRedirect as PortalConsentRedirectComponent, portalConsentURL } from '@/components/PortalConsentRedirect';
 import PortalConsentRedirect from '@/app/oauth/consent/page';
 import RootLayout from '@/app/layout';
 import WorkspaceLayout from '@/app/(workspace)/layout';
@@ -79,7 +79,7 @@ describe('GAT-42 Auth-domain consent handoff', () => {
 
   it('rejects noncanonical transaction bits before loading config or navigating', () => {
     lifecycle.loadRuntimeConfig.mockResolvedValue({ auth_url: 'https://auth.dev.example.test' });
-    const view = render(RootLayout({ children: <PortalConsentRedirect transactionId={nonCanonicalTransactionId} /> }));
+    const view = render(RootLayout({ children: <PortalConsentRedirectComponent transactionId={nonCanonicalTransactionId} /> }));
     expect(view.getByRole('status').textContent).toContain('無法確認這筆授權');
     expect(lifecycle.loadRuntimeConfig).not.toHaveBeenCalled();
     expect(lifecycle.calls).toEqual([]);
