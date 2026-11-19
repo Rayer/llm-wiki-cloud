@@ -250,22 +250,54 @@ describe('LWC-481 source status and attention transport', () => {
     expect(await screen.findByText('Nudge.loadFailed')).toBeTruthy();
   });
 
-  it('formats known release source failures and notices by category', async () => {
+  it('keeps inherited unknown failure and notice classes generic beside known history status', async () => {
+    const inherited = structuredClone(partialView);
+    const inheritedClasses = ['constructor', 'toString', '__proto__'];
+    inherited.failures = [
+      { project_id: 'project-a', safe_class: 'pipeline_history_partial' },
+      ...inheritedClasses.map((safe_class) => ({ project_id: 'project-a', safe_class })),
+    ];
+    inherited.notices = inheritedClasses.map((safe_class) => ({
+      source_key: 'pipeline-fail:project-a', state: 'stale', safe_class,
+    }));
+    enqueueHandlerResponses(handlerResponse(inherited));
+    const originalTitle = partialView.items[0]!.observations[0]!.observation!.title;
+
+    expect(() => render(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} />)).not.toThrow();
+    await screen.findByRole('status');
+    const statusText = nudgeStatusText();
+    expect(statusText).toContain(enMessages.Nudge.status.pipelineHistoryPartial);
+    expect(statusText).toContain(enMessages.Nudge.status.generic);
+    expect(screen.getByText(originalTitle)).toBeTruthy();
+    for (const safeClass of inheritedClasses) expect(statusText).not.toContain(safeClass);
+  });
+
+  it('formats release status and only labels exact Pipeline project notice keys', async () => {
     const releaseView = structuredClone(releaseOutageView);
     releaseView.failures = [
       { safe_class: 'release-content-unavailable' },
       { safe_class: 'release-locale-content-unavailable' },
     ];
-    releaseView.notices = [{
-      source_key: releaseSourceKey, state: 'missing', safe_class: 'current-version-not-indexed',
-    }];
+    releaseView.notices = [
+      { source_key: releaseSourceKey, state: 'missing', safe_class: 'current-version-not-indexed' },
+      { source_key: 'pipeline-fail:dev', state: 'stale', safe_class: 'project_context_changed' },
+      { source_key: 'unknown-source:dev', state: 'stale', safe_class: 'project_context_changed' },
+    ];
+    const projects = [{ id: 'dev', name: 'Development Wiki', createdAt: null, lastUsedAt: null }];
     enqueueHandlerResponses(handlerResponse(releaseView));
-    render(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} />);
+    render(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} projects={projects}
+      projectsIdentity={{ ownerId: 'user-a', sessionIdentityEpoch: 1, sessionEpoch: 1 }} />);
 
     await waitFor(() => expect(nudgeStatusText()).toContain(enMessages.Nudge.status.releaseStatusUnavailable));
-    expect(nudgeStatusText()).toContain(enMessages.Nudge.status.releaseLocalesPartial);
-    expect(nudgeStatusText()).toContain(enMessages.Nudge.status.releaseVersionNotIndexed);
-    expect(nudgeStatusText()).not.toContain('release-content-unavailable');
+    const statusText = nudgeStatusText();
+    expect(statusText).toContain(enMessages.Nudge.status.releaseLocalesPartial);
+    expect(statusText).toContain(enMessages.Nudge.status.releaseVersionNotIndexed);
+    expect(statusText).toContain(enMessages.Nudge.status.projectContextChanged);
+    expect(statusText).toContain(enMessages.Nudge.status.generic);
+    expect(statusText.split('Affected Wiki: Development Wiki.')).toHaveLength(2);
+    expect(statusText).not.toContain('1 affected Wiki(s).');
+    expect(statusText).not.toContain('release-content-unavailable');
+    expect(statusText).not.toContain('dev');
   });
 
   it('keeps partial status through navigation-read and dismiss, including the empty last item', async () => {

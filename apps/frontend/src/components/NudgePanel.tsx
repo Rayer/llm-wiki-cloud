@@ -57,11 +57,24 @@ function projectLabel(projectID: string | undefined, projects: Project[], metada
   return name && name !== project?.id.trim() ? name : undefined;
 }
 
+function ownMessageKey(mapping: Record<string, string>, safeClass: string): string | undefined {
+  if (!Object.prototype.hasOwnProperty.call(mapping, safeClass)) return undefined;
+  const messageKey = mapping[safeClass];
+  return typeof messageKey === 'string' ? messageKey : undefined;
+}
+
+function pipelineProjectIDFromSourceKey(sourceKey: string): string | undefined {
+  const pipelineProjectPrefix = 'pipeline-fail:';
+  if (!sourceKey.startsWith(pipelineProjectPrefix)) return undefined;
+  const projectID = sourceKey.slice(pipelineProjectPrefix.length);
+  return projectID || undefined;
+}
+
 function projectIDFromSourceKey(sourceKey: string, projects: Project[], metadataIsCurrent: boolean): string | undefined {
   if (!metadataIsCurrent) return undefined;
-  return projects
-    .filter((project) => sourceKey.endsWith(`:${project.id}`))
-    .sort((left, right) => right.id.length - left.id.length)[0]?.id;
+  const projectID = pipelineProjectIDFromSourceKey(sourceKey);
+  if (!projectID) return undefined;
+  return projects.find((project) => project.id === projectID)?.id;
 }
 
 function collectStatusReasons(
@@ -101,14 +114,17 @@ function collectStatusReasons(
 
   for (const [identity, failure] of failures) {
     const safeClass = failure.safe_class || '';
-    addReason(failureMessageKeys[safeClass] ?? 'Nudge.status.generic', identity, failure.project_id || undefined);
+    addReason(ownMessageKey(failureMessageKeys, safeClass) ?? 'Nudge.status.generic', identity, failure.project_id || undefined);
   }
   for (const [identity, notice] of notices) {
     const safeClass = notice.safe_class || '';
+    const sourceProjectID = pipelineProjectIDFromSourceKey(notice.source_key);
     const projectID = projectIDFromSourceKey(notice.source_key, projects, metadataIsCurrent);
-    const messageKey = noticeMessageKeys[safeClass]
-      ?? (!safeClass && notice.state === 'stale' ? 'Nudge.status.stale' : 'Nudge.status.generic');
-    addReason(messageKey, identity, projectID, safeClass === 'project_context_changed');
+    const messageKey = safeClass === 'project_context_changed' && !sourceProjectID
+      ? 'Nudge.status.generic'
+      : ownMessageKey(noticeMessageKeys, safeClass)
+        ?? (!safeClass && notice.state === 'stale' ? 'Nudge.status.stale' : 'Nudge.status.generic');
+    addReason(messageKey, identity, projectID, safeClass === 'project_context_changed' && Boolean(sourceProjectID));
   }
 
   return [...groups.values()].map((group) => {
