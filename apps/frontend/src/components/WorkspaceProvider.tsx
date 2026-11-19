@@ -141,6 +141,7 @@ type WorkspaceContextValue = {
   isListViewSessionCurrent: (namespaceId: string, generation: number, ownerId: string) => boolean;
   refreshLoginSession?: () => Promise<string | null>;
   projects: Project[];
+  projectsIdentity: { ownerId: string; sessionIdentityEpoch: number; sessionEpoch: number } | null;
   currentProject: Project | null;
   projectsLoading: boolean;
   projectsError: string;
@@ -189,6 +190,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     refreshAccessToken,
   } = useAuth();
   const [projects, setProjects] = useState<Project[]>([]);
+  const [projectsIdentity, setProjectsIdentity] = useState<WorkspaceContextValue['projectsIdentity']>(null);
   const [currentProject, setCurrentProject] = useState<Project | null>(null);
   const [projectsLoading, setProjectsLoading] = useState(false);
   const [projectsError, setProjectsError] = useState('');
@@ -360,6 +362,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         ? nextProjects.find((project) => project.id === existingSelection.id)
         : null) ?? selectDefaultProject(nextProjects, readLastProjectId());
       setProjects(nextProjects);
+      setProjectsIdentity({ ownerId: user?.id ?? '', sessionIdentityEpoch, sessionEpoch: operationSessionEpoch });
       setCurrentProject(selected);
       projectsReadyRef.current = true;
       writeLastProjectId(selected?.id ?? null);
@@ -370,6 +373,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         return;
       }
       setProjects([]);
+      setProjectsIdentity(null);
       setCurrentProject(null);
       projectsReadyRef.current = false;
       setProjectsError(error instanceof Error ? error.message : 'Unable to load projects.');
@@ -379,7 +383,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         activeProjectLoadRef.current = null;
       }
     }
-  }, [sessionEpoch, token]);
+  }, [sessionEpoch, sessionIdentityEpoch, token, user]);
 
   const signIn = useCallback(async (email: string, password: string) => {
     await login(email, password);
@@ -402,6 +406,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     writeLastProjectId(null);
     clearPendingProfileOnboarding();
     setProjects([]);
+    setProjectsIdentity(null);
     setCurrentProject(null);
     setProjectsLoading(false);
     setProjectsError('');
@@ -450,11 +455,12 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       const withoutDuplicate = current.filter((item) => item.id !== project.id);
       return [...withoutDuplicate, project];
     });
+    setProjectsIdentity({ ownerId: operationOwnerId, sessionIdentityEpoch, sessionEpoch: operationEpoch });
     writeLastProjectId(project.id);
     setCurrentProject(project);
     setProjectsError('');
     return project;
-  }, [isDemoSession, sessionEpoch, token, user]);
+  }, [isDemoSession, sessionEpoch, sessionIdentityEpoch, token, user]);
 
   const updateProjectDescription = useCallback((projectId: string, description: string, revision: number) => {
     setProjects((currentProjects) => currentProjects.map((project) => (
@@ -556,6 +562,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       if (identityChanged && previous !== null) {
         projectsReadyRef.current = false;
         setProjects([]);
+        setProjectsIdentity(null);
         setCurrentProject(null);
       }
       void loadProjects(!identityChanged && projectsReadyRef.current);
@@ -566,6 +573,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     projectListGenerationRef.current += 1;
     setProjectsLoading(false);
     setProjects([]);
+    setProjectsIdentity(null);
     setCurrentProject(null);
     projectsReadyRef.current = false;
     setProjectsError('');
@@ -627,6 +635,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     isListViewSessionCurrent,
     refreshLoginSession: refreshAccessToken,
     projects,
+    projectsIdentity,
     currentProject,
     projectsLoading,
     projectsError,
@@ -666,6 +675,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     profileOnboarding,
     markProfileOnboardingPresented,
     projects,
+    projectsIdentity,
     projectsError,
     refreshAccessToken,
     refreshNavCounts,

@@ -11,7 +11,7 @@ const mocks = vi.hoisted(() => ({
   push: vi.fn(),
   confirmNavigation: vi.fn(() => true),
   locale: 'en' as 'en' | 'zh-TW',
-  t: vi.fn((key: string) => key),
+  t: vi.fn((key: string, params?: Record<string, string | number>) => { void params; return key; }),
   auth: { user: { id: 'user-a' }, sessionIdentityEpoch: 1, sessionEpoch: 1, isDemoSession: false },
 }));
 
@@ -93,6 +93,10 @@ function sourceSection(body: string) {
   return section;
 }
 
+function nudgeStatusText() {
+  return screen.getByRole('status').textContent ?? '';
+}
+
 function popup() {
   return { location: { replace: vi.fn() }, close: vi.fn(), opener: null } as unknown as Window;
 }
@@ -107,11 +111,16 @@ describe('LWC-481 source status and attention transport', () => {
     mocks.auth.sessionEpoch = 1;
     mocks.auth.isDemoSession = false;
     mocks.locale = 'en';
-    mocks.t.mockImplementation((key) => {
+    mocks.t.mockImplementation((key, params) => {
       const messages = mocks.locale === 'zh-TW' ? zhTWMessages : enMessages;
       if (key === 'Nudge.stale') return messages.Nudge.stale;
       if (key === 'Nudge.partial') return messages.Nudge.partial;
-      return key;
+      if (!key.startsWith('Nudge.status.')) return key;
+      const value = key.split('.').reduce<unknown>((current, part) => (
+        current && typeof current === 'object' ? (current as Record<string, unknown>)[part] : undefined
+      ), messages);
+      if (typeof value !== 'string') return key;
+      return value.replace(/\{(\w+)\}/g, (_, name: string) => String(params?.[name] ?? `{${name}}`));
     });
   });
 
@@ -140,6 +149,123 @@ describe('LWC-481 source status and attention transport', () => {
       ['/api/v1/nudges/pipeline-failure/attention', 'PATCH'],
       ['/api/v1/nudges', 'GET'],
     ]);
+  });
+
+  it('retains POST history issues alongside GET projection issues, then replaces each channel only from its own accepted response', async () => {
+    const sourcePartial = structuredClone(partialView);
+    sourcePartial.failures = [
+      { project_id: 'project-a', safe_class: 'pipeline_history_partial' },
+      { project_id: 'project-a', safe_class: 'pipeline_history_partial' },
+      { project_id: 'project-b', safe_class: 'pipeline_history_partial' },
+      { project_id: 'project-c', safe_class: 'pipeline_history_partial' },
+    ];
+    sourcePartial.notices = [];
+
+    const projectionPartial = structuredClone(sourcePartial);
+    projectionPartial.failures = [
+      { safe_class: 'project_context_unavailable' },
+      { safe_class: 'project_context_unavailable' },
+    ];
+    projectionPartial.notices = [
+      { source_key: 'pipeline-fail:project-a', state: 'stale', safe_class: 'project_context_changed' },
+      { source_key: 'pipeline-fail:project-a', state: 'stale', safe_class: 'project_context_changed' },
+    ];
+    projectionPartial.items[0]!.attention_state = 'read';
+
+    const cleanProjection = structuredClone(projectionPartial);
+    cleanProjection.partial = false;
+    cleanProjection.failures = [];
+    cleanProjection.notices = [];
+    const cleanReconcile = structuredClone(cleanProjection);
+    cleanReconcile.items = [];
+
+    enqueueHandlerResponses(
+      handlerResponse(sourcePartial),
+      handlerResponse(undefined, 204),
+      handlerResponse(projectionPartial),
+      handlerResponse(undefined, 204),
+      handlerResponse(cleanProjection),
+      handlerResponse(cleanReconcile),
+    );
+    const projects = [
+      { id: 'project-a', name: 'Lifestyle Wiki', createdAt: null, lastUsedAt: null },
+      { id: 'project-b', name: 'project-b', createdAt: null, lastUsedAt: null },
+      { id: 'project-c', name: '', createdAt: null, lastUsedAt: null },
+    ];
+    render(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} projects={projects}
+      projectsIdentity={{ ownerId: 'user-a', sessionIdentityEpoch: 1, sessionEpoch: 1 }} />);
+
+    await screen.findByRole('status');
+    expect(nudgeStatusText()).toContain(enMessages.Nudge.status.pipelineHistoryPartial);
+    expect(nudgeStatusText()).toContain('Affected Wiki: Lifestyle Wiki.');
+    expect(nudgeStatusText()).toContain('2 affected Wiki(s).');
+    fireEvent.click(screen.getByRole('button', { name: 'Nudge.markRead' }));
+
+    await waitFor(() => expect(nudgeStatusText()).toContain(enMessages.Nudge.status.projectContextUnavailable));
+    const statusText = nudgeStatusText();
+    expect(statusText).toContain(enMessages.Nudge.status.projectContextChanged);
+    expect(statusText).toContain(enMessages.Nudge.status.pipelineHistoryPartial);
+    expect(statusText.split(enMessages.Nudge.status.projectContextUnavailable)).toHaveLength(2);
+    expect(statusText.split(enMessages.Nudge.status.projectContextChanged)).toHaveLength(2);
+    expect(statusText).not.toContain('project-a');
+    expect(statusText).not.toContain('project-b');
+    expect(statusText).not.toContain('project-c');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Nudge.markUnread' }));
+    await waitFor(() => expect(mocks.apiFetch).toHaveBeenCalledTimes(5));
+    expect(nudgeStatusText()).toContain(enMessages.Nudge.status.pipelineHistoryPartial);
+    expect(nudgeStatusText()).not.toContain(enMessages.Nudge.status.projectContextUnavailable);
+    expect(nudgeStatusText()).not.toContain(enMessages.Nudge.status.projectContextChanged);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Nudge.refresh' }));
+    await waitFor(() => expect(screen.queryByText(enMessages.Nudge.partial)).toBeNull());
+    expect(screen.queryByText(enMessages.Nudge.status.pipelineHistoryPartial)).toBeNull();
+    expect(mocks.apiFetch.mock.calls.map(([path, options]) => [path, options?.method])).toEqual([
+      ['/api/v1/nudges/reconcile', 'POST'],
+      ['/api/v1/nudges/pipeline-failure/attention', 'PATCH'],
+      ['/api/v1/nudges', 'GET'],
+      ['/api/v1/nudges/pipeline-failure/attention', 'PATCH'],
+      ['/api/v1/nudges', 'GET'],
+      ['/api/v1/nudges/reconcile', 'POST'],
+    ]);
+  });
+
+  it('uses a generic visible fallback for unknown failure classes and preserves the prior view after a GET failure', async () => {
+    const unknown = structuredClone(partialView);
+    unknown.failures = [{ project_id: 'project-a', safe_class: 'new_unknown_class' }];
+    const pendingRead = deferred<Response>();
+    enqueueHandlerResponses(handlerResponse(unknown), handlerResponse(undefined, 204), pendingRead.promise);
+    render(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} />);
+
+    await screen.findByRole('status');
+    expect(nudgeStatusText()).toContain(enMessages.Nudge.status.generic);
+    expect(screen.queryByText('new_unknown_class')).toBeNull();
+    const originalTitle = partialView.items[0]!.observations[0]!.observation!.title;
+    fireEvent.click(screen.getByRole('button', { name: 'Nudge.markRead' }));
+    await waitFor(() => expect(mocks.apiFetch).toHaveBeenCalledTimes(3));
+    pendingRead.reject(new Error('synthetic persisted GET timeout'));
+
+    expect(await screen.findByText(originalTitle)).toBeTruthy();
+    expect(nudgeStatusText()).toContain(enMessages.Nudge.status.generic);
+    expect(await screen.findByText('Nudge.loadFailed')).toBeTruthy();
+  });
+
+  it('formats known release source failures and notices by category', async () => {
+    const releaseView = structuredClone(releaseOutageView);
+    releaseView.failures = [
+      { safe_class: 'release-content-unavailable' },
+      { safe_class: 'release-locale-content-unavailable' },
+    ];
+    releaseView.notices = [{
+      source_key: releaseSourceKey, state: 'missing', safe_class: 'current-version-not-indexed',
+    }];
+    enqueueHandlerResponses(handlerResponse(releaseView));
+    render(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} />);
+
+    await waitFor(() => expect(nudgeStatusText()).toContain(enMessages.Nudge.status.releaseStatusUnavailable));
+    expect(nudgeStatusText()).toContain(enMessages.Nudge.status.releaseLocalesPartial);
+    expect(nudgeStatusText()).toContain(enMessages.Nudge.status.releaseVersionNotIndexed);
+    expect(nudgeStatusText()).not.toContain('release-content-unavailable');
   });
 
   it('keeps partial status through navigation-read and dismiss, including the empty last item', async () => {
@@ -375,6 +501,27 @@ describe('LWC-481 source status and attention transport', () => {
     ]);
     expect(screen.getByText('New session Release item')).toBeTruthy();
     expect(screen.queryByText(enMessages.Nudge.stale)).toBeNull();
+  });
+
+  it('does not use a prior account Wiki name after the mounted session switches', async () => {
+    const priorAccount = structuredClone(partialView);
+    priorAccount.failures = [{ project_id: 'private-project', safe_class: 'pipeline_history_partial' }];
+    const nextAccount = structuredClone(priorAccount);
+    const projects = [{ id: 'private-project', name: 'Prior Account Wiki', createdAt: null, lastUsedAt: null }];
+    enqueueHandlerResponses(handlerResponse(priorAccount), handlerResponse(nextAccount));
+    const panel = render(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} projects={projects}
+      projectsIdentity={{ ownerId: 'user-a', sessionIdentityEpoch: 1, sessionEpoch: 1 }} />);
+    await screen.findByRole('status');
+    expect(nudgeStatusText()).toContain('Affected Wiki: Prior Account Wiki.');
+
+    mocks.auth.user = { id: 'user-b' };
+    mocks.auth.sessionIdentityEpoch = 2;
+    mocks.auth.sessionEpoch = 2;
+    panel.rerender(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} projects={projects}
+      projectsIdentity={{ ownerId: 'user-a', sessionIdentityEpoch: 1, sessionEpoch: 1 }} />);
+
+    await waitFor(() => expect(nudgeStatusText()).toContain('1 affected Wiki(s).'));
+    expect(nudgeStatusText()).not.toContain('Affected Wiki: Prior Account Wiki.');
   });
 
   it('keeps same-id Pipeline copy and copy-then-link feedback bound to each actual source', async () => {

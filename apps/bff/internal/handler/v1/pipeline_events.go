@@ -16,6 +16,7 @@ import (
 
 	cloudfirestore "cloud.google.com/go/firestore"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/rayer/llm-wiki-bff/internal/auth"
 	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	handlerapi "github.com/rayer/llm-wiki-bff/internal/handler"
 	"github.com/rayer/llm-wiki-bff/internal/nudge"
@@ -751,6 +752,72 @@ func normalizePipelineMode(mode string) string {
 	}
 }
 
+type pipelineNudgeProjectRecord struct {
+	docID string
+	data  map[string]interface{}
+}
+
+func boundPipelineNudgeProjectRecords(projects []pipelineNudgeProjectRecord) ([]pipelineNudgeProjectRecord, bool) {
+	if len(projects) <= pipelineNudgeProjectLimit {
+		return projects, false
+	}
+	return projects[:pipelineNudgeProjectLimit], true
+}
+
+func pipelineNudgeProjectIdentity(userID string, project pipelineNudgeProjectRecord) (string, bool) {
+	ownerID, ownerOK := project.data["user_id"].(string)
+	projectID, projectOK := project.data["project_id"].(string)
+	projectID = strings.TrimSpace(projectID)
+	if !ownerOK || ownerID != userID || !projectOK || !auth.ValidPathSegment(projectID) || project.docID != userID+"_"+projectID {
+		return "", false
+	}
+	if marker, exists := project.data["idempotency_key"]; exists {
+		key, ok := marker.(string)
+		if !ok || !auth.ValidPathSegment(key) {
+			return "", false
+		}
+	}
+	return projectID, true
+}
+
+func pipelineNudgeBookkeepingProjectID(userID string, project pipelineNudgeProjectRecord) (string, bool) {
+	ownerID, ownerOK := project.data["user_id"].(string)
+	projectID, projectOK := project.data["project_id"].(string)
+	idempotencyKey, keyOK := project.data["idempotency_key"].(string)
+	prefix := userID + "_"
+	if !ownerOK || ownerID != userID || !strings.HasPrefix(project.docID, prefix) ||
+		!projectOK || !keyOK || !auth.ValidPathSegment(strings.TrimSpace(projectID)) ||
+		!auth.ValidPathSegment(idempotencyKey) {
+		return "", false
+	}
+	projectID = strings.TrimSpace(projectID)
+	suffix := strings.TrimPrefix(project.docID, prefix)
+	if suffix != idempotencyKey || suffix == projectID {
+		return "", false
+	}
+	return projectID, true
+}
+
+func pipelineNudgeBookkeepingProjectDocuments(userID string, projects []pipelineNudgeProjectRecord) map[string]struct{} {
+	canonicalProjects := make(map[string]struct{}, len(projects))
+	for _, project := range projects {
+		if projectID, ok := pipelineNudgeProjectIdentity(userID, project); ok {
+			canonicalProjects[projectID] = struct{}{}
+		}
+	}
+	bookkeeping := make(map[string]struct{})
+	for _, project := range projects {
+		projectID, ok := pipelineNudgeBookkeepingProjectID(userID, project)
+		if !ok {
+			continue
+		}
+		if _, hasCanonicalProject := canonicalProjects[projectID]; hasCanonicalProject {
+			bookkeeping[project.docID] = struct{}{}
+		}
+	}
+	return bookkeeping
+}
+
 func (h *Handler) reconcilePipelineFailureNudges(ctx context.Context, userID string, repository *nudge.Repository) ([]nudge.SourceFailure, []nudge.SourceNotice) {
 	failures := make([]nudge.SourceFailure, 0)
 	notices := make([]nudge.SourceNotice, 0)
@@ -762,16 +829,23 @@ func (h *Handler) reconcilePipelineFailureNudges(ctx context.Context, userID str
 	if err != nil {
 		return []nudge.SourceFailure{{SafeClass: "pipeline_source_unavailable"}}, notices
 	}
-	projectListTruncated := len(projects) > pipelineNudgeProjectLimit
+	projectRecords := make([]pipelineNudgeProjectRecord, 0, len(projects))
+	for _, project := range projects {
+		projectRecords = append(projectRecords, pipelineNudgeProjectRecord{docID: project.Ref.ID, data: project.Data()})
+	}
+	bookkeepingDocuments := pipelineNudgeBookkeepingProjectDocuments(userID, projectRecords)
+	projectRecords, projectListTruncated := boundPipelineNudgeProjectRecords(projectRecords)
 	if projectListTruncated {
-		projects = projects[:pipelineNudgeProjectLimit]
 		failures = append(failures, nudge.SourceFailure{SafeClass: "pipeline_project_limit"})
 	}
-	sort.Slice(projects, func(i, j int) bool { return projects[i].Ref.ID < projects[j].Ref.ID })
-	for _, project := range projects {
-		data := project.Data()
-		projectID := strings.TrimSpace(stringData(data, "project_id"))
-		if projectID == "" || data["user_id"] != userID || project.Ref.ID != userID+"_"+projectID {
+	sort.Slice(projectRecords, func(i, j int) bool { return projectRecords[i].docID < projectRecords[j].docID })
+	for _, project := range projectRecords {
+		if _, bookkeeping := bookkeepingDocuments[project.docID]; bookkeeping {
+			continue
+		}
+		data := project.data
+		projectID, validIdentity := pipelineNudgeProjectIdentity(userID, project)
+		if !validIdentity {
 			failures = append(failures, nudge.SourceFailure{SafeClass: "project_identity_unavailable"})
 			continue
 		}

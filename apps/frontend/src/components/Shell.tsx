@@ -47,6 +47,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
     token,
     loginOpen,
     projects,
+    projectsIdentity,
     currentProject,
     projectsLoading,
     projectsError,
@@ -428,7 +429,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
         <div className="lwc-utilities mx-auto max-w-6xl px-4 pt-4 sm:px-6 lg:px-10">
           {pathname === '/login' || !loginOpen ? <LocaleControl /> : null}
           <RequestIDPanel />
-          {token && !isDemoSession ? <NudgePanel open={nudgeOpen} onOpen={() => setNudgeOpenIdentity(nudgeIdentity)} onClose={() => setNudgeOpenIdentity(null)} /> : null}
+          {token && !isDemoSession ? <NudgePanel projects={projects} projectsIdentity={projectsIdentity} open={nudgeOpen} onOpen={() => setNudgeOpenIdentity(nudgeIdentity)} onClose={() => setNudgeOpenIdentity(null)} /> : null}
         </div>
         {!hydrated ? (
           <div className="flex min-h-screen items-center justify-center text-sm text-zinc-500">

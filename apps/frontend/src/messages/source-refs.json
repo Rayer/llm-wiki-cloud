@@ -401,6 +401,28 @@
       "kind": "literal",
       "context": "Closed Shell status shown until a saved Nudge view has been confirmed."
     },
+    "Nudge.status.affectedCount": {
+      "kind": "literal",
+      "context": "Count fallback when Nudge status identifies affected Wikis but no current human-readable names are available.",
+      "params": [
+        "count"
+      ]
+    },
+    "Nudge.status.affectedProject": {
+      "kind": "literal",
+      "context": "Current-account Wiki label included with a Nudge status reason.",
+      "params": [
+        "project"
+      ]
+    },
+    "Nudge.status.releaseLocalesPartial": {
+      "kind": "literal",
+      "context": "Nudge status when only some published release note language bodies are unavailable."
+    },
+    "Nudge.status.releaseVersionNotIndexed": {
+      "kind": "literal",
+      "context": "Nudge status when the current release version is missing from the release note index."
+    },
     "Nudge.markUnread": {
       "kind": "literal",
       "context": "Action that returns an ordinary Nudge item to unread without changing its source."
