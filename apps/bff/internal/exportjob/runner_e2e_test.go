@@ -59,10 +59,17 @@ func TestHTTPToRunnerPublishesDigestVerifiedCanonicalArchiveLocally(t *testing.T
 
 	const bucket, userID, projectID = "lwc346-local-export", "e2e-user", "e2e-project"
 	projectPrefix := "users/" + userID + "/projects/" + projectID + "/"
-	stateDB := exportStateFixture(t)
+	stateDB, stateSecretMarkers := exportStateFixture(t)
 	stateBytes, err := os.ReadFile(stateDB)
 	if err != nil {
 		t.Fatal(err)
+	}
+	sourceStateDigest := sha256.Sum256(stateBytes)
+	sourceStateSnapshot := snapshotExportStateSQLite(t, stateBytes)
+	for _, marker := range stateSecretMarkers {
+		if !bytes.Contains(stateBytes, marker) {
+			t.Fatalf("source state fixture does not contain marker %q", marker)
+		}
 	}
 	stateMarker := []byte("LWC346_E2E_PROVIDER_SECRET_880301")
 	envReference := []byte("LWC346_E2E_ENV_REFERENCE_880302")
@@ -81,6 +88,8 @@ func TestHTTPToRunnerPublishesDigestVerifiedCanonicalArchiveLocally(t *testing.T
 	}
 	sort.Strings(paths)
 	manifest := generation.Manifest{Version: generation.Version, GenerationID: "generation-e2e-001", CreatedAt: time.Now().UTC().Format(time.RFC3339), InputFingerprint: "local-fixture"}
+	var stateObjectName, stateGenerationVersion string
+	var stateGeneration int64
 	for i, path := range paths {
 		generationNumber := int64(i + 10)
 		file, err := generation.NewFile(path, files[path], generationNumber)
@@ -88,7 +97,16 @@ func TestHTTPToRunnerPublishesDigestVerifiedCanonicalArchiveLocally(t *testing.T
 			t.Fatal(err)
 		}
 		manifest.Files = append(manifest.Files, file)
-		storageAPI.put(projectPrefix+manifest.ObjectPath(file), files[path], generationNumber)
+		objectName := projectPrefix + manifest.ObjectPath(file)
+		storageAPI.put(objectName, files[path], generationNumber)
+		if path == ".synto/state.db" {
+			stateObjectName = objectName
+			stateGeneration = generationNumber
+			stateGenerationVersion = manifest.GenerationID + "@" + fmt.Sprint(generationNumber)
+		}
+	}
+	if stateObjectName == "" || stateGenerationVersion == "" || stateGeneration == 0 {
+		t.Fatal("producer-shaped source state database was not assigned a generation")
 	}
 	manifestBytes, err := json.Marshal(manifest)
 	if err != nil {
@@ -160,9 +178,22 @@ func TestHTTPToRunnerPublishesDigestVerifiedCanonicalArchiveLocally(t *testing.T
 	}
 	entries := make(map[string]*zip.File, len(zipReader.File))
 	for _, file := range zipReader.File {
+		if _, exists := entries[file.Name]; exists {
+			t.Fatalf("archive contains duplicate entry %q", file.Name)
+		}
 		entries[file.Name] = file
 	}
-	for _, path := range []string{"raw/original.md", "wiki/.drafts/draft.md", "wiki/session-notes.md", "wiki/tokenization.md", "wiki.toml", "synto.toml", ".synto/INDEX.json", ".synto/state.db", ".lwc/publish/current.json", "vault-schema.md", "project-metadata/project.json", "export-meta.json"} {
+	expectedEntryPaths := []string{"raw/original.md", "wiki/.drafts/draft.md", "wiki/session-notes.md", "wiki/tokenization.md", "wiki.toml", "synto.toml", ".synto/INDEX.json", ".synto/state.db", ".lwc/publish/current.json", "vault-schema.md", "project-metadata/project.json", "export-meta.json"}
+	actualEntryPaths := make([]string, 0, len(entries))
+	for path := range entries {
+		actualEntryPaths = append(actualEntryPaths, path)
+	}
+	sort.Strings(expectedEntryPaths)
+	sort.Strings(actualEntryPaths)
+	if !reflect.DeepEqual(actualEntryPaths, expectedEntryPaths) {
+		t.Fatalf("archive entry paths = %#v, want exact set %#v", actualEntryPaths, expectedEntryPaths)
+	}
+	for _, path := range expectedEntryPaths {
 		if entries[path] == nil {
 			t.Errorf("archive omitted expected path %q", path)
 		}
@@ -194,16 +225,48 @@ func TestHTTPToRunnerPublishesDigestVerifiedCanonicalArchiveLocally(t *testing.T
 	if metadata.Scope != ScopeRawFullMetadata || metadata.ProjectID != projectID || metadata.SourceVersions["wiki/.drafts/draft.md"] == "" {
 		t.Fatalf("archive metadata lacks project/snapshot identity: %#v", metadata)
 	}
+	if got := metadata.SourceVersions[".synto/state.db"]; got != stateGenerationVersion {
+		t.Fatalf("archive state database source version = %q, want pinned generation %q", got, stateGenerationVersion)
+	}
+	expectedManifestPaths := make([]string, 0, len(expectedEntryPaths)-1)
+	for _, path := range expectedEntryPaths {
+		if path != "export-meta.json" {
+			expectedManifestPaths = append(expectedManifestPaths, path)
+		}
+	}
+	actualManifestPaths := make([]string, 0, len(metadata.Files))
+	for _, digest := range metadata.Files {
+		actualManifestPaths = append(actualManifestPaths, digest.Path)
+	}
+	sort.Strings(expectedManifestPaths)
+	sort.Strings(actualManifestPaths)
+	if !reflect.DeepEqual(actualManifestPaths, expectedManifestPaths) {
+		t.Fatalf("manifest file paths = %#v, want exact payload set %#v", actualManifestPaths, expectedManifestPaths)
+	}
 	if !reflect.DeepEqual(metadata.RedactedFields["wiki.toml"], []string{"provider.api_key"}) || !reflect.DeepEqual(metadata.RedactedFields["synto.toml"], []string{"providers.default.api_key_env"}) {
 		t.Fatalf("archive manifest redaction fields = %#v", metadata.RedactedFields)
 	}
 	if bytes.Contains(archiveBytes, stateMarker) || bytes.Contains(archiveBytes, envReference) {
 		t.Fatal("ZIP bytes contain a provider secret marker or active auth environment reference")
 	}
+	for _, marker := range stateSecretMarkers {
+		if bytes.Contains(archiveBytes, marker) {
+			t.Fatalf("ZIP bytes retain a synthetic SQLite secret marker %q", marker)
+		}
+	}
 	if !bytes.Contains(readZipEntry(t, entries["wiki.toml"]), []byte(`fast = "deepseek-chat"`)) || !bytes.Contains(readZipEntry(t, entries["synto.toml"]), []byte(`model = "deepseek-flash"`)) {
 		t.Fatal("sanitized configs did not preserve their nonsecret model settings")
 	}
 	assertArchiveRawNotesState(t, readZipEntry(t, entries[".synto/state.db"]))
+	stateArchiveBytes := readZipEntry(t, entries[".synto/state.db"])
+	archiveStateSnapshot := snapshotExportStateSQLite(t, stateArchiveBytes)
+	if !reflect.DeepEqual(archiveStateSnapshot.Schema, sourceStateSnapshot.Schema) {
+		t.Fatalf("sanitized archive state schema/indexes changed: source=%#v archive=%#v", sourceStateSnapshot.Schema, archiveStateSnapshot.Schema)
+	}
+	if !reflect.DeepEqual(archiveStateSnapshot.RowCounts, sourceStateSnapshot.RowCounts) {
+		t.Fatalf("sanitized archive state row counts changed: source=%#v archive=%#v", sourceStateSnapshot.RowCounts, archiveStateSnapshot.RowCounts)
+	}
+	assertArchiveSQLiteCacheState(t, stateArchiveBytes, stateSecretMarkers)
 	for _, digest := range metadata.Files {
 		data := readZipEntry(t, entries[digest.Path])
 		sum := sha256.Sum256(data)
@@ -213,6 +276,21 @@ func TestHTTPToRunnerPublishesDigestVerifiedCanonicalArchiveLocally(t *testing.T
 		if bytes.Contains(data, stateMarker) {
 			t.Fatalf("archive entry %q retains a redacted provider secret marker", digest.Path)
 		}
+	}
+	stateBytesAfter, err := os.ReadFile(stateDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateDigestAfter := sha256.Sum256(stateBytesAfter)
+	if !bytes.Equal(stateBytesAfter, stateBytes) || stateDigestAfter != sourceStateDigest {
+		t.Fatalf("closed source state fixture changed: before_sha256=%x after_sha256=%x", sourceStateDigest, stateDigestAfter)
+	}
+	if after := snapshotExportStateSQLite(t, stateBytesAfter); !reflect.DeepEqual(after, sourceStateSnapshot) {
+		t.Fatalf("source state fixture logical schema/index/rows changed: before=%#v after=%#v", sourceStateSnapshot, after)
+	}
+	sourceStateObject, exists := storageAPI.getObject(stateObjectName)
+	if !exists || !bytes.Equal(sourceStateObject.Data, stateBytes) || sourceStateObject.Generation != stateGeneration {
+		t.Fatalf("source state object changed during Export: exists=%t generation=%d want=%s bytes_equal=%t", exists, sourceStateObject.Generation, stateGenerationVersion, bytes.Equal(sourceStateObject.Data, stateBytes))
 	}
 	archiveDigest := sha256.Sum256(archiveBytes)
 	t.Logf("local provider simulation: archive bytes=%d sha256=%x; every ZIP entry matched export-meta.json digests", len(archiveBytes), archiveDigest)
@@ -372,9 +450,18 @@ func TestOTLPCaptureExportHTTPToRunnerLocalSyntheticObjectStore(t *testing.T) {
 	}
 }
 
-func exportStateFixture(t *testing.T) string {
+func exportStateFixture(t *testing.T) (string, [][]byte) {
 	t.Helper()
 	path := t.TempDir() + "/state.db"
+	nonceHash := sha256.Sum256([]byte(path))
+	nonce := hex.EncodeToString(nonceHash[:6])
+	secretMarkers := [][]byte{
+		[]byte("LWC495_CACHE_ORDINARY_SECRET_" + nonce),
+		[]byte("LWC495_CACHE_MALFORMED_SECRET_" + nonce),
+		[]byte("LWC495_CACHE_VALID_SECRET_" + nonce),
+		[]byte("LWC495_NULLABLE_MALFORMED_SECRET_" + nonce),
+		[]byte("LWC495_NULLABLE_VALID_SECRET_" + nonce),
+	}
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatal(err)
@@ -386,13 +473,388 @@ func exportStateFixture(t *testing.T) string {
 		ingested_at TEXT,
 		error TEXT
 	);
+	CREATE INDEX raw_notes_status_idx ON raw_notes(status);
 	INSERT INTO raw_notes(path, content_hash, status, ingested_at, error)
 	VALUES ('raw/original.md', 'source-sha256', 'ingested', '2026-09-25T00:00:00Z', '')`)
-	closeErr := db.Close()
-	if err := errors.Join(err, closeErr); err != nil {
+	if err != nil {
+		_ = db.Close()
 		t.Fatal(err)
 	}
-	return path
+	_, err = db.Exec(`CREATE TABLE llm_cache (
+		cache_key TEXT PRIMARY KEY,
+		model TEXT NOT NULL,
+		response_json TEXT NOT NULL,
+		created_at TEXT NOT NULL,
+		last_hit_at TEXT,
+		hit_count INTEGER NOT NULL DEFAULT 0
+	)`)
+	if err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	cacheRows := []struct {
+		key, response, createdAt string
+		lastHit                  any
+		hitCount                 any
+	}{
+		{key: "cache-ordinary", response: "ordinary response " + string(secretMarkers[0]), createdAt: "2026-10-01T00:00:00Z"},
+		{key: "cache-malformed", response: fmt.Sprintf(`{"token":%q,broken`, string(secretMarkers[1])), createdAt: "2026-10-02T00:00:00Z", lastHit: "2026-11-02T00:00:00Z", hitCount: 4},
+		{key: "cache-valid", response: fmt.Sprintf(`{"message":"ordinary response field","profile":{"refresh_token":%q,"label":"ordinary nested field"}}`, string(secretMarkers[2])), createdAt: "2026-10-03T00:00:00Z", hitCount: 7},
+	}
+	for _, row := range cacheRows {
+		var err error
+		if row.hitCount == nil {
+			_, err = db.Exec(`INSERT INTO llm_cache(cache_key, model, response_json, created_at, last_hit_at)
+				VALUES (?, 'synthetic-model', ?, ?, ?)`, row.key, row.response, row.createdAt, row.lastHit)
+		} else {
+			_, err = db.Exec(`INSERT INTO llm_cache(cache_key, model, response_json, created_at, last_hit_at, hit_count)
+				VALUES (?, 'synthetic-model', ?, ?, ?, ?)`, row.key, row.response, row.createdAt, row.lastHit, row.hitCount)
+		}
+		if err != nil {
+			_ = db.Close()
+			t.Fatal(err)
+		}
+	}
+	_, err = db.Exec(`CREATE TABLE nullable_json_controls (
+		id TEXT PRIMARY KEY,
+		response_json TEXT,
+		payload TEXT
+	)`)
+	if err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	nullableRows := []struct {
+		id, response string
+		payload      string
+	}{
+		{id: "nullable-malformed", response: fmt.Sprintf(`{"authorization":%q,broken`, string(secretMarkers[3])), payload: "opaque malformed payload"},
+		{id: "nullable-existing-null", response: "", payload: "opaque null payload"},
+		{id: "nullable-valid", response: fmt.Sprintf(`{"display":"nullable ordinary field","nested":{"api_key":%q,"title":"nullable ordinary nested field"}}`, string(secretMarkers[4])), payload: "opaque valid payload"},
+	}
+	for _, row := range nullableRows {
+		var response any = row.response
+		if row.id == "nullable-existing-null" {
+			response = nil
+		}
+		if _, err := db.Exec(`INSERT INTO nullable_json_controls(id, response_json, payload) VALUES (?, ?, ?)`, row.id, response, row.payload); err != nil {
+			_ = db.Close()
+			t.Fatal(err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return path, secretMarkers
+}
+
+type exportSQLiteSchemaObject struct {
+	Type  string
+	Name  string
+	Table string
+	SQL   string
+}
+
+type exportSQLiteSnapshot struct {
+	Schema    []exportSQLiteSchemaObject
+	RowCounts map[string]int
+	Rows      map[string][][]string
+}
+
+func snapshotExportStateSQLite(t *testing.T, data []byte) exportSQLiteSnapshot {
+	t.Helper()
+	db := openExportStateBytes(t, data)
+	defer db.Close()
+
+	snapshot := exportSQLiteSnapshot{RowCounts: make(map[string]int), Rows: make(map[string][][]string)}
+	schemaRows, err := db.Query(`SELECT type, name, tbl_name, COALESCE(sql, '')
+		FROM sqlite_master
+		WHERE (type = 'table' AND name NOT LIKE 'sqlite_%') OR (type = 'index' AND tbl_name NOT LIKE 'sqlite_%')
+		ORDER BY type, name`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for schemaRows.Next() {
+		var object exportSQLiteSchemaObject
+		if err := schemaRows.Scan(&object.Type, &object.Name, &object.Table, &object.SQL); err != nil {
+			_ = schemaRows.Close()
+			t.Fatal(err)
+		}
+		snapshot.Schema = append(snapshot.Schema, object)
+	}
+	if err := errors.Join(schemaRows.Err(), schemaRows.Close()); err != nil {
+		t.Fatal(err)
+	}
+	tableRows, err := db.Query(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tables []string
+	for tableRows.Next() {
+		var table string
+		if err := tableRows.Scan(&table); err != nil {
+			_ = tableRows.Close()
+			t.Fatal(err)
+		}
+		tables = append(tables, table)
+	}
+	if err := errors.Join(tableRows.Err(), tableRows.Close()); err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range tables {
+		rows, err := db.Query("SELECT * FROM " + quoteIdentifier(table) + " ORDER BY rowid")
+		if err != nil {
+			t.Fatalf("snapshot table %q: %v", table, err)
+		}
+		columns, err := rows.Columns()
+		if err != nil {
+			_ = rows.Close()
+			t.Fatal(err)
+		}
+		for rows.Next() {
+			values := make([]any, len(columns))
+			pointers := make([]any, len(columns))
+			for i := range values {
+				pointers[i] = &values[i]
+			}
+			if err := rows.Scan(pointers...); err != nil {
+				_ = rows.Close()
+				t.Fatalf("snapshot row from %q: %v", table, err)
+			}
+			row := make([]string, len(values))
+			for i, value := range values {
+				row[i] = formatExportSQLiteCell(value)
+			}
+			snapshot.Rows[table] = append(snapshot.Rows[table], row)
+		}
+		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+			t.Fatalf("finish snapshot table %q: %v", table, err)
+		}
+		snapshot.RowCounts[table] = len(snapshot.Rows[table])
+	}
+	return snapshot
+}
+
+func formatExportSQLiteCell(value any) string {
+	switch value := value.(type) {
+	case nil:
+		return "NULL"
+	case []byte:
+		return "BLOB:" + hex.EncodeToString(value)
+	case string:
+		return "TEXT:" + value
+	case int64:
+		return fmt.Sprintf("INTEGER:%d", value)
+	case float64:
+		return fmt.Sprintf("REAL:%g", value)
+	default:
+		return fmt.Sprintf("%T:%v", value, value)
+	}
+}
+
+func openExportStateBytes(t *testing.T, data []byte) *sql.DB {
+	t.Helper()
+	path := t.TempDir() + "/state.db"
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return db
+}
+
+func assertArchiveSQLiteCacheState(t *testing.T, data []byte, secretMarkers [][]byte) {
+	t.Helper()
+	for _, marker := range secretMarkers {
+		if bytes.Contains(data, marker) {
+			t.Fatalf("sanitized SQLite bytes retain secret marker %q", marker)
+		}
+	}
+	db := openExportStateBytes(t, data)
+	defer db.Close()
+	var check string
+	if err := db.QueryRow("PRAGMA quick_check").Scan(&check); err != nil || check != "ok" {
+		t.Fatalf("sanitized archive state quick_check = %q, %v", check, err)
+	}
+
+	var keys []string
+	keyRows, err := db.Query("SELECT cache_key FROM llm_cache ORDER BY cache_key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for keyRows.Next() {
+		var key string
+		if err := keyRows.Scan(&key); err != nil {
+			_ = keyRows.Close()
+			t.Fatal(err)
+		}
+		keys = append(keys, key)
+	}
+	if err := errors.Join(keyRows.Err(), keyRows.Close()); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"cache-malformed", "cache-ordinary", "cache-valid"}; !reflect.DeepEqual(keys, want) {
+		t.Fatalf("sanitized cache keys = %#v, want %#v", keys, want)
+	}
+	var cacheCount int
+	if err := db.QueryRow("SELECT count(*) FROM llm_cache").Scan(&cacheCount); err != nil || cacheCount != 3 {
+		t.Fatalf("sanitized cache row count = %d, %v; want 3", cacheCount, err)
+	}
+	for _, key := range []string{"cache-ordinary", "cache-malformed"} {
+		var value string
+		var isNull int
+		var storageType string
+		if err := db.QueryRow("SELECT response_json, response_json IS NULL, typeof(response_json) FROM llm_cache WHERE cache_key=?", key).Scan(&value, &isNull, &storageType); err != nil {
+			t.Fatal(err)
+		}
+		var decoded any
+		if err := json.Unmarshal([]byte(value), &decoded); err != nil || value != "null" || decoded != nil || isNull != 0 || storageType != "text" {
+			t.Fatalf("sanitized NOT NULL response_json %q = (%q, decoded=%#v, IS NULL=%d, typeof=%q), err=%v; want bound TEXT null", key, value, decoded, isNull, storageType, err)
+		}
+	}
+	var validResponse string
+	if err := db.QueryRow("SELECT response_json FROM llm_cache WHERE cache_key='cache-valid'").Scan(&validResponse); err != nil {
+		t.Fatal(err)
+	}
+	var validJSON map[string]any
+	if err := json.Unmarshal([]byte(validResponse), &validJSON); err != nil {
+		t.Fatalf("sanitized valid cache JSON %q: %v", validResponse, err)
+	}
+	profile, ok := validJSON["profile"].(map[string]any)
+	if !ok || validJSON["message"] != "ordinary response field" || profile["label"] != "ordinary nested field" {
+		t.Fatalf("sanitized valid cache JSON lost ordinary fields: %#v", validJSON)
+	}
+	if _, exists := profile["refresh_token"]; exists {
+		t.Fatalf("sanitized valid cache JSON retained nested secret: %#v", validJSON)
+	}
+
+	type cacheMetadata struct {
+		model, createdAt string
+		lastHit          sql.NullString
+		hitCount         int
+	}
+	metadataRows, err := db.Query("SELECT cache_key, model, created_at, last_hit_at, hit_count FROM llm_cache ORDER BY cache_key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata := make(map[string]cacheMetadata)
+	for metadataRows.Next() {
+		var key string
+		var row cacheMetadata
+		if err := metadataRows.Scan(&key, &row.model, &row.createdAt, &row.lastHit, &row.hitCount); err != nil {
+			_ = metadataRows.Close()
+			t.Fatal(err)
+		}
+		metadata[key] = row
+	}
+	if err := errors.Join(metadataRows.Err(), metadataRows.Close()); err != nil {
+		t.Fatal(err)
+	}
+	wantMetadata := map[string]cacheMetadata{
+		"cache-ordinary":  {model: "synthetic-model", createdAt: "2026-10-01T00:00:00Z", lastHit: sql.NullString{}, hitCount: 0},
+		"cache-malformed": {model: "synthetic-model", createdAt: "2026-10-02T00:00:00Z", lastHit: sql.NullString{String: "2026-11-02T00:00:00Z", Valid: true}, hitCount: 4},
+		"cache-valid":     {model: "synthetic-model", createdAt: "2026-10-03T00:00:00Z", lastHit: sql.NullString{}, hitCount: 7},
+	}
+	if !reflect.DeepEqual(metadata, wantMetadata) {
+		t.Fatalf("sanitized cache metadata = %#v, want %#v", metadata, wantMetadata)
+	}
+
+	type columnInfo struct {
+		name, kind       string
+		notNull, primary int
+		defaultValue     sql.NullString
+	}
+	var columns []columnInfo
+	columnRows, err := db.Query(`PRAGMA table_info("llm_cache")`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for columnRows.Next() {
+		var cid int
+		var column columnInfo
+		if err := columnRows.Scan(&cid, &column.name, &column.kind, &column.notNull, &column.defaultValue, &column.primary); err != nil {
+			_ = columnRows.Close()
+			t.Fatal(err)
+		}
+		columns = append(columns, column)
+	}
+	if err := errors.Join(columnRows.Err(), columnRows.Close()); err != nil {
+		t.Fatal(err)
+	}
+	wantColumns := []columnInfo{
+		{name: "cache_key", kind: "TEXT", primary: 1},
+		{name: "model", kind: "TEXT", notNull: 1},
+		{name: "response_json", kind: "TEXT", notNull: 1},
+		{name: "created_at", kind: "TEXT", notNull: 1},
+		{name: "last_hit_at", kind: "TEXT"},
+		{name: "hit_count", kind: "INTEGER", notNull: 1, defaultValue: sql.NullString{String: "0", Valid: true}},
+	}
+	if !reflect.DeepEqual(columns, wantColumns) {
+		t.Fatalf("sanitized llm_cache table_info = %#v, want %#v", columns, wantColumns)
+	}
+	indexRows, err := db.Query(`PRAGMA index_list("llm_cache")`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type indexInfo struct {
+		name, origin    string
+		unique, partial int
+	}
+	var indexes []indexInfo
+	for indexRows.Next() {
+		var sequence int
+		var index indexInfo
+		if err := indexRows.Scan(&sequence, &index.name, &index.unique, &index.origin, &index.partial); err != nil {
+			_ = indexRows.Close()
+			t.Fatal(err)
+		}
+		indexes = append(indexes, index)
+	}
+	if err := errors.Join(indexRows.Err(), indexRows.Close()); err != nil {
+		t.Fatal(err)
+	}
+	if want := []indexInfo{{name: "sqlite_autoindex_llm_cache_1", origin: "pk", unique: 1}}; !reflect.DeepEqual(indexes, want) {
+		t.Fatalf("sanitized llm_cache indexes = %#v, want %#v", indexes, want)
+	}
+
+	for _, id := range []string{"nullable-malformed", "nullable-existing-null"} {
+		var value sql.NullString
+		var isNull int
+		var storageType string
+		if err := db.QueryRow("SELECT response_json, response_json IS NULL, typeof(response_json) FROM nullable_json_controls WHERE id=?", id).Scan(&value, &isNull, &storageType); err != nil {
+			t.Fatal(err)
+		}
+		if value.Valid || isNull != 1 || storageType != "null" {
+			t.Fatalf("nullable response_json %q = (%#v, IS NULL=%d, typeof=%q), want SQL NULL", id, value, isNull, storageType)
+		}
+	}
+	var nullableValid, opaquePayload string
+	if err := db.QueryRow("SELECT response_json, payload FROM nullable_json_controls WHERE id='nullable-valid'").Scan(&nullableValid, &opaquePayload); err != nil {
+		t.Fatal(err)
+	}
+	var nullableJSON map[string]any
+	if err := json.Unmarshal([]byte(nullableValid), &nullableJSON); err != nil {
+		t.Fatalf("sanitized nullable JSON %q: %v", nullableValid, err)
+	}
+	nested, ok := nullableJSON["nested"].(map[string]any)
+	if !ok || nullableJSON["display"] != "nullable ordinary field" || nested["title"] != "nullable ordinary nested field" {
+		t.Fatalf("sanitized nullable JSON lost ordinary fields: %#v", nullableJSON)
+	}
+	if _, exists := nested["api_key"]; exists {
+		t.Fatalf("sanitized nullable JSON retained nested secret: %#v", nullableJSON)
+	}
+	if opaquePayload != "opaque valid payload" {
+		t.Fatalf("non-json-named payload changed during sanitizer: %q", opaquePayload)
+	}
+	var malformedOpaquePayload string
+	if err := db.QueryRow("SELECT payload FROM nullable_json_controls WHERE id='nullable-malformed'").Scan(&malformedOpaquePayload); err != nil {
+		t.Fatal(err)
+	}
+	if malformedOpaquePayload != "opaque malformed payload" {
+		t.Fatalf("non-json-named malformed payload = %q, want unchanged", malformedOpaquePayload)
+	}
 }
 
 func assertArchiveRawNotesState(t *testing.T, data []byte) {
@@ -481,9 +943,16 @@ func (s *fakeStorageAPI) put(name string, data []byte, generation int64) {
 }
 
 func (s *fakeStorageAPI) get(name string) []byte {
+	object, _ := s.getObject(name)
+	return object.Data
+}
+
+func (s *fakeStorageAPI) getObject(name string) (fakeStorageObject, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]byte(nil), s.objects[name].Data...)
+	object, exists := s.objects[name]
+	object.Data = append([]byte(nil), object.Data...)
+	return object, exists
 }
 
 func (s *fakeStorageAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
