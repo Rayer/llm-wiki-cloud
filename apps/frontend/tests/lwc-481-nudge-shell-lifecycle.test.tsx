@@ -163,15 +163,17 @@ describe('LWC-481 closed Shell Nudge feedback and accepted navigation lifecycle'
     vi.clearAllMocks();
   });
 
-  it('announces unknown while the closed initial reconciliation is pending, then removes it on confirmed read', async () => {
+  it('hides source status while closed reconciliation is pending, then shows a legitimate unread cue after readback', async () => {
     let resolveReconcile!: (value: NudgeView) => void;
     mocks.reconcileNudges.mockReturnValueOnce(new Promise<NudgeView>((resolve) => { resolveReconcile = resolve; }));
     renderShell();
 
-    expect(screen.getByRole('status').textContent).toBe('Nudge.statusUnknown');
+    expect(screen.queryByRole('status')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Nudge.open' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Nudge.open, Nudge.unreadCue' })).toBeNull();
     await resolveReconcile(unreadView);
-    await waitFor(() => expect(screen.queryByRole('status')).toBeNull());
-    expect(screen.getByRole('button', { name: 'Nudge.open, Nudge.unreadCue' })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: 'Nudge.open, Nudge.unreadCue' })).toBeTruthy();
+    expect(screen.queryByRole('status')).toBeNull();
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 
