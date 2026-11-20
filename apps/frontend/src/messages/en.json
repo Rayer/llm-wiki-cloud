@@ -922,7 +922,7 @@
       "affectedProject": "Affected Wiki: {project}.",
       "affectedCount": "{count} affected Wiki(s)."
     },
-    "empty": "No current topics.",
+    "empty": "No reminders to show.",
     "urgent": "Urgent · source recovery required",
     "read": "Read",
     "unread": "Unread",
@@ -935,7 +935,7 @@
     "markUnread": "Mark unread",
     "unreadCue": "Unread items",
     "dismiss": "Dismiss",
-    "stale": "This observation may be out of date.",
+    "stale": "This status may be out of date.",
     "targetUnavailable": "This destination is unavailable.",
     "copyFailed": "Copy did not succeed. Select the text below and copy it manually.",
     "popupBlocked": "The destination did not open. Use the explicit link below.",

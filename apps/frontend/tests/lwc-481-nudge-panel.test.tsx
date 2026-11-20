@@ -235,21 +235,30 @@ describe('LWC-481 Nudge action navigation', () => {
     expect(mocks.setNudgeAttention).not.toHaveBeenCalled();
   });
 
-  it('renders yellow attention while preserving red urgent and green info treatments', async () => {
-    const itemWithSeverity = (severity: 'urgent' | 'attention' | 'info', category: string) => {
+  it('preserves mixed cards and scopes source-stale status without a global partial message', async () => {
+    const itemWithSeverity = (severity: 'urgent' | 'attention' | 'info', category: string, sourceKey: string) => {
       const item = structuredClone(view.items[0]!);
       item.category = category;
       item.severity = severity;
+      item.attention_id = `attention-${category}`;
+      item.observations[0]!.source_key = sourceKey;
       const observation = item.observations[0]?.observation;
       if (!observation) throw new Error('test fixture is missing its observation');
       observation.severity = severity;
       return item;
     };
     const tieredView = structuredClone(view);
+    tieredView.partial = true;
+    tieredView.failures = [
+      { project_id: 'project-a', safe_class: 'pipeline_history_partial' },
+      { safe_class: 'pipeline_source_unavailable' },
+    ];
+    tieredView.notices = [{ source_key: 'pipeline-fail:project-a', state: 'stale', safe_class: 'project_context_changed' }];
     tieredView.items = [
-      itemWithSeverity('urgent', 'pipeline-failure'),
-      itemWithSeverity('attention', 'content-purpose-gap'),
-      itemWithSeverity('info', 'release-notes'),
+      itemWithSeverity('attention', 'pipeline-failure', 'pipeline-fail:project-a'),
+      itemWithSeverity('urgent', 'urgent-control', 'pipeline-fail:project-b'),
+      itemWithSeverity('info', 'release-notes', 'release-notes:llm-wiki-cloud:dev'),
+      itemWithSeverity('info', 'content-purpose-gap', 'purpose:project-c'),
     ];
     mocks.reconcileNudges.mockResolvedValueOnce(tieredView);
     render(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} />);
@@ -260,9 +269,10 @@ describe('LWC-481 Nudge action navigation', () => {
       if (!result) throw new Error(`${category} card was not rendered`);
       return result;
     };
-    const urgentArticle = article('pipeline-failure');
-    const attentionArticle = article('content-purpose-gap');
+    const urgentArticle = article('urgent-control');
+    const attentionArticle = article('pipeline-failure');
     const infoArticle = article('release-notes');
+    const otherInfoArticle = article('content-purpose-gap');
     const urgentCard = within(urgentArticle);
     const attentionCard = within(attentionArticle);
     const infoCard = within(infoArticle);
@@ -271,14 +281,21 @@ describe('LWC-481 Nudge action navigation', () => {
     expect(urgentArticle.classList.contains('bg-red-950/30')).toBe(true);
     expect(urgentCard.queryByRole('button', { name: 'Nudge.markRead' })).toBeNull();
     expect(urgentCard.queryByRole('button', { name: 'Nudge.dismiss' })).toBeNull();
+    expect(urgentCard.queryByText('Nudge.stale')).toBeNull();
     expect(attentionArticle.classList.contains('border-amber-300/60')).toBe(true);
     expect(attentionArticle.classList.contains('bg-amber-950/55')).toBe(true);
     expect(attentionCard.getByRole('button', { name: 'Nudge.markRead' })).toBeTruthy();
     expect(attentionCard.getByRole('button', { name: 'Nudge.dismiss' })).toBeTruthy();
+    expect(attentionCard.getByText('Nudge.stale')).toBeTruthy();
     expect(infoArticle.classList.contains('border-emerald-300/50')).toBe(true);
     expect(infoArticle.classList.contains('bg-emerald-950/30')).toBe(true);
     expect(infoCard.getByRole('button', { name: 'Nudge.markRead' })).toBeTruthy();
     expect(infoCard.getByRole('button', { name: 'Nudge.dismiss' })).toBeTruthy();
+    expect(infoCard.queryByText('Nudge.stale')).toBeNull();
+    expect(within(otherInfoArticle).queryByText('Nudge.stale')).toBeNull();
+    expect(screen.queryByText('Nudge.partial')).toBeNull();
+    expect(screen.queryByRole('status')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Nudge.open, Nudge.unreadCue' })).toBeTruthy();
   });
 
   it('opens the actual same-Project target only after the exact copy succeeds', async () => {
@@ -396,20 +413,42 @@ describe('LWC-481 Nudge action navigation', () => {
     expect(mocks.setNudgeAttention).toHaveBeenCalledTimes(1);
   });
 
-  it('shows explicit partial source status returned by manual reconcile', async () => {
+  it('does not present partial source status as a user-facing Nudge action', async () => {
     const partialView = structuredClone(view);
     partialView.partial = true;
     partialView.failures = [{ safe_class: 'pipeline_observer_not_qualified' }];
     mocks.reconcileNudges.mockResolvedValueOnce(partialView);
     render(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} />);
 
-    expect(await screen.findByText('Nudge.partial')).toBeTruthy();
+    expect(await screen.findByText('Purpose and overview differ')).toBeTruthy();
+    expect(screen.queryByText('Nudge.partial')).toBeNull();
+    expect(screen.queryByRole('status')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Nudge.refresh' })).toBeTruthy();
     expect(mocks.reconcileNudges).toHaveBeenCalledTimes(1);
     expect(mocks.getNudges).not.toHaveBeenCalled();
   });
 
+  it('shows an actual reconcile failure and retries it only after explicit recheck', async () => {
+    mocks.reconcileNudges.mockRejectedValueOnce(new Error('synthetic reconcile HTTP failure'));
+    render(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} />);
+
+    expect(await screen.findByText('Nudge.loadFailed', { selector: '[role="alert"]' })).toBeTruthy();
+    expect(screen.queryByRole('status')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Nudge.refresh' })).toBeTruthy();
+    expect(mocks.reconcileNudges).toHaveBeenCalledTimes(1);
+
+    mocks.reconcileNudges.mockResolvedValueOnce(view);
+    fireEvent.click(screen.getByRole('button', { name: 'Nudge.refresh' }));
+
+    expect(await screen.findByText('Purpose and overview differ')).toBeTruthy();
+    expect(mocks.reconcileNudges).toHaveBeenCalledTimes(2);
+    expect(mocks.getNudges).not.toHaveBeenCalled();
+    expect(mocks.setNudgeAttention).not.toHaveBeenCalled();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
   it.each(['read', 'navigation-read', 'dismiss'] as const)(
-    'keeps source-unavailable status after a %s attention GET',
+    'keeps existing %s actions available when source status is partial',
     async (attentionPath) => {
       const partialView = structuredClone(view);
       partialView.partial = true;
@@ -431,7 +470,9 @@ describe('LWC-481 Nudge action navigation', () => {
       }
       mocks.getNudges.mockResolvedValueOnce(attentionRead);
       render(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} />);
-      expect(await screen.findByText('Nudge.partial')).toBeTruthy();
+      expect(await screen.findByText('Purpose and overview differ')).toBeTruthy();
+      expect(screen.queryByText('Nudge.partial')).toBeNull();
+      expect(screen.queryByRole('status')).toBeNull();
 
       if (attentionPath === 'read') {
         fireEvent.click(screen.getByRole('button', { name: 'Nudge.markRead' }));
@@ -445,7 +486,8 @@ describe('LWC-481 Nudge action navigation', () => {
         'content-purpose-gap', 'attention-a', attentionPath === 'dismiss' ? 'dismiss' : 'read',
       ));
       await waitFor(() => expect(mocks.getNudges).toHaveBeenCalledTimes(1));
-      expect(await screen.findByText('Nudge.partial')).toBeTruthy();
+      expect(screen.queryByText('Nudge.partial')).toBeNull();
+      expect(screen.queryByRole('status')).toBeNull();
       if (attentionPath === 'dismiss') {
         expect(await screen.findByText('Nudge.empty')).toBeTruthy();
       } else {
@@ -454,22 +496,53 @@ describe('LWC-481 Nudge action navigation', () => {
     },
   );
 
-  it('clears source-unavailable status only after a successful manual reconciliation', async () => {
+  it('keeps a rejected dismiss visible and manual recheck never replays dismiss', async () => {
+    const partialView = structuredClone(view);
+    partialView.partial = true;
+    partialView.failures = [{ safe_class: 'pipeline_observer_not_qualified' }];
+    mocks.reconcileNudges.mockResolvedValueOnce(partialView).mockResolvedValueOnce(view);
+    mocks.setNudgeAttention.mockRejectedValueOnce(new Error('synthetic dismiss write rejection'));
+    render(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} />);
+
+    expect(await screen.findByText('Purpose and overview differ')).toBeTruthy();
+    expect(screen.queryByText('Nudge.partial')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Nudge.dismiss' }));
+    expect(await screen.findByText('Nudge.actionFailed', { selector: '[role="alert"]' })).toBeTruthy();
+    expect(mocks.setNudgeAttention).toHaveBeenCalledOnce();
+    expect(mocks.setNudgeAttention).toHaveBeenCalledWith('content-purpose-gap', 'attention-a', 'dismiss');
+    expect(mocks.reconcileNudges).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('Purpose and overview differ')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Nudge.refresh' }));
+
+    expect(await screen.findByText('Purpose and overview differ')).toBeTruthy();
+    expect(mocks.reconcileNudges).toHaveBeenCalledTimes(2);
+    expect(mocks.setNudgeAttention).toHaveBeenCalledOnce();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByRole('status')).toBeNull();
+    expect(screen.queryByText('Nudge.partial')).toBeNull();
+  });
+
+  it('keeps manual reconciliation available without presenting source-unavailable status', async () => {
     const partialView = structuredClone(view);
     partialView.partial = true;
     partialView.failures = [{ safe_class: 'pipeline_observer_not_qualified' }];
     mocks.reconcileNudges.mockResolvedValueOnce(partialView);
     render(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} />);
-    expect(await screen.findByText('Nudge.partial')).toBeTruthy();
+    expect(await screen.findByText('Purpose and overview differ')).toBeTruthy();
+    expect(screen.queryByText('Nudge.partial')).toBeNull();
+    expect(screen.queryByRole('status')).toBeNull();
 
     mocks.reconcileNudges.mockResolvedValueOnce(view);
     fireEvent.click(screen.getByRole('button', { name: 'Nudge.refresh' }));
 
     await waitFor(() => expect(mocks.reconcileNudges).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(screen.queryByText('Nudge.partial')).toBeNull());
+    expect(screen.getByText('Purpose and overview differ')).toBeTruthy();
+    expect(screen.queryByText('Nudge.partial')).toBeNull();
+    expect(screen.queryByRole('status')).toBeNull();
   });
 
-  it('does not let an older reconciliation overwrite a later successful source status', async () => {
+  it('does not let an older reconciliation restore a source-stale card indicator', async () => {
     let resolveInitial!: (value: NudgeView) => void;
     const initialReconciliation = new Promise<NudgeView>((resolve) => { resolveInitial = resolve; });
     mocks.reconcileNudges.mockReset().mockReturnValueOnce(initialReconciliation).mockResolvedValueOnce(view);
@@ -483,8 +556,10 @@ describe('LWC-481 Nudge action navigation', () => {
     const latePartial = structuredClone(view);
     latePartial.partial = true;
     latePartial.failures = [{ safe_class: 'pipeline_observer_not_qualified' }];
+    latePartial.notices = [{ source_key: 'purpose:project-a', state: 'stale', safe_class: 'project_context_changed' }];
     await act(async () => { resolveInitial(latePartial); await initialReconciliation; });
     expect(screen.queryByText('Nudge.partial')).toBeNull();
+    expect(screen.queryByText('Nudge.stale')).toBeNull();
   });
 
   it('suppresses an old account read after the session identity changes', async () => {
