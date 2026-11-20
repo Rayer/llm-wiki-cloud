@@ -147,6 +147,71 @@ func TestRedactSQLiteSecretsRemovesSecretTablesAndColumns(t *testing.T) {
 	}
 }
 
+func TestRedactSQLiteJSONColumnPreservesNullableAndNonJSONFailures(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE cache_control (id TEXT PRIMARY KEY, response_json TEXT, payload TEXT);
+		INSERT INTO cache_control VALUES ('malformed', '{"token":"nullable-malformed-secret",broken', 'opaque malformed payload');
+		INSERT INTO cache_control VALUES ('existing-null', NULL, 'opaque null payload');
+		INSERT INTO cache_control VALUES ('valid', '{"display":"keep","profile":{"api_key":"nullable-valid-secret","title":"nested keep"}}', 'opaque valid payload')`); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := redactSQLiteSecrets(db); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, id := range []string{"malformed", "existing-null"} {
+		var value sql.NullString
+		var isNull int
+		var storageType string
+		if err := db.QueryRow("SELECT response_json, response_json IS NULL, typeof(response_json) FROM cache_control WHERE id=?", id).Scan(&value, &isNull, &storageType); err != nil {
+			t.Fatal(err)
+		}
+		if value.Valid || isNull != 1 || storageType != "null" {
+			t.Errorf("nullable response_json %q = (%#v, IS NULL=%d, typeof=%q), want SQL NULL", id, value, isNull, storageType)
+		}
+	}
+	var validJSON, payload string
+	if err := db.QueryRow("SELECT response_json, payload FROM cache_control WHERE id='valid'").Scan(&validJSON, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if validJSON != `{"display":"keep","profile":{"title":"nested keep"}}` {
+		t.Errorf("nullable valid JSON = %s", validJSON)
+	}
+	if payload != "opaque valid payload" {
+		t.Errorf("non-json-named malformed payload = %q, want unchanged", payload)
+	}
+	var malformedPayload string
+	if err := db.QueryRow("SELECT payload FROM cache_control WHERE id='malformed'").Scan(&malformedPayload); err != nil {
+		t.Fatal(err)
+	}
+	if malformedPayload != "opaque malformed payload" {
+		t.Errorf("non-json-named parse failure = %q, want unchanged", malformedPayload)
+	}
+}
+
+func TestRedactSQLiteJSONColumnFailsClosedOnOtherConstraints(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE constrained_cache (
+		id TEXT PRIMARY KEY,
+		response_json TEXT NOT NULL CHECK (response_json <> 'null')
+	);
+	INSERT INTO constrained_cache VALUES ('malformed', '{"token":"constraint-control",broken')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := redactSQLiteSecrets(db); err == nil || !strings.Contains(strings.ToLower(err.Error()), "constraint failed") {
+		t.Fatalf("sanitizer error = %v, want preserved CHECK constraint failure", err)
+	}
+}
+
 func TestCloudRunStarterSendsOnlyBoundedJobIdentity(t *testing.T) {
 	starter := NewCloudRunJobStarter("https://run.googleapis.com/v2/projects/p/locations/r/jobs/export:run")
 	starter.tokenSource = oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "test-access"})

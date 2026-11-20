@@ -508,7 +508,11 @@ func redactSQLiteSecrets(db *sql.DB) error {
 			return err
 		}
 		var sensitive []string
-		var jsonColumns []string
+		type jsonColumn struct {
+			name    string
+			notNull bool
+		}
+		var jsonColumns []jsonColumn
 		var keyColumns []string
 		var valueColumns []string
 		for columns.Next() {
@@ -526,7 +530,7 @@ func redactSQLiteSecrets(db *sql.DB) error {
 				}
 				sensitive = append(sensitive, quoteIdentifier(name)+value)
 			} else if likelyJSONColumn(name, kind) {
-				jsonColumns = append(jsonColumns, name)
+				jsonColumns = append(jsonColumns, jsonColumn{name: name, notNull: notnull != 0})
 			}
 			if isSettingKeyColumn(name) {
 				keyColumns = append(keyColumns, name)
@@ -543,8 +547,8 @@ func redactSQLiteSecrets(db *sql.DB) error {
 				return err
 			}
 		}
-		for _, name := range jsonColumns {
-			if err := redactSQLiteJSONColumn(db, table, name); err != nil {
+		for _, column := range jsonColumns {
+			if err := redactSQLiteJSONColumn(db, table, column.name, column.notNull); err != nil {
 				return err
 			}
 		}
@@ -631,7 +635,7 @@ func redactSQLiteKeyValueRows(db *sql.DB, table, keyColumn string) error {
 	return nil
 }
 
-func redactSQLiteJSONColumn(db *sql.DB, table, column string) error {
+func redactSQLiteJSONColumn(db *sql.DB, table, column string, notNull bool) error {
 	rows, err := db.Query("SELECT rowid, " + quoteIdentifier(column) + " FROM " + quoteIdentifier(table) + " WHERE " + quoteIdentifier(column) + " IS NOT NULL")
 	if err != nil {
 		return err // Fail closed for tables whose row identity cannot be safely preserved.
@@ -665,7 +669,13 @@ func redactSQLiteJSONColumn(db *sql.DB, table, column string) error {
 		var parsed any
 		if err := json.Unmarshal(raw, &parsed); err != nil {
 			if strings.Contains(strings.ToLower(column), "json") {
-				if _, err := db.Exec("UPDATE "+quoteIdentifier(table)+" SET "+quoteIdentifier(column)+"=NULL WHERE rowid=?", item.id); err != nil {
+				var err error
+				if notNull {
+					_, err = db.Exec("UPDATE "+quoteIdentifier(table)+" SET "+quoteIdentifier(column)+"=? WHERE rowid=?", "null", item.id)
+				} else {
+					_, err = db.Exec("UPDATE "+quoteIdentifier(table)+" SET "+quoteIdentifier(column)+"=NULL WHERE rowid=?", item.id)
+				}
+				if err != nil {
 					return err
 				}
 			}
