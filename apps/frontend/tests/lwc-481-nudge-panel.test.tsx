@@ -523,6 +523,36 @@ describe('LWC-481 Nudge action navigation', () => {
     expect(screen.queryByText('Nudge.partial')).toBeNull();
   });
 
+  it('lets the user retry the same dismiss after its first write is rejected', async () => {
+    const partialView = structuredClone(view);
+    partialView.partial = true;
+    partialView.failures = [{ safe_class: 'pipeline_observer_not_qualified' }];
+    const dismissedView = structuredClone(view);
+    dismissedView.items = [];
+    mocks.reconcileNudges.mockResolvedValueOnce(partialView);
+    mocks.setNudgeAttention
+      .mockRejectedValueOnce(new Error('synthetic dismiss write rejection'))
+      .mockResolvedValueOnce(undefined);
+    mocks.getNudges.mockResolvedValueOnce(dismissedView);
+    render(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} />);
+
+    expect(await screen.findByText('Purpose and overview differ')).toBeTruthy();
+    const dismissButton = screen.getByRole('button', { name: 'Nudge.dismiss' });
+    fireEvent.click(dismissButton);
+    expect(await screen.findByText('Nudge.actionFailed', { selector: '[role="alert"]' })).toBeTruthy();
+    await waitFor(() => expect((dismissButton as HTMLButtonElement).disabled).toBe(false));
+    expect(screen.getByText('Purpose and overview differ')).toBeTruthy();
+    expect(mocks.setNudgeAttention).toHaveBeenNthCalledWith(1, 'content-purpose-gap', 'attention-a', 'dismiss');
+
+    fireEvent.click(dismissButton);
+
+    expect(await screen.findByText('Nudge.empty')).toBeTruthy();
+    expect(mocks.setNudgeAttention).toHaveBeenCalledTimes(2);
+    expect(mocks.setNudgeAttention).toHaveBeenNthCalledWith(2, 'content-purpose-gap', 'attention-a', 'dismiss');
+    expect(mocks.getNudges).toHaveBeenCalledOnce();
+    expect(mocks.reconcileNudges).toHaveBeenCalledOnce();
+  });
+
   it('keeps manual reconciliation available without presenting source-unavailable status', async () => {
     const partialView = structuredClone(view);
     partialView.partial = true;

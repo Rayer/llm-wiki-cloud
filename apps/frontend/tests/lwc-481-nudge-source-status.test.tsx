@@ -291,6 +291,86 @@ describe('LWC-481 source status and attention transport', () => {
     ]);
   });
 
+  it('keeps source and projection stale evidence independently until a clean reconcile', async () => {
+    const sourcePartial = structuredClone(partialView);
+    const item = sourcePartial.items[0]!;
+    const sourceObservation = item.observations[0]!;
+    const observationB = structuredClone(sourceObservation);
+    observationB.source_key = 'pipeline-fail:project-b';
+    observationB.observation!.project_id = 'project-b';
+    observationB.observation!.project_name = 'Project B';
+    observationB.observation!.execution_id = 'execution-b';
+    observationB.observation!.title = 'Pipeline failure in project B';
+    observationB.observation!.body = 'Project B pipeline evidence is available.';
+    item.observations.push(observationB);
+    sourcePartial.failures = [{ project_id: 'project-a', safe_class: 'pipeline_history_partial' }];
+    sourcePartial.notices = [
+      { source_key: 'pipeline-fail:project-a', state: 'stale', safe_class: 'project_context_changed' },
+    ];
+
+    const projectionPartial = structuredClone(sourcePartial);
+    projectionPartial.notices = [
+      { source_key: 'pipeline-fail:project-b', state: 'stale', safe_class: 'project_context_changed' },
+    ];
+    projectionPartial.items[0]!.attention_state = 'read';
+
+    const cleanProjection = structuredClone(projectionPartial);
+    cleanProjection.partial = false;
+    cleanProjection.failures = [];
+    cleanProjection.notices = [];
+    const cleanReconcile = structuredClone(cleanProjection);
+
+    enqueueHandlerResponses(
+      handlerResponse(sourcePartial),
+      handlerResponse(undefined, 204),
+      handlerResponse(projectionPartial),
+      handlerResponse(undefined, 204),
+      handlerResponse(cleanProjection),
+      handlerResponse(cleanReconcile),
+    );
+    render(<NudgePanel open onOpen={vi.fn()} onClose={vi.fn()} />);
+
+    const bodyA = sourceObservation.observation!.body;
+    const bodyB = observationB.observation!.body;
+    expect(await screen.findByText(bodyA)).toBeTruthy();
+    expect(screen.getByText(bodyB)).toBeTruthy();
+    expect(within(sourceSection(bodyA)).getByText(enMessages.Nudge.stale)).toBeTruthy();
+    expect(within(sourceSection(bodyB)).queryByText(enMessages.Nudge.stale)).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Nudge.markRead' }));
+    expect(await within(sourceSection(bodyA)).findByText(enMessages.Nudge.stale)).toBeTruthy();
+    expect(await within(sourceSection(bodyB)).findByText(enMessages.Nudge.stale)).toBeTruthy();
+    expect(screen.getByText(bodyA)).toBeTruthy();
+    expect(screen.getByText(bodyB)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Nudge.markUnread' }));
+    await waitFor(() => expect(mocks.apiFetch).toHaveBeenCalledTimes(5));
+    await waitFor(() => {
+      expect(within(sourceSection(bodyA)).getByText(enMessages.Nudge.stale)).toBeTruthy();
+      expect(within(sourceSection(bodyB)).queryByText(enMessages.Nudge.stale)).toBeNull();
+    });
+    expect(screen.getByText(bodyA)).toBeTruthy();
+    expect(screen.getByText(bodyB)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Nudge.refresh' }));
+    await waitFor(() => expect(mocks.apiFetch).toHaveBeenCalledTimes(6));
+    await waitFor(() => {
+      expect(within(sourceSection(bodyA)).queryByText(enMessages.Nudge.stale)).toBeNull();
+      expect(within(sourceSection(bodyB)).queryByText(enMessages.Nudge.stale)).toBeNull();
+    });
+    expect(screen.getByText(bodyA)).toBeTruthy();
+    expect(screen.getByText(bodyB)).toBeTruthy();
+    expectNoInternalStatus(enMessages);
+    expect(mocks.apiFetch.mock.calls.map(([path, options]) => [path, options?.method])).toEqual([
+      ['/api/v1/nudges/reconcile', 'POST'],
+      ['/api/v1/nudges/pipeline-failure/attention', 'PATCH'],
+      ['/api/v1/nudges', 'GET'],
+      ['/api/v1/nudges/pipeline-failure/attention', 'PATCH'],
+      ['/api/v1/nudges', 'GET'],
+      ['/api/v1/nudges/reconcile', 'POST'],
+    ]);
+  });
+
   it('hides unknown source classes while preserving the prior view and a true GET failure alert', async () => {
     const unknown = structuredClone(partialView);
     unknown.failures = [{ project_id: 'project-a', safe_class: 'new_unknown_class' }];
