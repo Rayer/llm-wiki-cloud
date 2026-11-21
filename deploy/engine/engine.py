@@ -444,7 +444,8 @@ def admit(args):
           args.environment == 'production' and args.dev):
         auth_source = auth_source_from_receipt(Path(args.dev) / 'receipts/auth.json')
         require(auth_source is not None, 'independent-auth-source-required')
-    elif (release_source_mode == 'independent' and 'auth' not in selected and
+    elif (release_source_mode == 'independent' and selected != ['frontend'] and
+          'auth' not in selected and
           args.environment == 'development' and args.reuse):
         auth_source = auth_source_from_receipt(Path(args.reuse) / 'receipts/auth.json')
         require(auth_source is not None, 'independent-auth-source-required')

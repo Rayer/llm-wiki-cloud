@@ -990,6 +990,170 @@ class Acceptance(unittest.TestCase):
         p['id']=engine.digest(engine.release_identity(p))
         write(directory/'plan.json',p)
         return engine.Engine(directory)
+
+    def lwc498_admit(self, components='frontend', reuse=None, **auth_source):
+        source, executor = 'c' * 40, 'e' * 40
+        normalized = copy.deepcopy(self.normalized)
+        normalized.update(environment='development',
+                          selected_components=engine.selection(components))
+        config_path = 'deploy/environments/development.yaml'
+
+        def fake_run(command, **kwargs):
+            command = [str(value) for value in command]
+            if command[:2] == ['git', 'rev-parse']:
+                if command[2] == 'HEAD':
+                    return executor
+                if command[2] == source + '^{commit}':
+                    return source
+                if command[2] == source + ':' + config_path:
+                    return 'config-blob'
+                if command[2] == source + ':deploy/cac/ssot.pkl':
+                    return 'ssot-blob'
+            if command[:2] == ['git', 'hash-object']:
+                if command[2] == config_path:
+                    return 'config-blob'
+                if command[2] == 'deploy/cac/ssot.pkl':
+                    return 'ssot-blob'
+            if command[:2] == ['git', 'check-ref-format']:
+                return ''
+            if command[:4] == ['go', 'run', './cmd/pipeline_config', 'prepare']:
+                return ''
+            if command[:3] == ['go', 'run', './cmd/deploy_config']:
+                return json.dumps(normalized)
+            self.fail('unexpected admission command: ' + ' '.join(command))
+
+        auth_values = {
+            'auth_repository_id': None, 'auth_revision': None, 'auth_tree_sha256': None,
+            'auth_artifact_id': None, 'auth_run_id': None, 'auth_run_attempt': None,
+        }
+        auth_values.update(auth_source)
+        args = SimpleNamespace(
+            environment='development', source=source, executor_sha=executor,
+            components=components, tag='lwc498-frontend-reuse', release_version='2026.11.8',
+            release_source_mode='independent', auth_schema_version=4,
+            reuse=str(reuse) if reuse else None, dev=None, dev_reference=None,
+            **auth_values)
+        with patch.dict(os.environ, {'GITHUB_REPOSITORY_ID': '42'}, clear=False), \
+                patch.object(engine, 'run', side_effect=fake_run), \
+                patch.object(engine, 'source_identity', side_effect=lambda component, sha, source:
+                             {'profile': 'lwc498-' + component,
+                              'inputs': engine.digest({'source': sha, 'auth_source': source}),
+                              'files': []}):
+            return engine.admit(args)
+
+    def frontend_reuse_fixture(self, reuse, plan, *, mismatch=None, target='preview'):
+        reuse = Path(reuse)
+        (reuse / 'receipts').mkdir(parents=True, exist_ok=True)
+        archive = b'LWC498_TEST_ONLY_RETAINED_FRONTEND_ARCHIVE'
+        (reuse / 'frontend.tgz').write_bytes(archive)
+        target_config = engine.digest(plan['normalized']['frontend'])
+        identity = copy.deepcopy(plan['identities']['frontend'])
+        if mismatch == 'identity':
+            identity = {'profile': 'wrong-source', 'inputs': 'wrong'}
+        elif mismatch == 'target-config':
+            target_config = '0' * 64
+        receipt = {
+            'schema': 2, 'component': 'frontend', 'identity': identity,
+            'build_sha': plan['source'], 'target_config': target_config,
+            'artifact': {
+                'archive': 'frontend.tgz', 'sha256': hashlib.sha256(archive).hexdigest(),
+                'config': {'schema_version': plan['normalized']['frontend']['config_schema_version'],
+                           'config_url': plan['normalized']['frontend']['config_url']},
+                'target': target, 'project': 'prj_test', 'team': 'team_test',
+            },
+        }
+        write(reuse / 'receipts/frontend.json', receipt)
+        return receipt, archive
+
+    def test_lwc498_frontend_only_reuse_admits_without_auth_and_keeps_frontend_artifact(self):
+        reuse = self.root / 'lwc498-frontend-only-reuse'
+        (reuse / 'receipts').mkdir(parents=True)
+        with patch.object(engine, 'auth_source_from_receipt', wraps=engine.auth_source_from_receipt) as read_auth:
+            plan = self.lwc498_admit(reuse=reuse)
+        read_auth.assert_not_called()
+        self.assertEqual(plan['selected'], ['frontend'])
+        self.assertNotIn('auth_source', plan)
+        self.assertFalse((reuse / 'receipts/auth.json').exists())
+
+        receipt, archive = self.frontend_reuse_fixture(reuse, plan)
+        output = self.root / 'lwc498-frontend-only-output'
+        output.mkdir()
+        write(output / 'plan.json', plan)
+        release = engine.Engine(output)
+        with patch.object(release.provider, 'prepare', side_effect=AssertionError(
+                'retained frontend must be reused without provider preparation')) as prepare:
+            release.prepare(reuse=reuse)
+        prepare.assert_not_called()
+        self.assertEqual(release.state['status'], 'ready')
+        self.assertEqual((output / 'frontend.tgz').read_bytes(), archive)
+        self.assertEqual(read(output / 'receipts/frontend.json'), receipt)
+        self.assertFalse((output / 'receipts/auth.json').exists())
+
+    def test_lwc498_reuse_still_requires_auth_except_for_exact_frontend_only_selection(self):
+        reuse = self.root / 'lwc498-no-auth-receipt'
+        (reuse / 'receipts').mkdir(parents=True)
+        cases = (
+            ('documentimport,frontend', {}, 'independent-auth-source-required'),
+            ('auth', {}, 'independent-auth-source-required'),
+            ('frontend', {'auth_repository_id': '99'}, 'independent-auth-source-required'),
+            ('frontend', {
+                'auth_repository_id': '99', 'auth_revision': 'invalid',
+                'auth_tree_sha256': 'sha256:' + 'd' * 64, 'auth_artifact_id': '7',
+                'auth_run_id': '8', 'auth_run_attempt': '1',
+            }, 'independent-auth-source-invalid'),
+        )
+        for components, explicit_source, reason in cases:
+            with self.subTest(components=components, explicit_source=bool(explicit_source)):
+                with self.assertRaises(Breakpoint) as caught:
+                    self.lwc498_admit(components, reuse, **explicit_source)
+                self.assertEqual(caught.exception.reason, reason)
+
+    def test_lwc498_frontend_reuse_keeps_source_and_target_config_checks(self):
+        for mismatch in ('identity', 'target-config'):
+            with self.subTest(mismatch=mismatch):
+                reuse = self.root / ('lwc498-mismatch-' + mismatch)
+                (reuse / 'receipts').mkdir(parents=True)
+                plan = self.lwc498_admit(reuse=reuse)
+                self.frontend_reuse_fixture(reuse, plan, mismatch=mismatch)
+                output = self.root / ('lwc498-rebuild-' + mismatch)
+                output.mkdir()
+                write(output / 'plan.json', plan)
+                release = engine.Engine(output)
+                expected_config = {
+                    'schema_version': plan['normalized']['frontend']['config_schema_version'],
+                    'config_url': plan['normalized']['frontend']['config_url']}
+                replacement = b'LWC498_TEST_ONLY_REBUILT_FRONTEND_ARCHIVE'
+
+                def prepare(component):
+                    self.assertEqual(component, 'frontend')
+                    (output / 'frontend.tgz').write_bytes(replacement)
+                    return {
+                        'archive': 'frontend.tgz',
+                        'sha256': hashlib.sha256(replacement).hexdigest(),
+                        'config': expected_config, 'target': 'preview',
+                        'project': 'prj_test', 'team': 'team_test',
+                    }
+
+                with patch.object(release.provider, 'prepare', side_effect=prepare) as rebuilt, \
+                        patch.object(release.provider, 'usable'):
+                    release.prepare(reuse=reuse)
+                rebuilt.assert_called_once_with('frontend')
+                self.assertEqual((output / 'frontend.tgz').read_bytes(), replacement)
+
+        reuse = self.root / 'lwc498-wrong-environment-receipt'
+        (reuse / 'receipts').mkdir(parents=True)
+        plan = self.lwc498_admit(reuse=reuse)
+        self.frontend_reuse_fixture(reuse, plan, target='production')
+        output = self.root / 'lwc498-reject-wrong-environment'
+        output.mkdir()
+        write(output / 'plan.json', plan)
+        release = engine.Engine(output)
+        with patch.object(release.provider, 'prepare', side_effect=AssertionError(
+                'wrong-target receipt must not be treated as reusable')) as prepare:
+            with self.assertRaisesRegex(Breakpoint, 'artifact-config-incompatible'):
+                release.prepare(reuse=reuse)
+        prepare.assert_not_called()
+
     def ready(self,e):e.prepare();return e
 
     @staticmethod
