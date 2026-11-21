@@ -570,13 +570,15 @@ func runParallel(t *testing.T, expander queryquality.QueryExpander) queryquality
 }
 
 type barrierExpander struct {
-	allStarted  chan struct{}
-	allCanceled chan struct{}
-	releaseOnce sync.Once
-	started     chan struct{}
-	canceled    chan struct{}
-	releaseCh   chan struct{}
-	count       int
+	allStarted      chan struct{}
+	allCanceled     chan struct{}
+	allStartedOnce  sync.Once
+	allCanceledOnce sync.Once
+	releaseOnce     sync.Once
+	started         chan struct{}
+	canceled        chan struct{}
+	releaseCh       chan struct{}
+	count           int
 }
 
 func newBarrierExpander(count int) *barrierExpander {
@@ -585,13 +587,13 @@ func newBarrierExpander(count int) *barrierExpander {
 func (e *barrierExpander) Expand(ctx context.Context, request queryquality.ExpansionRequest) (queryquality.QueryPlan, error) {
 	e.started <- struct{}{}
 	if len(e.started) == e.count {
-		close(e.allStarted)
+		e.allStartedOnce.Do(func() { close(e.allStarted) })
 	}
 	select {
 	case <-ctx.Done():
 		e.canceled <- struct{}{}
 		if len(e.canceled) == e.count {
-			close(e.allCanceled)
+			e.allCanceledOnce.Do(func() { close(e.allCanceled) })
 		}
 		return queryquality.QueryPlan{}, ctx.Err()
 	case <-e.releaseCh:
@@ -601,15 +603,16 @@ func (e *barrierExpander) Expand(ctx context.Context, request queryquality.Expan
 func (e *barrierExpander) release() { e.releaseOnce.Do(func() { close(e.releaseCh) }) }
 
 type nonCompliantExpander struct {
-	allStarted  chan struct{}
-	allDone     chan struct{}
-	hold        chan struct{}
-	releaseOnce sync.Once
-	started     chan struct{}
-	done        chan struct{}
-	count       int
-	mu          sync.Mutex
-	completed   int
+	allStarted     chan struct{}
+	allDone        chan struct{}
+	allStartedOnce sync.Once
+	hold           chan struct{}
+	releaseOnce    sync.Once
+	started        chan struct{}
+	done           chan struct{}
+	count          int
+	mu             sync.Mutex
+	completed      int
 }
 
 func newNonCompliantExpander(count int) *nonCompliantExpander {
@@ -626,7 +629,7 @@ func newNonCompliantExpander(count int) *nonCompliantExpander {
 func (e *nonCompliantExpander) Expand(_ context.Context, request queryquality.ExpansionRequest) (queryquality.QueryPlan, error) {
 	e.started <- struct{}{}
 	if len(e.started) == e.count {
-		close(e.allStarted)
+		e.allStartedOnce.Do(func() { close(e.allStarted) })
 	}
 	<-e.hold
 	e.done <- struct{}{}

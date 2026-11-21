@@ -922,7 +922,7 @@
       "affectedProject": "受影響的 Wiki：{project}。",
       "affectedCount": "{count} 個 Wiki 受到影響。"
     },
-    "empty": "目前沒有主題。",
+    "empty": "目前沒有可顯示的近況提醒。",
     "urgent": "緊急 · 必須由來源確認恢復",
     "read": "已讀",
     "unread": "未讀",
@@ -935,7 +935,7 @@
     "markUnread": "標示為未讀",
     "unreadCue": "有未讀項目",
     "dismiss": "略過",
-    "stale": "這項觀察可能已過時。",
+    "stale": "狀態可能不是最新。",
     "targetUnavailable": "此目的地目前無法使用。",
     "copyFailed": "複製未成功。請選取下方文字並手動複製。",
     "popupBlocked": "目的地未開啟。請使用下方明確連結。",
