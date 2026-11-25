@@ -646,6 +646,19 @@ func runCloudWorkerBatch(ctx context.Context, cfg workerConfig, commands [][]str
 		return primary
 	}
 	observability.FinishPipelineSpan(materializeSpan, "success")
+	if cfg.ConceptResolveJSON != "" {
+		cfg.ConceptConflictStorageView = "legacy"
+		if len(manifestData) > 0 {
+			manifest, decodeErr := generation.Decode(manifestData)
+			if decodeErr != nil || manifest.GenerationID == "" {
+				return annotateError(errCloudMaterialization, errors.New("current generation identity unavailable"))
+			}
+			if manifestAttrs.Generation <= 0 {
+				return annotateError(errCloudMaterialization, errors.New("current manifest snapshot identity unavailable"))
+			}
+			cfg.ConceptConflictStorageView = fmt.Sprintf("manifest-%d", manifestAttrs.Generation)
+		}
+	}
 	cfg.VaultPath = workspace
 	cfg.Workspace = false
 	// Keep SuppressOutput as configured by the caller. Cloud mode always writes

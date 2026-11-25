@@ -54,6 +54,9 @@ type workerConfig struct {
 	WorkspaceDir                 string
 	PipelineConfigPath           string
 	PipelineBindingsPath         string
+	ConceptResolveJSON           string
+	ConceptConflictStorageView   string
+	ConceptConflictSourceVault   string
 	ProfileResolverURL           string
 	ProfileResolverAudience      string
 	PipelineProfileSource        string
@@ -395,7 +398,7 @@ func runWorkerBatch(ctx context.Context, cfg workerConfig, rawCommands string) (
 	if err := validateWorkerInput(cfg, commands); err != nil {
 		return annotateError(errWorkerInputInvalid, err)
 	}
-	if cfg.PipelineReservationID != "" {
+	if cfg.PipelineReservationID != "" && cfg.ConceptResolveJSON == "" {
 		if cfg.ProfileResolverURL == "" {
 			return errors.New("Pipeline profile resolver is unavailable")
 		}
@@ -522,6 +525,11 @@ func configFromEnvironment(cfg workerConfig) workerConfig {
 	}
 	if cfg.ExecutionID == "" && !cfg.executionIDSet {
 		cfg.ExecutionID = envOr("EXECUTION_ID", envOr("CLOUD_RUN_EXECUTION", ""))
+	}
+	cfg.ConceptResolveJSON = envOr("LWC_CONCEPT_RESOLVE_JSON", cfg.ConceptResolveJSON)
+	cfg.ConceptConflictStorageView = envOr("LWC_CONFLICT_STORAGE_VIEW", cfg.ConceptConflictStorageView)
+	if cfg.ConceptResolveJSON != "" {
+		cfg.SuggestedQueries = false
 	}
 	if cfg.PipelineReservationID == "" {
 		cfg.PipelineReservationID = envOr("PIPELINE_RESERVATION_ID", "")
@@ -1169,6 +1177,15 @@ func prepareOLWEnvironment(cfg workerConfig) ([]string, error) {
 	if cfg.ProfileCallAttemptMarkerPath != "" {
 		env = append(env, "LWC_PROFILE_CALL_ATTEMPT_MARKER_PATH="+cfg.ProfileCallAttemptMarkerPath)
 	}
+	if cfg.ConceptResolveJSON != "" {
+		env = append(env, "LWC_CONCEPT_RESOLVE_JSON="+cfg.ConceptResolveJSON)
+		env = append(env, "LWC_PROJECT_ID="+cfg.ProjectID)
+		env = append(env, "LWC_EXECUTION_ID="+cfg.ExecutionID)
+		env = append(env, "LWC_CONFLICT_STORAGE_VIEW="+cfg.ConceptConflictStorageView)
+		if cfg.ConceptConflictSourceVault != "" {
+			env = append(env, "LWC_CONFLICT_SOURCE_VAULT="+cfg.ConceptConflictSourceVault)
+		}
+	}
 	env = append(env, profileFixtureEnvironment()...)
 	return env, nil
 }
@@ -1229,7 +1246,8 @@ func allowlistedSyntoEnvironment(extra []string) []string {
 		switch key {
 		case "XDG_CONFIG_HOME", "SYNTO_API_KEY", "DEEPSEEK_API_KEY", "LWC_BASE_SCHEMA_PATH", "LWC_PROFILE_GUIDANCE",
 			"LWC_PROFILE_CONFIG", "LWC_PROFILE_API_KEY", "LWC_PROFILE_QUOTA_MARKER_PATH", "LWC_PROFILE_CALL_SUCCESS_MARKER_PATH", "LWC_PROFILE_CALL_ATTEMPT_MARKER_PATH",
-			"LWC_PROFILE_FIXTURE_TRANSPORT", "LWC_PROFILE_FIXTURE_RECEIPT_FILE", "LWC_PROFILE_FIXTURE_QUOTA_MODEL", "LWC_PROFILE_FIXTURE_QUOTA_AFTER", "LWC_PROFILE_FIXTURE_REQUIRE_AUTH", "LWC_PROFILE_FIXTURE_HEALTH_ROLE":
+			"LWC_PROFILE_FIXTURE_TRANSPORT", "LWC_PROFILE_FIXTURE_RECEIPT_FILE", "LWC_PROFILE_FIXTURE_QUOTA_MODEL", "LWC_PROFILE_FIXTURE_QUOTA_AFTER", "LWC_PROFILE_FIXTURE_REQUIRE_AUTH", "LWC_PROFILE_FIXTURE_HEALTH_ROLE",
+			"LWC_CONCEPT_RESOLVE_JSON", "LWC_PROJECT_ID", "LWC_EXECUTION_ID", "LWC_CONFLICT_STORAGE_VIEW", "LWC_CONFLICT_SOURCE_VAULT":
 			env = append(env, item)
 		}
 	}

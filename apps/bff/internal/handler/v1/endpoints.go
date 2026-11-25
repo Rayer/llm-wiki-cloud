@@ -1282,6 +1282,10 @@ func (h *Handler) invokePipelineJobStageWithReservation(ctx context.Context, use
 }
 
 func (h *Handler) invokePipelineJobStageWithAttempt(ctx context.Context, userID, projectID string, cleanRebuild bool, stage, reservationID, attemptID string) (executionID string, err error) {
+	return h.invokePipelineJobStageWithAttemptAndEnvironment(ctx, userID, projectID, cleanRebuild, stage, reservationID, attemptID, nil)
+}
+
+func (h *Handler) invokePipelineJobStageWithAttemptAndEnvironment(ctx context.Context, userID, projectID string, cleanRebuild bool, stage, reservationID, attemptID string, extraEnv map[string]string) (executionID string, err error) {
 	ctx, invokeSpan := observability.StartPipelineSpan(ctx, "pipeline.job.invoke")
 	defer func() {
 		outcome := pipelineTraceOutcome(err)
@@ -1317,6 +1321,15 @@ func (h *Handler) invokePipelineJobStageWithAttempt(ctx context.Context, userID,
 		return "", fmt.Errorf("clean_rebuild is only valid for full pipeline stage")
 	}
 	if h.localPipeline != nil {
+		if len(extraEnv) > 0 {
+			executor, ok := h.localPipeline.(interface {
+				StartWithAttemptAndEnvironment(context.Context, string, string, string, bool, string, string, map[string]string) (string, error)
+			})
+			if !ok {
+				return "", errors.New("local Pipeline executor cannot run the requested operation")
+			}
+			return executor.StartWithAttemptAndEnvironment(ctx, userID, projectID, stage, cleanRebuild, reservationID, attemptID, extraEnv)
+		}
 		if executor, ok := h.localPipeline.(interface {
 			StartWithAttempt(context.Context, string, string, string, bool, string, string) (string, error)
 		}); ok {
@@ -1339,6 +1352,14 @@ func (h *Handler) invokePipelineJobStageWithAttempt(ctx context.Context, userID,
 		// Keep TASK_TYPE=pipeline for ownership matching across stages.
 		{"name": "TASK_TYPE", "value": "pipeline"},
 		{"name": pipelineStageEnvName, "value": stage},
+	}
+	for key, value := range extraEnv {
+		switch key {
+		case "LWC_CONCEPT_RESOLVE_JSON", "LWC_CONFLICT_STORAGE_VIEW":
+			env = append(env, gin.H{"name": key, "value": value})
+		default:
+			return "", errors.New("unsupported Pipeline worker environment override")
+		}
 	}
 	if h.pipelineWorkerServiceAccount != "" && h.pipelineWorkerAudience != "" {
 		resolverURL := strings.TrimRight(h.pipelineWorkerAudience, "/") + "/internal/pipeline/llm-profile"
