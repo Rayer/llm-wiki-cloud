@@ -26,7 +26,7 @@ def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def seed(vault, operation_file, action):
+def seed(vault, operation_file, action, auto_approve=False):
     vault = Path(vault)
     (vault / ".synto").mkdir(parents=True)
     (vault / ".olw").mkdir(parents=True)
@@ -42,7 +42,8 @@ def seed(vault, operation_file, action):
     }.items():
         (vault / "cache" / name).write_text(content)
     (vault / "synto.toml").write_text(
-        "[pipeline]\nauto_commit = false\nauto_maintain = false\n"
+        f"[pipeline]\nauto_approve = {str(auto_approve).lower()}\n"
+        "auto_commit = false\nauto_maintain = false\n"
         "relation_extraction = false\n\n"
         "[providers.default]\nname = \"deepseek\"\nurl = \"https://fixture.example/v1\"\n\n"
         "[models.fast]\nprovider = \"default\"\nmodel = \"deepseek-chat\"\n\n"
@@ -184,12 +185,41 @@ def verify_failed(vault, operation_file):
     db.close()
 
 
+def verify_scan(vault, expected_new, expected_pending):
+    vault = Path(vault)
+    config = Config(vault=vault)
+    db = StateDB(config.state_db_path)
+    row = db._conn.execute(
+        "SELECT new_conflicts_json,pending_conflicts_json FROM lwc341_run_state WHERE singleton=1"
+    ).fetchone()
+    assert row is not None, "normal auto-approve worker did not persist conflict inventory"
+    new_ids, pending_ids = map(json.loads, row)
+    expected_ids = {
+        LWC["_lwc341_conflict_id"](
+            "fixture-project", f"wiki/{name}.md",
+            digest((vault / f"wiki/{name}.md").read_bytes()),
+            digest((vault / f"wiki/.drafts/{name}.md").read_bytes()),
+        )
+        for name in ("A", "B")
+    }
+    assert len(new_ids) == expected_new and set(new_ids) == (expected_ids if expected_new else set()), new_ids
+    assert len(pending_ids) == expected_pending and set(pending_ids) == expected_ids, pending_ids
+    for name in ("A", "B"):
+        assert parse_note(vault / f"wiki/{name}.md")[1] == f"published {name} original"
+        assert parse_note(vault / f"wiki/.drafts/{name}.md")[1] == f"candidate {name} body"
+    db.close()
+
+
 if __name__ == "__main__":
     mode, vault, operation_file, *args = sys.argv[1:]
     if mode == "seed":
         seed(vault, operation_file, args[0])
+    elif mode == "seed-auto-approve":
+        seed(vault, operation_file, args[0], auto_approve=True)
     elif mode == "verify":
         verify(vault, operation_file)
+    elif mode == "verify-scan":
+        verify_scan(vault, int(args[0]), int(args[1]))
     elif mode == "verify-stale":
         verify(vault, operation_file, stale=True)
     elif mode == "verify-failed":

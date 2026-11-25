@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,7 +15,29 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/rayer/llm-wiki-bff/internal/localfs"
+	store "github.com/rayer/llm-wiki-bff/internal/storage"
 )
+
+type leaseObservingConceptStore struct {
+	store.Store
+	base      *localfs.Client
+	onRead    func()
+	readFired bool
+}
+
+func (s *leaseObservingConceptStore) WithWorkerReadLease(ctx context.Context, read func() error) error {
+	return s.base.WithWorkerReadLease(ctx, read)
+}
+
+func (s *leaseObservingConceptStore) ReadFileLimited(ctx context.Context, path string, limit int64) ([]byte, error) {
+	if !s.readFired {
+		s.readFired = true
+		s.onRead()
+	}
+	return s.Store.(interface {
+		ReadFileLimited(context.Context, string, int64) ([]byte, error)
+	}).ReadFileLimited(ctx, path, limit)
+}
 
 func writeConceptConflictStateDB(t *testing.T, root string) *sql.DB {
 	t.Helper()
@@ -83,7 +106,7 @@ func TestConceptConflictInventoryAndCompareAreReadOnly(t *testing.T) {
 	if compared.PairSHA256 == "" || listed.PairSHA256 == "" {
 		t.Fatal("comparison and inventory must identify the observed byte pair")
 	}
-	if compared.StorageView == "legacy" || listed.StorageView == "legacy" || !strings.HasPrefix(compared.StorageView, "observed-") {
+	if compared.StorageView == "legacy" || listed.StorageView == "legacy" || !strings.HasPrefix(compared.StorageView, "local-lease-") {
 		t.Fatalf("local comparison was not pinned to its observed pair: comparison=%q inventory=%q", compared.StorageView, listed.StorageView)
 	}
 	priorView := compared.StorageView
@@ -123,6 +146,60 @@ func TestConceptConflictCompareSupportsNestedRelativePath(t *testing.T) {
 	got, err := compareConceptConflict(context.Background(), "project", scoped, "wiki/guides/alpha.md")
 	if err != nil || got.Published.Content != string(published) || got.Candidate.Content != string(candidate) {
 		t.Fatalf("nested compare=%+v err=%v", got, err)
+	}
+}
+
+func TestLocalConceptConflictCompareUsesCooperativeWorkerReadLease(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	base := localfs.New(root).Scope("user", "project").(*localfs.Client)
+	for path, content := range map[string][]byte{
+		"wiki/alpha.md":         []byte("---\ntitle: alpha\nstatus: published\n---\nold published\n"),
+		"wiki/.drafts/alpha.md": []byte("---\ntitle: alpha\nstatus: draft\nconfidence: 0.9\n---\nold candidate\n"),
+		".synto/INDEX.json":     []byte(`{"articles":[{"path":"articles/alpha.md"}]}`),
+	} {
+		if _, err := base.WriteBytes(ctx, content, path); err != nil {
+			t.Fatalf("seed %s: %v", path, err)
+		}
+	}
+	projectRoot := filepath.Join(root, "users", "user", "projects", "project")
+	renameRan := false
+	var writerErr error
+	scoped := &leaseObservingConceptStore{
+		Store: base, base: base,
+		onRead: func() {
+			writerErr = base.WithWorkerReadLease(ctx, func() error {
+				renameRan = true
+				return os.Rename(filepath.Join(projectRoot, "wiki"), filepath.Join(projectRoot, "wiki-renamed"))
+			})
+		},
+	}
+	compared, err := compareConceptConflict(ctx, "project", scoped, "wiki/alpha.md")
+	if err != nil || compared.Published.Content != "---\ntitle: alpha\nstatus: published\n---\nold published\n" || compared.Candidate.Content != "---\ntitle: alpha\nstatus: draft\nconfidence: 0.9\n---\nold candidate\n" {
+		t.Fatalf("local compare did not return one leased pair: response=%+v err=%v", compared, err)
+	}
+	if !errors.Is(writerErr, localfs.ErrWorkerLeaseHeld) || renameRan {
+		t.Fatalf("cooperative worker was not fenced during compare: err=%v renameRan=%t", writerErr, renameRan)
+	}
+	if _, err := os.Stat(filepath.Join(projectRoot, "wiki")); err != nil {
+		t.Fatalf("fixture published directory moved during compare: %v", err)
+	}
+
+	var busyErr error
+	if err := base.WithWorkerReadLease(ctx, func() error {
+		_, busyErr = compareConceptConflict(ctx, "project", base, "wiki/alpha.md")
+		return nil
+	}); err != nil {
+		t.Fatalf("hold worker lease around busy compare: %v", err)
+	}
+	if !errors.Is(busyErr, errConceptConflictSnapshotBusy) {
+		t.Fatalf("compare during active worker lease = %v, want explicit snapshot conflict", busyErr)
+	}
+	recorder := httptest.NewRecorder()
+	requestContext, _ := gin.CreateTestContext(recorder)
+	writeConceptConflictReadError(requestContext, busyErr)
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("busy local compare response status=%d body=%s, want 409", recorder.Code, recorder.Body.String())
 	}
 }
 

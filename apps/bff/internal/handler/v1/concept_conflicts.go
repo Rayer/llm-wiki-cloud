@@ -17,6 +17,7 @@ import (
 	cloudstorage "cloud.google.com/go/storage"
 	"github.com/gin-gonic/gin"
 	handlerapi "github.com/rayer/llm-wiki-bff/internal/handler"
+	"github.com/rayer/llm-wiki-bff/internal/localfs"
 	store "github.com/rayer/llm-wiki-bff/internal/storage"
 	"gopkg.in/yaml.v3"
 )
@@ -101,7 +102,24 @@ var (
 	errInvalidConceptPath            = errors.New("invalid published concept path")
 	errPublishedConceptFileMissing   = errors.New("published concept file is missing while its Synto row exists")
 	errConceptConflictBelowThreshold = errors.New("concept candidate is below the applicable confidence threshold")
+	errConceptConflictSnapshotBusy   = errors.New("local publication is in progress")
 )
+
+type conceptConflictReadLeaser interface {
+	WithWorkerReadLease(context.Context, func() error) error
+}
+
+func withConceptConflictReadLease(ctx context.Context, scoped store.Store, read func() error) error {
+	leaser, ok := scoped.(conceptConflictReadLeaser)
+	if !ok {
+		return read()
+	}
+	err := leaser.WithWorkerReadLease(ctx, read)
+	if errors.Is(err, localfs.ErrWorkerLeaseHeld) {
+		return fmt.Errorf("%w: %v", errConceptConflictSnapshotBusy, err)
+	}
+	return err
+}
 
 func normalizePublishedConceptPath(raw string) (string, bool) {
 	if raw == "" || pathpkg.IsAbs(raw) || strings.ContainsAny(raw, "\\\x00") ||
@@ -185,9 +203,9 @@ func conceptConflictStorageView(projectID string, scoped store.Store, conflicts 
 	if view != "" && view != "legacy" {
 		return view
 	}
-	// Local storage has no atomic generation token; pin the exact observed pair
-	// (or inventory) and revalidate it under the worker's vault lease.
-	return "observed-" + conceptConflictPairDigest(projectID, "local-observed", conflicts)
+	// Local storage has no manifest generation; this digest identifies the
+	// database rows, files, and index read while holding the worker lease.
+	return "local-lease-" + conceptConflictPairDigest(projectID, "local-lease", conflicts)
 }
 
 func conceptConflictPairDigest(projectID, view string, conflicts []conceptConflictSummary) string {
@@ -285,6 +303,16 @@ func countNewConceptConflicts(conflicts []conceptConflictSummary) int {
 }
 
 func listConceptConflicts(ctx context.Context, projectID string, scoped store.Store) (conceptConflictListResponse, error) {
+	var response conceptConflictListResponse
+	err := withConceptConflictReadLease(ctx, scoped, func() error {
+		var err error
+		response, err = listConceptConflictsWithinLease(ctx, projectID, scoped)
+		return err
+	})
+	return response, err
+}
+
+func listConceptConflictsWithinLease(ctx context.Context, projectID string, scoped store.Store) (conceptConflictListResponse, error) {
 	drafts, err := scoped.ListMarkdownFiles(ctx, "wiki/.drafts/")
 	if err != nil {
 		return conceptConflictListResponse{}, err
@@ -337,12 +365,17 @@ func listConceptConflicts(ctx context.Context, projectID string, scoped store.St
 }
 
 func compareConceptConflict(ctx context.Context, projectID string, scoped store.Store, publishedPath string) (conceptConflictCompareResponse, error) {
-	state, closeState, err := readConceptConflictDatabase(ctx, scoped)
-	if err != nil {
-		return conceptConflictCompareResponse{}, err
-	}
-	defer closeState()
-	return compareConceptConflictWithDatabase(ctx, projectID, scoped, publishedPath, state)
+	var response conceptConflictCompareResponse
+	err := withConceptConflictReadLease(ctx, scoped, func() error {
+		state, closeState, err := readConceptConflictDatabase(ctx, scoped)
+		if err != nil {
+			return err
+		}
+		defer closeState()
+		response, err = compareConceptConflictWithDatabase(ctx, projectID, scoped, publishedPath, state)
+		return err
+	})
+	return response, err
 }
 
 func compareConceptConflictWithDatabase(ctx context.Context, projectID string, scoped store.Store, publishedPath string, state *conceptConflictDatabase) (conceptConflictCompareResponse, error) {
@@ -394,6 +427,8 @@ func writeConceptConflictReadError(c *gin.Context, err error) {
 		c.JSON(http.StatusRequestEntityTooLarge, handlerapi.ErrorResponse{Error: "concept conflict exceeds comparison limit"})
 	case errors.Is(err, errConceptConflictBelowThreshold):
 		c.JSON(http.StatusConflict, handlerapi.ErrorResponse{Error: "candidate is below the applicable confidence threshold"})
+	case errors.Is(err, errConceptConflictSnapshotBusy):
+		c.JSON(http.StatusConflict, handlerapi.ErrorResponse{Error: "project publication is in progress; retry comparison"})
 	default:
 		c.JSON(http.StatusInternalServerError, handlerapi.ErrorResponse{Error: "concept conflict data unavailable"})
 	}
@@ -419,8 +454,8 @@ func (h *Handler) ListConceptConflicts(c *gin.Context) {
 }
 
 // CompareConceptConflict returns both Markdown versions without mutating either one.
-// Cloud reads are manifest-pinned; localfs reports an observed pair digest and
-// revalidates it under the worker's cooperative vault lease at commit time.
+// Cloud reads are manifest-pinned; localfs holds the cooperative worker lease
+// while reading the database, pair, and index, then the worker revalidates at commit.
 func (h *Handler) CompareConceptConflict(c *gin.Context) {
 	_, projectID, ok := h.authorizeConceptConflictRead(c)
 	if !ok {

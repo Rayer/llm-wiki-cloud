@@ -185,7 +185,10 @@ func (h *Handler) ResolveConceptConflict(c *gin.Context) {
 		writeConceptConflictOperationError(c, http.StatusConflict, "operation_id was already used with a different payload")
 		return
 	}
-	comparison, err := compareConceptConflictWithDatabase(ctx, projectID, scoped, request.Path, state)
+	// Resolve the comparison from one local lease-protected view. The earlier
+	// database read above is only for durable receipt lookup and may predate a
+	// worker commit that completed while this request was being authorized.
+	comparison, err := compareConceptConflict(ctx, projectID, scoped, request.Path)
 	if err != nil {
 		writeConceptConflictReadError(c, err)
 		return

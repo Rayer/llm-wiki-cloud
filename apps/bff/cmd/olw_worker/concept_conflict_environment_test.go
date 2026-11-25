@@ -45,3 +45,23 @@ func TestConceptConflictEnvironmentRequiresTrustedIdentity(t *testing.T) {
 		t.Fatal("resolve environment was prepared without an authenticated principal")
 	}
 }
+
+func TestAllowlistedSyntoEnvironmentCarriesTrustedProjectForDiscovery(t *testing.T) {
+	prepared, err := prepareOLWEnvironment(workerConfig{ProjectID: "trusted-project"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := map[string]string{}
+	for _, item := range allowlistedSyntoEnvironment(append(prepared, "UNTRUSTED_PROJECT_ID=attacker")) {
+		key, value, ok := strings.Cut(item, "=")
+		if ok {
+			values[key] = value
+		}
+	}
+	if values["LWC_PROJECT_ID"] != "trusted-project" {
+		t.Fatalf("trusted project did not reach normal Synto discovery: %q", values["LWC_PROJECT_ID"])
+	}
+	if _, ok := values["UNTRUSTED_PROJECT_ID"]; ok {
+		t.Fatal("untrusted project override passed through the Synto allowlist")
+	}
+}

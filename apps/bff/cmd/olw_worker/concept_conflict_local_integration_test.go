@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"cloud.google.com/go/firestore"
+	"github.com/rayer/llm-wiki-bff/internal/localfs"
 )
 
 func localConflictFixture(t *testing.T, mode, vault, operationFile string, args ...string) {
@@ -99,6 +100,56 @@ func TestLocalConceptConflictWorkerStageCommitAndReceiptReplay(t *testing.T) {
 			}
 			localConflictFixture(t, "verify", vault, operationFile)
 		})
+	}
+}
+
+func TestLocalAutoApproveDiscoveryPersistsTrustedProjectAcrossRuns(t *testing.T) {
+	root := t.TempDir()
+	vault := filepath.Join(root, "users", "fixture-user", "projects", "fixture-project")
+	operationFile := filepath.Join(root, "operation.json")
+	localConflictFixture(t, "seed-auto-approve", vault, operationFile, "publish_candidate")
+	cfg := conceptConflictWorkerConfig(t, root, operationFile)
+	cfg.ConceptResolveJSON = ""
+	cfg.ExecutionID = "lwc341-auto-approve-first"
+
+	if err := runLocalConflictWorker(t, vault, cfg); err != nil {
+		t.Fatalf("normal auto-approve worker first run failed: %v\n%s", err, localConflictLog(vault))
+	}
+	localConflictFixture(t, "verify-scan", vault, operationFile, "2", "2")
+
+	cfg.ExecutionID = "lwc341-auto-approve-second"
+	if err := runLocalConflictWorker(t, vault, cfg); err != nil {
+		t.Fatalf("normal auto-approve worker second run failed: %v\n%s", err, localConflictLog(vault))
+	}
+	localConflictFixture(t, "verify-scan", vault, operationFile, "0", "2")
+}
+
+func TestLocalWorkerLeaseAndCompareReadLeaseShareFence(t *testing.T) {
+	root := t.TempDir()
+	vault := filepath.Join(root, "users", "fixture-user", "projects", "fixture-project")
+	if err := os.MkdirAll(vault, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	scoped := localfs.New(root).Scope("fixture-user", "fixture-project").(*localfs.Client)
+	workerLease, err := acquireVaultLease(vault, "lwc341-worker-lease")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := scoped.WithWorkerReadLease(context.Background(), func() error { return nil }); !errors.Is(err, localfs.ErrWorkerLeaseHeld) {
+		t.Fatalf("compare read lease during worker publication = %v, want busy", err)
+	}
+	if err := workerLease.Release(); err != nil {
+		t.Fatal(err)
+	}
+	var writerErr error
+	if err := scoped.WithWorkerReadLease(context.Background(), func() error {
+		_, writerErr = acquireVaultLease(vault, "lwc341-competing-worker")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if writerErr == nil || !strings.Contains(writerErr.Error(), "refusing overlap") {
+		t.Fatalf("worker did not respect compare read lease: %v", writerErr)
 	}
 }
 

@@ -1183,12 +1183,16 @@ func prepareOLWEnvironment(cfg workerConfig) ([]string, error) {
 		}
 		env = append(env, "LWC_CONCEPT_RESOLVE_JSON="+cfg.ConceptResolveJSON)
 		env = append(env, "USER_ID="+cfg.UserID, "PROJECT_ID="+cfg.ProjectID)
-		env = append(env, "LWC_PROJECT_ID="+cfg.ProjectID)
 		env = append(env, "LWC_EXECUTION_ID="+cfg.ExecutionID)
 		env = append(env, "LWC_CONFLICT_STORAGE_VIEW="+cfg.ConceptConflictStorageView)
 		if cfg.ConceptConflictSourceVault != "" {
 			env = append(env, "LWC_CONFLICT_SOURCE_VAULT="+cfg.ConceptConflictSourceVault)
 		}
+	}
+	if strings.TrimSpace(cfg.ProjectID) != "" {
+		// Trusted pipeline identity is also required by the normal discovery pass,
+		// which persists run-scoped conflict IDs after auto-approve.
+		env = append(env, "LWC_PROJECT_ID="+cfg.ProjectID)
 	}
 	env = append(env, profileFixtureEnvironment()...)
 	return env, nil
