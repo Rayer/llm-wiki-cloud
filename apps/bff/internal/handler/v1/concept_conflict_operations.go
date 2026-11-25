@@ -165,23 +165,34 @@ func (h *Handler) ResolveConceptConflict(c *gin.Context) {
 		writeConceptConflictReadError(c, err)
 		return
 	}
-	state, closeState, err := readConceptConflictDatabase(ctx, scoped)
-	if err != nil {
-		writeConceptConflictReadError(c, err)
+	var result map[string]any
+	var receiptExists, operationIDExists bool
+	readErr := withConceptConflictReadLease(ctx, scoped, func() error {
+		state, closeState, err := readConceptConflictDatabase(ctx, scoped)
+		if err != nil {
+			return err
+		}
+		defer closeState()
+		result, receiptExists, err = state.operationResult(ctx, userID, request.OperationID, payloadSHA256)
+		if err != nil || receiptExists {
+			return err
+		}
+		operationIDExists, err = state.hasOperationID(ctx, userID, request.OperationID)
+		return err
+	})
+	if errors.Is(readErr, errConceptConflictSnapshotBusy) {
+		writeConceptConflictOperationError(c, http.StatusConflict, "local publication is in progress; retry this operation with the same operation_id")
 		return
 	}
-	defer closeState()
-	if result, exists, readErr := state.operationResult(ctx, userID, request.OperationID, payloadSHA256); readErr != nil {
+	if readErr != nil {
 		writeConceptConflictReadError(c, readErr)
 		return
-	} else if exists {
+	}
+	if receiptExists {
 		c.JSON(http.StatusOK, result)
 		return
 	}
-	if exists, checkErr := state.hasOperationID(ctx, userID, request.OperationID); checkErr != nil {
-		writeConceptConflictReadError(c, checkErr)
-		return
-	} else if exists {
+	if operationIDExists {
 		writeConceptConflictOperationError(c, http.StatusConflict, "operation_id was already used with a different payload")
 		return
 	}
@@ -247,12 +258,18 @@ func (h *Handler) GetConceptConflictOperation(c *gin.Context) {
 		return
 	}
 	readResult := func(scopedStore store.Store) (map[string]any, bool, error) {
-		state, cleanup, readErr := readConceptConflictDatabase(c.Request.Context(), scopedStore)
-		if readErr != nil {
-			return nil, false, readErr
-		}
-		defer cleanup()
-		return state.operationByID(c.Request.Context(), userID, operationID)
+		var result map[string]any
+		var found bool
+		readErr := withConceptConflictReadLease(c.Request.Context(), scopedStore, func() error {
+			state, cleanup, err := readConceptConflictDatabase(c.Request.Context(), scopedStore)
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+			result, found, err = state.operationByID(c.Request.Context(), userID, operationID)
+			return err
+		})
+		return result, found, readErr
 	}
 	scoped, err := h.GetStore(c)
 	if err != nil {
@@ -260,6 +277,10 @@ func (h *Handler) GetConceptConflictOperation(c *gin.Context) {
 		return
 	}
 	result, found, err := readResult(scoped)
+	if errors.Is(err, errConceptConflictSnapshotBusy) {
+		c.JSON(http.StatusAccepted, conceptConflictOperationStatusResponse{OperationID: operationID, Status: "pending"})
+		return
+	}
 	if err != nil {
 		writeConceptConflictReadError(c, err)
 		return
@@ -289,6 +310,10 @@ func (h *Handler) GetConceptConflictOperation(c *gin.Context) {
 		fresh, err = pinStore(c.Request.Context(), fresh)
 		if err == nil {
 			result, found, err = readResult(fresh)
+		}
+		if errors.Is(err, errConceptConflictSnapshotBusy) {
+			c.JSON(http.StatusAccepted, conceptConflictOperationStatusResponse{OperationID: operationID, Status: "pending", Execution: execution})
+			return
 		}
 		if err != nil {
 			writeConceptConflictReadError(c, err)

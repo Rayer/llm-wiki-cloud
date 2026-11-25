@@ -157,7 +157,7 @@ def verify(vault, operation_file, stale=False):
     db.close()
 
 
-def verify_failed(vault, operation_file):
+def verify_failed(vault, operation_file, seed_index_sha256=None):
     vault = Path(vault)
     operation = json.loads(Path(operation_file).read_text())
     config = Config(vault=vault)
@@ -166,7 +166,8 @@ def verify_failed(vault, operation_file):
     assert parse_note(vault / "wiki/.drafts/A.md")[1] == "candidate A body"
     assert db.get_article("wiki/A.md").entity_id == "01JAZ5N7Y3K8M2Q4R6T9VWXAC8"
     assert db.get_article("wiki/.drafts/A.md").entity_id == "01JAZ5N7Y3K8M2Q4R6T9VWXAD0"
-    assert (vault / ".synto/INDEX.json").read_bytes() and digest((vault / ".synto/INDEX.json").read_bytes()) == operation["seed_index_sha256"]
+    expected_index_sha256 = seed_index_sha256 or operation.get("seed_index_sha256")
+    assert expected_index_sha256 and digest((vault / ".synto/INDEX.json").read_bytes()) == expected_index_sha256
     tables = {row[0] for row in db._conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     if "lwc341_operations" in tables:
         assert db._conn.execute(
@@ -223,6 +224,6 @@ if __name__ == "__main__":
     elif mode == "verify-stale":
         verify(vault, operation_file, stale=True)
     elif mode == "verify-failed":
-        verify_failed(vault, operation_file)
+        verify_failed(vault, operation_file, args[0] if args else None)
     else:
         raise ValueError(f"unknown fixture mode {mode}")
