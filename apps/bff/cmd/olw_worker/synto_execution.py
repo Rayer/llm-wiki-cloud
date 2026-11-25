@@ -82,10 +82,11 @@ def _publish_drafts_without_path_collisions(
             publishable.append(draft_path)
             continue
         target = config.wiki_dir / relative
-        if target.exists() or target.is_symlink():
+        published_rel = (Path("wiki") / relative).as_posix()
+        if target.exists() or target.is_symlink() or db.get_article(published_rel) is not None:
             logging.getLogger("synto").warning(
-                "Held back path collision: %s (published target exists)",
-                relative.as_posix(),
+                "Held back path collision: %s (published file or row exists)",
+                published_rel,
             )
             continue
         publishable.append(draft_path)
@@ -364,7 +365,9 @@ def _lwc341_resolve(config, db, operation):
     ).fetchone()
     if prior:
         if prior[0] == payload_sha256:
-            return json.loads(prior[1])
+            result = json.loads(prior[1])
+            result["_lwc341_replayed"] = True
+            return result
         return _lwc341_store_attempt(db, operation, "payload_mismatch", {
             "operation_id": operation_id, "payload_sha256": payload_sha256,
             "status": "payload_mismatch", "action": operation.get("action", ""),
@@ -507,11 +510,12 @@ def _run_with_lwc341_conflict_inventory(self, *args, **kwargs):
     operation_json = os.environ.get("LWC_CONCEPT_RESOLVE_JSON", "").strip()
     if operation_json:
         operation = json.loads(operation_json)
-        _lwc341_resolve(self.config, self.db, operation)
+        result = _lwc341_resolve(self.config, self.db, operation)
+        replayed = result.pop("_lwc341_replayed", False)
         source_vault = os.environ.get("LWC_CONFLICT_SOURCE_VAULT", "").strip()
-        if source_vault and not _lwc341_local_source_matches(source_vault, operation):
+        if result.get("status") == "committed" and not replayed and source_vault and not _lwc341_local_source_matches(source_vault, operation):
             raise RuntimeError("local concept conflict snapshot changed before publication")
-        return PipelineReport(published=1 if operation.get("action") == "publish_candidate" else 0)
+        return PipelineReport(published=1 if result.get("status") == "committed" and not replayed and operation.get("action") == "publish_candidate" else 0)
     report = _orchestrator_run(self, *args, **kwargs)
     if not kwargs.get("dry_run", False):
         min_confidence = float(kwargs.get("min_confidence", 0.0))

@@ -1178,7 +1178,11 @@ func prepareOLWEnvironment(cfg workerConfig) ([]string, error) {
 		env = append(env, "LWC_PROFILE_CALL_ATTEMPT_MARKER_PATH="+cfg.ProfileCallAttemptMarkerPath)
 	}
 	if cfg.ConceptResolveJSON != "" {
+		if strings.TrimSpace(cfg.UserID) == "" || strings.TrimSpace(cfg.ProjectID) == "" {
+			return nil, errors.New("concept conflict principal and project are required")
+		}
 		env = append(env, "LWC_CONCEPT_RESOLVE_JSON="+cfg.ConceptResolveJSON)
+		env = append(env, "USER_ID="+cfg.UserID, "PROJECT_ID="+cfg.ProjectID)
 		env = append(env, "LWC_PROJECT_ID="+cfg.ProjectID)
 		env = append(env, "LWC_EXECUTION_ID="+cfg.ExecutionID)
 		env = append(env, "LWC_CONFLICT_STORAGE_VIEW="+cfg.ConceptConflictStorageView)
@@ -1247,7 +1251,7 @@ func allowlistedSyntoEnvironment(extra []string) []string {
 		case "XDG_CONFIG_HOME", "SYNTO_API_KEY", "DEEPSEEK_API_KEY", "LWC_BASE_SCHEMA_PATH", "LWC_PROFILE_GUIDANCE",
 			"LWC_PROFILE_CONFIG", "LWC_PROFILE_API_KEY", "LWC_PROFILE_QUOTA_MARKER_PATH", "LWC_PROFILE_CALL_SUCCESS_MARKER_PATH", "LWC_PROFILE_CALL_ATTEMPT_MARKER_PATH",
 			"LWC_PROFILE_FIXTURE_TRANSPORT", "LWC_PROFILE_FIXTURE_RECEIPT_FILE", "LWC_PROFILE_FIXTURE_QUOTA_MODEL", "LWC_PROFILE_FIXTURE_QUOTA_AFTER", "LWC_PROFILE_FIXTURE_REQUIRE_AUTH", "LWC_PROFILE_FIXTURE_HEALTH_ROLE",
-			"LWC_CONCEPT_RESOLVE_JSON", "LWC_PROJECT_ID", "LWC_EXECUTION_ID", "LWC_CONFLICT_STORAGE_VIEW", "LWC_CONFLICT_SOURCE_VAULT":
+			"LWC_CONCEPT_RESOLVE_JSON", "USER_ID", "PROJECT_ID", "LWC_PROJECT_ID", "LWC_EXECUTION_ID", "LWC_CONFLICT_STORAGE_VIEW", "LWC_CONFLICT_SOURCE_VAULT":
 			env = append(env, item)
 		}
 	}

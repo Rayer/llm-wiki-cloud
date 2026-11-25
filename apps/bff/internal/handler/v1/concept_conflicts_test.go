@@ -83,6 +83,20 @@ func TestConceptConflictInventoryAndCompareAreReadOnly(t *testing.T) {
 	if compared.PairSHA256 == "" || listed.PairSHA256 == "" {
 		t.Fatal("comparison and inventory must identify the observed byte pair")
 	}
+	if compared.StorageView == "legacy" || listed.StorageView == "legacy" || !strings.HasPrefix(compared.StorageView, "observed-") {
+		t.Fatalf("local comparison was not pinned to its observed pair: comparison=%q inventory=%q", compared.StorageView, listed.StorageView)
+	}
+	priorView := compared.StorageView
+	if _, err := scoped.WriteBytes(ctx, []byte("changed candidate"), "wiki/.drafts/alpha.md"); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := compareConceptConflict(ctx, "project", scoped, "wiki/alpha.md")
+	if err != nil || changed.StorageView == priorView || changed.PairSHA256 == compared.PairSHA256 {
+		t.Fatalf("local comparison pin did not change with its pair: before=%q after=%q err=%v", priorView, changed.StorageView, err)
+	}
+	if _, err := scoped.WriteBytes(ctx, candidate, "wiki/.drafts/alpha.md"); err != nil {
+		t.Fatal(err)
+	}
 	for path, want := range map[string][]byte{
 		"wiki/alpha.md":         published,
 		"wiki/.drafts/alpha.md": candidate,
@@ -241,6 +255,41 @@ func TestConceptConflictReceiptLookupIsPrincipalScopedAndPayloadBound(t *testing
 	}
 	if found, err := state.hasOperationID(context.Background(), "other", "operation-456"); err != nil || found {
 		t.Fatalf("cross-principal operation ID found=%v err=%v", found, err)
+	}
+}
+
+func TestConceptConflictReceiptReplayStillRequiresCurrentProjectAuthorization(t *testing.T) {
+	root := t.TempDir()
+	projectRoot := filepath.Join(root, "users", "user", "projects", "project")
+	db := writeConceptConflictStateDB(t, projectRoot)
+	if _, err := db.Exec(`INSERT INTO lwc341_operations VALUES(?,?,?,?,?)`, "user", "operation-123", strings.Repeat("a", 64), `{"status":"committed","action":"keep_published"}`, "2026-11-26T00:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	h := New(localfs.New(root), nil, nil, nil, nil, nil)
+	gin.SetMode(gin.TestMode)
+
+	resolveRecorder := httptest.NewRecorder()
+	resolve, _ := gin.CreateTestContext(resolveRecorder)
+	resolve.Request = httptest.NewRequest(http.MethodPost, "/api/v1/concept-conflicts/resolve", strings.NewReader(`{"operation_id":"operation-123","action":"keep_published","conflict_id":"`+strings.Repeat("b", 64)+`","path":"wiki/alpha.md","storage_view":"observed-local","pair_sha256":"`+strings.Repeat("c", 64)+`"}`))
+	resolve.Set("userID", "user")
+	resolve.Set("projectID", "project")
+	h.ResolveConceptConflict(resolve)
+	if resolveRecorder.Code != http.StatusServiceUnavailable || strings.Contains(resolveRecorder.Body.String(), `"status":"committed"`) {
+		t.Fatalf("receipt replay bypassed current write authorization: status=%d body=%s", resolveRecorder.Code, resolveRecorder.Body.String())
+	}
+
+	statusRecorder := httptest.NewRecorder()
+	status, _ := gin.CreateTestContext(statusRecorder)
+	status.Request = httptest.NewRequest(http.MethodGet, "/api/v1/concept-conflicts/operations/operation-123", nil)
+	status.Params = gin.Params{{Key: "operationID", Value: "operation-123"}}
+	status.Set("userID", "user")
+	status.Set("projectID", "project")
+	h.GetConceptConflictOperation(status)
+	if statusRecorder.Code != http.StatusServiceUnavailable || strings.Contains(statusRecorder.Body.String(), `"status":"committed"`) {
+		t.Fatalf("receipt read bypassed current read authorization: status=%d body=%s", statusRecorder.Code, statusRecorder.Body.String())
 	}
 }
 

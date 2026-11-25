@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   compareConceptConflict,
   getConceptConflictOperation,
@@ -29,8 +29,12 @@ export default function ConceptConflictsPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const comparisonRequest = useRef(0);
+  const currentProjectID = useRef(projectID);
+  currentProjectID.current = projectID;
 
   const reload = useCallback(async () => {
+    comparisonRequest.current += 1;
     if (!projectID) {
       setInventory(null);
       setComparison(null);
@@ -53,6 +57,7 @@ export default function ConceptConflictsPage() {
 
   useEffect(() => {
     if (!hydrated) return;
+    comparisonRequest.current += 1;
     let cancelled = false;
     const clearProject = () => {
       if (cancelled) return;
@@ -82,19 +87,27 @@ export default function ConceptConflictsPage() {
   }, [hydrated, projectID]);
 
   const selectConflict = async (conflict: ConceptConflict) => {
+    const requestID = ++comparisonRequest.current;
+    const requestProjectID = projectID;
+    const requestPath = conflict.published.path;
     setSelectedPath(conflict.published.path);
     setComparison(null);
     setError("");
     setMessage("");
     try {
-      setComparison(await compareConceptConflict(conflict.published.path, projectID));
+      const result = await compareConceptConflict(requestPath, requestProjectID);
+      if (requestID !== comparisonRequest.current || currentProjectID.current !== requestProjectID ||
+        result.project_id !== requestProjectID || result.published.path !== requestPath) return;
+      setComparison(result);
     } catch (cause) {
+      if (requestID !== comparisonRequest.current || currentProjectID.current !== requestProjectID) return;
       setError(cause instanceof Error ? cause.message : String(cause));
     }
   };
 
   const decide = async (action: ConceptConflictResolveAction) => {
-    if (!comparison || !projectID || busy || !comparison.conflict_id) return;
+    if (!comparison || !projectID || busy || !comparison.conflict_id ||
+      comparison.project_id !== projectID || comparison.published.path !== selectedPath) return;
     const confirmation = action === "keep_published"
       ? t("ConceptConflicts.confirmKeep")
       : t("ConceptConflicts.confirmPublish");

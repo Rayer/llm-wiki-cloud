@@ -184,6 +184,8 @@ var publishRename = func(root *os.Root, oldName, newName string) error {
 	return root.Rename(oldName, newName)
 }
 
+var publishJournalWrite = writePublishJournal
+
 var publishRemoveAll = func(root *os.Root, name string) error {
 	return root.RemoveAll(name)
 }
@@ -415,7 +417,7 @@ func publishStagedOutputs(vault, stage string) (runErr error) {
 	if err := validatePublishJournal(journal); err != nil {
 		return err
 	}
-	if err := writePublishJournal(vault, journal); err != nil {
+	if err := publishJournalWrite(vault, journal); err != nil {
 		return err
 	}
 	defer func() {
@@ -445,7 +447,7 @@ func publishStagedOutputs(vault, stage string) (runErr error) {
 			// intended move as completed: removing a missing destination is harmless,
 			// while restoring a backup avoids exposing a mixed generation.
 			entry.HadOld = true
-			if err := writePublishJournal(vault, journal); err != nil {
+			if err := publishJournalWrite(vault, journal); err != nil {
 				return err
 			}
 			if err := publishRename(r, entry.Destination, entry.Backup); err != nil {
@@ -458,7 +460,7 @@ func publishStagedOutputs(vault, stage string) (runErr error) {
 			return err
 		}
 		entry.Published = true
-		if err := writePublishJournal(vault, journal); err != nil {
+		if err := publishJournalWrite(vault, journal); err != nil {
 			return err
 		}
 		if err := publishRename(r, entry.Stage, entry.Destination); err != nil {
@@ -468,7 +470,7 @@ func publishStagedOutputs(vault, stage string) (runErr error) {
 	// Once this state reaches disk the new generation is authoritative. Cleanup
 	// may be retried by recovery, but it must never roll back published output.
 	journal.Phase = publishPhaseCommitted
-	if err := writePublishJournal(vault, journal); err != nil {
+	if err := publishJournalWrite(vault, journal); err != nil {
 		return err
 	}
 	if err := publishRemoveAll(r, backup); err != nil {

@@ -180,6 +180,16 @@ func conceptConflictView(scoped store.Store) string {
 	return ""
 }
 
+func conceptConflictStorageView(projectID string, scoped store.Store, conflicts []conceptConflictSummary) string {
+	view := conceptConflictView(scoped)
+	if view != "" && view != "legacy" {
+		return view
+	}
+	// Local storage has no atomic generation token; pin the exact observed pair
+	// (or inventory) and revalidate it under the worker's vault lease.
+	return "observed-" + conceptConflictPairDigest(projectID, "local-observed", conflicts)
+}
+
 func conceptConflictPairDigest(projectID, view string, conflicts []conceptConflictSummary) string {
 	h := sha256.New()
 	_, _ = h.Write([]byte(projectID))
@@ -317,7 +327,7 @@ func listConceptConflicts(ctx context.Context, projectID string, scoped store.St
 	sort.Slice(heldBack, func(i, j int) bool {
 		return heldBack[i].Published.Path < heldBack[j].Published.Path
 	})
-	view := conceptConflictView(scoped)
+	view := conceptConflictStorageView(projectID, scoped, conflicts)
 	return conceptConflictListResponse{
 		ProjectID: projectID, StorageView: view,
 		PairSHA256: conceptConflictPairDigest(projectID, view, conflicts),
@@ -340,7 +350,7 @@ func compareConceptConflictWithDatabase(ctx context.Context, projectID string, s
 	if err != nil {
 		return conceptConflictCompareResponse{}, err
 	}
-	view := conceptConflictView(scoped)
+	view := conceptConflictStorageView(projectID, scoped, []conceptConflictSummary{conflict})
 	return conceptConflictCompareResponse{
 		ProjectID: projectID, StorageView: view,
 		PairSHA256: conceptConflictPairDigest(projectID, view, []conceptConflictSummary{conflict}),
@@ -409,8 +419,8 @@ func (h *Handler) ListConceptConflicts(c *gin.Context) {
 }
 
 // CompareConceptConflict returns both Markdown versions without mutating either one.
-// Cloud reads are manifest-pinned; localfs reports a legacy view and a digest of
-// the exact byte pair returned, without claiming an atomic filesystem snapshot.
+// Cloud reads are manifest-pinned; localfs reports an observed pair digest and
+// revalidates it under the worker's cooperative vault lease at commit time.
 func (h *Handler) CompareConceptConflict(c *gin.Context) {
 	_, projectID, ok := h.authorizeConceptConflictRead(c)
 	if !ok {

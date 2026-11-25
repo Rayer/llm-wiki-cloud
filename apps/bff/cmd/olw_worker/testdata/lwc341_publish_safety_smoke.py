@@ -71,11 +71,11 @@ def seed(case, published=True, published_row=True, confidence=0.9):
     draft_body = "CANDIDATE BODY — disposable fixture"
     if published:
         write_note(target, {"title": "Alpha", "status": "published"}, old_body)
-        if published_row:
-            db.upsert_article(WikiArticleRecord(
-                path="wiki/Alpha.md", title="Alpha", sources=[],
-                content_hash=sha(old_body.encode()), status="published",
-            ))
+    if published_row:
+        db.upsert_article(WikiArticleRecord(
+            path="wiki/Alpha.md", title="Alpha", sources=[],
+            content_hash=sha(old_body.encode()), status="published",
+        ))
     write_note(draft, {
         "title": "Alpha", "status": "draft", "confidence": confidence,
     }, draft_body)
@@ -86,18 +86,19 @@ def seed(case, published=True, published_row=True, confidence=0.9):
     return vault, config, db, target, draft, old_body, draft_body
 
 
-def test_collision(case, published_row):
+def test_collision(case, published_row, published=True):
     vault, config, db, target, draft, old_body, _ = seed(
-        case, published_row=published_row
+        case, published=published, published_row=published_row
     )
-    before = target.read_bytes()
+    before = target.read_bytes() if target.exists() else None
     target_row_before = db.get_article("wiki/Alpha.md")
     draft_row_before = db.get_article(str(draft.relative_to(vault)))
     affected = compile_pipeline.publish_drafts(config, db, paths=[draft])
     assert not affected, (case, affected)
-    assert target.read_bytes() == before, case
+    assert (target.read_bytes() if target.exists() else None) == before, case
     assert draft.exists(), case
-    assert parse_note(target)[1] == old_body, case
+    if before is not None:
+        assert parse_note(target)[1] == old_body, case
     target_row_after = db.get_article("wiki/Alpha.md")
     assert (target_row_after.status if target_row_after else None) == (
         target_row_before.status if target_row_before else None
@@ -108,9 +109,10 @@ def test_collision(case, published_row):
 
 test_collision("tracked_collision", published_row=True)
 test_collision("orphan_published_file", published_row=False)
+test_collision("orphan_published_row", published_row=True, published=False)
 
 vault, config, db, target, draft, _, draft_body = seed(
-    "new_target", published=False
+    "new_target", published=False, published_row=False
 )
 affected = compile_pipeline.publish_drafts(config, db, paths=[draft])
 assert affected == [target]
@@ -120,7 +122,7 @@ assert db.get_article("wiki/Alpha.md").status == "published"
 db.close()
 
 vault, config, db, target, draft, _, _ = seed(
-    "low_confidence", published=False, confidence=0.1
+    "low_confidence", published=False, published_row=False, confidence=0.1
 )
 affected = compile_pipeline.publish_drafts(
     config, db, paths=[draft], min_confidence=0.9
@@ -150,6 +152,21 @@ with patch(
 assert report.published == 0 and report.held_back == 1
 assert target.read_bytes() == before and parse_note(target)[1] == old_body
 assert draft.exists()
+db.close()
+
+vault, config, db, target, draft, _, _ = seed(
+    "auto_approve_orphan_row", published=False, published_row=True
+)
+row_before = db.get_article("wiki/Alpha.md").model_dump()
+with patch(
+    "synto.pipeline.orchestrator._run_compile",
+    return_value=([draft], [], {}),
+):
+    report = PipelineOrchestrator(config, None, db).run(auto_approve=True, max_rounds=1)
+assert report.published == 0 and report.held_back == 1
+assert not target.exists() and draft.exists()
+assert db.get_article("wiki/Alpha.md").model_dump() == row_before
+assert db.get_article("wiki/.drafts/Alpha.md").status == "draft"
 db.close()
 
 
@@ -267,6 +284,7 @@ assert len(__import__("json").loads(remaining)) == 1
 db.close()
 db = StateDB(config.state_db_path)
 replayed = lwc["_lwc341_resolve"](config, db, operation_a)
+assert replayed.pop("_lwc341_replayed") is True
 assert replayed == result_a
 mismatch = dict(operation_a, payload_sha256="b" * 64)
 assert lwc["_lwc341_resolve"](config, db, mismatch)["status"] == "payload_mismatch"
