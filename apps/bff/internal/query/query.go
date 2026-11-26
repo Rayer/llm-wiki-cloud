@@ -91,14 +91,20 @@ const (
 // AIOperationFailure records a safe, bounded failure from an optional AI step
 // and the fallback the query used to keep useful retrieval results available.
 type AIOperationFailure struct {
-	Stage    string `json:"stage"`
-	Class    string `json:"class"`
-	Fallback string `json:"fallback"`
-	Source   string `json:"source,omitempty"`
+	Stage            string `json:"stage"`
+	Class            string `json:"class"`
+	Fallback         string `json:"fallback"`
+	Source           string `json:"source,omitempty"`
+	ActionableReason string `json:"actionable_reason,omitempty"`
 }
 
 func NewAIOperationFailure(stage string, err error, fallback string) (AIOperationFailure, bool) {
-	return AIOperationFailureFromCategory(stage, AIOperationFailureClass(err), fallback)
+	failure, ok := AIOperationFailureFromCategory(stage, AIOperationFailureClass(err), fallback)
+	if !ok {
+		return AIOperationFailure{}, false
+	}
+	failure.ActionableReason, _ = llm.ActionableBYOKFailureReason(err)
+	return failure, true
 }
 
 func AIOperationFailureFromCategory(stage, category, fallback string) (AIOperationFailure, bool) {
@@ -332,6 +338,7 @@ func (s *Service) Execute(ctx context.Context, reader cache.Reader, request Requ
 	}
 	searchQuery := request.Query
 	var expandResult *llm.ExpandResult
+	var deferredFailures []AIOperationFailure
 
 	if s.expander != nil {
 		if result, err := s.expander.Expand(ctx, request.Query); err != nil {
@@ -342,6 +349,12 @@ func (s *Service) Execute(ctx context.Context, reader cache.Reader, request Requ
 				return Result{}, err
 			}
 			log.Printf("[expander] query expansion failed: %v — falling back to raw query", err)
+			failure, _ := NewAIOperationFailure(AIOperationQueryExpansion, err, AIFallbackRawQuery)
+			if failure.Class != "" {
+				// The normal result is built after retrieval; carry the safe failure
+				// across that boundary without retaining the provider response.
+				deferredFailures = append(deferredFailures, failure)
+			}
 		} else if result != nil {
 			expandResult = result
 			searchQuery = strings.Join(result.Keywords, " ")
@@ -364,6 +377,9 @@ func (s *Service) Execute(ctx context.Context, reader cache.Reader, request Requ
 		Mode:    request.Mode,
 		Results: results,
 		Expand:  expandResult,
+	}
+	for _, failure := range deferredFailures {
+		response.addAIOperationFailure(failure)
 	}
 	result, err := s.SynthesizeWithError(ctx, reader, request, response)
 	if err != nil {

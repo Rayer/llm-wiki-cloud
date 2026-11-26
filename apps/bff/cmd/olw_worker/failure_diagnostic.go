@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 
@@ -222,15 +223,47 @@ func preserveWorkerFailure(err error, stage failureStage, class failureErrorClas
 const maxFailureDiagnosticMessage = 512
 
 type failureDiagnostic struct {
-	Version    int                        `json:"version"`
-	Status     string                     `json:"status"`
-	Stage      failureStage               `json:"stage"`
-	ErrorClass failureErrorClass          `json:"error_class"`
-	DetailCode conceptReconcileDetailCode `json:"detail_code,omitempty"`
-	Child      failureChildCommand        `json:"child_command,omitempty"`
-	ExitCode   *int                       `json:"exit_code,omitempty"`
-	Execution  string                     `json:"execution,omitempty"`
-	Message    string                     `json:"message,omitempty"`
+	Version           int                        `json:"version"`
+	Status            string                     `json:"status"`
+	Stage             failureStage               `json:"stage"`
+	ErrorClass        failureErrorClass          `json:"error_class"`
+	DetailCode        conceptReconcileDetailCode `json:"detail_code,omitempty"`
+	Child             failureChildCommand        `json:"child_command,omitempty"`
+	ExitCode          *int                       `json:"exit_code,omitempty"`
+	Execution         string                     `json:"execution,omitempty"`
+	Message           string                     `json:"message,omitempty"`
+	BYOKFailureReason string                     `json:"byok_failure_reason,omitempty"`
+}
+
+func failureDiagnosticForConfig(err error, cfg workerConfig) failureDiagnostic {
+	diagnostic := diagnosticForError(err)
+	if cfg.PipelineProfileSource != "personal" || cfg.BYOKFailureMarkerPath == "" ||
+		diagnostic.Stage != failureStageSyntoRun || diagnostic.Child != failureChildRun || diagnostic.ErrorClass != failureClassChildExit {
+		return diagnostic
+	}
+	data, readErr := os.ReadFile(cfg.BYOKFailureMarkerPath)
+	if readErr != nil || len(data) > 256 {
+		return diagnostic
+	}
+	var marker struct {
+		Reason string `json:"reason"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&marker) != nil || decoder.Decode(new(any)) != io.EOF || !validBYOKFailureReason(marker.Reason) {
+		return diagnostic
+	}
+	diagnostic.BYOKFailureReason = marker.Reason
+	return diagnostic
+}
+
+func validBYOKFailureReason(reason string) bool {
+	switch reason {
+	case "authentication", "quota", "billing", "permission", "model_configuration":
+		return true
+	default:
+		return false
+	}
 }
 
 func diagnosticForError(err error) failureDiagnostic {
@@ -326,6 +359,12 @@ func decodeFailureDiagnostic(data []byte) (failureDiagnostic, error) {
 			return failureDiagnostic{}, errors.New("invalid failure diagnostic message")
 		}
 	}
+	if raw, ok := fields["byok_failure_reason"]; ok {
+		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) || !validBYOKFailureReason(diagnostic.BYOKFailureReason) ||
+			diagnostic.Stage != failureStageSyntoRun || diagnostic.Child != failureChildRun || diagnostic.ErrorClass != failureClassChildExit {
+			return failureDiagnostic{}, errors.New("invalid BYOK failure diagnostic")
+		}
+	}
 	return diagnostic, nil
 }
 
@@ -334,7 +373,14 @@ func marshalFailureDiagnostic(err error) ([]byte, error) {
 }
 
 func marshalFailureDiagnosticMeta(err error, execution string, secrets []string) ([]byte, error) {
-	diagnostic := diagnosticForError(err)
+	return marshalFailureDiagnosticFrom(diagnosticForError(err), err, execution, secrets)
+}
+
+func marshalFailureDiagnosticMetaWithConfig(err error, execution string, secrets []string, cfg workerConfig) ([]byte, error) {
+	return marshalFailureDiagnosticFrom(failureDiagnosticForConfig(err, cfg), err, execution, secrets)
+}
+
+func marshalFailureDiagnosticFrom(diagnostic failureDiagnostic, err error, execution string, secrets []string) ([]byte, error) {
 	if execution = strings.TrimSpace(execution); validPipelineExecutionID(execution) {
 		diagnostic.Execution = execution
 	}

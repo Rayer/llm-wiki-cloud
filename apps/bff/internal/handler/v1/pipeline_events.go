@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"sort"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/auth"
 	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	handlerapi "github.com/rayer/llm-wiki-bff/internal/handler"
+	"github.com/rayer/llm-wiki-bff/internal/llm"
 	"github.com/rayer/llm-wiki-bff/internal/nudge"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -229,24 +231,27 @@ type pipelineEventResult struct {
 }
 
 type pipelineEventRunRecord struct {
-	id                    string
-	status                string
-	startedAt             time.Time
-	actualStarted         time.Time
-	endedAt               time.Time
-	publication           string
-	quota                 string
-	response              *handlerapi.PipelineExecutionResponse
-	known                 bool
-	candidate             bool
-	reservationID         string
-	attemptID             string
-	trigger               string
-	mode                  string
-	sequence              int64
-	sequenceSet           bool
-	reservationUpdateTime time.Time
-	reservationMissing    bool
+	id                     string
+	status                 string
+	startedAt              time.Time
+	actualStarted          time.Time
+	endedAt                time.Time
+	publication            string
+	quota                  string
+	response               *handlerapi.PipelineExecutionResponse
+	known                  bool
+	candidate              bool
+	reservationID          string
+	attemptID              string
+	trigger                string
+	mode                   string
+	sequence               int64
+	sequenceSet            bool
+	reservationUpdateTime  time.Time
+	reservationMissing     bool
+	profileID              string
+	profileRevision        int64
+	profileBindingRevision int64
 }
 
 func pipelineEventsURI(projectID string) string {
@@ -678,19 +683,26 @@ func (h *Handler) readCloudPipelineEventSnapshot(ctx context.Context, userID, pr
 }
 
 func (h *Handler) attachPipelineReservation(ctx context.Context, userID, projectID string, record *pipelineEventRunRecord, candidate *scopedfirestore.PipelineEventCandidate) error {
+	fromCandidate := candidate != nil
 	if candidate != nil {
 		record.reservationID = candidate.ReservationID
 		record.attemptID, record.trigger, record.mode = candidate.AttemptID, string(candidate.Trigger), string(candidate.Mode)
 		record.sequence, record.sequenceSet = candidate.Sequence, candidate.SequenceSet
 		record.reservationUpdateTime = candidate.UpdateTime
-		return nil
 	}
 	if record.reservationID == "" {
 		return nil
 	}
 	reservation, exists, updateTime, err := scopedfirestore.GetQuotaReservationForAttemptSnapshotFromFirestore(ctx, h.firestore.Raw(), record.reservationID, record.attemptID, userID, projectID)
 	if err != nil {
+		if fromCandidate {
+			return nil
+		}
 		return fmt.Errorf("read exact Pipeline reservation evidence: %w", err)
+	}
+	if fromCandidate && (!exists || reservation.UserID != userID || reservation.ProjectID != projectID ||
+		(reservation.ExecutionID != "" && reservation.ExecutionID != record.id)) {
+		return nil
 	}
 	if !exists || reservation.UserID != userID || reservation.ProjectID != projectID ||
 		(reservation.ExecutionID != "" && reservation.ExecutionID != record.id) || (reservation.ExecutionID == "" && reservation.SettlementStatus != "pending") {
@@ -714,6 +726,13 @@ func (h *Handler) attachPipelineReservation(ctx context.Context, userID, project
 		record.sequence, record.sequenceSet = reservation.ProjectPipelineSequence, true
 	}
 	record.reservationUpdateTime = updateTime
+	var profileSnapshot llm.OperationProfileSnapshot
+	if snapshotFromFirestore(reservation.ProfileSnapshot, &profileSnapshot) == nil && validProfileOperationSnapshot(profileSnapshot) &&
+		profileSnapshot.Source == "personal" && len(profileSnapshot.Profiles) == 1 && profileSnapshot.Profiles[0].OwnerID == userID {
+		record.profileID = profileSnapshot.Profiles[0].ID
+		record.profileRevision = profileSnapshot.Profiles[0].Revision
+		record.profileBindingRevision = profileSnapshot.BindingRevision
+	}
 	return nil
 }
 
@@ -925,6 +944,13 @@ func (h *Handler) reconcilePipelineProjectFailureAttempt(ctx context.Context, re
 			legacy++
 		}
 	}
+	sort.Slice(records, func(i, j int) bool {
+		if records[i].sequence == records[j].sequence {
+			return records[i].id < records[j].id
+		}
+		return records[i].sequence < records[j].sequence
+	})
+	h.recordBYOKPipelineFailures(ctx, userID, projectID, records)
 	if sequenced > 0 && legacy > 0 && slot.ProducerWitness.BootstrapDigest == "" && slot.SourceRevision == 0 {
 		return partial("pipeline_legacy_order_ambiguous")
 	}
@@ -959,12 +985,6 @@ func (h *Handler) reconcilePipelineProjectFailureAttempt(ctx context.Context, re
 	if legacy > 0 && slot.ProducerWitness.BootstrapDigest == "" && slot.SourceRevision == 0 {
 		return partial("pipeline_legacy_order_ambiguous")
 	}
-	sort.Slice(records, func(i, j int) bool {
-		if records[i].sequence == records[j].sequence {
-			return records[i].id < records[j].id
-		}
-		return records[i].sequence < records[j].sequence
-	})
 	for index := 1; index < len(records); index++ {
 		if records[index].sequenceSet && records[index-1].sequenceSet && records[index].sequence == records[index-1].sequence && records[index].id != records[index-1].id {
 			return partial("pipeline_sequence_ambiguous")
@@ -1036,6 +1056,39 @@ func (h *Handler) reconcilePipelineProjectFailureAttempt(ctx context.Context, re
 		}
 	}
 	return nil, nil
+}
+
+func (h *Handler) recordBYOKPipelineFailures(ctx context.Context, userID, projectID string, records []pipelineEventRunRecord) {
+	for _, record := range records {
+		if record.status != "FAILED" || record.publication != "confirmed_not_published" {
+			continue
+		}
+		if err := h.recordBYOKPipelineFailure(ctx, userID, projectID, record); err != nil && !errors.Is(err, nudge.ErrSourceRevisionConflict) {
+			log.Printf("BYOK actionable reminder persistence failed")
+		}
+	}
+}
+
+func (h *Handler) recordBYOKPipelineFailure(ctx context.Context, userID, projectID string, record pipelineEventRunRecord) error {
+	if record.response == nil || record.response.Diagnostic == nil ||
+		!handlerapi.ValidBYOKFailureReason(record.response.Diagnostic.BYOKFailureReason) ||
+		record.profileID == "" || record.profileRevision < 1 || record.profileBindingRevision < 0 {
+		return nil
+	}
+	startedAt := record.actualStarted
+	if startedAt.IsZero() {
+		startedAt = record.startedAt
+	}
+	if startedAt.IsZero() {
+		return nil
+	}
+	sequence := int64(0)
+	if record.sequenceSet {
+		sequence = record.sequence
+	}
+	err := h.recordBYOKActionableFailure(ctx, userID, projectID, record.profileID, record.profileRevision,
+		record.profileBindingRevision, sequence, record.response.Diagnostic.BYOKFailureReason, "pipeline", record.id, startedAt)
+	return err
 }
 
 func validPipelineEventRecord(record pipelineEventRunRecord) bool {

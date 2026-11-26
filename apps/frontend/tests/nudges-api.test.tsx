@@ -62,4 +62,10 @@ describe('Nudge API read and reconcile contracts', () => {
     });
     expect(target && resolveNudgeTarget(target)).toBe('/status?project_id=project-a&execution_id=execution-1');
   });
+
+  it('resolves the BYOK action to the owning Project AI service settings', () => {
+    expect(resolveNudgeTarget({ kind: 'project-ai-service', project_id: 'project-a' }))
+      .toBe('/profile?project_id=project-a#project-ai-service');
+    expect(resolveNudgeTarget({ kind: 'project-ai-service', project_id: 'bad/project' })).toBeNull();
+  });
 });

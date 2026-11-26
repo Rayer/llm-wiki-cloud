@@ -3265,6 +3265,16 @@ const docTemplate = `{
                 },
                 "version": {
                     "type": "integer"
+                },
+                "byok_failure_reason": {
+                    "type": "string",
+                    "enum": [
+                        "authentication",
+                        "quota",
+                        "billing",
+                        "permission",
+                        "model_configuration"
+                    ]
                 }
             }
         },
