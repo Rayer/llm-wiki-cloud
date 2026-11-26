@@ -308,14 +308,24 @@ type PipelinePreparedGuidance struct {
 // PipelineFailureDiagnostic is the allowlisted, worker-produced failure
 // receipt exposed to an authenticated owner.
 type PipelineFailureDiagnostic struct {
-	Version    int    `json:"version"`
-	Status     string `json:"status"`
-	Stage      string `json:"stage"`
-	ErrorClass string `json:"error_class"`
-	DetailCode string `json:"detail_code,omitempty"`
-	Child      string `json:"child_command,omitempty"`
-	ExitCode   *int   `json:"exit_code,omitempty"`
-	Message    string `json:"message,omitempty"`
+	Version           int    `json:"version"`
+	Status            string `json:"status"`
+	Stage             string `json:"stage"`
+	ErrorClass        string `json:"error_class"`
+	DetailCode        string `json:"detail_code,omitempty"`
+	Child             string `json:"child_command,omitempty"`
+	ExitCode          *int   `json:"exit_code,omitempty"`
+	Message           string `json:"message,omitempty"`
+	BYOKFailureReason string `json:"byok_failure_reason,omitempty"`
+}
+
+func ValidBYOKFailureReason(reason string) bool {
+	switch reason {
+	case "authentication", "quota", "billing", "permission", "model_configuration":
+		return true
+	default:
+		return false
+	}
 }
 
 // MetricsResponse is for GET /api/metrics (Grafana).

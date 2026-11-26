@@ -278,6 +278,42 @@ func TestProfileModelDiscoveryClassifiesErrorsWithoutProviderBody(t *testing.T) 
 	}
 }
 
+func TestActionableBYOKFailureClassificationExcludesTransientFailures(t *testing.T) {
+	tests := []struct {
+		name string
+		kind ProviderErrorKind
+		want string
+	}{
+		{name: "authentication", kind: ProviderAuthentication, want: "authentication"},
+		{name: "quota", kind: ProviderQuotaExhausted, want: "quota"},
+		{name: "billing", kind: ProviderBilling, want: "billing"},
+		{name: "permission", kind: ProviderPermissionDenied, want: "permission"},
+		{name: "model configuration", kind: ProviderModelNotFound, want: "model_configuration"},
+		{name: "unsupported parameter", kind: ProviderParameterUnsupported, want: "model_configuration"},
+		{name: "rate limit", kind: ProviderRateLimited},
+		{name: "timeout", kind: ProviderTimeout},
+		{name: "generic provider failure", kind: ProviderFailure},
+		{name: "invalid response", kind: ProviderResponseInvalid},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, ok := ActionableBYOKFailureReason(&ProfileCallError{Kind: test.kind, StatusCode: 401})
+			if test.want == "" {
+				if ok || got != "" {
+					t.Fatalf("classification=(%q,%t), want no actionable reason", got, ok)
+				}
+				return
+			}
+			if !ok || got != test.want {
+				t.Fatalf("classification=(%q,%t), want %q", got, ok, test.want)
+			}
+		})
+	}
+	if _, ok := ActionableBYOKFailureReason(errors.New("provider response leaked")); ok {
+		t.Fatal("untyped provider error became actionable")
+	}
+}
+
 func TestProfileModelDiscoveryClassifiesUnsupportedEndpoints(t *testing.T) {
 	for _, statusCode := range []int{http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusNotImplemented} {
 		t.Run(http.StatusText(statusCode), func(t *testing.T) {

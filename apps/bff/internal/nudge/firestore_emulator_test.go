@@ -145,6 +145,177 @@ func TestRepositorySourceCASAttentionAndTombstoneRecovery(t *testing.T) {
 	}
 }
 
+func TestBYOKReminderUsesCurrentAuthorizedBindingAndClearsQueryAndSequencedPipelineByRevision(t *testing.T) {
+	client := newNudgeFirestoreEmulator(t)
+	defer client.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	ownerID, otherOwner, profileID := "byok-owner", "byok-other-owner", "byok-profile"
+	profileRef := scopedfirestore.Collection(client.Raw(), "llm_profiles").Doc(ownerID + "_" + profileID)
+	if _, err := profileRef.Set(ctx, map[string]any{"owner_id": ownerID, "revision": int64(1), "enabled": true}); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = profileRef.Delete(context.Background()) }()
+
+	repo := NewRepository(client.Raw())
+	projects := []string{fmt.Sprintf("byok-wiki-a-%d", time.Now().UnixNano()), fmt.Sprintf("byok-wiki-b-%d", time.Now().UnixNano())}
+	for index, projectID := range projects {
+		projectName := fmt.Sprintf("BYOK Wiki %d", index+1)
+		projectRef := scopedfirestore.Collection(client.Raw(), "projects").Doc(ownerID + "_" + projectID)
+		if _, err := projectRef.Set(ctx, map[string]any{"user_id": ownerID, "project_id": projectID, "name": projectName}); err != nil {
+			t.Fatalf("seed Project %s: %v", projectID, err)
+		}
+		if _, err := projectRef.Collection("llm_profile_binding").Doc("current").Set(ctx, map[string]any{
+			"source": "personal", "profile_id": profileID, "profile_revision": int64(1), "revision": int64(1),
+		}); err != nil {
+			t.Fatalf("seed binding %s: %v", projectID, err)
+		}
+		input := byokRevisionFailureInput(index, projectID, profileID, 1, 1, 1, "authentication", time.Now().UTC())
+		input.Observation.ProjectName = projectName
+		if applied, err := repo.ApplyBYOKObservation(ctx, ownerID, input); err != nil || !applied {
+			t.Fatalf("create Project %s reminder applied=%t err=%v", projectID, applied, err)
+		}
+	}
+	initialView, err := repo.Read(ctx, ownerID, nil, nil)
+	if err != nil || len(initialView.Items) != 1 || initialView.Items[0].Category != CategoryBYOKActionable ||
+		len(initialView.Items[0].Observations) != 2 {
+		t.Fatalf("both Wiki reminders must be visible before settings update: view=%+v err=%v", initialView, err)
+	}
+	visibleProjects := make(map[string]string, len(projects))
+	for _, slot := range initialView.Items[0].Observations {
+		if slot.Observation == nil || len(slot.Observation.Actions) != 1 || slot.Observation.Actions[0].Target == nil ||
+			slot.Observation.Actions[0].Target.ProjectID != slot.Observation.ProjectID {
+			t.Fatalf("Wiki reminder has no scoped settings action: %+v", slot)
+		}
+		visibleProjects[slot.Observation.ProjectID] = slot.Observation.ProjectName
+	}
+	if len(visibleProjects) != 2 {
+		t.Fatalf("visible Wiki reminders=%v", visibleProjects)
+	}
+	projectName := "Renamed BYOK Wiki"
+	renamedRef := scopedfirestore.Collection(client.Raw(), "projects").Doc(ownerID + "_" + projects[0])
+	if _, err := renamedRef.Update(ctx, []firestore.Update{{Path: "name", Value: projectName}}); err != nil {
+		t.Fatal(err)
+	}
+	renamedView, err := repo.Read(ctx, ownerID, nil, nil)
+	if err != nil || len(renamedView.Items) != 1 || len(renamedView.Items[0].Observations) != 2 || len(renamedView.Notices) != 0 {
+		t.Fatalf("Project rename hid a current BYOK reminder: view=%+v err=%v", renamedView, err)
+	}
+	for _, slot := range renamedView.Items[0].Observations {
+		if slot.Observation.ProjectID == projects[0] && slot.Observation.ProjectName != projectName {
+			t.Fatalf("renamed Project display name=%q, want %q", slot.Observation.ProjectName, projectName)
+		}
+	}
+
+	// Updating the shared profile revision retracts every bound Wiki's old
+	// reminder; the tombstone makes late revision-1 requests fail closed.
+	if _, err := profileRef.Update(ctx, []firestore.Update{{Path: "revision", Value: int64(2)}}); err != nil {
+		t.Fatal(err)
+	}
+	updatedView, err := repo.Read(ctx, ownerID, nil, nil)
+	if err != nil || len(updatedView.Items) != 0 {
+		t.Fatalf("old revision remained visible after profile settings changed: view=%+v err=%v", updatedView, err)
+	}
+	for index, projectID := range projects {
+		if cleared, err := repo.ClearBYOKForSettings(ctx, ownerID, projectID); err != nil || !cleared {
+			t.Fatalf("clear Project %s reminder cleared=%t err=%v", projectID, cleared, err)
+		}
+		old := byokRevisionFailureInput(index, projectID, profileID, 1, 1, 1, "authentication", time.Now().UTC().Add(time.Second))
+		old.ExpectedSourceRevision = 2
+		if applied, err := repo.ApplyBYOKObservation(ctx, ownerID, old); applied || !errors.Is(err, ErrSourceRevisionConflict) {
+			t.Fatalf("late old-profile request Project %s applied=%t err=%v", projectID, applied, err)
+		}
+		slot, err := repo.ReadSourceSlot(ctx, ownerID, CategoryBYOKActionable, "byok:"+projectID)
+		if err != nil || slot.Active || slot.ProducerWitness.Kind != "byok-settings" || slot.ProducerWitness.ProfileRevision != 2 ||
+			slot.ProducerWitness.Trigger != "" || slot.ProducerWitness.ExecutionID != "" ||
+			slot.ProducerWitness.ProjectPipelineSequence != 0 || !slot.ProducerWitness.AttemptStartedAt.IsZero() {
+			t.Fatalf("settings tombstone Project %s slot=%+v err=%v", projectID, slot, err)
+		}
+	}
+
+	// A failure from the new saved revision can recreate each source.
+	for index, projectID := range projects {
+		newFailure := byokRevisionFailureInput(index, projectID, profileID, 2, 1, 2, "billing", time.Now().UTC().Add(2*time.Second))
+		newFailure.ExpectedSourceRevision = 2
+		if applied, err := repo.ApplyBYOKObservation(ctx, ownerID, newFailure); err != nil || !applied {
+			t.Fatalf("new profile revision did not recreate Project %s reminder applied=%t err=%v", projectID, applied, err)
+		}
+	}
+
+	// Changing each Project binding also clears the Query and sequenced
+	// Pipeline reminders; only the current binding revision can recreate them.
+	for index, projectID := range projects {
+		projectRef := scopedfirestore.Collection(client.Raw(), "projects").Doc(ownerID + "_" + projectID)
+		bindingRef := projectRef.Collection("llm_profile_binding").Doc("current")
+		if _, err := bindingRef.Update(ctx, []firestore.Update{{Path: "revision", Value: int64(2)}}); err != nil {
+			t.Fatal(err)
+		}
+		if cleared, err := repo.ClearBYOKForSettings(ctx, ownerID, projectID); err != nil || !cleared {
+			t.Fatalf("binding revision did not clear Project %s reminder cleared=%t err=%v", projectID, cleared, err)
+		}
+		settingsSlot, err := repo.ReadSourceSlot(ctx, ownerID, CategoryBYOKActionable, "byok:"+projectID)
+		if err != nil || settingsSlot.Active || settingsSlot.ProducerWitness.Kind != "byok-settings" ||
+			settingsSlot.ProducerWitness.BindingRevision != 2 || settingsSlot.ProducerWitness.ExecutionID != "" ||
+			settingsSlot.ProducerWitness.ProjectPipelineSequence != 0 || !settingsSlot.ProducerWitness.AttemptStartedAt.IsZero() {
+			t.Fatalf("binding settings clear did not persist a canonical tombstone for %s: slot=%+v err=%v", projectID, settingsSlot, err)
+		}
+		oldBindingFailure := byokRevisionFailureInput(index, projectID, profileID, 2, 1, 2, "billing", time.Now().UTC().Add(3*time.Second))
+		oldBindingFailure.ExpectedSourceRevision, err = repo.ReadSourceRevision(ctx, ownerID, CategoryBYOKActionable, "byok:"+projectID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if applied, err := repo.ApplyBYOKObservation(ctx, ownerID, oldBindingFailure); applied || !errors.Is(err, ErrSourceRevisionConflict) {
+			t.Fatalf("late old-binding request Project %s applied=%t err=%v", projectID, applied, err)
+		}
+		newBindingFailure := byokRevisionFailureInput(index, projectID, profileID, 2, 2, 3, "billing", time.Now().UTC().Add(4*time.Second))
+		newBindingFailure.ExpectedSourceRevision, err = repo.ReadSourceRevision(ctx, ownerID, CategoryBYOKActionable, "byok:"+projectID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if applied, err := repo.ApplyBYOKObservation(ctx, ownerID, newBindingFailure); err != nil || !applied {
+			t.Fatalf("new binding revision did not recreate Project %s reminder applied=%t err=%v", projectID, applied, err)
+		}
+	}
+
+	// Neither Query nor Pipeline evidence can cross the Project owner boundary.
+	for index, projectID := range projects {
+		unauthorized := byokRevisionFailureInput(index, projectID, profileID, 2, 2, 3, "billing", time.Now().UTC().Add(5*time.Second))
+		if applied, err := repo.ApplyBYOKObservation(ctx, otherOwner, unauthorized); applied || !errors.Is(err, ErrSourceRevisionConflict) {
+			t.Fatalf("cross-owner write Project %s applied=%t err=%v", projectID, applied, err)
+		}
+	}
+	otherView, err := repo.Read(ctx, otherOwner, nil, nil)
+	if err != nil || len(otherView.Items) != 0 {
+		t.Fatalf("cross-owner view=%+v err=%v", otherView, err)
+	}
+	ownerView, err := repo.Read(ctx, ownerID, nil, nil)
+	if err != nil || len(ownerView.Items) != 1 || len(ownerView.Items[0].Observations) != 2 {
+		t.Fatalf("cross-owner attempts changed owner Query/Pipeline reminders: view=%+v err=%v", ownerView, err)
+	}
+}
+
+func byokFailureInput(projectID, profileID string, profileRevision, bindingRevision int64, reason string, started time.Time) ObservationInput {
+	witness := ProducerWitness{Kind: "byok-failure", ProjectID: projectID, ProfileID: profileID,
+		ProfileRevision: profileRevision, BindingRevision: bindingRevision, FailureReason: reason,
+		Trigger: "query", AttemptStartedAt: started.UTC().Truncate(time.Microsecond)}
+	observation := Observation{ProjectID: projectID, Title: "Personal LLM needs attention", Body: "Review AI service settings.",
+		Severity: SeverityAttention, Actions: []Action{{ID: "review-ai-settings", Kind: "link", Label: "Review AI settings",
+			Target: &Target{Kind: "project-ai-service", ProjectID: projectID}}}}
+	return ObservationInput{Category: CategoryBYOKActionable, SourceKey: "byok:" + projectID,
+		PayloadDigest: strings.Repeat("a", 64), AttentionMaterialRevision: fmt.Sprintf("profile-revision:%d;binding-revision:%d;reason:%s", profileRevision, bindingRevision, reason),
+		ProducerWitness: witness, Observation: observation}
+}
+
+func byokRevisionFailureInput(index int, projectID, profileID string, profileRevision, bindingRevision, pipelineSequence int64, reason string, started time.Time) ObservationInput {
+	input := byokFailureInput(projectID, profileID, profileRevision, bindingRevision, reason, started)
+	if index == 1 {
+		input.ProducerWitness.Trigger = "pipeline"
+		input.ProducerWitness.ExecutionID = fmt.Sprintf("review-run-%d", pipelineSequence)
+		input.ProducerWitness.ProjectPipelineSequence = pipelineSequence
+	}
+	return input
+}
+
 func TestPatchAttentionRejectsUrgentReadDismissAndUnread(t *testing.T) {
 	client := newNudgeFirestoreEmulator(t)
 	defer client.Close()

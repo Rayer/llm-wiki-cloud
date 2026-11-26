@@ -180,6 +180,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  window.history.replaceState(null, '', '/');
   vi.useRealTimers();
   vi.resetAllMocks();
 });
@@ -212,6 +213,16 @@ async function renderProfile(projectId = 'project-a', card: ProfileCard | null =
 }
 
 describe('LWC-211 Project Profile', () => {
+  it('opens the AI service tab for the BYOK Nudge hash target', async () => {
+    window.history.replaceState(null, '', '/profile?project_id=project-a#project-ai-service');
+    render(<ProjectProfilePanel projectId="project-a" />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('tab', { name: 'LLM Provider' }).getAttribute('aria-selected')).toBe('true');
+      expect(document.getElementById('project-settings-panel-ai-service')?.hasAttribute('hidden')).toBe(false);
+    });
+  });
+
   it('keeps the empty requirement editor mounted and focused after the first character', async () => {
     function RequirementsHarness() {
       const [requirements, setRequirements] = React.useState<ProfileRequirement[]>([]);

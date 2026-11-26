@@ -184,6 +184,7 @@ type QuotaReservation struct {
 	IntentStatus                   string
 	CompileMode                    pipelinequota.ExecutionMode
 	ProfileRevision                int64
+	ProfileSnapshot                map[string]interface{}
 	ProfileRequirements            []PipelineProfileRequirement
 	RequirementsDigest             string
 	ConsumedGuidanceKind           string
@@ -2001,6 +2002,7 @@ func quotaReservationFromData(id string, data map[string]interface{}) QuotaReser
 	reservation.Mode = pipelinequota.ExecutionMode(mode)
 	reservation.CompileMode = pipelinequota.ExecutionMode(mode)
 	reservation.ProfileRevision = int64FromFirestore(data["profile_revision"])
+	reservation.ProfileSnapshot, _ = data["profile_snapshot"].(map[string]interface{})
 	reservation.ProfileRequirements = profileRequirementsFromFirestore(data["profile_requirements"])
 	reservation.RequirementsDigest, _ = data["requirements_digest"].(string)
 	reservation.ConsumedGuidanceKind, _ = data["consumed_guidance_kind"].(string)

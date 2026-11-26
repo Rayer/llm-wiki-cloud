@@ -3400,6 +3400,45 @@ func TestPipelineFailureDiagnosticAcceptsEveryWorkerProducedSchemaValue(t *testi
 	}
 }
 
+func TestPipelineFailureDiagnosticBYOKReasonIsBoundedToPersonalRunFailures(t *testing.T) {
+	root := localfs.New(t.TempDir())
+	project := root.WithScope("u", "p")
+	valid := handler.PipelineFailureDiagnostic{
+		Version: 1, Status: "failed", Stage: "synto_run", ErrorClass: "child_exit",
+		Child: "run", BYOKFailureReason: "authentication",
+	}
+	data, err := json.Marshal(valid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := project.WriteBytes(context.Background(), data, "cache/pipeline-byok-run.failure.json"); err != nil {
+		t.Fatal(err)
+	}
+	diagnostic, _, err := readPipelineFailureDiagnosticWithExecution(context.Background(), project, "byok-run")
+	if err != nil || diagnostic == nil || diagnostic.BYOKFailureReason != "authentication" {
+		t.Fatalf("valid BYOK diagnostic=%+v err=%v", diagnostic, err)
+	}
+
+	for _, raw := range []string{
+		`{"version":1,"status":"failed","execution":"bad-reason","stage":"synto_run","error_class":"child_exit","child_command":"run","byok_failure_reason":"rate_limited"}`,
+		`{"version":1,"status":"failed","execution":"wrong-stage","stage":"unknown","error_class":"unknown","child_command":"run","byok_failure_reason":"authentication"}`,
+		`{"version":1,"status":"failed","execution":"wrong-child","stage":"synto_run","error_class":"child_exit","child_command":"migrate-olw","byok_failure_reason":"authentication"}`,
+	} {
+		executionID := "bad-reason"
+		if strings.Contains(raw, "wrong-stage") {
+			executionID = "wrong-stage"
+		} else if strings.Contains(raw, "wrong-child") {
+			executionID = "wrong-child"
+		}
+		if _, err := project.WriteBytes(context.Background(), []byte(raw), "cache/pipeline-"+executionID+".failure.json"); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := readPipelineFailureDiagnosticWithExecution(context.Background(), project, executionID); err == nil {
+			t.Fatalf("invalid BYOK diagnostic accepted: %s", raw)
+		}
+	}
+}
+
 func TestPipelineStatusDiagnosticStates(t *testing.T) {
 	tests := []struct {
 		name       string

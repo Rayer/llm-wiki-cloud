@@ -14,6 +14,7 @@ const (
 	CategoryPipelineFailure = "pipeline-failure"
 	CategoryReleaseNotes    = "release-notes"
 	CategoryPurposeGap      = "content-purpose-gap"
+	CategoryBYOKActionable  = "byok-actionable"
 	SchemaVersion           = 1
 	MaxTextRunes            = 1000
 	PurposeCooldown         = 7 * 24 * time.Hour
@@ -89,6 +90,10 @@ type ProducerWitness struct {
 	BootstrapDigest         string    `json:"bootstrap_digest,omitempty" firestore:"bootstrap_digest,omitempty"`
 	ReservationID           string    `json:"reservation_id,omitempty" firestore:"reservation_id,omitempty"`
 	AttemptID               string    `json:"attempt_id,omitempty" firestore:"attempt_id,omitempty"`
+	ProfileID               string    `json:"profile_id,omitempty" firestore:"profile_id,omitempty"`
+	ProfileRevision         int64     `json:"profile_revision,omitempty" firestore:"profile_revision,omitempty"`
+	BindingRevision         int64     `json:"binding_revision,omitempty" firestore:"binding_revision,omitempty"`
+	FailureReason           string    `json:"failure_reason,omitempty" firestore:"failure_reason,omitempty"`
 	ExecutionID             string    `json:"execution_id,omitempty" firestore:"execution_id,omitempty"`
 	Trigger                 string    `json:"trigger,omitempty" firestore:"trigger,omitempty"`
 	Mode                    string    `json:"mode,omitempty" firestore:"mode,omitempty"`
@@ -210,6 +215,10 @@ func ValidateTarget(target Target) error {
 		if !validID(target.ProjectID) || target.ExecutionID != "" || target.Mode != "" || target.Version != "" {
 			return ErrInvalidInput
 		}
+	case "project-ai-service":
+		if !validID(target.ProjectID) || target.ExecutionID != "" || target.Mode != "" || target.Version != "" {
+			return ErrInvalidInput
+		}
 	case "release-notes":
 		if target.ProjectID != "" || target.ExecutionID != "" || (target.Mode != "current" && target.Mode != "published-version") {
 			return ErrInvalidInput
@@ -232,6 +241,8 @@ func ResolveTarget(target Target) (string, error) {
 		return "/status?project_id=" + url.QueryEscape(target.ProjectID) + "&execution_id=" + url.QueryEscape(target.ExecutionID), nil
 	case "project-description":
 		return "/profile?project_id=" + url.QueryEscape(target.ProjectID) + "#project-description", nil
+	case "project-ai-service":
+		return "/profile?project_id=" + url.QueryEscape(target.ProjectID) + "#project-ai-service", nil
 	case "release-notes":
 		version := target.Version
 		if target.Mode == "current" {
@@ -264,8 +275,11 @@ func ValidateObservationInput(in ObservationInput) error {
 }
 
 func ValidateClearInput(in ClearInput) error {
-	if !validCategory(in.Category) || !validSourceKey(in.Category, in.SourceKey) || in.ExpectedSourceRevision < 0 ||
-		(in.Proof != "authoritative-current-missing" && in.Proof != "confirmed-recovery" && in.Proof != "confirmed-no-conflict") {
+	validProof := in.Proof == "authoritative-current-missing" || in.Proof == "confirmed-recovery" || in.Proof == "confirmed-no-conflict"
+	if in.Category == CategoryBYOKActionable {
+		validProof = in.Proof == "confirmed-settings-update"
+	}
+	if !validCategory(in.Category) || !validSourceKey(in.Category, in.SourceKey) || in.ExpectedSourceRevision < 0 || !validProof {
 		return ErrInvalidInput
 	}
 	if err := validateWitness(in.Category, in.SourceKey, in.ProducerWitness); err != nil {
@@ -275,6 +289,9 @@ func ValidateClearInput(in ClearInput) error {
 		return ErrInvalidInput
 	}
 	if in.Category == CategoryPipelineFailure && in.Proof == "confirmed-recovery" && in.ProducerWitness.TerminalClass != "recovered" {
+		return ErrInvalidInput
+	}
+	if in.Category == CategoryBYOKActionable && (in.Proof != "confirmed-settings-update" || in.ProducerWitness.Kind != "byok-settings" || in.ProducerWitness.FailureReason != "") {
 		return ErrInvalidInput
 	}
 	return nil
@@ -342,6 +359,30 @@ func validateWitness(category, sourceKey string, w ProducerWitness) error {
 		if w.Kind != "release-notes" || (w.Environment != "dev" && w.Environment != "local" && w.Environment != "prod") || w.IndexRevision < 1 || w.ProductVersion == "" || !validProductVersion(w.ProductVersion) || len(w.IndexDigest) != 64 || !isHex(w.IndexDigest) || sourceKey != "release-notes:llm-wiki-cloud:"+w.Environment {
 			return ErrInvalidInput
 		}
+	case CategoryBYOKActionable:
+		if !validID(w.ProjectID) || !validID(w.ProfileID) || w.ProfileRevision < 1 ||
+			w.BindingRevision < 0 || sourceKey != "byok:"+w.ProjectID {
+			return ErrInvalidInput
+		}
+		if w.Kind == "byok-settings" {
+			if w.FailureReason != "" || w.Trigger != "" || w.ProjectPipelineSequence != 0 || !w.AttemptStartedAt.IsZero() {
+				return ErrInvalidInput
+			}
+			return nil
+		}
+		if w.Kind != "byok-failure" || (w.Trigger != "query" && w.Trigger != "pipeline") || w.AttemptStartedAt.IsZero() {
+			return ErrInvalidInput
+		}
+		if w.ProjectPipelineSequence < 0 || w.Trigger == "query" && w.ProjectPipelineSequence != 0 {
+			return ErrInvalidInput
+		}
+		if w.FailureReason != "authentication" && w.FailureReason != "quota" && w.FailureReason != "billing" &&
+			w.FailureReason != "permission" && w.FailureReason != "model_configuration" {
+			return ErrInvalidInput
+		}
+		if w.Trigger == "pipeline" && !validID(w.ExecutionID) || w.Trigger == "query" && w.ExecutionID != "" {
+			return ErrInvalidInput
+		}
 	default:
 		return ErrInvalidInput
 	}
@@ -402,12 +443,58 @@ func CompareWitness(category string, incoming, current ProducerWitness) int {
 			return 0
 		}
 		return 0
+	case CategoryBYOKActionable:
+		if incoming.ProjectID != current.ProjectID {
+			return -1
+		}
+		if incoming.BindingRevision < current.BindingRevision {
+			return -1
+		}
+		if incoming.BindingRevision > current.BindingRevision {
+			return 1
+		}
+		if incoming.ProfileRevision < current.ProfileRevision {
+			return -1
+		}
+		if incoming.ProfileRevision > current.ProfileRevision {
+			return 1
+		}
+		if incoming.Kind == "byok-settings" {
+			if current.Kind == "byok-settings" {
+				return 0
+			}
+			return -1
+		}
+		if current.Kind == "byok-settings" {
+			return 1
+		}
+		if incoming.AttemptStartedAt.Before(current.AttemptStartedAt) {
+			return -1
+		}
+		if incoming.AttemptStartedAt.After(current.AttemptStartedAt) {
+			return 1
+		}
+		if incoming.Trigger == "pipeline" && current.Trigger == "pipeline" {
+			if incoming.ProjectPipelineSequence < current.ProjectPipelineSequence {
+				return -1
+			}
+			if incoming.ProjectPipelineSequence > current.ProjectPipelineSequence {
+				return 1
+			}
+		}
+		if order := strings.Compare(incoming.Trigger, current.Trigger); order != 0 {
+			return order
+		}
+		if order := strings.Compare(incoming.ExecutionID, current.ExecutionID); order != 0 {
+			return order
+		}
+		return strings.Compare(incoming.FailureReason, current.FailureReason)
 	}
 	return -1
 }
 
 func validCategory(value string) bool {
-	return value == CategoryPipelineFailure || value == CategoryReleaseNotes || value == CategoryPurposeGap
+	return value == CategoryPipelineFailure || value == CategoryReleaseNotes || value == CategoryPurposeGap || value == CategoryBYOKActionable
 }
 func validSourceKey(category, key string) bool {
 	if len(key) == 0 || len(key) > 512 {
@@ -420,6 +507,8 @@ func validSourceKey(category, key string) bool {
 		return strings.HasPrefix(key, "release-notes:llm-wiki-cloud:")
 	case CategoryPurposeGap:
 		return strings.HasPrefix(key, "content-purpose-gap:")
+	case CategoryBYOKActionable:
+		return strings.HasPrefix(key, "byok:")
 	}
 	return false
 }

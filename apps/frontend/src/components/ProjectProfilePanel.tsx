@@ -128,6 +128,7 @@ const PROJECT_SETTINGS_TABS: ProjectSettingsTab[] = ['project-info', 'pipeline',
 const PROJECT_SETTINGS_HASH_TARGETS: Record<string, { tab: ProjectSettingsTab; targetId: string; focusId?: string }> = {
   'project-description': { tab: 'project-info', targetId: 'project-description', focusId: 'project-description-input' },
   'project-pipeline-automation': { tab: 'pipeline', targetId: 'project-pipeline-automation' },
+  'project-ai-service': { tab: 'ai-service', targetId: 'project-settings-panel-ai-service' },
 };
 
 export function ProjectProfilePanel({ projectId }: { projectId: string }) {

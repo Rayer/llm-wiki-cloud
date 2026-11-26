@@ -92,6 +92,111 @@ func (r *Repository) ApplyObservation(ctx context.Context, userID string, input 
 	return r.apply(ctx, userID, input.Category, input.SourceKey, input.ExpectedSourceRevision, input.ProducerWitness, &input, nil, false)
 }
 
+// ApplyBYOKObservation writes an actionable failure only while the exact
+// Project binding and personal Profile revision used by the operation remain
+// current. The transaction fence prevents late work from restoring a cleared
+// or superseded reminder.
+func (r *Repository) ApplyBYOKObservation(ctx context.Context, userID string, input ObservationInput) (bool, error) {
+	if err := ValidateObservationInput(input); err != nil || input.Category != CategoryBYOKActionable || input.ProducerWitness.Kind != "byok-failure" {
+		return false, ErrInvalidInput
+	}
+	witness := input.ProducerWitness
+	projectRef := scopedfirestore.Collection(r.client, "projects").Doc(userID + "_" + witness.ProjectID)
+	bindingRef := projectRef.Collection("llm_profile_binding").Doc("current")
+	profileRef := scopedfirestore.Collection(r.client, "llm_profiles").Doc(userID + "_" + witness.ProfileID)
+	fence := func(ctx context.Context, tx *firestore.Transaction) error {
+		project, err := tx.Get(projectRef)
+		if err != nil {
+			return ErrSourceRevisionConflict
+		}
+		projectData := project.Data()
+		if projectData["user_id"] != userID || projectData["project_id"] != witness.ProjectID {
+			return ErrSourceRevisionConflict
+		}
+		binding, err := tx.Get(bindingRef)
+		if err != nil {
+			return ErrSourceRevisionConflict
+		}
+		bindingData := binding.Data()
+		if bindingData["source"] != "personal" || bindingData["profile_id"] != witness.ProfileID ||
+			firestoreRevision(bindingData["revision"]) != witness.BindingRevision {
+			return ErrSourceRevisionConflict
+		}
+		profile, err := tx.Get(profileRef)
+		if err != nil {
+			return ErrSourceRevisionConflict
+		}
+		profileData := profile.Data()
+		if profileData["owner_id"] != userID || firestoreRevision(profileData["revision"]) != witness.ProfileRevision || profileData["enabled"] != true {
+			return ErrSourceRevisionConflict
+		}
+		return nil
+	}
+	return r.applyWithFence(ctx, userID, input.Category, input.SourceKey, input.ExpectedSourceRevision,
+		witness, &input, nil, false, fence, false)
+}
+
+// ClearBYOKForSettings removes a reminder only when the currently saved
+// profile or Project binding is newer than the failure that created it.
+func (r *Repository) ClearBYOKForSettings(ctx context.Context, userID, projectID string) (bool, error) {
+	sourceKey := "byok:" + projectID
+	slot, err := r.ReadSourceSlot(ctx, userID, CategoryBYOKActionable, sourceKey)
+	if err != nil || !slot.Active || slot.Observation == nil || slot.ProducerWitness.Kind != "byok-failure" {
+		return false, err
+	}
+	witness := slot.ProducerWitness
+	projectRef := scopedfirestore.Collection(r.client, "projects").Doc(userID + "_" + projectID)
+	bindingSnapshot, bindErr := projectRef.Collection("llm_profile_binding").Doc("current").Get(ctx)
+	if bindErr != nil && status.Code(bindErr) != codes.NotFound {
+		return false, bindErr
+	}
+	newBindingRevision := int64(0)
+	newProfileRevision := witness.ProfileRevision
+	if bindErr == nil {
+		data := bindingSnapshot.Data()
+		newBindingRevision = firestoreRevision(data["revision"])
+		if data["source"] == "personal" && data["profile_id"] == witness.ProfileID {
+			profileSnapshot, profileErr := scopedfirestore.Collection(r.client, "llm_profiles").Doc(userID + "_" + witness.ProfileID).Get(ctx)
+			if profileErr == nil {
+				profile := profileSnapshot.Data()
+				if profile["owner_id"] == userID {
+					newProfileRevision = firestoreRevision(profile["revision"])
+				}
+			} else if status.Code(profileErr) != codes.NotFound {
+				return false, profileErr
+			}
+		}
+	}
+	clearWitness := witness
+	clearWitness.Kind = "byok-settings"
+	clearWitness.BindingRevision = newBindingRevision
+	clearWitness.ProfileRevision = newProfileRevision
+	clearWitness.FailureReason = ""
+	clearWitness.Trigger = ""
+	clearWitness.AttemptStartedAt = time.Time{}
+	clearWitness.ExecutionID = ""
+	clearWitness.ProjectPipelineSequence = 0
+	if CompareWitness(CategoryBYOKActionable, clearWitness, witness) <= 0 {
+		return false, nil
+	}
+	input := ClearInput{Category: CategoryBYOKActionable, SourceKey: sourceKey,
+		ExpectedSourceRevision: slot.SourceRevision, ProducerWitness: clearWitness, Proof: "confirmed-settings-update"}
+	return r.ApplyClear(ctx, userID, input)
+}
+
+func firestoreRevision(value any) int64 {
+	switch number := value.(type) {
+	case int64:
+		return number
+	case int:
+		return int64(number)
+	case float64:
+		return int64(number)
+	default:
+		return -1
+	}
+}
+
 // ApplyReleaseAliasTransfer preserves an existing Release attention only for
 // the validated one-time 1.0.0 -> 2026.11.4 alias. The witness is captured
 // before Notes I/O and compared again inside the transaction.
@@ -517,7 +622,7 @@ func (r *Repository) ReadWithPublicationVerifier(ctx context.Context, userID str
 				projectID = slot.Observation.ProjectID
 			}
 			if projectID != "" {
-				owned, current, err := r.projectProjectionCurrent(ctx, userID, cat.Category, projectID, slot)
+				owned, current, currentProjectName, err := r.projectProjectionCurrent(ctx, userID, cat.Category, projectID, slot)
 				if err != nil {
 					appendProjectionFailure(&view, "project_context_unavailable")
 					continue
@@ -525,6 +630,9 @@ func (r *Repository) ReadWithPublicationVerifier(ctx context.Context, userID str
 				if !owned {
 					appendProjectionFailure(&view, "project_unavailable")
 					continue
+				}
+				if cat.Category == CategoryBYOKActionable && strings.TrimSpace(currentProjectName) != "" {
+					slot.Observation.ProjectName = currentProjectName
 				}
 				if cat.Category == CategoryPurposeGap && verifyPublication != nil {
 					published, err := verifyPublication(ctx, userID, projectID, slot.ProducerWitness)
@@ -536,6 +644,10 @@ func (r *Repository) ReadWithPublicationVerifier(ctx context.Context, userID str
 					}
 				}
 				if !current {
+					if cat.Category == CategoryBYOKActionable {
+						appendProjectionNotice(&view, slot.SourceKey, "byok_settings_changed")
+						continue
+					}
 					slot.Observation.Stale = true
 					slot.Observation.Actions = []Action{}
 					appendProjectionNotice(&view, slot.SourceKey, "project_context_changed")
@@ -584,15 +696,18 @@ func appendProjectionNotice(view *View, sourceKey, safeClass string) {
 	view.Notices = append(view.Notices, SourceNotice{SourceKey: sourceKey, State: "stale", SafeClass: safeClass})
 }
 
-func (r *Repository) projectProjectionCurrent(ctx context.Context, userID, category, projectID string, slot Slot) (owned, current bool, err error) {
+func (r *Repository) projectProjectionCurrent(ctx context.Context, userID, category, projectID string, slot Slot) (owned, current bool, currentProjectName string, err error) {
 	if !auth.ValidPathSegment(projectID) {
-		return false, false, nil
+		return false, false, "", nil
 	}
 	projectRef := scopedfirestore.Collection(r.client, "projects").Doc(userID + "_" + projectID)
 	refs := []*firestore.DocumentRef{projectRef}
 	if category == CategoryPurposeGap {
 		contextRef := projectRef.Collection("content_context")
 		refs = append(refs, contextRef.Doc("state"), contextRef.Doc("declaration"), contextRef.Doc("comparison"))
+	} else if category == CategoryBYOKActionable {
+		refs = append(refs, projectRef.Collection("llm_profile_binding").Doc("current"),
+			scopedfirestore.Collection(r.client, "llm_profiles").Doc(userID+"_"+slot.ProducerWitness.ProfileID))
 	}
 	data := make([]map[string]interface{}, len(refs))
 	found := make([]bool, len(refs))
@@ -611,10 +726,10 @@ func (r *Repository) projectProjectionCurrent(ctx context.Context, userID, categ
 		return nil
 	}, firestore.ReadOnly)
 	if err != nil {
-		return false, false, err
+		return false, false, "", err
 	}
 	if !found[0] {
-		return false, false, nil
+		return false, false, "", nil
 	}
 	project := data[0]
 	storedProjectID, _ := project["project_id"].(string)
@@ -622,20 +737,21 @@ func (r *Repository) projectProjectionCurrent(ctx context.Context, userID, categ
 		storedProjectID = strings.TrimPrefix(projectRef.ID, userID+"_")
 	}
 	if project["user_id"] != userID || storedProjectID != projectID {
-		return false, false, nil
+		return false, false, "", nil
 	}
 	owned, current = true, true
 	projectName, _ := project["name"].(string)
 	if strings.TrimSpace(projectName) == "" {
 		projectName = projectID
 	}
+	currentProjectName = projectName
 	observation := slot.Observation
-	if observation == nil || observation.ProjectID != projectID || observation.ProjectName != projectName {
+	if observation == nil || observation.ProjectID != projectID || (category != CategoryBYOKActionable && observation.ProjectName != projectName) {
 		current = false
 	}
 	if category == CategoryPurposeGap {
 		current = current && found[1] && found[2] && found[3] && purposeProjectionMatches(userID, projectID, project, data[1], data[2], data[3], slot)
-		return owned, current, nil
+		return owned, current, currentProjectName, nil
 	}
 	if category == CategoryPipelineFailure {
 		witness := slot.ProducerWitness
@@ -649,7 +765,29 @@ func (r *Repository) projectProjectionCurrent(ctx context.Context, userID, categ
 			}
 		}
 	}
-	return owned, current, nil
+	if category == CategoryBYOKActionable {
+		witness := slot.ProducerWitness
+		if witness.ProjectID != projectID || witness.Kind != "byok-failure" || slot.SourceKey != "byok:"+projectID || !found[1] || !found[2] {
+			current = false
+		} else {
+			binding := data[1]
+			profile := data[2]
+			if binding["source"] != "personal" || binding["profile_id"] != witness.ProfileID ||
+				firestoreRevision(binding["revision"]) != witness.BindingRevision || profile["owner_id"] != userID ||
+				firestoreRevision(profile["revision"]) != witness.ProfileRevision || profile["enabled"] != true {
+				current = false
+			}
+		}
+		if len(observation.Actions) != 1 {
+			current = false
+		}
+		for _, action := range observation.Actions {
+			if action.Target == nil || ValidateTarget(*action.Target) != nil || action.Target.Kind != "project-ai-service" || action.Target.ProjectID != projectID {
+				current = false
+			}
+		}
+	}
+	return owned, current, currentProjectName, nil
 }
 
 func purposeProjectionMatches(userID, projectID string, project, state, declaration, comparison map[string]interface{}, slot Slot) bool {

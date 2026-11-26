@@ -37,35 +37,37 @@ import (
 )
 
 type workerConfig struct {
-	VaultPath                    string
-	Bucket                       string
-	DataDir                      string
-	UserID                       string
-	ProjectID                    string
-	LocalCloudScope              string
-	ExecutionID                  string
-	PipelineReservationID        string
-	PipelineAttemptID            string
-	APIKey                       string
-	InitVault                    bool
-	Postprocess                  bool
-	StopOnError                  bool
-	Workspace                    bool
-	WorkspaceDir                 string
-	PipelineConfigPath           string
-	PipelineBindingsPath         string
-	ProfileResolverURL           string
-	ProfileResolverAudience      string
-	PipelineProfileSource        string
-	ProfileCandidates            []pipelineLLMProfile
-	ActiveLLMProfile             *pipelineLLMProfile
-	SharedProfilePool            bool
-	BootstrapLLMSource           bool
-	QuotaMarkerPath              string
-	ProfileCallSuccessMarkerPath string
-	ProfileCallAttemptMarkerPath string
-	SuppressOutput               bool
-	SuggestedQueries             bool
+	VaultPath                      string
+	Bucket                         string
+	DataDir                        string
+	UserID                         string
+	ProjectID                      string
+	LocalCloudScope                string
+	ExecutionID                    string
+	PipelineReservationID          string
+	PipelineAttemptID              string
+	APIKey                         string
+	InitVault                      bool
+	Postprocess                    bool
+	StopOnError                    bool
+	Workspace                      bool
+	WorkspaceDir                   string
+	PipelineConfigPath             string
+	PipelineBindingsPath           string
+	ProfileResolverURL             string
+	ProfileResolverAudience        string
+	PipelineProfileSource          string
+	PipelineProfileBindingRevision int64
+	ProfileCandidates              []pipelineLLMProfile
+	ActiveLLMProfile               *pipelineLLMProfile
+	SharedProfilePool              bool
+	BootstrapLLMSource             bool
+	QuotaMarkerPath                string
+	ProfileCallSuccessMarkerPath   string
+	ProfileCallAttemptMarkerPath   string
+	BYOKFailureMarkerPath          string
+	SuppressOutput                 bool
+	SuggestedQueries               bool
 	// CleanRebuild skips materializing prior generation outputs (wiki/.synto/
 	// cache artifacts) so Synto cold-starts from raw only. Default false.
 	CleanRebuild             bool
@@ -404,6 +406,7 @@ func runWorkerBatch(ctx context.Context, cfg workerConfig, rawCommands string) (
 			return errors.New("Project LLM source is unavailable to Pipeline")
 		}
 		cfg.PipelineProfileSource = profileResponse.Source
+		cfg.PipelineProfileBindingRevision = profileResponse.BindingRevision
 		cfg.ProfileCandidates = profileResponse.Profiles
 		cfg.SharedProfilePool = profileResponse.Source == "shared"
 		cfg.BootstrapLLMSource = profileResponse.Source == "bootstrap"
@@ -412,14 +415,19 @@ func runWorkerBatch(ctx context.Context, cfg workerConfig, rawCommands string) (
 				clear(cfg.ProfileCandidates[i].APIKey)
 			}
 		}()
-		if cfg.SharedProfilePool && len(cfg.ProfileCandidates) > 1 {
+		if cfg.PipelineProfileSource == "personal" || cfg.SharedProfilePool && len(cfg.ProfileCandidates) > 1 {
 			markerDir, markerErr := os.MkdirTemp("", "lwc-profile-pool-markers-*")
 			if markerErr != nil {
 				return errors.New("Pipeline quota marker is unavailable")
 			}
-			cfg.QuotaMarkerPath = filepath.Join(markerDir, "quota")
-			cfg.ProfileCallSuccessMarkerPath = filepath.Join(markerDir, "profile-call-success")
-			cfg.ProfileCallAttemptMarkerPath = filepath.Join(markerDir, "profile-call-attempt")
+			if cfg.SharedProfilePool {
+				cfg.QuotaMarkerPath = filepath.Join(markerDir, "quota")
+				cfg.ProfileCallSuccessMarkerPath = filepath.Join(markerDir, "profile-call-success")
+				cfg.ProfileCallAttemptMarkerPath = filepath.Join(markerDir, "profile-call-attempt")
+			}
+			if cfg.PipelineProfileSource == "personal" {
+				cfg.BYOKFailureMarkerPath = filepath.Join(markerDir, "byok-failure")
+			}
 			defer os.RemoveAll(markerDir)
 		}
 	}
@@ -1169,6 +1177,10 @@ func prepareOLWEnvironment(cfg workerConfig) ([]string, error) {
 	if cfg.ProfileCallAttemptMarkerPath != "" {
 		env = append(env, "LWC_PROFILE_CALL_ATTEMPT_MARKER_PATH="+cfg.ProfileCallAttemptMarkerPath)
 	}
+	if cfg.BYOKFailureMarkerPath != "" {
+		env = append(env, "LWC_BYOK_FAILURE_MARKER_PATH="+cfg.BYOKFailureMarkerPath,
+			"LWC_PROFILE_BINDING_REVISION="+strconv.FormatInt(cfg.PipelineProfileBindingRevision, 10))
+	}
 	env = append(env, profileFixtureEnvironment()...)
 	return env, nil
 }
@@ -1229,6 +1241,7 @@ func allowlistedSyntoEnvironment(extra []string) []string {
 		switch key {
 		case "XDG_CONFIG_HOME", "SYNTO_API_KEY", "DEEPSEEK_API_KEY", "LWC_BASE_SCHEMA_PATH", "LWC_PROFILE_GUIDANCE",
 			"LWC_PROFILE_CONFIG", "LWC_PROFILE_API_KEY", "LWC_PROFILE_QUOTA_MARKER_PATH", "LWC_PROFILE_CALL_SUCCESS_MARKER_PATH", "LWC_PROFILE_CALL_ATTEMPT_MARKER_PATH",
+			"LWC_BYOK_FAILURE_MARKER_PATH", "LWC_PROFILE_BINDING_REVISION",
 			"LWC_PROFILE_FIXTURE_TRANSPORT", "LWC_PROFILE_FIXTURE_RECEIPT_FILE", "LWC_PROFILE_FIXTURE_QUOTA_MODEL", "LWC_PROFILE_FIXTURE_QUOTA_AFTER", "LWC_PROFILE_FIXTURE_REQUIRE_AUTH", "LWC_PROFILE_FIXTURE_HEALTH_ROLE":
 			env = append(env, item)
 		}
