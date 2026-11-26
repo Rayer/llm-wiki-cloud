@@ -218,8 +218,8 @@ describe('LWC-211 Project Profile', () => {
     render(<ProjectProfilePanel projectId="project-a" />);
 
     await waitFor(() => {
-      expect(screen.getByRole('tab', { name: 'LLM Provider' })).toHaveAttribute('aria-selected', 'true');
-      expect(document.getElementById('project-settings-panel-ai-service')).not.toHaveAttribute('hidden');
+      expect(screen.getByRole('tab', { name: 'LLM Provider' }).getAttribute('aria-selected')).toBe('true');
+      expect(document.getElementById('project-settings-panel-ai-service')?.hasAttribute('hidden')).toBe(false);
     });
   });
 
