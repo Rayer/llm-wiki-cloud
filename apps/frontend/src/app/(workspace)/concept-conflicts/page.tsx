@@ -19,9 +19,13 @@ function wait(milliseconds: number) {
 }
 
 export default function ConceptConflictsPage() {
-  const { t } = useT();
   const { currentProject, hydrated } = useWorkspace();
   const projectID = currentProject?.id;
+  return <ConceptConflictsSession key={projectID ?? "no-project"} projectID={projectID} hydrated={hydrated} />;
+}
+
+function ConceptConflictsSession({ projectID, hydrated }: { projectID?: string; hydrated: boolean }) {
+  const { t } = useT();
   const [inventory, setInventory] = useState<ConceptConflictInventory | null>(null);
   const [selectedPath, setSelectedPath] = useState("");
   const [comparison, setComparison] = useState<ConceptConflictComparison | null>(null);
@@ -29,63 +33,75 @@ export default function ConceptConflictsPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const inventoryRequest = useRef(0);
   const comparisonRequest = useRef(0);
-  const currentProjectID = useRef(projectID);
+  const operationRequest = useRef(0);
+  const mounted = useRef(true);
+
   useLayoutEffect(() => {
-    currentProjectID.current = projectID;
-  }, [projectID]);
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      inventoryRequest.current += 1;
+      comparisonRequest.current += 1;
+      operationRequest.current += 1;
+    };
+  }, []);
 
   const reload = useCallback(async () => {
+    const requestID = ++inventoryRequest.current;
     comparisonRequest.current += 1;
     if (!projectID) {
       setInventory(null);
       setComparison(null);
       setSelectedPath("");
+      setLoading(false);
       return;
     }
     setLoading(true);
     setError("");
     try {
       const result = await getConceptConflicts(projectID);
+      if (!mounted.current || requestID !== inventoryRequest.current) return;
       setInventory(result);
       setComparison(null);
       setSelectedPath("");
     } catch (cause) {
+      if (!mounted.current || requestID !== inventoryRequest.current) return;
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
-      setLoading(false);
+      if (mounted.current && requestID === inventoryRequest.current) setLoading(false);
     }
   }, [projectID]);
 
   useEffect(() => {
     if (!hydrated) return;
-    comparisonRequest.current += 1;
-    let cancelled = false;
-    const clearProject = () => {
-      if (cancelled) return;
-      setInventory(null);
-      setComparison(null);
-      setSelectedPath("");
-      setLoading(false);
-    };
+    const requestID = ++inventoryRequest.current;
+    const isCurrent = () => mounted.current && requestID === inventoryRequest.current;
     if (!projectID) {
-      void Promise.resolve().then(clearProject);
-      return () => { cancelled = true; };
-    }
-    void getConceptConflicts(projectID)
-      .then((result) => {
-        if (cancelled) return;
-        setInventory(result);
+      void Promise.resolve().then(() => {
+        if (!isCurrent()) return;
+        setInventory(null);
         setComparison(null);
         setSelectedPath("");
-      })
-      .catch((cause) => {
-        if (!cancelled) setError(cause instanceof Error ? cause.message : String(cause));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
+        setLoading(false);
       });
-    return () => { cancelled = true; };
+    } else {
+      void getConceptConflicts(projectID)
+        .then((result) => {
+          if (!isCurrent()) return;
+          setInventory(result);
+          setComparison(null);
+          setSelectedPath("");
+        })
+        .catch((cause) => {
+          if (isCurrent()) setError(cause instanceof Error ? cause.message : String(cause));
+        })
+        .finally(() => {
+          if (isCurrent()) setLoading(false);
+        });
+    }
+    return () => { inventoryRequest.current += 1; };
   }, [hydrated, projectID]);
 
   const selectConflict = async (conflict: ConceptConflict) => {
@@ -98,11 +114,11 @@ export default function ConceptConflictsPage() {
     setMessage("");
     try {
       const result = await compareConceptConflict(requestPath, requestProjectID);
-      if (requestID !== comparisonRequest.current || currentProjectID.current !== requestProjectID ||
+      if (!mounted.current || requestID !== comparisonRequest.current ||
         result.project_id !== requestProjectID || result.published.path !== requestPath) return;
       setComparison(result);
     } catch (cause) {
-      if (requestID !== comparisonRequest.current || currentProjectID.current !== requestProjectID) return;
+      if (!mounted.current || requestID !== comparisonRequest.current) return;
       setError(cause instanceof Error ? cause.message : String(cause));
     }
   };
@@ -114,6 +130,8 @@ export default function ConceptConflictsPage() {
       ? t("ConceptConflicts.confirmKeep")
       : t("ConceptConflicts.confirmPublish");
     if (!window.confirm(confirmation)) return;
+    const requestID = ++operationRequest.current;
+    const isCurrent = () => mounted.current && operationRequest.current === requestID;
     setBusy(true);
     setError("");
     setMessage(t("ConceptConflicts.submitting"));
@@ -127,6 +145,7 @@ export default function ConceptConflictsPage() {
         storage_view: comparison.storage_view,
         pair_sha256: comparison.pair_sha256,
       }, projectID);
+      if (!isCurrent()) return;
       if (accepted.status !== "pending") {
         if (accepted.status === "committed") {
           setMessage(action === "keep_published" ? t("ConceptConflicts.kept") : t("ConceptConflicts.published"));
@@ -141,7 +160,9 @@ export default function ConceptConflictsPage() {
       let finalStatus = "pending";
       for (let attempt = 0; attempt < 90; attempt += 1) {
         await wait(2000);
+        if (!isCurrent()) return;
         const result = await getConceptConflictOperation(operationID, accepted.execution_id, projectID);
+        if (!isCurrent()) return;
         finalStatus = result.status;
         if (finalStatus !== "pending") break;
       }
@@ -152,13 +173,15 @@ export default function ConceptConflictsPage() {
       } else {
         setMessage(t("ConceptConflicts.operationFinished", { status: finalStatus }));
       }
+      if (!isCurrent()) return;
       await reload();
     } catch (cause) {
+      if (!isCurrent()) return;
       setError(cause instanceof Error ? cause.message : String(cause));
       setMessage("");
       await reload();
     } finally {
-      setBusy(false);
+      if (isCurrent()) setBusy(false);
     }
   };
 
@@ -181,7 +204,7 @@ export default function ConceptConflictsPage() {
         </p>
       ) : null}
 
-      {!loading && conflicts.length === 0 && heldBack.length === 0 ? (
+      {!loading && inventory && conflicts.length === 0 && heldBack.length === 0 ? (
         <p className="rounded border border-white/10 p-4 text-zinc-400">{t("ConceptConflicts.empty")}</p>
       ) : null}
 
