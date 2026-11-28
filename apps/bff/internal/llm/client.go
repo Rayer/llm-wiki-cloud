@@ -134,8 +134,11 @@ type ModelIdentity struct {
 // ProjectRoleClients keeps one Project operation on a single immutable Profile
 // snapshot while allowing its Fast and Heavy calls to select distinct models.
 type ProjectRoleClients struct {
-	Fast  ProjectChatClient
-	Heavy ProjectChatClient
+	Fast            ProjectChatClient
+	Heavy           ProjectChatClient
+	ProfileID       string
+	ProfileRevision int64
+	BindingRevision int64
 }
 
 type ModelIdentityProvider interface {

@@ -2302,15 +2302,16 @@ func readPipelineFailureDiagnosticWithExecution(ctx context.Context, projectStor
 		return nil, "", errors.New("diagnostic too large")
 	}
 	var payload struct {
-		Version    int    `json:"version"`
-		Status     string `json:"status"`
-		Stage      string `json:"stage"`
-		ErrorClass string `json:"error_class"`
-		DetailCode string `json:"detail_code,omitempty"`
-		Child      string `json:"child_command,omitempty"`
-		ExitCode   *int   `json:"exit_code,omitempty"`
-		Execution  string `json:"execution,omitempty"`
-		Message    string `json:"message,omitempty"`
+		Version           int    `json:"version"`
+		Status            string `json:"status"`
+		Stage             string `json:"stage"`
+		ErrorClass        string `json:"error_class"`
+		DetailCode        string `json:"detail_code,omitempty"`
+		Child             string `json:"child_command,omitempty"`
+		ExitCode          *int   `json:"exit_code,omitempty"`
+		Execution         string `json:"execution,omitempty"`
+		Message           string `json:"message,omitempty"`
+		BYOKFailureReason string `json:"byok_failure_reason,omitempty"`
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
@@ -2329,6 +2330,9 @@ func readPipelineFailureDiagnosticWithExecution(ctx context.Context, projectStor
 	}
 	if len(payload.Message) > 512 {
 		return nil, "", errors.New("diagnostic message too large")
+	}
+	if payload.BYOKFailureReason != "" && (!handler.ValidBYOKFailureReason(payload.BYOKFailureReason) || payload.Stage != "synto_run" || payload.Child != "run" || payload.ErrorClass != "child_exit") {
+		return nil, "", errors.New("invalid BYOK failure diagnostic")
 	}
 	if _, ok := pipelinediagnostic.ValidStages[pipelinediagnostic.Stage(payload.Stage)]; !ok {
 		return nil, "", errors.New("invalid diagnostic stage")
@@ -2358,6 +2362,7 @@ func readPipelineFailureDiagnosticWithExecution(ctx context.Context, projectStor
 		Version: payload.Version, Status: payload.Status, Stage: payload.Stage,
 		ErrorClass: payload.ErrorClass, DetailCode: payload.DetailCode,
 		Child: payload.Child, ExitCode: payload.ExitCode, Message: payload.Message,
+		BYOKFailureReason: payload.BYOKFailureReason,
 	}, payload.Execution, nil
 }
 

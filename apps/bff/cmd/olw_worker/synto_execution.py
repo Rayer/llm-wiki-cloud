@@ -616,6 +616,7 @@ if _profile_raw:
     _profile_host = _profile_url.hostname.rstrip(".").lower()
     _profile_call_success_marker_path = os.environ.get("LWC_PROFILE_CALL_SUCCESS_MARKER_PATH", "")
     _profile_call_attempt_marker_path = os.environ.get("LWC_PROFILE_CALL_ATTEMPT_MARKER_PATH", "")
+    _byok_failure_marker_path = os.environ.get("LWC_BYOK_FAILURE_MARKER_PATH", "")
     _original_getaddrinfo = socket.getaddrinfo
 
     def _mark_profile_marker(path, label):
@@ -655,6 +656,52 @@ if _profile_raw:
         except OSError as exc:
             raise RuntimeError("Project profile quota attempt marker could not be cleared") from exc
 
+    def _actionable_byok_failure(response):
+        try:
+            envelope = response.json()
+        except Exception:
+            envelope = {}
+        error = envelope.get("error") if isinstance(envelope, dict) else None
+        code = ""
+        if isinstance(error, dict):
+            value = error.get("code") or error.get("type") or ""
+            if isinstance(value, str):
+                code = value.strip().lower()
+        if code in {"insufficient_quota", "quota_exhausted", "quota_exceeded", "insufficient_credits"}:
+            return "quota"
+        if code == "billing_error":
+            return "billing"
+        if code in {"model_not_found", "unsupported_parameter"}:
+            return "model_configuration"
+        if code in {"permission_denied", "insufficient_permissions"} or response.status_code == 403:
+            return "permission"
+        if response.status_code == 401:
+            return "authentication"
+        return ""
+
+    def _write_byok_failure_marker(reason):
+        if not _byok_failure_marker_path:
+            return
+        if not reason:
+            try:
+                os.unlink(_byok_failure_marker_path)
+            except FileNotFoundError:
+                pass
+            return
+        payload = json.dumps({"reason": reason}, separators=(",", ":")).encode("utf-8")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            fd = os.open(_byok_failure_marker_path, flags, 0o600)
+        except FileExistsError:
+            return
+        except OSError as exc:
+            raise RuntimeError("Project profile failure marker is unavailable") from exc
+        try:
+            with os.fdopen(fd, "wb") as marker:
+                marker.write(payload)
+        except OSError as exc:
+            raise RuntimeError("Project profile failure marker is unavailable") from exc
+
     _profile_httpx_send = httpx.Client.send
 
     def _send_with_profile_call_success_marker(self, request, *args, **kwargs):
@@ -663,14 +710,23 @@ if _profile_raw:
             and request.method.upper() != "GET"
         )
         owns_attempt_marker = _mark_profile_marker(_profile_call_attempt_marker_path, "attempt") if profile_generation else False
-        response = _profile_httpx_send(self, request, *args, **kwargs)
+        try:
+            response = _profile_httpx_send(self, request, *args, **kwargs)
+        except Exception:
+            if profile_generation:
+                _write_byok_failure_marker("")
+            raise
         if profile_generation and 200 <= response.status_code < 300:
             # This per-batch marker is monotonic: any generation response that
             # completed means a later stage cannot safely replay the batch.
             _mark_profile_call_success()
+            _write_byok_failure_marker("")
         elif profile_generation and _is_profile_quota_response(response):
             # Clear only the provisional marker created by this exact request.
             _clear_profile_attempt_for_quota(owns_attempt_marker)
+            _write_byok_failure_marker(_actionable_byok_failure(response))
+        elif profile_generation:
+            _write_byok_failure_marker(_actionable_byok_failure(response))
         return response
 
     httpx.Client.send = _send_with_profile_call_success_marker

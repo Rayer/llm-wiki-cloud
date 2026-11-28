@@ -1902,13 +1902,14 @@ func localVaultHasWorkerFailure(vault string, cfg workerConfig) (bool, error) {
 }
 
 type workerFailureLogRecord struct {
-	Event      string                     `json:"event"`
-	Stage      failureStage               `json:"stage"`
-	ErrorClass failureErrorClass          `json:"error_class"`
-	DetailCode conceptReconcileDetailCode `json:"detail_code,omitempty"`
-	Child      failureChildCommand        `json:"child_command,omitempty"`
-	ExitCode   *int                       `json:"exit_code,omitempty"`
-	Cause      string                     `json:"cause"`
+	Event             string                     `json:"event"`
+	Stage             failureStage               `json:"stage"`
+	ErrorClass        failureErrorClass          `json:"error_class"`
+	DetailCode        conceptReconcileDetailCode `json:"detail_code,omitempty"`
+	Child             failureChildCommand        `json:"child_command,omitempty"`
+	ExitCode          *int                       `json:"exit_code,omitempty"`
+	Cause             string                     `json:"cause"`
+	BYOKFailureReason string                     `json:"byok_failure_reason,omitempty"`
 }
 
 type workerStartLogRecord struct {
@@ -1993,7 +1994,7 @@ func hasWorkerFailureEvent(data []byte) bool {
 }
 
 func workerFailurePipelineLogData(data []byte, exists bool, cfg workerConfig, failure error, secrets []string) ([]byte, error) {
-	diagnostic := diagnosticForError(failure)
+	diagnostic := failureDiagnosticForConfig(failure, cfg)
 	secrets = append(logSecrets(cfg), secrets...)
 	if !exists {
 		startup, err := json.Marshal(workerStartLogRecord{
@@ -2015,13 +2016,14 @@ func workerFailurePipelineLogData(data []byte, exists bool, cfg workerConfig, fa
 	}
 	cause := truncateDiagnostic(string(redactDiagnosticBytes([]byte(failure.Error()), secrets)), maxWorkerArgBytes)
 	record, err := json.Marshal(workerFailureLogRecord{
-		Event:      "worker_failure",
-		Stage:      diagnostic.Stage,
-		ErrorClass: diagnostic.ErrorClass,
-		DetailCode: diagnostic.DetailCode,
-		Child:      diagnostic.Child,
-		ExitCode:   diagnostic.ExitCode,
-		Cause:      cause,
+		Event:             "worker_failure",
+		Stage:             diagnostic.Stage,
+		ErrorClass:        diagnostic.ErrorClass,
+		DetailCode:        diagnostic.DetailCode,
+		Child:             diagnostic.Child,
+		ExitCode:          diagnostic.ExitCode,
+		Cause:             cause,
+		BYOKFailureReason: diagnostic.BYOKFailureReason,
 	})
 	if err != nil {
 		return nil, err
@@ -2119,7 +2121,7 @@ func writeCloudFailureDiagnosticWithContext(ctx context.Context, objects objectS
 	if !validPipelineExecutionID(cfg.ExecutionID) {
 		return nil
 	}
-	data, err := marshalFailureDiagnosticMeta(failure, cfg.ExecutionID, logSecrets(cfg))
+	data, err := marshalFailureDiagnosticMetaWithConfig(failure, cfg.ExecutionID, logSecrets(cfg), cfg)
 	if err != nil {
 		return err
 	}

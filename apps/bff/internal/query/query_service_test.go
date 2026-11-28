@@ -620,6 +620,37 @@ func TestAIOperationFailureClassUsesTypedProviderCategories(t *testing.T) {
 	}
 }
 
+func TestNewAIOperationFailureKeepsActionableReasonPrivateAndSkipsTransients(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "authentication", err: &llm.ProfileCallError{Kind: llm.ProviderAuthentication}, want: "authentication"},
+		{name: "quota", err: &llm.ProfileCallError{Kind: llm.ProviderQuotaExhausted}, want: "quota"},
+		{name: "billing", err: &llm.ProfileCallError{Kind: llm.ProviderBilling}, want: "billing"},
+		{name: "permission", err: &llm.ProfileCallError{Kind: llm.ProviderPermissionDenied}, want: "permission"},
+		{name: "model configuration", err: &llm.ProfileCallError{Kind: llm.ProviderModelNotFound}, want: "model_configuration"},
+		{name: "rate limited", err: &llm.ProfileCallError{Kind: llm.ProviderRateLimited}},
+		{name: "timeout", err: &llm.ProfileCallError{Kind: llm.ProviderTimeout}},
+		{name: "generic provider failure", err: &llm.ProfileCallError{Kind: llm.ProviderFailure}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			failure, ok := NewAIOperationFailure(AIOperationAnswerSynthesis, test.err, AIFallbackRetrievalOnly)
+			if !ok {
+				t.Fatal("typed provider failure was omitted")
+			}
+			if failure.ActionableReason != test.want {
+				t.Fatalf("actionable reason=%q, want %q", failure.ActionableReason, test.want)
+			}
+			encoded, err := json.Marshal(failure)
+			if err != nil || strings.Contains(string(encoded), "provider response leaked") {
+				t.Fatalf("failure serialization=%q err=%v", encoded, err)
+			}
+		})
+	}
+}
+
 func TestAIOperationFailureCanonicalClassesRoundTripAndUnconfiguredProviderIsOmitted(t *testing.T) {
 	classes := []string{
 		AIFailureAuthentication, AIFailureRateLimited, AIFailureQuotaExhausted, AIFailureBilling,

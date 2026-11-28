@@ -51,6 +51,7 @@ func (h *Handler) executeQuery(ctx context.Context, reader storage.Store, profil
 	}
 	var selectedClient llm.ProjectChatClient
 	var selectedRoles llm.ProjectRoleClients
+	var selectedBYOK llm.ProjectRoleClients
 	selectedSource := ""
 	if len(scope) == 2 {
 		roles, source, err := h.projectLLMRoleClients(ctx, scope[0], scope[1])
@@ -65,6 +66,9 @@ func (h *Handler) executeQuery(ctx context.Context, reader storage.Store, profil
 		selectedRoles = roles
 		selectedClient = roles.Fast
 		selectedSource = source
+		if source == "personal" {
+			selectedBYOK = roles
+		}
 		if selectedClient != nil {
 			ctx = llm.WithProjectRoleClients(ctx, selectedRoles)
 			ctx = llm.WithProjectChatClient(ctx, selectedRoles.Fast)
@@ -72,6 +76,7 @@ func (h *Handler) executeQuery(ctx context.Context, reader storage.Store, profil
 		}
 	}
 	request.Profile = profile
+	operationStartedAt := time.Now().UTC()
 	stageCtx, span := startQueryStage(ctx, "runtime.execute")
 	if selectedSource != "" {
 		span.SetAttributes(attribute.String("llm.source", selectedSource))
@@ -104,6 +109,16 @@ func (h *Handler) executeQuery(ctx context.Context, reader storage.Store, profil
 		source := queryAIOperationSource(selectedSource)
 		for i := range response.AIOperationFailures {
 			response.AIOperationFailures[i].Source = source
+		}
+	}
+	if selectedSource == "personal" && selectedBYOK.ProfileID != "" && selectedBYOK.ProfileRevision > 0 {
+		for _, failure := range response.AIOperationFailures {
+			if failure.ActionableReason == "" || failure.Source != query.AIOperationSourcePersonal {
+				continue
+			}
+			// Nudge persistence must not replace or fail the user's Query result.
+			_ = h.recordBYOKActionableFailure(ctx, scope[0], scope[1], selectedBYOK.ProfileID,
+				selectedBYOK.ProfileRevision, selectedBYOK.BindingRevision, 0, failure.ActionableReason, "query", "", operationStartedAt)
 		}
 	}
 	return response, result.RuntimeConfigIdentity, nil

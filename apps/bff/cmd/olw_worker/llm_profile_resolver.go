@@ -36,11 +36,12 @@ type pipelineLLMProfile struct {
 }
 
 type pipelineLLMProfileResponse struct {
-	SchemaVersion  int                  `json:"schema_version"`
-	SnapshotDigest string               `json:"snapshot_digest"`
-	RoleMapVersion int                  `json:"role_map_version"`
-	Source         string               `json:"source"`
-	Profiles       []pipelineLLMProfile `json:"profiles"`
+	SchemaVersion   int                  `json:"schema_version"`
+	SnapshotDigest  string               `json:"snapshot_digest"`
+	RoleMapVersion  int                  `json:"role_map_version"`
+	BindingRevision int64                `json:"binding_revision"`
+	Source          string               `json:"source"`
+	Profiles        []pipelineLLMProfile `json:"profiles"`
 }
 
 type pipelineLLMModels struct {
@@ -269,6 +270,7 @@ func resolveSuggestedQueriesSource(ctx context.Context, cfg workerConfig) (worke
 		return workerConfig{}, errors.New("Project LLM source is unavailable to suggested-query generation")
 	}
 	cfg.PipelineProfileSource = response.Source
+	cfg.PipelineProfileBindingRevision = response.BindingRevision
 	cfg.ProfileCandidates = response.Profiles
 	cfg.SharedProfilePool = response.Source == "shared"
 	cfg.BootstrapLLMSource = response.Source == "bootstrap"

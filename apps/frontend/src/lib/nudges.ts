@@ -5,6 +5,7 @@ import { apiFetch } from './api.ts';
 export type NudgeTarget =
   | { kind: 'pipeline-run'; project_id: string; execution_id: string }
   | { kind: 'project-description'; project_id: string }
+  | { kind: 'project-ai-service'; project_id: string }
   | { kind: 'release-notes'; mode: 'current' }
   | { kind: 'release-notes'; mode: 'published-version'; version: string };
 
@@ -102,6 +103,9 @@ export function resolveNudgeTarget(target: NudgeTarget): string | null {
     case 'project-description':
       if (!segment(target.project_id)) return null;
       return `/profile?project_id=${encodeURIComponent(target.project_id)}#project-description`;
+    case 'project-ai-service':
+      if (!segment(target.project_id)) return null;
+      return `/profile?project_id=${encodeURIComponent(target.project_id)}#project-ai-service`;
     case 'release-notes':
       if (target.mode === 'current') return '/release-notes?version=current';
       if (target.mode === 'published-version' && target.version.length > 0 && target.version.length <= 64 && !/[\\/?#\0]/.test(target.version)) {

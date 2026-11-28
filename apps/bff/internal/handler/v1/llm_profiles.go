@@ -20,6 +20,7 @@ import (
 	"github.com/rayer/llm-wiki-bff/internal/byok"
 	scopedfirestore "github.com/rayer/llm-wiki-bff/internal/firestore"
 	"github.com/rayer/llm-wiki-bff/internal/llm"
+	"github.com/rayer/llm-wiki-bff/internal/nudge"
 	"github.com/rayer/llm-wiki-bff/internal/pipelinequota"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -271,12 +272,14 @@ func (h *Handler) PipelineLLMProfile(c *gin.Context) {
 	}
 	trace.SpanFromContext(c.Request.Context()).SetAttributes(attrs...)
 	response := struct {
-		SchemaVersion  int                  `json:"schema_version"`
-		SnapshotDigest string               `json:"snapshot_digest"`
-		RoleMapVersion int                  `json:"role_map_version"`
-		Source         string               `json:"source"`
-		Profiles       []pipelineLLMProfile `json:"profiles"`
-	}{SchemaVersion: 2, SnapshotDigest: snapshot.ConfigDigest, RoleMapVersion: snapshot.RoleMapVersion, Source: source, Profiles: profiles}
+		SchemaVersion   int                  `json:"schema_version"`
+		SnapshotDigest  string               `json:"snapshot_digest"`
+		RoleMapVersion  int                  `json:"role_map_version"`
+		BindingRevision int64                `json:"binding_revision"`
+		Source          string               `json:"source"`
+		Profiles        []pipelineLLMProfile `json:"profiles"`
+	}{SchemaVersion: 2, SnapshotDigest: snapshot.ConfigDigest, RoleMapVersion: snapshot.RoleMapVersion,
+		BindingRevision: snapshot.BindingRevision, Source: source, Profiles: profiles}
 	body, err := json.Marshal(response)
 	if err != nil {
 		for i := range profiles {
@@ -558,6 +561,7 @@ func (h *Handler) SetProjectLLMBinding(c *gin.Context) {
 	projectRef := scopedfirestore.Collection(h.firestore.Raw(), "projects").Doc(projectDocID(userID, projectID))
 	bindingRef := projectRef.Collection("llm_profile_binding").Doc("current")
 	var next llmBindingView
+	var previous llmBindingView
 	err := h.firestore.Raw().RunTransaction(c.Request.Context(), func(ctx context.Context, tx *cloudfirestore.Transaction) error {
 		project, err := tx.Get(projectRef)
 		if err != nil {
@@ -578,6 +582,7 @@ func (h *Handler) SetProjectLLMBinding(c *gin.Context) {
 		if current.Revision != input.Revision {
 			return errLLMProfileConflict
 		}
+		previous = current
 		var newProfileRef *cloudfirestore.DocumentRef
 		var newProfile llmProfileDocument
 		if input.Source == "personal" {
@@ -624,6 +629,14 @@ func (h *Handler) SetProjectLLMBinding(c *gin.Context) {
 	if err != nil {
 		writeLLMProfileError(c, err)
 		return
+	}
+	if previous.Revision != next.Revision || previous.Source != next.Source || previous.ProfileID != next.ProfileID || previous.ProfileRevision != next.ProfileRevision {
+		if _, clearErr := nudge.NewRepository(h.firestore.Raw()).ClearBYOKForSettings(c.Request.Context(), userID, projectID); clearErr != nil {
+			// The projection independently hides reminders whose binding or profile
+			// revision is no longer current, so a persistence hiccup must not turn a
+			// successful settings update into an apparent failure.
+			slog.Warn("BYOK nudge clear unavailable")
+		}
 	}
 	c.JSON(http.StatusOK, next)
 }
@@ -731,6 +744,9 @@ func (h *Handler) updateLLMProfile(c *gin.Context, shared bool) {
 	if err != nil {
 		writeLLMProfileError(c, err)
 		return
+	}
+	if !shared && len(next.BoundProjects) > 0 {
+		clearBYOKNudgesForBoundProjects(c.Request.Context(), h.firestore.Raw(), owner, next.BoundProjects)
 	}
 	c.JSON(http.StatusOK, viewLLMProfile(next, shared))
 }
@@ -1011,6 +1027,11 @@ func (h *Handler) projectLLMRoleClients(ctx context.Context, owner, project stri
 		return llm.ProjectRoleClients{}, operation.Source, err
 	}
 	roles, err := h.profileRoleClientsForRecords(ctx, owner, operation.Source, profiles)
+	if err == nil && operation.Source == "personal" && len(operation.Profiles) == 1 {
+		roles.ProfileID = operation.Profiles[0].ID
+		roles.ProfileRevision = operation.Profiles[0].Revision
+		roles.BindingRevision = operation.BindingRevision
+	}
 	return roles, operation.Source, err
 }
 

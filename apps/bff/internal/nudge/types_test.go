@@ -16,6 +16,7 @@ func TestResolveTargetUsesClosedFirstPartyRoutes(t *testing.T) {
 	}{
 		{"pipeline exact run", Target{Kind: "pipeline-run", ProjectID: "project-a", ExecutionID: "run-a"}, "/status?project_id=project-a&execution_id=run-a", false},
 		{"description exact project", Target{Kind: "project-description", ProjectID: "project-a"}, "/profile?project_id=project-a#project-description", false},
+		{"Project AI service settings", Target{Kind: "project-ai-service", ProjectID: "project-a"}, "/profile?project_id=project-a#project-ai-service", false},
 		{"current notes", Target{Kind: "release-notes", Mode: "current"}, "/release-notes?version=current", false},
 		{"published notes", Target{Kind: "release-notes", Mode: "published-version", Version: "2026.11.4"}, "/release-notes?version=2026.11.4", false},
 		{"extra pipeline mode", Target{Kind: "pipeline-run", ProjectID: "project-a", ExecutionID: "run-a", Mode: "full"}, "", true},
@@ -36,6 +37,83 @@ func TestResolveTargetUsesClosedFirstPartyRoutes(t *testing.T) {
 				t.Fatalf("ResolveTarget=%q err=%v, want %q", got, err, test.want)
 			}
 		})
+	}
+}
+
+func TestBYOKWitnessOrdersSettingsRevisionsAndLateOperations(t *testing.T) {
+	started := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	failure := ProducerWitness{Kind: "byok-failure", ProjectID: "project-a", ProfileID: "profile-a", ProfileRevision: 1,
+		BindingRevision: 2, FailureReason: "authentication", Trigger: "query", AttemptStartedAt: started}
+	newSettings := failure
+	newSettings.Kind, newSettings.ProfileRevision = "byok-settings", 2
+	newSettings.FailureReason, newSettings.Trigger, newSettings.AttemptStartedAt = "", "", time.Time{}
+	if CompareWitness(CategoryBYOKActionable, failure, newSettings) >= 0 {
+		t.Fatal("old profile revision beat settings update")
+	}
+	newFailure := failure
+	newFailure.ProfileRevision, newFailure.AttemptStartedAt = 2, started.Add(time.Second)
+	if CompareWitness(CategoryBYOKActionable, newFailure, newSettings) <= 0 {
+		t.Fatal("actionable failure after settings update could not recreate the Nudge")
+	}
+	lateOldBinding := newFailure
+	lateOldBinding.ProfileRevision, lateOldBinding.BindingRevision = 3, 1
+	currentBinding := newFailure
+	currentBinding.ProfileRevision, currentBinding.BindingRevision = 3, 2
+	if CompareWitness(CategoryBYOKActionable, lateOldBinding, currentBinding) >= 0 {
+		t.Fatal("late operation from an old Project binding beat the current binding")
+	}
+	earlierRun, laterRun := failure, failure
+	earlierRun.Trigger, earlierRun.ExecutionID, earlierRun.ProjectPipelineSequence = "pipeline", "run-1", 3
+	laterRun.Trigger, laterRun.ExecutionID, laterRun.ProjectPipelineSequence = "pipeline", "run-2", 4
+	if CompareWitness(CategoryBYOKActionable, earlierRun, laterRun) >= 0 || CompareWitness(CategoryBYOKActionable, laterRun, earlierRun) <= 0 {
+		t.Fatal("same-time pipeline BYOK failures were not ordered by Project sequence")
+	}
+	otherRun := earlierRun
+	otherRun.ExecutionID = "run-0"
+	if CompareWitness(CategoryBYOKActionable, earlierRun, otherRun) <= 0 || CompareWitness(CategoryBYOKActionable, otherRun, earlierRun) >= 0 {
+		t.Fatal("same-time, same-sequence BYOK failures did not have a deterministic event tie break")
+	}
+}
+
+func TestBYOKSettingsClearAcceptsOnlySettingsUpdateProof(t *testing.T) {
+	clear := ClearInput{Category: CategoryBYOKActionable, SourceKey: "byok:project-a", ExpectedSourceRevision: 1,
+		ProducerWitness: ProducerWitness{Kind: "byok-settings", ProjectID: "project-a", ProfileID: "profile-a", ProfileRevision: 2, BindingRevision: 1},
+		Proof:           "confirmed-settings-update"}
+	if err := ValidateClearInput(clear); err != nil {
+		t.Fatalf("valid settings update clear rejected: %v", err)
+	}
+	clear.Proof = "confirmed-recovery"
+	if !errors.Is(ValidateClearInput(clear), ErrInvalidInput) {
+		t.Fatal("Pipeline recovery proof cleared a BYOK reminder")
+	}
+	pipelineClear := ClearInput{Category: CategoryPipelineFailure, SourceKey: "pipeline-fail:project-a", Proof: "confirmed-settings-update"}
+	if !errors.Is(ValidateClearInput(pipelineClear), ErrInvalidInput) {
+		t.Fatal("BYOK settings proof cleared a Pipeline reminder")
+	}
+}
+
+func TestBYOKObservationRejectsTransientAndUnscopedWitnesses(t *testing.T) {
+	base := ObservationInput{
+		Category: CategoryBYOKActionable, SourceKey: "byok:project-a",
+		PayloadDigest: strings.Repeat("a", 64), AttentionMaterialRevision: "profile-revision:1",
+		ProducerWitness: ProducerWitness{Kind: "byok-failure", ProjectID: "project-a", ProfileID: "profile-a", ProfileRevision: 1,
+			BindingRevision: 1, FailureReason: "authentication", Trigger: "query", AttemptStartedAt: time.Now().UTC()},
+		Observation: Observation{ProjectID: "project-a", Title: "Personal LLM needs attention", Body: "Review AI service settings.", Severity: SeverityAttention,
+			Actions: []Action{{ID: "review-ai-settings", Kind: "link", Label: "Review AI settings", Target: &Target{Kind: "project-ai-service", ProjectID: "project-a"}}}},
+	}
+	if err := ValidateObservationInput(base); err != nil {
+		t.Fatalf("valid BYOK observation rejected: %v", err)
+	}
+	transient := base
+	transient.ProducerWitness = base.ProducerWitness
+	transient.ProducerWitness.FailureReason = "timeout"
+	if err := ValidateObservationInput(transient); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("transient BYOK failure accepted: %v", err)
+	}
+	unscoped := base
+	unscoped.SourceKey = "byok:project-b"
+	if err := ValidateObservationInput(unscoped); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("cross-Project source accepted: %v", err)
 	}
 }
 

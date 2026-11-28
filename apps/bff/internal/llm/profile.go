@@ -151,6 +151,30 @@ const (
 	ProviderPermissionDenied     ProviderErrorKind = "provider_permission_denied"
 )
 
+// ActionableBYOKFailureReason returns a finite, user-actionable category for
+// a typed personal-profile provider rejection. Transient and ambiguous errors
+// deliberately return no reason so they cannot create a persistent reminder.
+func ActionableBYOKFailureReason(err error) (string, bool) {
+	var callErr *ProfileCallError
+	if !errors.As(err, &callErr) || callErr == nil {
+		return "", false
+	}
+	switch callErr.Kind {
+	case ProviderAuthentication:
+		return "authentication", true
+	case ProviderQuotaExhausted:
+		return "quota", true
+	case ProviderBilling:
+		return "billing", true
+	case ProviderPermissionDenied:
+		return "permission", true
+	case ProviderModelNotFound, ProviderParameterUnsupported:
+		return "model_configuration", true
+	default:
+		return "", false
+	}
+}
+
 // ProfileCallError contains only a safe category and status, never provider bodies or keys.
 type ProfileCallError struct {
 	Kind       ProviderErrorKind
