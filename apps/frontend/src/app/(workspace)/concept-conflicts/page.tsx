@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   compareConceptConflict,
   getConceptConflictOperation,
@@ -31,7 +31,9 @@ export default function ConceptConflictsPage() {
   const [message, setMessage] = useState("");
   const comparisonRequest = useRef(0);
   const currentProjectID = useRef(projectID);
-  currentProjectID.current = projectID;
+  useLayoutEffect(() => {
+    currentProjectID.current = projectID;
+  }, [projectID]);
 
   const reload = useCallback(async () => {
     comparisonRequest.current += 1;
