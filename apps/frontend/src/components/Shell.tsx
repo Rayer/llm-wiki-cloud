@@ -215,6 +215,7 @@ function ShellContent({ children }: { children: React.ReactNode }) {
     ...(!isDemoSession ? [{ href: '/cli', label: t('CLILane.nav'), icon: Terminal, beta: true }] : []),
     { href: '/sources', label: t('Shell.sources'), icon: FileText, countKey: 'sources' },
     { href: '/concepts', label: t('Shell.concepts'), icon: Brain, countKey: 'concepts' },
+    ...(!isDemoSession ? [{ href: '/concept-conflicts', label: t('Shell.conceptConflicts'), icon: Shield }] : []),
     { href: '/status', label: t('Shell.status'), icon: Activity },
     ...(user?.management_scopes?.some((scope) => scope === 'auth:admin' || scope === 'lwc:admin')
       ? [{ href: '/admin', label: 'Admin', icon: Shield }]

@@ -4,11 +4,16 @@ Config.resolve_role is the shared seam after provider/profile/CLI precedence.
 OpenAICompatClient ignores think and merges options last into the wire payload.
 """
 import hashlib
+import json
 import httpx
 import ipaddress
-import json
+import math
+import logging
 import os
+import sqlite3
 import socket
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -17,6 +22,8 @@ from synto.config import Config, ResolvedModel
 from synto.openai_compat_client import LLMError, OpenAICompatClient
 from synto.providers import ProviderInfo, PROVIDER_REGISTRY
 from synto.pipeline import compile as compile_pipeline, ingest
+from synto.pipeline.orchestrator import PipelineOrchestrator, PipelineReport
+from synto.vault import parse_note
 
 if synto.__version__ != "0.7.0":
     raise RuntimeError("LWC execution adapter requires pinned Synto 0.7.0")
@@ -49,6 +56,475 @@ def _build_wiki_frontmatter_with_generator(*args, **kwargs):
 
 
 compile_pipeline.build_wiki_frontmatter = _build_wiki_frontmatter_with_generator
+
+# Synto 0.7.0 publishes to the same relative path without checking whether the
+# target already exists. Keep the guard in this LWC adapter so every LWC
+# approve_drafts/publish_drafts caller shares it without changing the pinned
+# third-party package. A held candidate stays in .drafts for read-only review.
+_publish_drafts = compile_pipeline.publish_drafts
+
+
+def _publish_drafts_without_path_collisions(
+    config, db, paths=None, notes="", min_confidence=0.0
+):
+    candidates = paths
+    if candidates is None:
+        candidates = list(config.drafts_dir.rglob("*.md")) if config.drafts_dir.exists() else []
+
+    publishable = []
+    for draft_path in candidates:
+        draft_path = Path(draft_path)
+        try:
+            relative = draft_path.resolve().relative_to(config.drafts_dir.resolve())
+        except ValueError:
+            # Preserve Synto's existing validation/error behavior for paths
+            # outside its draft root.
+            publishable.append(draft_path)
+            continue
+        target = config.wiki_dir / relative
+        published_rel = (Path("wiki") / relative).as_posix()
+        if target.exists() or target.is_symlink() or db.get_article(published_rel) is not None:
+            logging.getLogger("synto").warning(
+                "Held back path collision: %s (published file or row exists)",
+                published_rel,
+            )
+            continue
+        publishable.append(draft_path)
+
+    return _publish_drafts(
+        config,
+        db,
+        paths=publishable,
+        notes=notes,
+        min_confidence=min_confidence,
+    )
+
+
+compile_pipeline.publish_drafts = _publish_drafts_without_path_collisions
+
+
+def _lwc341_ensure_state(db):
+    db._conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS lwc341_conflicts (
+            conflict_id TEXT PRIMARY KEY,
+            path TEXT NOT NULL,
+            published_sha256 TEXT NOT NULL,
+            candidate_sha256 TEXT NOT NULL,
+            published_identity_json TEXT NOT NULL,
+            candidate_identity_json TEXT NOT NULL,
+            confidence REAL NOT NULL,
+            min_confidence REAL NOT NULL,
+            first_seen_run TEXT NOT NULL,
+            last_seen_run TEXT NOT NULL,
+            status TEXT NOT NULL,
+            action TEXT
+        );
+        CREATE TABLE IF NOT EXISTS lwc341_run_state (
+            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+            run_id TEXT NOT NULL,
+            new_conflicts_json TEXT NOT NULL,
+            pending_conflicts_json TEXT NOT NULL,
+            min_confidence REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS lwc341_operations (
+            principal_id TEXT NOT NULL,
+            operation_id TEXT NOT NULL,
+            payload_sha256 TEXT NOT NULL,
+            result_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (principal_id, operation_id)
+        );
+        CREATE TABLE IF NOT EXISTS lwc341_operation_attempts (
+            principal_id TEXT NOT NULL,
+            operation_id TEXT NOT NULL,
+            payload_sha256 TEXT NOT NULL,
+            result_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (principal_id, operation_id, payload_sha256)
+        );
+        """
+    )
+
+
+def _lwc341_article_identity(db, relative_path):
+    article = db.get_article(relative_path)
+    if article is None:
+        return {"exists": False}
+    return {
+        "exists": True,
+        "status": article.status,
+        "content_hash": article.content_hash,
+        "article_id": article.article_id or "",
+        "entity_id": article.entity_id or "",
+    }
+
+
+def _lwc341_confidence(meta):
+    try:
+        value = float(meta.get("confidence", 1.0))
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(value) or value < 0.0 or value > 1.0:
+        return 0.0
+    return value
+
+
+def _lwc341_conflict_id(project_id, relative_path, published_sha256, candidate_sha256):
+    raw = "\0".join((project_id, relative_path, published_sha256, candidate_sha256))
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _lwc341_snapshot(config, db, operation):
+    relative_path = operation.get("path", "")
+    if not relative_path.startswith("wiki/") or relative_path.startswith("wiki/.drafts/") or ".." in Path(relative_path).parts or "\\" in relative_path:
+        raise ValueError("invalid concept conflict path")
+    published_path = config.wiki_dir / relative_path.removeprefix("wiki/")
+    candidate_path = config.drafts_dir / relative_path.removeprefix("wiki/")
+    for path in (published_path, candidate_path):
+        if path.is_symlink() or not path.is_file():
+            return None
+        if not path.resolve().is_relative_to(config.vault.resolve()):
+            return None
+    published_bytes = published_path.read_bytes()
+    candidate_bytes = candidate_path.read_bytes()
+    published_sha256 = hashlib.sha256(published_bytes).hexdigest()
+    candidate_sha256 = hashlib.sha256(candidate_bytes).hexdigest()
+    published_meta, published_body = parse_note(published_path)
+    candidate_meta, candidate_body = parse_note(candidate_path)
+    published_rel = str(published_path.resolve().relative_to(config.vault.resolve()))
+    candidate_rel = str(candidate_path.resolve().relative_to(config.vault.resolve()))
+    published_identity = _lwc341_article_identity(db, published_rel)
+    candidate_identity = _lwc341_article_identity(db, candidate_rel)
+    index_path = config.vault / ".synto" / "INDEX.json"
+    index_sha256 = hashlib.sha256(index_path.read_bytes()).hexdigest() if index_path.is_file() and not index_path.is_symlink() else ""
+    confidence = _lwc341_confidence(candidate_meta)
+    project_id = os.environ.get("LWC_PROJECT_ID", "")
+    return {
+        "project_id": project_id,
+        "path": relative_path,
+        "published_sha256": published_sha256,
+        "candidate_sha256": candidate_sha256,
+        "published_identity": published_identity,
+        "candidate_identity": candidate_identity,
+        "published_body_sha256": compile_pipeline._content_hash(published_body),
+        "candidate_body_sha256": compile_pipeline._content_hash(candidate_body),
+        "published_meta": published_meta,
+        "candidate_meta": candidate_meta,
+        "index_sha256": index_sha256,
+        "confidence": confidence,
+        "conflict_id": _lwc341_conflict_id(project_id, relative_path, published_sha256, candidate_sha256),
+    }
+
+
+def _lwc341_local_source_matches(source_vault, operation):
+    expected = operation.get("expected", {})
+    source = Path(source_vault).resolve()
+    published_rel = operation.get("path", "")
+    if not published_rel.startswith("wiki/"):
+        return False
+    candidate_rel = "wiki/.drafts/" + published_rel.removeprefix("wiki/")
+    for relative, key in ((published_rel, "published_sha256"), (candidate_rel, "candidate_sha256")):
+        path = source / relative
+        if path.is_symlink() or not path.is_file() or not path.resolve().is_relative_to(source):
+            return False
+        if hashlib.sha256(path.read_bytes()).hexdigest() != expected.get(key):
+            return False
+
+    state_path = source / ".synto/state.db"
+    identities = {}
+    if state_path.is_file() and not state_path.is_symlink():
+        try:
+            connection = sqlite3.connect(state_path.as_uri() + "?mode=ro", uri=True)
+            try:
+                for relative in (published_rel, candidate_rel):
+                    row = connection.execute(
+                        "SELECT status,content_hash,COALESCE(article_id,''),COALESCE(entity_id,'') FROM wiki_articles WHERE path=?",
+                        (relative,),
+                    ).fetchone()
+                    identities[relative] = (
+                        {"exists": False} if row is None else {
+                            "exists": True, "status": row[0], "content_hash": row[1],
+                            "article_id": row[2], "entity_id": row[3],
+                        }
+                    )
+            finally:
+                connection.close()
+        except sqlite3.Error:
+            return False
+    else:
+        identities = {published_rel: {"exists": False}, candidate_rel: {"exists": False}}
+    if identities[published_rel] != expected.get("published_identity") or identities[candidate_rel] != expected.get("candidate_identity"):
+        return False
+
+    index_path = source / ".synto/INDEX.json"
+    if index_path.is_symlink() or not index_path.is_file():
+        index_sha256 = ""
+    else:
+        index_sha256 = hashlib.sha256(index_path.read_bytes()).hexdigest()
+    return index_sha256 == expected.get("index_sha256", "")
+
+
+def _lwc341_refresh_conflicts(config, db, run_id, min_confidence):
+    _lwc341_ensure_state(db)
+    project_id = os.environ.get("LWC_PROJECT_ID", "")
+    pending = []
+    new = []
+    active_ids = set()
+    if config.drafts_dir.exists():
+        for candidate_path in sorted(config.drafts_dir.rglob("*.md")):
+            if candidate_path.is_symlink() or not candidate_path.is_file() or not candidate_path.resolve().is_relative_to(config.vault.resolve()):
+                continue
+            relative = candidate_path.resolve().relative_to(config.vault.resolve()).as_posix()
+            target = config.wiki_dir / relative.removeprefix("wiki/.drafts/")
+            if not target.is_file() or target.is_symlink():
+                continue
+            meta, _ = parse_note(candidate_path)
+            confidence = _lwc341_confidence(meta)
+            if confidence < min_confidence:
+                continue
+            published_bytes = target.read_bytes()
+            candidate_bytes = candidate_path.read_bytes()
+            published_sha256 = hashlib.sha256(published_bytes).hexdigest()
+            candidate_sha256 = hashlib.sha256(candidate_bytes).hexdigest()
+            published_rel = target.resolve().relative_to(config.vault.resolve()).as_posix()
+            candidate_rel = relative
+            conflict_id = _lwc341_conflict_id(project_id, published_rel, published_sha256, candidate_sha256)
+            published_identity = _lwc341_article_identity(db, published_rel)
+            candidate_identity = _lwc341_article_identity(db, candidate_rel)
+            prior = db._conn.execute(
+                "SELECT first_seen_run, status FROM lwc341_conflicts WHERE conflict_id = ?",
+                (conflict_id,),
+            ).fetchone()
+            first_seen = prior[0] if prior and prior[1] == "pending" else run_id
+            was_new = not prior or prior[1] != "pending"
+            db._conn.execute(
+                """INSERT INTO lwc341_conflicts
+                   (conflict_id,path,published_sha256,candidate_sha256,published_identity_json,candidate_identity_json,
+                    confidence,min_confidence,first_seen_run,last_seen_run,status,action)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,NULL)
+                   ON CONFLICT(conflict_id) DO UPDATE SET
+                    published_identity_json=excluded.published_identity_json,
+                    candidate_identity_json=excluded.candidate_identity_json,
+                    confidence=excluded.confidence,min_confidence=excluded.min_confidence,
+                    last_seen_run=excluded.last_seen_run,status='pending',action=NULL""",
+                (conflict_id, published_rel, published_sha256, candidate_sha256,
+                 json.dumps(published_identity, sort_keys=True, separators=(",", ":")),
+                 json.dumps(candidate_identity, sort_keys=True, separators=(",", ":")),
+                 confidence, min_confidence, first_seen, run_id, "pending"),
+            )
+            active_ids.add(conflict_id)
+            pending.append(conflict_id)
+            if was_new:
+                new.append(conflict_id)
+    prior_pending = db._conn.execute(
+        "SELECT conflict_id FROM lwc341_conflicts WHERE status='pending'"
+    ).fetchall()
+    for (conflict_id,) in prior_pending:
+        if conflict_id not in active_ids:
+            db._conn.execute(
+                "UPDATE lwc341_conflicts SET status='stale' WHERE conflict_id=?",
+                (conflict_id,),
+            )
+    db._conn.execute(
+        """INSERT INTO lwc341_run_state(singleton,run_id,new_conflicts_json,pending_conflicts_json,min_confidence)
+           VALUES (1,?,?,?,?)
+           ON CONFLICT(singleton) DO UPDATE SET run_id=excluded.run_id,
+             new_conflicts_json=excluded.new_conflicts_json,
+             pending_conflicts_json=excluded.pending_conflicts_json,
+             min_confidence=excluded.min_confidence""",
+        (run_id, json.dumps(new), json.dumps(pending), min_confidence),
+    )
+    db._conn.commit()
+
+
+def _lwc341_store_attempt(db, operation, status, result):
+    _lwc341_ensure_state(db)
+    encoded = json.dumps(result, sort_keys=True, separators=(",", ":"))
+    db._conn.execute(
+        """INSERT INTO lwc341_operation_attempts(principal_id,operation_id,payload_sha256,result_json,created_at)
+           VALUES (?,?,?,?,?) ON CONFLICT(principal_id,operation_id,payload_sha256) DO NOTHING""",
+        (os.environ.get("USER_ID", ""), operation["operation_id"], operation["payload_sha256"], encoded, datetime.now(timezone.utc).isoformat()),
+    )
+    db._conn.commit()
+    return result
+
+
+def _lwc341_resolve(config, db, operation):
+    _lwc341_ensure_state(db)
+    operation_id = operation.get("operation_id", "")
+    payload_sha256 = operation.get("payload_sha256", "")
+    if not operation_id or len(operation_id) > 96 or len(payload_sha256) != 64:
+        raise ValueError("invalid concept conflict operation identity")
+    principal_id = os.environ.get("USER_ID", "")
+    if not principal_id:
+        raise ValueError("concept conflict principal is unavailable")
+    prior = db._conn.execute(
+        "SELECT payload_sha256,result_json FROM lwc341_operations WHERE principal_id=? AND operation_id=?",
+        (principal_id, operation_id),
+    ).fetchone()
+    if prior:
+        if prior[0] == payload_sha256:
+            result = json.loads(prior[1])
+            result["_lwc341_replayed"] = True
+            return result
+        return _lwc341_store_attempt(db, operation, "payload_mismatch", {
+            "operation_id": operation_id, "payload_sha256": payload_sha256,
+            "status": "payload_mismatch", "action": operation.get("action", ""),
+        })
+
+    snapshot = _lwc341_snapshot(config, db, operation)
+    status = "stale"
+    if snapshot is None:
+        return _lwc341_store_attempt(db, operation, status, {
+            "operation_id": operation_id, "payload_sha256": payload_sha256,
+            "status": status, "action": operation.get("action", ""),
+        })
+    expected = operation.get("expected", {})
+    if operation.get("storage_view", "") != os.environ.get("LWC_CONFLICT_STORAGE_VIEW", "") or any(
+        snapshot.get(key) != expected.get(expected_key)
+        for key, expected_key in (
+            ("conflict_id", "conflict_id"),
+            ("published_sha256", "published_sha256"),
+            ("candidate_sha256", "candidate_sha256"),
+            ("published_identity", "published_identity"),
+            ("candidate_identity", "candidate_identity"),
+            ("index_sha256", "index_sha256"),
+        )
+    ):
+        return _lwc341_store_attempt(db, operation, status, {
+            "operation_id": operation_id, "payload_sha256": payload_sha256,
+            "status": status, "action": operation.get("action", ""),
+        })
+
+    run_state = db._conn.execute(
+        "SELECT min_confidence FROM lwc341_run_state WHERE singleton=1"
+    ).fetchone()
+    threshold = run_state[0] if run_state else 0.0
+    expected = operation.get("expected", {})
+    if expected.get("min_confidence") != threshold:
+        return _lwc341_store_attempt(db, operation, status, {
+            "operation_id": operation_id, "payload_sha256": payload_sha256,
+            "status": status, "action": operation.get("action", ""),
+        })
+    if snapshot["confidence"] < threshold:
+        return _lwc341_store_attempt(db, operation, "low_confidence", {
+            "operation_id": operation_id, "payload_sha256": payload_sha256,
+            "status": "low_confidence", "action": operation["action"],
+        })
+
+    published_rel = operation["path"]
+    candidate_rel = "wiki/.drafts/" + published_rel.removeprefix("wiki/")
+    candidate_path = config.vault / candidate_rel
+    published_path = config.vault / published_rel
+    action = operation.get("action")
+    if action == "keep_published":
+        published_row = db.get_article(published_rel)
+        if published_row is None:
+            candidate_row = db.get_article(candidate_rel)
+            identity = (candidate_row.entity_id or candidate_row.article_id) if candidate_row else None
+            if candidate_row is None or not identity:
+                return _lwc341_store_attempt(db, operation, "identity_unavailable", {
+                    "operation_id": operation_id, "payload_sha256": payload_sha256,
+                    "status": "identity_unavailable", "action": action,
+                })
+            published_meta, published_body = parse_note(published_path)
+            published_row = candidate_row.model_copy(update={
+                "path": published_rel,
+                "title": str(published_meta.get("title", candidate_row.title)),
+                "content_hash": compile_pipeline._content_hash(published_body),
+                "status": "published",
+                "updated_at": datetime.now(timezone.utc),
+            })
+            db.delete_article(candidate_rel)
+            db.upsert_article(published_row)
+        db.delete_article(candidate_rel)
+        candidate_path.unlink()
+    elif action == "publish_candidate":
+        candidate_row = db.get_article(candidate_rel)
+        affected = _publish_drafts(
+            config, db, paths=[candidate_path], min_confidence=threshold
+        )
+        if not affected:
+            return _lwc341_store_attempt(db, operation, "low_confidence", {
+                "operation_id": operation_id, "payload_sha256": payload_sha256,
+                "status": "low_confidence", "action": action,
+            })
+        # Synto 0.7.0's publisher moves the draft row, but its follow-up body
+        # hash upsert does not carry article/entity IDs. Preserve this selected
+        # candidate's identity on the published row for the INDEX export.
+        published_row = db.get_article(published_rel)
+        if candidate_row is not None and published_row is not None:
+            db.upsert_article(published_row.model_copy(update={
+                "article_id": candidate_row.article_id,
+                "entity_id": candidate_row.entity_id,
+            }))
+    else:
+        raise ValueError("unsupported concept conflict action")
+
+    output_bytes = published_path.read_bytes()
+    _, output_body = parse_note(published_path)
+    result = {
+        "operation_id": operation_id,
+        "payload_sha256": payload_sha256,
+        "status": "committed",
+        "action": action,
+        "conflict_id": operation["conflict_id"],
+        "input_sha256": snapshot["candidate_sha256"],
+        "output_sha256": hashlib.sha256(output_bytes).hexdigest(),
+        "content_hash": compile_pipeline._content_hash(output_body),
+    }
+    db._conn.execute(
+        "UPDATE lwc341_conflicts SET status='resolved', action=? WHERE conflict_id=?",
+        (action, operation["conflict_id"]),
+    )
+    run_state = db._conn.execute(
+        "SELECT new_conflicts_json,pending_conflicts_json FROM lwc341_run_state WHERE singleton=1"
+    ).fetchone()
+    if run_state:
+        remaining_new = [item for item in json.loads(run_state[0]) if item != operation["conflict_id"]]
+        remaining_pending = [item for item in json.loads(run_state[1]) if item != operation["conflict_id"]]
+        db._conn.execute(
+            "UPDATE lwc341_run_state SET new_conflicts_json=?,pending_conflicts_json=? WHERE singleton=1",
+            (json.dumps(remaining_new), json.dumps(remaining_pending)),
+        )
+    encoded = json.dumps(result, sort_keys=True, separators=(",", ":"))
+    created_at = datetime.now(timezone.utc).isoformat()
+    db._conn.execute(
+        "INSERT INTO lwc341_operations(principal_id,operation_id,payload_sha256,result_json,created_at) VALUES (?,?,?,?,?)",
+        (principal_id, operation_id, payload_sha256, encoded, created_at),
+    )
+    db._conn.execute(
+        """INSERT INTO lwc341_operation_attempts(principal_id,operation_id,payload_sha256,result_json,created_at)
+           VALUES (?,?,?,?,?)""",
+        (principal_id, operation_id, payload_sha256, encoded, created_at),
+    )
+    db._conn.commit()
+    return result
+
+
+_orchestrator_run = PipelineOrchestrator.run
+
+
+def _run_with_lwc341_conflict_inventory(self, *args, **kwargs):
+    operation_json = os.environ.get("LWC_CONCEPT_RESOLVE_JSON", "").strip()
+    if operation_json:
+        operation = json.loads(operation_json)
+        result = _lwc341_resolve(self.config, self.db, operation)
+        replayed = result.pop("_lwc341_replayed", False)
+        source_vault = os.environ.get("LWC_CONFLICT_SOURCE_VAULT", "").strip()
+        if result.get("status") == "committed" and not replayed and source_vault and not _lwc341_local_source_matches(source_vault, operation):
+            raise RuntimeError("local concept conflict snapshot changed before publication")
+        return PipelineReport(published=1 if result.get("status") == "committed" and not replayed and operation.get("action") == "publish_candidate" else 0)
+    report = _orchestrator_run(self, *args, **kwargs)
+    if not kwargs.get("dry_run", False):
+        min_confidence = float(kwargs.get("min_confidence", 0.0))
+        run_id = os.environ.get("LWC_EXECUTION_ID", "") or uuid.uuid4().hex
+        _lwc341_refresh_conflicts(self.config, self.db, run_id, min_confidence)
+    return report
+
+
+PipelineOrchestrator.run = _run_with_lwc341_conflict_inventory
 
 _resolve_role = Config.resolve_role
 _MODELS = {

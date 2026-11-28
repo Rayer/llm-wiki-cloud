@@ -361,6 +361,12 @@ func samePipelineProfileIdentity(left, right pipelineLLMProfile) bool {
 }
 
 func runWorkerBatchAtVaultWithProfilePool(ctx context.Context, cfg workerConfig, commands [][]string, vault, workspace string, snapshots []sourceSnapshot, materialize bool) (string, error) {
+	if cfg.ConceptResolveJSON != "" && cfg.Bucket == "" {
+		// The mounted vault stays immutable while the private workspace runs.
+		// Pass its trusted path for a final best-effort local stale check before
+		// the existing journal/rename publication step.
+		cfg.ConceptConflictSourceVault = vault
+	}
 	pinnedProfiles := cfg.ProfileCandidates
 	profiles := pinnedProfiles
 	// The outer worker owns these pinned credentials through publication

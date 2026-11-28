@@ -143,6 +143,78 @@ export type WikiEntry = {
 
 export type WikiReference = { id?: string; slug: string; title: string; type: 'concept' | 'source' };
 
+export type ConceptConflictIdentity = {
+  exists: boolean;
+  status?: string;
+  content_hash?: string;
+  article_id?: string;
+  entity_id?: string;
+};
+
+export type ConceptConflictVersion = {
+  path: string;
+  sha256: string;
+  content?: string;
+  identity: ConceptConflictIdentity;
+};
+
+export type ConceptConflict = {
+  conflict_id: string;
+  published: ConceptConflictVersion;
+  candidate: ConceptConflictVersion;
+  index_sha256: string;
+  confidence: number;
+  min_confidence: number;
+  first_seen_run?: string;
+  is_new: boolean;
+  eligible: boolean;
+};
+
+export type ConceptConflictInventory = {
+  project_id: string;
+  storage_view: string;
+  pair_sha256: string;
+  run_id?: string;
+  new_count: number;
+  pending_count: number;
+  held_back_count: number;
+  conflicts: ConceptConflict[];
+  held_back: ConceptConflict[];
+  count: number;
+};
+
+export type ConceptConflictComparison = {
+  project_id: string;
+  storage_view: string;
+  pair_sha256: string;
+  conflict_id: string;
+  index_sha256: string;
+  confidence: number;
+  min_confidence: number;
+  published: ConceptConflictVersion;
+  candidate: ConceptConflictVersion;
+};
+
+export type ConceptConflictResolveAction = 'keep_published' | 'publish_candidate';
+export type ConceptConflictResolveRequest = Pick<ConceptConflictComparison, 'storage_view' | 'pair_sha256' | 'conflict_id'> & {
+  operation_id: string;
+  action: ConceptConflictResolveAction;
+  path: string;
+};
+export type ConceptConflictResolveResponse = {
+  operation_id: string;
+  payload_sha256: string;
+  execution_id?: string;
+  status: string;
+  action: ConceptConflictResolveAction;
+};
+export type ConceptConflictOperation = {
+  operation_id: string;
+  status: string;
+  result?: Record<string, unknown>;
+  execution?: PipelineExecution | null;
+};
+
 export type SourceLifecycle = 'new' | 'synced' | 'notes_pending' | 'content_pending' | 'error';
 
 export type SourceListItem = {
@@ -1555,6 +1627,40 @@ export async function updateSourceAnnotation(
 
 export async function getConcepts(projectId?: string) {
   return extractArray(await requestJson<unknown>('/api/v1/concepts', projectId ? { projectId } : {})).map(normalizeEntry);
+}
+
+export async function getConceptConflicts(projectId?: string): Promise<ConceptConflictInventory> {
+  return requestJson<ConceptConflictInventory>('/api/v1/concept-conflicts', projectId ? { projectId } : {});
+}
+
+export async function compareConceptConflict(path: string, projectId?: string): Promise<ConceptConflictComparison> {
+  const query = new URLSearchParams({ path });
+  return requestJson<ConceptConflictComparison>(`/api/v1/concept-conflicts/compare?${query}`, projectId ? { projectId } : {});
+}
+
+export async function resolveConceptConflict(request: ConceptConflictResolveRequest, projectId?: string): Promise<ConceptConflictResolveResponse> {
+  const response = await apiFetch('/api/v1/concept-conflicts/resolve', {
+    method: 'POST', projectId, json: true, body: JSON.stringify(request),
+  });
+  if (!response.ok) {
+    const payload: unknown = await response.json().catch(() => null);
+    const message = isRecord(payload) ? asString(payload.error) : undefined;
+    throw new ApiError(message ?? `Conflict decision failed (${response.status})`, response.status,
+      diagnosticIdFromPayload(payload), response.headers.get('X-Request-ID'));
+  }
+  return response.json() as Promise<ConceptConflictResolveResponse>;
+}
+
+export async function getConceptConflictOperation(operationId: string, executionId: string, projectId?: string): Promise<ConceptConflictOperation> {
+  const query = new URLSearchParams({ execution_id: executionId });
+  const response = await apiFetch(`/api/v1/concept-conflicts/operations/${encodeURIComponent(operationId)}?${query}`, { projectId });
+  const payload: unknown = await response.json().catch(() => null);
+  if (!response.ok && response.status !== 202) {
+    const message = isRecord(payload) ? asString(payload.error) : undefined;
+    throw new ApiError(message ?? `Conflict decision status failed (${response.status})`, response.status,
+      diagnosticIdFromPayload(payload), response.headers.get('X-Request-ID'));
+  }
+  return payload as ConceptConflictOperation;
 }
 
 export async function getConcept(slug: string) {

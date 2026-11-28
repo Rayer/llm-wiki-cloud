@@ -200,6 +200,57 @@
       "kind": "literal",
       "context": "BYOK editor: Provider error text when the credential lacks permission for the operation."
     },
+    "ConceptConflicts.confidence": {
+      "kind": "literal",
+      "context": "Conflict inventory: candidate confidence value.",
+      "params": [
+        "value"
+      ]
+    },
+    "ConceptConflicts.counts": {
+      "kind": "literal",
+      "context": "Conflict inventory: distinct pending count and its newly detected subset.",
+      "params": [
+        "newCount",
+        "pendingCount"
+      ]
+    },
+    "ConceptConflicts.identity": {
+      "kind": "literal",
+      "context": "Conflict comparison: identity metadata for one version.",
+      "params": [
+        "value"
+      ]
+    },
+    "ConceptConflicts.operationFinished": {
+      "kind": "literal",
+      "context": "Conflict decision: terminal worker result status.",
+      "params": [
+        "status"
+      ]
+    },
+    "ConceptConflicts.rowState": {
+      "kind": "literal",
+      "context": "Conflict comparison: whether the selected version has a Synto row.",
+      "params": [
+        "value"
+      ]
+    },
+    "ConceptConflicts.snapshot": {
+      "kind": "literal",
+      "context": "Conflict comparison: storage snapshot token used for the pair.",
+      "params": [
+        "value"
+      ]
+    },
+    "ConceptConflicts.threshold": {
+      "kind": "literal",
+      "context": "Conflict comparison: observed and applicable minimum confidence values.",
+      "params": [
+        "confidence",
+        "minimum"
+      ]
+    },
     "CLILane.projectContext": {
       "kind": "literal",
       "params": [

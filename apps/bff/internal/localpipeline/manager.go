@@ -669,8 +669,17 @@ func (m *Manager) Start(ctx context.Context, userID, projectID, stage string, cl
 }
 
 func (m *Manager) StartWithAttempt(ctx context.Context, userID, projectID, stage string, cleanRebuild bool, reservationID, attemptID string) (string, error) {
+	return m.StartWithAttemptAndEnvironment(ctx, userID, projectID, stage, cleanRebuild, reservationID, attemptID, nil)
+}
+
+func (m *Manager) StartWithAttemptAndEnvironment(ctx context.Context, userID, projectID, stage string, cleanRebuild bool, reservationID, attemptID string, extraEnv map[string]string) (string, error) {
 	if !auth.ValidPathSegment(userID) || !auth.ValidPathSegment(projectID) {
 		return "", errors.New("invalid Project identity")
+	}
+	for key := range extraEnv {
+		if key != "LWC_CONCEPT_RESOLVE_JSON" && key != "LWC_CONFLICT_STORAGE_VIEW" {
+			return "", errors.New("unsupported local worker environment override")
+		}
 	}
 	if stage != "full" && stage != "suggested-queries" || cleanRebuild && stage != "full" {
 		return "", errors.New("unsupported local pipeline stage")
@@ -782,7 +791,10 @@ func (m *Manager) StartWithAttempt(ctx context.Context, userID, projectID, stage
 	}
 
 	requestID := observability.RequestIDFromContext(ctx)
-	cmd := newWorkerCommandWithAttempt(m.cfg, executionID, userID, projectID, stage, cleanRebuild, reservationID, attemptID, os.Environ(), observability.TraceParentFromContext(ctx), requestID)
+	cmd := newWorkerCommandWithAttemptAndEnvironment(m.cfg, executionID, userID, projectID, stage, cleanRebuild, reservationID, attemptID, os.Environ(), observability.TraceParentFromContext(ctx), requestID, extraEnv)
+	if cmd == nil {
+		return "", errors.New("unsupported local worker environment override")
+	}
 	p := &process{cmd: cmd, done: make(chan struct{})}
 	if err := m.startProcess(executionID, p, cmd.Start); err != nil {
 		result := processResult{executionID: executionID, userID: userID, projectID: projectID, beforeID: beforeID, reservationID: reservationID, attemptID: attemptID, requestID: requestID, spawnFailed: true, childErr: err}
@@ -1172,12 +1184,14 @@ func newWorkerCommand(cfg Config, executionID, userID, projectID, stage string, 
 }
 
 func newWorkerCommandWithAttempt(cfg Config, executionID, userID, projectID, stage string, cleanRebuild bool, reservationID, attemptID string, parentEnv []string, traceParent, requestID string) *exec.Cmd {
+	return newWorkerCommandWithAttemptAndEnvironment(cfg, executionID, userID, projectID, stage, cleanRebuild, reservationID, attemptID, parentEnv, traceParent, requestID, nil)
+}
+
+func newWorkerCommandWithAttemptAndEnvironment(cfg Config, executionID, userID, projectID, stage string, cleanRebuild bool, reservationID, attemptID string, parentEnv []string, traceParent, requestID string, extraEnv map[string]string) *exec.Cmd {
 	args := workerArgs(stage)
 	if cfg.PipelineConfigPath != "" {
 		args = append(args, "--pipeline-config", cfg.PipelineConfigPath, "--pipeline-private-bindings", cfg.PipelineBindingsPath)
 	}
-	cmd := exec.Command(cfg.Worker, args...)
-	cmd.Dir = cfg.WorkDir
 	overrides := map[string]string{
 		"GCP_PROJECT":              cfg.Project,
 		"GOOGLE_CLOUD_PROJECT":     cfg.Project,
@@ -1196,6 +1210,16 @@ func newWorkerCommandWithAttempt(cfg Config, executionID, userID, projectID, sta
 		"LWC_TRACEPARENT": traceParent,
 		"LWC_REQUEST_ID":  requestID,
 	}
+	for key, value := range extraEnv {
+		switch key {
+		case "LWC_CONCEPT_RESOLVE_JSON", "LWC_CONFLICT_STORAGE_VIEW":
+			overrides[key] = value
+		default:
+			return nil
+		}
+	}
+	cmd := exec.Command(cfg.Worker, args...)
+	cmd.Dir = cfg.WorkDir
 	cmd.Env = workerEnvironment(parentEnv, overrides)
 	cmd.Stdout = io.Discard
 	cmd.Stderr = cfg.Stderr
